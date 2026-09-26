@@ -1,6 +1,6 @@
 import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kiframe/schema"
 import { chromium, type Browser, type Page } from "playwright"
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { runScenario, StepError, type RunnerEvent } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
@@ -515,5 +515,67 @@ teardown:
       { timeoutMs: 4000 },
     )
     expect(error.message).toMatch(/stays off screen/)
+  })
+
+  // ─── Review round 5 (P0-3) ─────────────────────────────────────────────────
+
+  it("never falls back past an ambiguous primary locator", async () => {
+    const error = await failure(`steps:
+  - { id: go, action: goto, url: /ambiguous }
+  - { id: del, action: click, target: { by: role, role: button, name: Delete, fallbacks: [{ by: css, selector: span }] } }
+`)
+    expect(error.reason).toBe("target-ambiguous")
+  })
+
+  it("sees shadow-DOM elements as on screen", async () => {
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /shadow }
+  - { id: find, action: scroll, until: { by: role, role: button, name: Inside shadow } }
+`,
+      { timeoutMs: 5000 },
+    )
+  })
+
+  it("scrolls a mid-page pane back up to a target above its visible area", async () => {
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /pane }
+  - { id: down, action: scroll, until: { by: text, text: Pane bottom }, within: { by: css, selector: "#pane" } }
+  - { id: up, action: scroll, until: { by: text, text: Pane top }, within: { by: css, selector: "#pane" } }
+`,
+      { timeoutMs: 5000 },
+    )
+  })
+
+  it("waits for lazily loaded content at the end of an infinite list", async () => {
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /feed }
+  - { id: find, action: scroll, until: { by: text, text: Target item } }
+`,
+      { timeoutMs: 8000 },
+    )
+  }, 20_000)
+
+  it("refuses to type a secret outside the target app's origin", async () => {
+    await page.goto(server.url.replace("127.0.0.1", "localhost") + "/login")
+    await page.setContent("<label>Password <input type=password></label>")
+    const error = await failure(
+      `steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+`,
+      { resolveSecret: () => "hunter2" },
+    )
+    expect(error.reason).toBe("off-origin")
+  })
+
+  it("doesn't attach anything to the page when the setup is invalid", async () => {
+    const on = vi.spyOn(page, "on")
+    await expect(
+      run(`setup: [{ preset: typo }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`),
+    ).rejects.toThrow(/typo/)
+    expect(on).not.toHaveBeenCalled()
+    on.mockRestore()
   })
 })

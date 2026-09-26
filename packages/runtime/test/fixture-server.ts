@@ -3,6 +3,33 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/ambiguous": `<!doctype html><title>Ambiguous</title>
+    <button>Delete</button><button>Delete</button><span>Delete</span>`,
+  "/shadow": `<!doctype html><title>Shadow</title>
+    <div style="height:2500px"></div><x-card></x-card>
+    <script>
+      customElements.define("x-card", class extends HTMLElement {
+        connectedCallback() { this.attachShadow({ mode: "open" }).innerHTML = "<button>Inside shadow</button>" }
+      })
+    </script>`,
+  "/pane": `<!doctype html><title>Pane</title>
+    <div style="height:300px">Header</div>
+    <div id="pane" style="height:200px; overflow:auto"><p>Pane top</p><div style="height:1500px"></div><p>Pane bottom</p></div>`,
+  "/feed": `<!doctype html><title>Feed</title>
+    <div id="feed"></div>
+    <script>
+      let pages = 0
+      const feed = document.getElementById("feed")
+      function more() {
+        pages++
+        for (let i = 0; i < 20; i++) feed.insertAdjacentHTML("beforeend", "<p style='height:60px'>Item " + pages + "-" + i + "</p>")
+        if (pages === 3) feed.insertAdjacentHTML("beforeend", "<p>Target item</p>")
+      }
+      more()
+      addEventListener("scroll", () => {
+        if (pages < 3 && innerHeight + scrollY >= document.body.scrollHeight - 5) setTimeout(more, 400)
+      })
+    </script>`,
   "/prefilled": `<!doctype html><title>Prefilled</title>
     <label>Company <input value="Acme"></label>
     <label>Notes <textarea>line1
