@@ -830,29 +830,21 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
 
   it("releases the cursor even when the click fails", async () => {
     const events: RunnerEvent[] = []
-    await page.goto(`${server.url}/moving`)
-    // Cover the button before the step: the box exists (the cursor travels), the click can't land.
-    await page.evaluate(() =>
-      document.body.insertAdjacentHTML(
-        "beforeend",
-        "<div style='position:fixed; inset:0; z-index:9'></div>",
-      ),
-    )
+    // A disabled button: the probe hits it, Playwright's click waits for "enabled" and times out.
+    await page.setContent(`<button id="b" disabled style="width:200px; height:60px">Save</button>`)
     await expect(
       runScenario(
         page,
         scenario(
-          `steps:\n  - { id: hit, action: click, target: { by: role, role: button, name: Moving target } }\n`,
+          `steps:\n  - { id: hit, action: click, target: { by: css, selector: "#b" }, risky: false }\n`,
         ),
         humanProject(),
-        { timeoutMs: 1000, onEvent: (e) => events.push(e) },
+        { timeoutMs: 800, onEvent: (e) => events.push(e) },
       ),
-    ).rejects.toThrow()
-    // The trial click fails before any press: the video never shows a click that didn't happen,
-    // and nothing is left held down.
+    ).rejects.toThrow(/Timeout/)
     const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
-    expect(pressed.filter(Boolean)).toHaveLength(0)
-    expect(pressed.at(-1) ?? false).toBe(false)
+    expect(pressed.filter(Boolean)).toHaveLength(1)
+    expect(pressed.at(-1)).toBe(false)
   })
 
   // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────
@@ -1188,5 +1180,20 @@ teardown:
   - { id: open, action: click, target: { by: role, role: link, name: Projects } }
   - { id: at, action: expect, that: { url: /projects }, timeout: 50 }
 `)
+  })
+
+  // ─── P0-4 review round 10 (cheap hardening before merge) ───────────────────
+
+  it("fails closed on outer controls, the target's own title and split words outside controls", async () => {
+    await page.setContent(`
+      <div role="button" aria-label="Delete row" id="outer"><span role="button" id="inner">Open</span></div>
+      <div class="trash" id="trash" title="Delete" style="width:40px; height:40px"><svg width="40" height="40"><rect width="40" height="40"/></svg></div>
+      <div id="split" style="width:120px; height:30px"><b>Del</b>ete</div>`)
+    for (const id of ["inner", "trash", "split"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
   })
 })

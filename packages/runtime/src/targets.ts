@@ -170,10 +170,13 @@ export async function viewportOf(page: Page): Promise<{ width: number; height: n
  * the control it belongs to (its text, shadow text and every naming attribute inside), or for a
  * non-control its own text and attributes without nested controls' text.
  */
+/** Arguments of `pointProbe`: point, whether to read the label, strict hit test, marker token. */
+export type ProbeArgs = [number, number, boolean, boolean, string?]
+
 export function pointProbe(
   el: Element,
-  [x, y, withLabel, strict = false]: [number, number, boolean, boolean?],
-): { hits: boolean; label: string } {
+  [x, y, withLabel, strict, token]: ProbeArgs,
+): { hits: boolean; label: string; sameAsMarked: boolean } {
   const CONTROLS =
     "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
   let hit = document.elementFromPoint(x, y)
@@ -196,7 +199,12 @@ export function pointProbe(
     return false
   }
   const hits = hit !== null && (within(hit, el) || (!strict && within(hit, closest(el))))
-  if (!withLabel || hit === null) return { hits, label: "" }
+  // Mark the element under the point (a JS property, invisible to the page) so a later probe can
+  // tell whether the same node is still there.
+  const marks = hit as unknown as { __kiframeProbe?: string } | null
+  const sameAsMarked = token !== undefined && marks !== null && marks.__kiframeProbe === token
+  if (token !== undefined && marks !== null) marks.__kiframeProbe ??= token
+  if (!withLabel || hit === null) return { hits, label: "", sameAsMarked }
   const texts: (string | null | undefined)[] = []
   const attrs = (e: Element) => {
     const root = e.getRootNode() as Document | ShadowRoot
@@ -222,7 +230,7 @@ export function pointProbe(
       ...(node instanceof Element && node.shadowRoot ? [node.shadowRoot] : []),
     ]
     for (const child of children) {
-      if (child.nodeType === Node.TEXT_NODE) texts.push(child.textContent)
+      if (child.nodeType === Node.TEXT_NODE) texts.push("\uE000" + (child.textContent ?? ""))
       else if (child instanceof Element) {
         if (skipControls && child.matches(CONTROLS)) continue
         attrs(child)
@@ -230,22 +238,32 @@ export function pointProbe(
       } else if (child instanceof ShadowRoot) walk(child, skipControls)
     }
   }
+  // Fail closed on everything the press can activate: the target itself, and every control from
+  // the hit up (a click bubbles: an inner "Open" inside an outer "Delete row" activates both).
+  attrs(el)
   const control = closest(hit)
   if (control !== null) {
-    // The press activates this control: fail closed on everything in it.
-    texts.push(control instanceof HTMLElement ? control.innerText : null)
-    attrs(control)
-    walk(control, false)
+    for (let c: Element | null = control; c !== null; c = closest(up(c) as Element | null)) {
+      texts.push(c instanceof HTMLElement ? c.innerText : null)
+      attrs(c)
+      walk(c, false)
+    }
   } else {
     // Not a control (a card's background, a row's cell): the element itself, not the buttons in it.
     attrs(hit)
     walk(hit, true)
   }
-  const label = texts
-    .filter((s): s is string => typeof s === "string")
+  // Two readings, both checked (fail closed): pieces separated by spaces, and adjacent text nodes
+  // glued (\uE000 marks them), so "<b>Del</b>ete" is found as "Delete" and "open"+"delete" as two words.
+  const pieces = texts.filter((s): s is string => typeof s === "string")
+  const spaced = pieces.join(" ").replace(/\uE000/g, "")
+  const glued = pieces
     .join(" ")
+    .replace(/ \uE000/g, "")
+    .replace(/\uE000/g, "")
+  const label = `${spaced} ${glued}`
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/\s+/g, " ")
     .trim()
-  return { hits, label }
+  return { hits, label, sameAsMarked }
 }

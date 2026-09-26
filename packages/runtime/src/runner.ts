@@ -24,6 +24,7 @@ import {
   describeLocator,
   isOnScreen,
   pointProbe,
+  type ProbeArgs,
   resolveTarget,
   toPlaywright,
   viewportOf,
@@ -792,20 +793,25 @@ async function clickAtCursor(
   let point = await moveCursorTo(ctx, target, step)
   let deadline = Date.now() + ctx.timeoutMs
   const left = () => Math.max(MIN_TIMEOUT_MS, deadline - Date.now())
+  // A token marks the element found under the point, so a later probe can tell it's the SAME node.
+  const token = `${seedOf(step)}:${Date.now()}`
   const probeAt = (p: Point) =>
-    target.evaluate(pointProbe, [p.x, p.y, true] as [number, number, boolean], { timeout: left() })
+    target.evaluate(pointProbe, [p.x, p.y, true, false, token] as ProbeArgs, { timeout: left() })
   await guard(step, async () => {
     let probe = point === undefined ? undefined : await probeAt(point)
     if (point !== undefined && probe !== undefined && !probe.hits) {
       point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
+      deadline = Date.now() + ctx.timeoutMs // the corrective travel doesn't count either
       probe = await probeAt(point)
       // Still covered at our point: let Playwright choose one (it reports interceptions clearly).
       if (!probe.hits) point = undefined
     }
+    // `point` defined ⇔ a verified point on the target, with `probe` describing what it activates.
     if (action.risky === undefined) {
-      const risky = probe === undefined || !probe.hits ? null : RISKY_LABEL.exec(probe.label)
+      const risky =
+        point === undefined || probe === undefined ? null : RISKY_LABEL.exec(probe.label)
       const detail =
-        probe === undefined || !probe.hits
+        point === undefined
           ? "can't see what this click would activate: approve it, or set `risky: false`"
           : risky !== null
             ? `this click activates something that mentions "${risky[0]}": approve it, or set \`risky: false\` if it's safe`
@@ -813,30 +819,40 @@ async function clickAtCursor(
       if (detail !== undefined) {
         await requireApproval(ctx, step, detail)
         deadline = Date.now() + ctx.timeoutMs // the human wait doesn't count
-        // The page may have changed while waiting: the point must still be on the target, and what
-        // it activates must mention the same risky words as what was approved.
-        if (point !== undefined && probe !== undefined) {
-          const now = await probeAt(point)
-          const words = (label: string) =>
-            [...label.matchAll(new RegExp(RISKY_LABEL.source, "gi"))]
-              .map((m) => m[0].toLowerCase())
-              .sort()
-              .join(",")
-          if (!now.hits || words(now.label) !== words(probe.label)) {
-            throw new StepError(
-              step,
-              "action-failed",
-              "the page changed while waiting for approval: nothing was clicked",
-            )
-          }
+        // The page may have changed while waiting: the point must still be on the target, on the
+        // very element that was approved (not another row with the same words).
+        const words = (label: string) =>
+          [...label.matchAll(new RegExp(RISKY_LABEL.source, "gi"))]
+            .map((m) => m[0].toLowerCase())
+            .sort()
+            .join(",")
+        const now = point === undefined ? undefined : await probeAt(point)
+        if (
+          now !== undefined &&
+          probe !== undefined &&
+          (!now.sameAsMarked || words(now.label) !== words(probe.label))
+        ) {
+          throw new StepError(
+            step,
+            "action-failed",
+            "the page changed while waiting for approval: nothing was clicked",
+          )
         }
       }
     }
-    const box = point === undefined ? null : await target.boundingBox({ timeout: left() })
-    const position =
-      point === undefined || box === null
-        ? undefined
-        : await clickOffset(target, box, point, left())
+    let position: Point | undefined
+    if (point !== undefined) {
+      const box = await target.boundingBox({ timeout: left() })
+      // The box vanished after the check: never fall back to the element's center, which wasn't
+      // checked (it could be the Delete button in the middle of a card).
+      if (box === null)
+        throw new StepError(
+          step,
+          "action-failed",
+          "the target changed right before the click: nothing was clicked",
+        )
+      position = await clickOffset(target, box, point, left())
+    }
     const at = point
     const emit = (pressed: boolean) => {
       if (at !== undefined) ctx.options.onEvent?.({ kind: "cursor", step, ...at, pressed })
