@@ -410,10 +410,11 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           // caret to the start when the window doesn't have OS focus (headed, Electron).
           const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
           const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
+          // delays[i] is the pause BEFORE character i (word and sentence boundaries).
           for (const [i, char] of [...text].entries()) {
-            await page.keyboard.type(char)
             const delay = delays[i] ?? 0
             if (delay > 0) await sleep(delay)
+            await page.keyboard.type(char)
           }
         }
         if (action.submit === true) await target.press("Enter", { timeout })
@@ -788,8 +789,10 @@ async function moveCursorTo(ctx: Ctx, target: Locator, step: StepRef): Promise<P
       await ctx.page.mouse.move(sample.x, sample.y)
       ctx.options.onEvent?.({ kind: "cursor", step, x: sample.x, y: sample.y, pressed: false })
     }
-    ctx.cursor = to
-    return to
+    // Where the mouse really is (the path is clamped to the viewport).
+    const end = path.at(-1) ?? { x: to.x, y: to.y }
+    ctx.cursor = { x: end.x, y: end.y }
+    return ctx.cursor
   })
 }
 
