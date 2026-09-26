@@ -6,7 +6,7 @@ AI agent that turns scenarios into product demo videos and guides. Design docs l
 
 ## Development
 
-Requires Node.js ≥ 22.18 and pnpm 10.
+Requires Node.js ≥ 22.18 and pnpm 10. Runtime tests drive a real Chromium: run `pnpm --filter @kiframe/runtime exec playwright install chromium` once.
 
 ```sh
 pnpm install
