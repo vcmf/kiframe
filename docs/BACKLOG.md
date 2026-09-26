@@ -25,7 +25,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Instant pacing doesn't re-measure after the hover:** a control that changes size on hover can be clicked at a stale offset (off camera only).
 - **Clip the aim point to clipping ancestors / fixed headers:** `visiblePart` clips to the viewport only. A covered point gets one re-aim, then Playwright picks the point (the cursor visual may jump); aiming directly at the uncovered part would avoid that.
 - **Risky label vs Playwright's hit check:** the risky label is read by our probe just before `locator.click`; Playwright then re-checks the hit target at dispatch. A re-render in between can only make Playwright's click fail or retry (it won't click a different element), but the label that was approved could differ from the final one in rare timing.
-- **Press ripple for a click that never happens:** the press event is emitted right before `locator.click`, which may then wait for actionability and time out; a double click's first pair is emitted before the real clicks.
+- **Double-click event timing:** when recording, a trial click checks actionability before the press is reported, but a double click's first press/release pair is still emitted before Playwright's clicks.
 - **Round trips per click:** up to ~6–8 sequential page calls (probes, boxes, border read, viewport). `pointProbe` could return the box and borders in the same call.
 
 ## @kiframe/runtime recorder (P0-5)
