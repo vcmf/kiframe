@@ -1,12 +1,12 @@
 import * as z from "zod"
 import {
-  hasUrlCredentials,
   Ms,
-  noCredentials,
   NPoint,
   SecretName,
   StepId,
+  Timestamp,
   ViewportRect,
+  withoutCredentials,
 } from "./common.ts"
 import { guarded } from "./guards.ts"
 import { RuleName, Viewport } from "./settings.ts"
@@ -19,7 +19,7 @@ import { RuleName, Viewport } from "./settings.ts"
  * step ID; off-camera work (setup, teardown, presets, interrupts) may not have one.
  */
 const base = {
-  t: Ms,
+  t: Timestamp,
   phase: z.enum(["setup", "steps", "teardown"]),
   stepId: StepId.optional(),
 }
@@ -51,7 +51,7 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   z.strictObject({
     ...base,
     kind: z.literal("navigate"),
-    url: z.string().refine((u) => !hasUrlCredentials(u), noCredentials),
+    url: withoutCredentials(z.string()),
   }),
   z.strictObject({ ...base, kind: z.literal("settled") }),
   /** Rect of an element referenced by a `camera.frame` or `emphasis` locator. */
@@ -70,7 +70,7 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
     why: z.enum(["secret-field", "secret-text", "redaction"]),
   }),
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
-  z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Ms }),
+  z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Timestamp }),
 ])
 const TakeEventBase = TakeEventVariants.refine(
   // Interrupts are handled between steps, so they may have no step even on camera.
@@ -85,7 +85,7 @@ export const TakeEvent = guarded(TakeEventBase)
 export type TakeEvent = z.infer<typeof TakeEventBase>
 
 export const CursorSample = z.strictObject({
-  t: Ms,
+  t: Timestamp,
   p: NPoint,
   pressed: z.boolean(),
   /** Computed CSS `cursor` of the element under the pointer (pointer, text, custom…). */
@@ -98,7 +98,7 @@ const TakeMetaBase = z.strictObject({
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),
-  appUrl: z.string().refine((u) => !hasUrlCredentials(u), noCredentials),
+  appUrl: withoutCredentials(z.string()),
   viewport: Viewport.required(),
   /** Frame size of `frames.webm` in pixels (viewport × DPR). */
   frameSize: z.strictObject({
