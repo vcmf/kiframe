@@ -1139,7 +1139,7 @@ teardown:
       {
         approveRisky: async () => {
           await page.evaluate(() => {
-            document.getElementById("b")!.textContent = "Delete everything"
+            document.getElementById("b")!.textContent = "Send invite"
           })
           return true
         },
@@ -1157,5 +1157,36 @@ teardown:
       </div>`)
     await run(`steps:\n  - { id: open, action: click, target: { by: css, selector: "#card" } }\n`)
     expect(await page.evaluate<string | undefined>("document.body.dataset.opened")).toBe("1")
+  })
+
+  // ─── P0-4 review round 9: back to Playwright's click ───────────────────────
+
+  it("clicks a shadow-DOM button whose label is slotted, and flags it", async () => {
+    await page.setContent(`
+      <my-button><span>Delete</span></my-button>
+      <script>
+        customElements.define("my-button", class extends HTMLElement {
+          connectedCallback() {
+            this.attachShadow({ mode: "open" }).innerHTML =
+              "<button onclick=\\"document.body.dataset.done='1'\\"><slot></slot></button>"
+          }
+        })
+      </script>`)
+    const flagged = await failure(
+      `steps:\n  - { id: c, action: click, target: { by: role, role: button, name: Delete } }\n`,
+    )
+    expect(flagged.reason).toBe("risky-not-approved")
+    await run(
+      `steps:\n  - { id: c, action: click, target: { by: role, role: button, name: Delete }, risky: false }\n`,
+    )
+    expect(await page.evaluate<string | undefined>("document.body.dataset.done")).toBe("1")
+  })
+
+  it("waits for the navigation a click starts before the next step", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: / }
+  - { id: open, action: click, target: { by: role, role: link, name: Projects } }
+  - { id: at, action: expect, that: { url: /projects }, timeout: 50 }
+`)
   })
 })

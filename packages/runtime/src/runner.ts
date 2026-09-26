@@ -161,7 +161,13 @@ export async function runScenario(
         // The first teardown failure is thrown when nothing failed before: it isn't also reported
         // as an event. Every other one is (it would be lost otherwise).
         if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
-        else options.onEvent?.({ kind: "teardown_failed", error: stepError })
+        else {
+          try {
+            options.onEvent?.({ kind: "teardown_failed", error: stepError })
+          } catch {
+            // reporting must never stop the remaining cleanup
+          }
+        }
       }
     }
     if (failure !== undefined) throw failure
@@ -768,13 +774,14 @@ async function moveCursorTo(
 }
 
 /**
- * Clicks where the cursor is, by construction, within ONE time budget for the whole step:
- * 1. the cursor travels to a point on the target (no box: Playwright's regular click, no visuals);
- * 2. a trial click checks actionability without clicking;
- * 3. a probe at the press point checks the hit lands on the target (or in its enclosing control;
- *    one re-aim otherwise) and reads what the press would really activate, right now (after hover):
- *    if it mentions a risky word, the click needs approval (fails closed, `risky: false` opts out);
- * 4. the real mouse is pressed and released there, events reported at the moment they happen.
+ * Clicks where the cursor is:
+ * 1. the cursor travels to a point on the target (visuals only);
+ * 2. a probe at that point checks it's on the target (one re-aim otherwise; if it's still covered,
+ *    Playwright picks the point) and reads what the press would activate, after hover: if it
+ *    mentions a risky word, the click needs approval (fails closed, `risky: false` opts out);
+ * 3. Playwright's own `click({ position })` does the rest: actionability at that point, the
+ *    hit-target check at dispatch, modifiers, and waiting for a navigation the click starts.
+ * The time budget covers the click itself, not the cursor travel nor the human approval wait.
  */
 async function clickAtCursor(
   ctx: Ctx,
@@ -782,134 +789,111 @@ async function clickAtCursor(
   step: StepRef,
   action: Extract<AnyAction, { action: "click" }>,
 ): Promise<void> {
-  const button = action.button ?? "left"
-  const modifiers = (action.modifiers ?? []).map(toPlaywrightModifier)
   let point = await moveCursorTo(ctx, target, step)
-  // The time budget covers the click itself: not the cursor travel (presentation) and not the
-  // human approval wait (restarted after it).
   let deadline = Date.now() + ctx.timeoutMs
   const left = () => Math.max(MIN_TIMEOUT_MS, deadline - Date.now())
-  const approve = async (detail: string) => {
-    await requireApproval(ctx, step, detail)
-    deadline = Date.now() + ctx.timeoutMs
-  }
   const probeAt = (p: Point) =>
     target.evaluate(pointProbe, [p.x, p.y, true] as [number, number, boolean], { timeout: left() })
   await guard(step, async () => {
-    if (point === undefined) {
-      // No visible box to aim at (display: contents, zero-size…): Playwright decides where to click.
-      if (action.risky === undefined) {
-        await approve("can't see what this click would activate: approve it, or set `risky: false`")
-      }
-      await target.click({
-        timeout: left(),
-        button,
-        modifiers,
-        ...(action.count !== undefined && { clickCount: action.count }),
-      })
-      return
-    }
-    // Actionability at the point that will be pressed (not the middle of the element). A point
-    // outside the element's current box (it moved during the travel) needs a re-aim first.
-    const trialAt = async (p: Point): Promise<boolean> => {
-      const box = await target.boundingBox({ timeout: left() })
-      if (
-        box === null ||
-        p.x < box.x ||
-        p.y < box.y ||
-        p.x > box.x + box.width ||
-        p.y > box.y + box.height
-      ) {
-        return false
-      }
-      await target.click({
-        trial: true,
-        timeout: left(),
-        button,
-        modifiers,
-        position: { x: p.x - box.x, y: p.y - box.y },
-      })
-      return true
-    }
-    let probe = (await trialAt(point)) ? await probeAt(point) : { hits: false, label: "" }
-    if (!probe.hits) {
+    let probe = point === undefined ? undefined : await probeAt(point)
+    if (point !== undefined && probe !== undefined && !probe.hits) {
       point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
-      probe = (await trialAt(point)) ? await probeAt(point) : { hits: false, label: "" }
-      if (!probe.hits)
-        throw new StepError(
-          step,
-          "action-failed",
-          "the target is covered where the cursor would click it",
-        )
+      probe = await probeAt(point)
+      // Still covered at our point: let Playwright choose one (it reports interceptions clearly).
+      if (!probe.hits) point = undefined
     }
     if (action.risky === undefined) {
-      const risky = RISKY_LABEL.exec(probe.label)
-      if (risky !== null) {
-        await approve(
-          `this click activates something that mentions "${risky[0]}": approve it, or set \`risky: false\` if it's safe`,
-        )
-        // The page may have changed while waiting for the human: what's under the point now must
-        // still be the target, and be what was approved.
-        const again = await probeAt(point)
-        if (!again.hits || again.label !== probe.label) {
-          throw new StepError(
-            step,
-            "action-failed",
-            "the page changed while waiting for approval: nothing was clicked",
-          )
+      const risky = probe === undefined || !probe.hits ? null : RISKY_LABEL.exec(probe.label)
+      const detail =
+        probe === undefined || !probe.hits
+          ? "can't see what this click would activate: approve it, or set `risky: false`"
+          : risky !== null
+            ? `this click activates something that mentions "${risky[0]}": approve it, or set \`risky: false\` if it's safe`
+            : undefined
+      if (detail !== undefined) {
+        await requireApproval(ctx, step, detail)
+        deadline = Date.now() + ctx.timeoutMs // the human wait doesn't count
+        // The page may have changed while waiting: the point must still be on the target, and what
+        // it activates must mention the same risky words as what was approved.
+        if (point !== undefined && probe !== undefined) {
+          const now = await probeAt(point)
+          const words = (label: string) =>
+            [...label.matchAll(new RegExp(RISKY_LABEL.source, "gi"))]
+              .map((m) => m[0].toLowerCase())
+              .sort()
+              .join(",")
+          if (!now.hits || words(now.label) !== words(probe.label)) {
+            throw new StepError(
+              step,
+              "action-failed",
+              "the page changed while waiting for approval: nothing was clicked",
+            )
+          }
         }
       }
     }
-    // The trial may have moved the mouse: put it back where the cursor is.
+    const box = point === undefined ? null : await target.boundingBox({ timeout: left() })
+    const position =
+      point === undefined || box === null
+        ? undefined
+        : await clickOffset(target, box, point, left())
     const at = point
-    await ctx.page.mouse.move(at.x, at.y)
-    const held: string[] = []
-    try {
-      for (const m of modifiers) {
-        await ctx.page.keyboard.down(m)
-        held.push(m)
-      }
-      for (let clickCount = 1; clickCount <= (action.count ?? 1); clickCount++) {
-        await pressAndRelease(ctx, step, at, button, clickCount)
-      }
-    } finally {
-      // Never leave a key held into later steps (capitals, shift-selection…).
-      for (const m of held.reverse()) await ctx.page.keyboard.up(m).catch(() => undefined)
+    const emit = (pressed: boolean) => {
+      if (at !== undefined) ctx.options.onEvent?.({ kind: "cursor", step, ...at, pressed })
     }
+    // One press/release pair per click (a double click shows two ripples); the last release comes
+    // after Playwright's click.
+    for (let i = 1; i < (action.count ?? 1); i++) {
+      emit(true)
+      emit(false)
+    }
+    emit(true)
+    let clickError: Error | undefined
+    try {
+      await target.click({
+        timeout: left(),
+        ...(position !== undefined && { position }),
+        ...(action.button !== undefined && { button: action.button }),
+        ...(action.count !== undefined && { clickCount: action.count }),
+        ...(action.modifiers !== undefined && {
+          modifiers: action.modifiers.map(toPlaywrightModifier),
+        }),
+      })
+    } catch (error) {
+      clickError = error instanceof Error ? error : new Error(String(error))
+    }
+    try {
+      emit(false)
+    } catch (error) {
+      // The click's own error wins; a failing release callback fails the step only on its own.
+      if (clickError === undefined) throw error
+    }
+    if (clickError !== undefined) throw clickError
   })
 }
 
-/** One mouse click at `point`, with its press/release cursor events; the release is always reported. */
-async function pressAndRelease(
-  ctx: Ctx,
-  step: StepRef,
-  point: Point,
-  button: "left" | "right",
-  clickCount: number,
-): Promise<void> {
-  let clickError: Error | undefined
-  try {
-    ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: true })
-    await ctx.page.mouse.down({ button, clickCount })
-    try {
-      await ctx.page.mouse.up({ button, clickCount })
-    } catch (error) {
-      // Never leave the button held (the next click would become a drag): try once more.
-      await ctx.page.mouse.up({ button, clickCount }).catch(() => undefined)
-      throw error
-    }
-  } catch (error) {
-    clickError = error instanceof Error ? error : new Error(String(error))
-  }
-  let releaseError: Error | undefined
-  try {
-    ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: false })
-  } catch (error) {
-    releaseError = error instanceof Error ? error : new Error(String(error))
-  }
-  // The click's own error wins; a failing release callback fails the step only on its own.
-  if (clickError !== undefined) throw clickError
-  if (releaseError !== undefined) throw releaseError
+/**
+ * The click `position` for a point on screen. Playwright measures it from the element's padding
+ * box: it adds parseInt(border width), so exactly that is subtracted and the click lands on `at`.
+ */
+async function clickOffset(
+  target: Locator,
+  box: { x: number; y: number },
+  at: Point,
+  timeout: number,
+): Promise<Point> {
+  const border = await target.evaluate(
+    (el) => {
+      const style = getComputedStyle(el)
+      return {
+        left: parseInt(style.borderLeftWidth, 10) || 0,
+        top: parseInt(style.borderTopWidth, 10) || 0,
+      }
+    },
+    undefined,
+    { timeout },
+  )
+  return { x: at.x - box.x - border.left, y: at.y - box.y - border.top }
 }
 
 const center = (viewport: { width: number; height: number }): Point => ({
