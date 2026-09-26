@@ -491,8 +491,9 @@ type Anchor =
 type ClipSegment = SegmentBase & (
   | { mode: "speed"; speed: number }   // 1 = real time. Idle gaps and network waits → e.g. 4
   | { mode: "cut" }                    // removed from the output (setup, interrupts, very long waits)
-  | { mode: "freeze"; ms: number }     // hold the frame at `at` for ms (caption reading time)
-) & { reason?: "idle" | "network" | "setup" | "interrupt" | "reading" | "user" };
+) & { reason?: "idle" | "network" | "setup" | "interrupt" | "reading" | "user" }
+  // A freeze has no `until`: it holds the source frame at `at` for `ms` of output time.
+  | { id: string; source: "auto" | "manual"; at: Anchor; mode: "freeze"; ms: number; reason?: "reading" | "user" };
 
 type CameraSegment = SegmentBase & {
   scale: number;                               // 1 = full frame, 2 = 2x zoom (capped, §2b)

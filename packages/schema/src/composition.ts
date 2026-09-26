@@ -121,15 +121,32 @@ export const CursorSegment = z.strictObject({
 })
 export type CursorSegment = z.infer<typeof CursorSegment>
 
-export const CalloutSegment = z.strictObject({
-  ...segmentBase,
-  kind: z.enum(["arrow", "text", "badge"]),
-  text: z.string().optional(),
-  target: z.union([
-    z.strictObject({ frameRef: z.string().min(1) }),
-    z.strictObject({ rect: NRect }),
-  ]),
-})
+const calloutTarget = z.union([
+  z.strictObject({ frameRef: z.string().min(1) }),
+  z.strictObject({ rect: NRect }),
+])
+
+/** A text callout needs its text; arrows and badges may have an optional label. */
+export const CalloutSegment = z.discriminatedUnion("kind", [
+  z.strictObject({
+    ...segmentBase,
+    kind: z.literal("text"),
+    text: z.string().min(1),
+    target: calloutTarget,
+  }),
+  z.strictObject({
+    ...segmentBase,
+    kind: z.literal("arrow"),
+    text: z.string().min(1).optional(),
+    target: calloutTarget,
+  }),
+  z.strictObject({
+    ...segmentBase,
+    kind: z.literal("badge"),
+    text: z.string().min(1).optional(),
+    target: calloutTarget,
+  }),
+])
 export type CalloutSegment = z.infer<typeof CalloutSegment>
 
 export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })

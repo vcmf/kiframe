@@ -98,6 +98,8 @@ export const TakeMetaBase = z.strictObject({
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),
   appUrl: withoutCredentials(z.string()),
+  /** The environment the take was recorded on (APPROACHES §10c), when known. */
+  environment: RuleName.optional(),
   viewport: Viewport.required(),
   /** Frame size of `frames.webm` in pixels (viewport × DPR). */
   frameSize: z.strictObject({

@@ -6,6 +6,7 @@ import {
   Ms,
   RectTuple,
   secretRefName,
+  SceneFilePath,
   StepId,
   withoutCredentials,
 } from "./common.ts"
@@ -50,7 +51,7 @@ const targetExtras = {
   /** Alternative locators tried in order if the primary one fails. */
   fallbacks: z.array(Locator).optional(),
   /** Path to a screenshot crop of the element, used as visual reference for self-healing. */
-  fingerprint: z.string().optional(),
+  fingerprint: SceneFilePath.optional(),
   /** Pick the n-th match (0-based) when the locator matches several elements. */
   nth: z.number().int().nonnegative().optional(),
 }
@@ -140,12 +141,20 @@ const presentation = {
 
 const Goto = z.strictObject({
   action: z.literal("goto"),
-  /** Relative to the environment's URL: `goto` never leaves the target app. */
-  url: withoutCredentials(
-    z.string().min(1).refine(isRelativeUrl, {
+  /**
+   * Relative to the environment's URL: `goto` never leaves the target app. No whitespace or control
+   * characters (the URL parser would silently drop them). Credentials are impossible: a relative
+   * URL stays on the environment's origin, which has none.
+   */
+  url: z
+    .string()
+    .min(1)
+    .refine((u) => [...u].every((c) => c.charCodeAt(0) > 0x20 && c.charCodeAt(0) !== 0x7f), {
+      message: "goto URL can't contain spaces or control characters",
+    })
+    .refine(isRelativeUrl, {
       message: "goto URL must be relative to the environment (e.g. `/projects`)",
     }),
-  ),
 })
 const Click = z.strictObject({
   action: z.literal("click"),
@@ -291,8 +300,9 @@ export const ScenarioBase = z
     claimIds(s.steps, ["steps"], ctx, claims)
     claimIds(s.teardown, ["teardown"], ctx, claims)
 
-    // `camera: target` and `emphasis` on the target need a step that acts on an element.
+    const position = new Map(s.steps.map((step, i) => [step.id, i]))
     s.steps.forEach((step, i) => {
+      // `camera: target` and `emphasis` on the target need a step that acts on an element.
       if (usesStepTarget(step) && !hasTarget(step)) {
         ctx.addIssue({
           code: "custom",
@@ -300,10 +310,7 @@ export const ScenarioBase = z
           path: ["steps", i],
         })
       }
-    })
-
-    // A step that types a secret must never show its keys in the keystroke overlay.
-    s.steps.forEach((step, i) => {
+      // A step that types a secret must never show its keys in the keystroke overlay.
       if (
         step.action === "type" &&
         secretRefName(step.value) !== undefined &&
@@ -315,15 +322,10 @@ export const ScenarioBase = z
           path: ["steps", i, "keystrokes"],
         })
       }
-    })
-
-    // camera.until must point to a LATER step, so the framing span is never empty or inverted.
-    const position = new Map(s.steps.map((step, i) => [step.id, i]))
-    s.steps.forEach((step, i) => {
+      // camera.until must point to a LATER step, so the framing span is never empty or inverted.
       const until = cameraUntil(step)
-      if (until === undefined) return
-      const target = position.get(until)
-      if (target === undefined || target <= i) {
+      const target = until === undefined ? undefined : position.get(until)
+      if (until !== undefined && (target === undefined || target <= i)) {
         ctx.addIssue({
           code: "custom",
           message: `camera.until must refer to a later step, got "${until}"`,

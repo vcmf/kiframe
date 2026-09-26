@@ -373,7 +373,7 @@ describe("round 3: secrets and credentials in every author string", () => {
       parseScenarioYaml(
         `version: 1\nsteps:\n  - { id: g, action: goto, url: "https://u:p@x.com" }\n`,
       ),
-    ).toThrow(/credentials/)
+    ).toThrow(/relative to the environment/)
     expect(
       parseScenarioYaml(`version: 1\nsteps:\n  - { id: g, action: goto, url: /projects }\n`).steps,
     ).toHaveLength(1)
@@ -420,7 +420,9 @@ describe("round 4: goto URLs", () => {
   )
 
   it("rejects credentials in protocol-relative URLs", () => {
-    expect(() => parseScenarioYaml(goto("//user:pass@staging.acme.com/app"))).toThrow(/credentials/)
+    expect(() => parseScenarioYaml(goto("//user:pass@staging.acme.com/app"))).toThrow(
+      /relative to the environment/,
+    )
   })
 
   it("accepts relative URLs only", () => {
@@ -948,5 +950,78 @@ describe("round 10", () => {
     )
     const messages = r.error?.issues.map((i) => i.message) ?? []
     expect(messages).toEqual(['forbidden key "__proto__"'])
+  })
+})
+
+// ─── Round 11 ────────────────────────────────────────────────────────────────
+
+describe("round 11", () => {
+  it("rejects YAML keys that collide once stringified", () => {
+    expect(() =>
+      parseProjectYaml(
+        project(
+          'presets:\n  1: { steps: [{ action: pause, ms: 1 }] }\n  "1": { steps: [{ action: pause, ms: 2 }] }\n',
+        ),
+      ),
+    ).toThrow(/duplicate key "1"/)
+    expect(() => parseScenarioYaml(`&k a: 1\n*k : 2\nversion: 1\n${steps}`)).toThrow(SchemaError)
+  })
+
+  it.each([
+    "../../../../Users/x/.ssh/id_rsa",
+    "/etc/passwd",
+    "C:\\\\x.png",
+    "https://x/y.png",
+    "fp/../../z.png",
+  ])("rejects the fingerprint path %j", (fp) => {
+    const yaml = `version: 1\nsteps:\n  - { id: c, action: click, target: { by: text, text: Go, fingerprint: ${JSON.stringify(fp)} } }\n`
+    expect(() => parseScenarioYaml(yaml)).toThrow(SchemaError)
+  })
+
+  it("accepts a fingerprint inside the scene", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: c, action: click, target: { by: text, text: Go, fingerprint: fp/open-new.png } }\n`
+    expect(parseScenarioYaml(yaml).steps).toHaveLength(1)
+  })
+
+  it("accepts the environment in take metadata", () => {
+    const meta = {
+      version: 1,
+      takeKey: "k",
+      scenarioHash: "h",
+      recordedAt: "2026-09-26T20:00:00Z",
+      appUrl: "https://x.test",
+      environment: "staging",
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
+      frameSize: { width: 2880, height: 1800 },
+      fps: 30,
+      durationMs: 1000,
+      kiframeVersion: "0.0.0",
+    }
+    expect(TakeMeta.safeParse(meta).success).toBe(true)
+  })
+
+  it("requires text on text callouts", () => {
+    const callout = {
+      id: "c",
+      source: "manual",
+      kind: "text",
+      at: { ms: 0 },
+      until: { ms: 10 },
+      target: { rect: { x: 0, y: 0, w: 0.1, h: 0.1 } },
+    }
+    expect(Composition.safeParse({ version: 1, tracks: { callouts: [callout] } }).success).toBe(
+      false,
+    )
+    expect(
+      Composition.safeParse({ version: 1, tracks: { callouts: [{ ...callout, kind: "arrow" }] } })
+        .success,
+    ).toBe(true)
+  })
+
+  it("rejects blank or whitespace goto URLs", () => {
+    for (const url of ["  ", " /projects", "/pro jects"]) {
+      const yaml = `version: 1\nsteps:\n  - { id: g, action: goto, url: ${JSON.stringify(url)} }\n`
+      expect(() => parseScenarioYaml(yaml)).toThrow(SchemaError)
+    }
   })
 })
