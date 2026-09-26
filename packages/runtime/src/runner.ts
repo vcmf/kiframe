@@ -35,18 +35,30 @@ import {
 // expanded), steps, teardown. Phase 0 scope: no human motion yet (P0-4), no recording (P0-5), no
 // `ensure` / session reuse (P0-9).
 
+type Box = { x: number; y: number; width: number; height: number }
+
 /** What the runner reports as it goes. The recorder (P0-5) turns these into take events. */
 export type RunnerEvent =
   | { kind: "step_start" | "step_end"; step: StepRef }
   | { kind: "navigate"; step: StepRef; url: string }
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
-  | { kind: "type"; step: StepRef; secret?: string | undefined }
-  /** Typing into a field starts (the `type` event marks its end). */
-  | { kind: "type_start"; step: StepRef; secret?: string | undefined }
+  | { kind: "type"; step: StepRef; secret?: string | undefined; box?: Box | undefined }
+  /** Typing into a field starts (the `type` event marks its end). `box`: the field (CSS pixels). */
+  | { kind: "type_start"; step: StepRef; secret?: string | undefined; box?: Box | undefined }
+  /** A click is about to be dispatched at (x, y), on the target's `box` (CSS pixels). */
+  | {
+      kind: "click"
+      step: StepRef
+      x: number
+      y: number
+      box: Box
+      button: "left" | "right"
+      count: number
+    }
   /** A key combination was pressed (`press` action). */
   | { kind: "key"; step: StepRef; keys: string }
   /** The element an action acts on, after scrolling it into view (CSS pixels of the viewport). */
-  | { kind: "target"; step: StepRef; box: { x: number; y: number; width: number; height: number } }
+  | { kind: "target"; step: StepRef; box: Box }
   /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
   | { kind: "cursor"; step: StepRef; x: number; y: number; pressed: boolean }
   /** A fallback locator was used: the primary one no longer matches (a signal for self-healing). */
@@ -95,10 +107,16 @@ export async function runScenario(
   // step running at that moment.
   let current: StepRef | undefined
   let listenerError: StepError | undefined
+  const secretValues = new Set<string>()
   const onNavigated = (frame: Frame) => {
     if (frame === page.mainFrame() && current !== undefined) {
       try {
-        options.onEvent?.({ kind: "navigate", step: current, url: frame.url() })
+        // URLs can carry a typed secret (a GET form, a token redirect): scrubbed before reporting.
+        options.onEvent?.({
+          kind: "navigate",
+          step: current,
+          url: scrubSecrets(frame.url(), secretValues),
+        })
       } catch (error) {
         // Thrown inside Playwright's event dispatch: keep it and fail the step afterwards.
         listenerError ??= new StepError(current, "action-failed", firstLine(error), {
@@ -115,6 +133,7 @@ export async function runScenario(
     options,
     network,
     setCurrent: (step) => (current = step),
+    secretValues,
     clearListenerError: () => (listenerError = undefined),
     throwListenerError: () => {
       const error = listenerError
@@ -194,6 +213,8 @@ interface Ctx {
   navigationTimeoutMs: number
   network: NetworkTracker
   setCurrent: (step: StepRef | undefined) => void
+  /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
+  secretValues: Set<string>
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void
   clearListenerError: () => void
@@ -351,7 +372,11 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
-      ctx.options.onEvent?.({ kind: "type_start", step, secret })
+      const fieldBox =
+        ctx.options.onEvent === undefined
+          ? null
+          : await target.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+      ctx.options.onEvent?.({ kind: "type_start", step, secret, box: fieldBox ?? undefined })
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -402,7 +427,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         }
         if (action.submit === true) await target.press("Enter", { timeout })
       })
-      ctx.options.onEvent?.({ kind: "type", step, secret })
+      ctx.options.onEvent?.({ kind: "type", step, secret, box: fieldBox ?? undefined })
       return
     }
     case "press":
@@ -448,8 +473,10 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
-  const box = await result.locator.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
-  if (box !== null) ctx.options.onEvent?.({ kind: "target", step, box })
+  if (ctx.options.onEvent !== undefined) {
+    const box = await result.locator.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+    if (box !== null) ctx.options.onEvent({ kind: "target", step, box })
+  }
   return result.locator
 }
 
@@ -462,7 +489,9 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
     )
   }
   try {
-    return await ctx.options.resolveSecret(name)
+    const value = await ctx.options.resolveSecret(name)
+    if (value !== "") ctx.secretValues.add(value)
+    return value
   } catch {
     // Never include the resolver's error: its message could contain the value.
     throw new StepError(step, "secret-unavailable", `secret "${name}" is unavailable`)
@@ -863,6 +892,25 @@ async function clickAtCursor(
         )
       position = await clickOffset(target, box, point, left())
     }
+    // The click event the recorder logs: where it's dispatched (our point, or the box center when
+    // Playwright picks it) and with which button.
+    if (ctx.options.onEvent !== undefined) {
+      const clickBox = await target.boundingBox({ timeout: left() }).catch(() => null)
+      if (clickBox !== null) {
+        const where = point ?? {
+          x: clickBox.x + clickBox.width / 2,
+          y: clickBox.y + clickBox.height / 2,
+        }
+        ctx.options.onEvent({
+          kind: "click",
+          step,
+          ...where,
+          box: clickBox,
+          button: action.button ?? "left",
+          count: action.count ?? 1,
+        })
+      }
+    }
     const at = point
     const emit = (pressed: boolean) => {
       if (at !== undefined) ctx.options.onEvent?.({ kind: "cursor", step, ...at, pressed })
@@ -954,6 +1002,28 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
   }
   const end = path.at(-1)
   if (end !== undefined) ctx.cursor = { x: end.x, y: end.y }
+}
+
+/**
+ * Replaces every known secret value in `text` (as-is and in its common encodings: URL-encoded,
+ * form-encoded, base64, JSON-escaped) with `[secret]`.
+ */
+export function scrubSecrets(text: string, values: Iterable<string>): string {
+  let out = text
+  for (const value of values) {
+    const variants = new Set([
+      value,
+      encodeURIComponent(value),
+      encodeURIComponent(value).replace(/%20/g, "+"),
+      encodeURI(value),
+      Buffer.from(value).toString("base64"),
+      JSON.stringify(value).slice(1, -1),
+    ])
+    for (const v of [...variants].sort((a, b) => b.length - a.length)) {
+      if (v !== "") out = out.split(v).join("[secret]")
+    }
+  }
+  return out
 }
 
 /** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */

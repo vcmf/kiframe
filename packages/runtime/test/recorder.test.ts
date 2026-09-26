@@ -93,7 +93,8 @@ steps:
         { encoding: "utf8" },
       ),
     ) as { format: { duration: string }; streams: { width: number; height: number }[] }
-    expect(Math.abs(Number(probe.format.duration) * 1000 - meta.durationMs)).toBeLessThan(500)
+    // Video time = take time (the first frame is shown from t = 0).
+    expect(Math.abs(Number(probe.format.duration) * 1000 - meta.durationMs)).toBeLessThan(100)
     expect(probe.streams[0]).toMatchObject(meta.frameSize)
 
     // The take has what the generators need.
@@ -122,5 +123,75 @@ steps:
       expect(readFileSync(join(outDir, f), "utf8")).not.toContain(SECRET)
     }
     expect(readFileSync(join(outDir, "events.jsonl"), "utf8")).toContain("acme.password")
+  })
+
+  const project = () =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+  const record = async (
+    yaml: string,
+    extra: Partial<Parameters<typeof recordScenario>[3]> = {},
+  ) => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    try {
+      return {
+        outDir,
+        take: await recordScenario(page, parseScenarioYaml(`version: 1\n${yaml}`), project(), {
+          outDir,
+          timeoutMs: 3000,
+          ...extra,
+        }),
+        page,
+      }
+    } finally {
+      await context.close()
+    }
+  }
+
+  it("scrubs secrets out of navigation URLs (a login submitted by GET)", async () => {
+    const { outDir } = await record(
+      `setup: [{ action: goto, url: /get-login }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}", submit: true }
+  - { id: after, action: waitFor, until: { url: /get-login } }
+`,
+      { resolveSecret: () => SECRET },
+    )
+    const events = readFileSync(join(outDir, "events.jsonl"), "utf8")
+    expect(events).not.toContain(SECRET)
+    expect(events).not.toContain(encodeURIComponent(SECRET))
+    expect(events).toContain("[secret]")
+  })
+
+  it("logs the real button of a click", async () => {
+    const { take } = await record(`setup: [{ action: goto, url: /get-login }]
+steps:
+  - { id: menu, action: click, button: right, target: { by: role, role: button, name: Options } }
+`)
+    const click = take.events.find((e) => e.kind === "click")
+    expect(click?.kind === "click" && click.button).toBe("right")
+  })
+
+  it("throws the runner's error, and still writes the take", async () => {
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    await expect(
+      recordScenario(
+        page,
+        parseScenarioYaml(
+          `version: 1\nsetup: [{ action: goto, url: /projects }]\nsteps:\n  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }\n`,
+        ),
+        project(),
+        { outDir, timeoutMs: 500 },
+      ),
+    ).rejects.toThrow(/boom/)
+    await context.close()
+    expect(existsSync(join(outDir, "meta.json"))).toBe(true)
+    expect(existsSync(join(outDir, "frames"))).toBe(false)
   })
 })

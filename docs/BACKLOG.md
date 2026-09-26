@@ -27,3 +27,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Risky label vs Playwright's hit check:** the risky label is read by our probe just before `locator.click`; Playwright then re-checks the hit target at dispatch. A re-render in between can only make Playwright's click fail or retry (it won't click a different element), but the label that was approved could differ from the final one in rare timing.
 - **Press ripple for a click that never happens:** the press event is emitted right before `locator.click`, which may then wait for actionability and time out; a double click's first pair is emitted before the real clicks.
 - **Round trips per click:** up to ~6–8 sequential page calls (probes, boxes, border read, viewport). `pointProbe` could return the box and borders in the same call.
+
+## @kiframe/runtime recorder (P0-5)
+- **Sensitive rects follow the element:** a vault-filled field's rect is logged once at `type_start` (full frame if it has no box). The schema allows re-logging when it moves (scroll, re-layout); the recorder should track it (and the DOM-text scan for secret text shown elsewhere, APPROACHES §7.4) before v0.
+- **Frames through a pipe:** frames are written as JPEG files then encoded by ffmpeg after the run; piping them into ffmpeg (image2pipe) would avoid the temporary files. Needs ffmpeg on PATH (Phase 0).

@@ -3,6 +3,9 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/get-login": `<!doctype html><title>GET login</title>
+    <form method="get" action="/get-login"><label>Password <input name="pw" type="password"></label></form>
+    <button oncontextmenu="event.preventDefault(); document.body.dataset.menu='1'">Options</button>`,
   "/moving": `<!doctype html><title>Moving</title>
     <button id="b" style="position:absolute; left:400px; top:200px; transition: top 0.2s">Moving target</button>
     <p id="s"></p>
