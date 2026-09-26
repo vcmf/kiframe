@@ -55,6 +55,13 @@ export type Ms = z.infer<typeof Ms>
 export const Timestamp = z.number().nonnegative()
 export type Timestamp = z.infer<typeof Timestamp>
 
+/** Keys that would change an object's prototype instead of creating a property. */
+export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
+  "__proto__",
+  "constructor",
+  "prototype",
+])
+
 /** Pattern of a secret NAME: dotted segments of letters, digits, `_` and `-`. */
 const SECRET_NAME = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*"
 
@@ -62,6 +69,9 @@ const SECRET_NAME = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*"
 export const SecretName = z
   .string()
   .regex(new RegExp(`^${SECRET_NAME}$`), "must be a secret name, never a secret value")
+  .refine((name) => !name.split(".").some((segment) => FORBIDDEN_KEYS.has(segment)), {
+    message: "reserved segment in secret name (it clashes with JavaScript object keys)",
+  })
 export type SecretName = z.infer<typeof SecretName>
 
 /** Reference to a vault secret by name, e.g. `{{secrets.acme_staging.password}}`. The value never appears in files. */
@@ -73,9 +83,10 @@ export const SECRET_REF = new RegExp(`^\\{\\{secrets\\.(${SECRET_NAME})\\}\\}$`)
  */
 const SECRET_REF_LIKE = /\{\{\s*secrets?\s*\./i
 
-/** Returns the secret name if `value` is exactly a secret reference, otherwise undefined. */
+/** Returns the secret name if `value` is exactly a well-formed secret reference, otherwise undefined. */
 export function secretRefName(value: string): string | undefined {
-  return SECRET_REF.exec(value)?.[1]
+  const name = SECRET_REF.exec(value)?.[1]
+  return name !== undefined && SecretName.safeParse(name).success ? name : undefined
 }
 
 /** True if `value` mentions a secret reference in any form (exact or malformed). */
@@ -109,12 +120,16 @@ export function hasUrlCredentials(url: string): boolean {
 }
 
 /**
- * A URL relative to the environment: a path (`/projects`) or query (`?tab=1`), never a scheme
- * (`https:`, `javascript:`, `http:host`…) or protocol-relative (`//host`), so `goto` can't leave the
- * target app (e.g. to type a secret on another origin).
+ * A URL relative to the environment: once resolved, it must stay on the environment's origin.
+ * Resolving (instead of pattern-matching the string) follows the WHATWG parser exactly, which strips
+ * leading spaces and control characters and ignores tabs/newlines anywhere: `" https://evil.com"`,
+ * `"h\\nttps://evil.com"` or `"/\\t/evil.com"` all resolve off-origin and are rejected, like
+ * `https:`, `javascript:`, `http:host` and `//host`.
  */
 export function isRelativeUrl(url: string): boolean {
-  return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[/\\]{2}/.test(url)
+  return ["http://base.invalid", "https://base.invalid"].every(
+    (base) => URL.parse(url, base)?.origin === base,
+  )
 }
 
 /** Adds the "no embedded credentials" rule to a URL-ish string schema (one rule for every URL field). */
@@ -124,33 +139,40 @@ export function withoutCredentials<T extends z.ZodType<string>>(schema: T) {
   })
 }
 
-/** Quotes are balanced (an unterminated string would swallow the rest of the stylesheet). */
-function balancedQuotes(selector: string): boolean {
+/**
+ * Checks a selector can't escape the rule it's injected into: quotes closed, `()` and `[]` balanced
+ * and properly nested, no trailing backslash, and outside strings none of `{ } ; @ <` or comments.
+ */
+function isSelfContainedSelector(selector: string): boolean {
+  const closing: Record<string, string> = { "(": ")", "[": "]" }
+  const stack: string[] = []
   let quote: string | undefined
   for (let i = 0; i < selector.length; i++) {
-    const c = selector[i]
+    const c = selector[i] ?? ""
     if (c === "\\") {
+      if (i === selector.length - 1) return false // a trailing backslash escapes the rule's `{`
       i++
       continue
     }
-    if (quote === undefined && (c === '"' || c === "'")) quote = c
-    else if (c === quote) quote = undefined
+    if (quote !== undefined) {
+      if (c === quote) quote = undefined
+      continue
+    }
+    if (c === '"' || c === "'") quote = c
+    else if (c in closing) stack.push(closing[c] ?? "")
+    else if (c === ")" || c === "]") {
+      if (stack.pop() !== c) return false
+    } else if ("{};@<".includes(c)) return false
+    else if (c === "/" && selector[i + 1] === "*") return false
+    else if (c === "*" && selector[i + 1] === "/") return false
   }
-  return quote === undefined
+  return quote === undefined && stack.length === 0
 }
 
-/**
- * A CSS selector Kiframe injects into the page (`hide`, redaction) or queries with. Anything that
- * could escape the rule it's placed in is rejected: braces, semicolons, at-rules, comments, `<`
- * (e.g. `</style>`) and unterminated strings.
- */
-export const CssSelector = z
-  .string()
-  .min(1)
-  .max(500)
-  .refine((s) => !/[{};@<]|\/\*|\*\//.test(s) && balancedQuotes(s), {
-    message: "must be a single CSS selector (no `{`, `}`, `;`, `@`, `<`, comments or open quotes)",
-  })
+export const CssSelector = z.string().min(1).max(500).refine(isSelfContainedSelector, {
+  message:
+    "must be a single CSS selector (balanced quotes and brackets; no `{`, `}`, `;`, `@`, `<`, comments or trailing `\\`)",
+})
 
 /** The `id` of an item, if it has a string one (steps, actions, rules, segments). */
 export function idOf(item: object): string | undefined {
