@@ -594,3 +594,99 @@ describe("round 5: secrets", () => {
     ).toThrow()
   })
 })
+
+// ─── Round 6 ─────────────────────────────────────────────────────────────────
+
+describe("round 6: whole-document guards", () => {
+  it("rejects __proto__ keys coming from JSON (project.json), not only YAML", () => {
+    const config = JSON.parse(
+      `{"version":1,"target":{"kind":"web","url":"https://x.test","viewport":{"width":1440,"height":900}},"presets":{"__proto__":{"steps":[{"action":"goto","url":"/x"}]}}}`,
+    ) as unknown
+    expect(ProjectConfig.safeParse(config).success).toBe(false)
+    const comp = JSON.parse(`{"version":1,"tracks":{},"style":{"__proto__":{"a":1}}}`) as unknown
+    expect(Composition.safeParse(comp).success).toBe(false)
+  })
+
+  it("rejects secret references in any string, including free-form style", () => {
+    expect(
+      Composition.safeParse({ version: 1, tracks: {}, style: { watermark: "{{secrets.x}}" } })
+        .success,
+    ).toBe(false)
+  })
+
+  it("rejects credentials in take URLs", () => {
+    const nav = {
+      t: 0,
+      phase: "steps",
+      stepId: "a",
+      kind: "navigate",
+      url: "https://u:p@x.com/?t=1",
+    }
+    expect(TakeEvent.safeParse(nav).success).toBe(false)
+  })
+})
+
+describe("round 6: span ordering", () => {
+  const caption = (at: object, until: object) => ({
+    version: 1,
+    tracks: { captions: [{ id: "c", source: "manual", text: "Hi", at, until }] },
+  })
+
+  it("rejects spans that are inverted whatever the step duration", () => {
+    expect(
+      Composition.safeParse(
+        caption({ step: "a", edge: "end" }, { step: "a", edge: "start", offsetMs: -100 }),
+      ).success,
+    ).toBe(false)
+  })
+
+  it("keeps scene anchors inside the scene", () => {
+    expect(
+      Composition.safeParse(caption({ scene: "start", offsetMs: -500 }, { ms: 100 })).success,
+    ).toBe(false)
+    expect(Composition.safeParse(caption({ ms: 0 }, { scene: "end", offsetMs: 500 })).success).toBe(
+      false,
+    )
+  })
+})
+
+describe("round 6: CSS selectors can't inject rules", () => {
+  it("rejects braces, semicolons and at-rules", () => {
+    for (const sel of ["x{} body{background:url(https://evil/?)} y", "a; b", "@import url(x)"]) {
+      expect(() => parseProjectYaml(project(`hide: [${JSON.stringify(sel)}]\n`))).toThrow(
+        /single CSS selector/,
+      )
+    }
+    expect(
+      parseProjectYaml(project('hide: ["#intercom-container", ".nps > .x"]\n')).hide,
+    ).toHaveLength(2)
+  })
+})
+
+describe("round 6: take metadata consistency", () => {
+  it("requires frameSize = viewport × DPR", () => {
+    const meta = {
+      version: 1,
+      takeKey: "k",
+      scenarioHash: "h",
+      recordedAt: "2026-09-26T20:00:00Z",
+      appUrl: "https://x.test",
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
+      frameSize: { width: 1440, height: 900 },
+      fps: 30,
+      durationMs: 1000,
+      kiframeVersion: "0.0.0",
+    }
+    expect(TakeMeta.safeParse(meta).success).toBe(false)
+    expect(TakeMeta.safeParse({ ...meta, frameSize: { width: 2880, height: 1800 } }).success).toBe(
+      true,
+    )
+  })
+})
+
+describe("round 6: scroll within has a target", () => {
+  it("accepts emphasis on a scroll inside a container", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: a, action: scroll, by: { y: 400 }, within: { by: css, selector: .list }, emphasis: highlight }\n`
+    expect(parseScenarioYaml(yaml).steps).toHaveLength(1)
+  })
+})

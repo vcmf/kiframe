@@ -51,14 +51,17 @@ export type StepId = z.infer<typeof StepId>
 export const Ms = z.number().int().nonnegative()
 export type Ms = z.infer<typeof Ms>
 
-/** Reference to a vault secret by name, e.g. `{{secrets.acme_staging.password}}`. The value never appears in files. */
-/** A secret NAME, e.g. `acme_staging.password`: dotted segments of letters, digits, `_` and `-`. */
+/** Pattern of a secret NAME: dotted segments of letters, digits, `_` and `-`. */
+const SECRET_NAME = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*"
+
+/** A secret NAME, e.g. `acme_staging.password`. Never a secret value. */
 export const SecretName = z
   .string()
-  .regex(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/, "must be a secret name, never a secret value")
+  .regex(new RegExp(`^${SECRET_NAME}$`), "must be a secret name, never a secret value")
 export type SecretName = z.infer<typeof SecretName>
 
-export const SECRET_REF = /^\{\{secrets\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/
+/** Reference to a vault secret by name, e.g. `{{secrets.acme_staging.password}}`. The value never appears in files. */
+export const SECRET_REF = new RegExp(`^\\{\\{secrets\\.(${SECRET_NAME})\\}\\}$`)
 
 /** Anything that looks like an attempt at a secret reference: `{{secret…`, any case, any spacing. */
 const SECRET_REF_LIKE = /\{\{\s*secrets?/i
@@ -68,26 +71,48 @@ export function secretRefName(value: string): string | undefined {
   return SECRET_REF.exec(value)?.[1]
 }
 
-/**
- * A value that mentions `{{secrets…` but isn't an exact reference. Rejected at validation time:
- * otherwise the placeholder would be typed literally on camera and never treated as a secret.
- */
-export function isMalformedSecretRef(value: string): boolean {
-  return SECRET_REF_LIKE.test(value) && secretRefName(value) === undefined
-}
-
 /** True if `value` mentions a secret reference in any form (exact or malformed). */
 export function mentionsSecret(value: string): boolean {
   return SECRET_REF_LIKE.test(value)
 }
 
+/** A value that mentions `{{secrets…` but isn't an exact reference. */
+export function isMalformedSecretRef(value: string): boolean {
+  return mentionsSecret(value) && secretRefName(value) === undefined
+}
+
+// ─── URLs ─────────────────────────────────────────────────────────────────────
+
+/** Parses `url` relative to a dummy base (so relative and protocol-relative URLs work), or null. */
+function parseUrl(url: string): URL | null {
+  return URL.parse(url, "http://base.invalid")
+}
+
+/** True if `url` embeds credentials (`https://user:pass@host`, also protocol-relative `//u:p@host`). */
+export function hasUrlCredentials(url: string): boolean {
+  const parsed = parseUrl(url)
+  return parsed !== null && (parsed.username !== "" || parsed.password !== "")
+}
+
+/** A navigable URL: relative, or absolute http(s). Never javascript:, file:, data:… */
+export function isNavigableUrl(url: string): boolean {
+  const protocol = parseUrl(url)?.protocol
+  return protocol === "http:" || protocol === "https:"
+}
+
+export const noCredentials = {
+  message: "URL must not contain credentials: store them in the vault",
+} as const
+
 /**
- * A string that must not contain any secret reference. Secrets are only allowed as the whole value
- * of a `type` action (resolved in the runtime); anywhere else they would be shown or logged literally.
+ * A CSS selector Kiframe injects into the page (`hide`, redaction) or queries with. Braces,
+ * semicolons and at-rules are rejected so a value can't inject extra CSS rules.
  */
-export const PlainText = z.string().refine((v) => !mentionsSecret(v), {
-  message: "secret references are only allowed as the whole `value` of a `type` action",
-})
+export const CssSelector = z
+  .string()
+  .min(1)
+  .max(500)
+  .regex(/^[^{};@]*$/, "must be a single CSS selector (no `{`, `}`, `;` or `@`)")
 
 /** The `id` of an item, if it has a string one (steps, actions, rules, segments). */
 export function idOf(item: object): string | undefined {

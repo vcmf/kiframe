@@ -1,5 +1,6 @@
 import * as z from "zod"
-import { claimIds, Ms, NPoint, NRect, PlainText, StepId } from "./common.ts"
+import { claimIds, Ms, NPoint, NRect, StepId } from "./common.ts"
+import { guarded } from "./guards.ts"
 import { CAMERA_SCALE, MAX_SPEED } from "./settings.ts"
 
 // The edit: parallel typed tracks of segments (docs/OBJECT-MODEL.md §4).
@@ -12,27 +13,24 @@ export const Anchor = z.union([
     offsetMs: z.number().int().optional(),
   }),
   z.strictObject({ event: z.string().min(1), offsetMs: z.number().int().optional() }),
-  z.strictObject({ scene: z.enum(["start", "end"]), offsetMs: z.number().int().optional() }),
+  // Scene anchors stay inside the scene: offsets go forward from the start, backward from the end.
+  z.strictObject({
+    scene: z.literal("start"),
+    offsetMs: z.number().int().nonnegative().optional(),
+  }),
+  z.strictObject({ scene: z.literal("end"), offsetMs: z.number().int().nonpositive().optional() }),
   z.strictObject({ ms: Ms }),
 ])
 export type Anchor = z.infer<typeof Anchor>
 
 /**
- * Orders two anchors when that's possible without a take. Returns a negative number if `a` is
- * before `b`, 0 if equal, positive if after, and undefined when only a take can tell.
- *
- * Two anchors on the same edge (same step edge, same scene edge, same event) differ only by their
- * offsets. Anchors on different edges of the same step/scene can only be ordered without offsets
- * (a step's start is never after its end); with offsets, the duration decides, which needs a take.
- * `{ scene: "start" }` is source time 0, so it also compares with absolute `{ ms }` anchors.
+ * True when `a` is at or before `b` whatever the take: both absolute (`{ms}` or the scene start),
+ * or on the same step/scene/event with `a` no later on both the edge and the offset (a start is
+ * never after its end). False means "not provably": only a take can tell.
  */
-export function compareStaticAnchors(a: Anchor, b: Anchor): number | undefined {
+export function isCertainlyNotAfter(a: Anchor, b: Anchor): boolean {
   const edge = (e: "start" | "end") => (e === "start" ? 0 : 1)
   const offset = (x: { offsetMs?: number | undefined }) => x.offsetMs ?? 0
-  const sameEdgeOrUnknown = (edgeA: number, edgeB: number, offA: number, offB: number) => {
-    if (edgeA === edgeB) return offA - offB
-    return offA === 0 && offB === 0 ? edgeA - edgeB : undefined
-  }
   const absolute = (x: Anchor): number | undefined => {
     if ("ms" in x) return x.ms
     if ("scene" in x && x.scene === "start") return offset(x)
@@ -40,15 +38,15 @@ export function compareStaticAnchors(a: Anchor, b: Anchor): number | undefined {
   }
   const absA = absolute(a)
   const absB = absolute(b)
-  if (absA !== undefined && absB !== undefined) return absA - absB
+  if (absA !== undefined && absB !== undefined) return absA <= absB
   if ("scene" in a && "scene" in b) {
-    return sameEdgeOrUnknown(edge(a.scene), edge(b.scene), offset(a), offset(b))
+    return edge(a.scene) <= edge(b.scene) && offset(a) <= offset(b)
   }
   if ("step" in a && "step" in b && a.step === b.step) {
-    return sameEdgeOrUnknown(edge(a.edge), edge(b.edge), offset(a), offset(b))
+    return edge(a.edge) <= edge(b.edge) && offset(a) <= offset(b)
   }
-  if ("event" in a && "event" in b && a.event === b.event) return offset(a) - offset(b)
-  return undefined
+  if ("event" in a && "event" in b && a.event === b.event) return offset(a) <= offset(b)
+  return false
 }
 
 const segmentBase = {
@@ -99,7 +97,7 @@ export type CameraSegment = z.infer<typeof CameraSegment>
 
 export const CaptionSegment = z.strictObject({
   ...segmentBase,
-  text: PlainText.min(1),
+  text: z.string().min(1),
   position: z.enum(["bottom", "top", "near-target"]).optional(),
 })
 export type CaptionSegment = z.infer<typeof CaptionSegment>
@@ -124,7 +122,7 @@ export type CursorSegment = z.infer<typeof CursorSegment>
 export const CalloutSegment = z.strictObject({
   ...segmentBase,
   kind: z.enum(["arrow", "text", "badge"]),
-  text: PlainText.optional(),
+  text: z.string().optional(),
   target: z.union([
     z.strictObject({ frameRef: z.string().min(1) }),
     z.strictObject({ rect: NRect }),
@@ -132,10 +130,10 @@ export const CalloutSegment = z.strictObject({
 })
 export type CalloutSegment = z.infer<typeof CalloutSegment>
 
-export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: PlainText.min(1) })
+export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })
 export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 
-export const Composition = z
+const CompositionBase = z
   .strictObject({
     version: z.literal(1),
     /** The take the auto segments were generated from. */
@@ -161,8 +159,7 @@ export const Composition = z
         // Spans that can be ordered without a take are checked here; the others are checked
         // once resolved against a take (generators, P0-6).
         const { at, until } = segment
-        const order = until === undefined ? undefined : compareStaticAnchors(until, at)
-        if (order !== undefined && order <= 0) {
+        if (until !== undefined && isCertainlyNotAfter(until, at)) {
           ctx.addIssue({
             code: "custom",
             message: "`until` must be after `at`",
@@ -172,4 +169,6 @@ export const Composition = z
       })
     }
   })
-export type Composition = z.infer<typeof Composition>
+/** A composition, with whole-document guards (forbidden keys, secret references). */
+export const Composition = guarded(CompositionBase)
+export type Composition = z.infer<typeof CompositionBase>

@@ -1,14 +1,7 @@
 import * as z from "zod"
-import { claimIds, idOf, PlainText } from "./common.ts"
-import {
-  Action,
-  CameraDefault,
-  Ensure,
-  hasUrlCredentials,
-  Locator,
-  presetRefs,
-  type Scenario,
-} from "./scenario.ts"
+import { claimIds, CssSelector, hasUrlCredentials, idOf, noCredentials } from "./common.ts"
+import { guarded } from "./guards.ts"
+import { Action, CameraDefault, Ensure, Locator, presetRefs, type Scenario } from "./scenario.ts"
 import { Pacing, RuleName, Viewport } from "./settings.ts"
 
 // Project-level configuration shared by every scene (docs/OBJECT-MODEL.md §2, §2b).
@@ -17,9 +10,7 @@ import { Pacing, RuleName, Viewport } from "./settings.ts"
 export const TargetApp = z.strictObject({
   kind: z.literal("web"),
   /** http(s) only, and no embedded credentials (use the vault): the app Kiframe drives. */
-  url: z.url({ protocol: /^https?$/ }).refine((u) => !hasUrlCredentials(u), {
-    message: "URL must not contain credentials: store them in the vault",
-  }),
+  url: z.url({ protocol: /^https?$/ }).refine((u) => !hasUrlCredentials(u), noCredentials),
   viewport: Viewport,
 })
 export type TargetApp = z.infer<typeof TargetApp>
@@ -39,7 +30,7 @@ export type Preset = z.infer<typeof Preset>
 export const InterruptRule = z.strictObject({
   /** Required: interrupt take events refer to the rule by this id. */
   id: RuleName,
-  when: z.union([Locator, z.strictObject({ text: PlainText.min(1) })]),
+  when: z.union([Locator, z.strictObject({ text: z.string().min(1) })]),
   /** No `id` on the action: interrupt events are identified by the rule id, not a step id. */
   do: Action.refine((action) => idOf(action) === undefined, {
     message: "interrupt actions can't have an id (the rule id identifies them)",
@@ -47,7 +38,7 @@ export const InterruptRule = z.strictObject({
 })
 export type InterruptRule = z.infer<typeof InterruptRule>
 
-export const ProjectConfig = z.strictObject({
+const ProjectConfigBase = z.strictObject({
   version: z.literal(1),
   environment: RuleName.optional(),
   target: TargetApp,
@@ -63,15 +54,17 @@ export const ProjectConfig = z.strictObject({
     .default([])
     .superRefine((rules, ctx) => void claimIds(rules, [], ctx)),
   /** CSS selectors hidden from the frame (display: none). */
-  hide: z.array(PlainText.min(1)).default([]),
+  hide: z.array(CssSelector).default([]),
   redaction: z
     .strictObject({
-      selectors: z.array(PlainText.min(1)).default([]),
+      selectors: z.array(CssSelector).default([]),
       secrets: z.literal("auto").default("auto"),
     })
     .prefault({}),
 })
-export type ProjectConfig = z.infer<typeof ProjectConfig>
+/** Project config, with whole-document guards (forbidden keys, secret references). */
+export const ProjectConfig = guarded(ProjectConfigBase)
+export type ProjectConfig = z.infer<typeof ProjectConfigBase>
 
 /** Cross-file checks a single schema can't do. Returns human-readable problems (empty = OK). */
 export function checkScenarioAgainstProject(scenario: Scenario, project: ProjectConfig): string[] {

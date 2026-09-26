@@ -1,6 +1,7 @@
 /** Zod schemas and types shared by every Kiframe package (docs/OBJECT-MODEL.md). */
 export * from "./common.ts"
 export * from "./settings.ts"
+export * from "./guards.ts"
 export * from "./scenario.ts"
 export * from "./project.ts"
 export * from "./take.ts"

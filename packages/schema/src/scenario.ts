@@ -1,13 +1,16 @@
 import * as z from "zod"
 import {
   claimIds,
-  isMalformedSecretRef,
+  CssSelector,
+  hasUrlCredentials,
+  isNavigableUrl,
   Ms,
-  PlainText,
+  noCredentials,
   RectTuple,
   secretRefName,
   StepId,
 } from "./common.ts"
+import { guarded } from "./guards.ts"
 import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from "./settings.ts"
 
 // ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
@@ -15,22 +18,22 @@ import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from ".
 
 const RoleLocator = z.strictObject({
   by: z.literal("role"),
-  role: PlainText.min(1),
-  name: PlainText.optional(),
+  role: z.string().min(1),
+  name: z.string().optional(),
   exact: z.boolean().optional(),
 })
 const LabelLocator = z.strictObject({
   by: z.literal("label"),
-  name: PlainText.min(1),
+  name: z.string().min(1),
   exact: z.boolean().optional(),
 })
 const TextLocator = z.strictObject({
   by: z.literal("text"),
-  text: PlainText.min(1),
+  text: z.string().min(1),
   exact: z.boolean().optional(),
 })
-const PlaceholderLocator = z.strictObject({ by: z.literal("placeholder"), text: PlainText.min(1) })
-const CssLocator = z.strictObject({ by: z.literal("css"), selector: PlainText.min(1) })
+const PlaceholderLocator = z.strictObject({ by: z.literal("placeholder"), text: z.string().min(1) })
+const CssLocator = z.strictObject({ by: z.literal("css"), selector: CssSelector })
 
 export const Locator = z.discriminatedUnion("by", [
   RoleLocator,
@@ -44,11 +47,11 @@ export type Locator = z.infer<typeof Locator>
 /** Fields every target can carry on top of its locator. */
 const targetExtras = {
   /** Natural-language intent from the chat. Used to heal the locator when it breaks. */
-  intent: PlainText.min(1).optional(),
+  intent: z.string().min(1).optional(),
   /** Alternative locators tried in order if the primary one fails. */
   fallbacks: z.array(Locator).optional(),
   /** Path to a screenshot crop of the element, used as visual reference for self-healing. */
-  fingerprint: PlainText.optional(),
+  fingerprint: z.string().optional(),
   /** Pick the n-th match (0-based) when the locator matches several elements. */
   nth: z.number().int().nonnegative().optional(),
 }
@@ -64,7 +67,7 @@ export const GroundedTarget = z.discriminatedUnion("by", [
 export type GroundedTarget = z.infer<typeof GroundedTarget>
 
 /** A target the agent hasn't grounded yet: only the intent is known (scene status `draft`). */
-export const UngroundedTarget = z.strictObject({ intent: PlainText.min(1) })
+export const UngroundedTarget = z.strictObject({ intent: z.string().min(1) })
 export type UngroundedTarget = z.infer<typeof UngroundedTarget>
 
 export const Target = z.union([GroundedTarget, UngroundedTarget])
@@ -80,8 +83,8 @@ export function isGrounded(target: Target): target is GroundedTarget {
 export const Condition = z.union([
   z.strictObject({ visible: Locator }),
   z.strictObject({ hidden: Locator }),
-  z.strictObject({ text: PlainText.min(1) }),
-  z.strictObject({ url: PlainText.min(1) }),
+  z.strictObject({ text: z.string().min(1) }),
+  z.strictObject({ url: z.string().min(1) }),
   z.strictObject({ networkIdle: z.literal(true) }),
 ])
 export type Condition = z.infer<typeof Condition>
@@ -121,8 +124,8 @@ export type Emphasis = z.infer<typeof Emphasis>
 
 /** Presentation fields shared by every recorded step. They have no effect on the app. */
 const presentation = {
-  caption: PlainText.min(1).optional(),
-  instruction: PlainText.min(1).optional(),
+  caption: z.string().min(1).optional(),
+  instruction: z.string().min(1).optional(),
   camera: CameraDirective.optional(),
   emphasis: Emphasis.optional(),
   /** Presentation beat after the step, in ms. Never sped up. */
@@ -137,30 +140,13 @@ const presentation = {
 // ─── Actions (Phase 0 subset; full set in M1-1) ───────────────────────────────
 
 /** True if `url` is absolute and embeds credentials (`https://user:pass@host`). Relative URLs can't. */
-/** Parses `url` relative to a dummy base (so relative and protocol-relative URLs work), or null. */
-function parseUrl(url: string): URL | null {
-  return URL.parse(url, "http://base.invalid")
-}
-
-/** True if `url` embeds credentials (`https://user:pass@host`, also protocol-relative `//u:p@host`). */
-export function hasUrlCredentials(url: string): boolean {
-  const parsed = parseUrl(url)
-  return parsed !== null && (parsed.username !== "" || parsed.password !== "")
-}
-
-/** A `goto` URL: relative to the environment, or absolute http(s). Never javascript:, file:, data:… */
-export function isNavigableUrl(url: string): boolean {
-  const protocol = parseUrl(url)?.protocol
-  return protocol === "http:" || protocol === "https:"
-}
-
 const Goto = z.strictObject({
   action: z.literal("goto"),
-  url: PlainText.min(1)
+  url: z
+    .string()
+    .min(1)
     .refine(isNavigableUrl, { message: "goto URL must be relative or http(s)" })
-    .refine((u) => !hasUrlCredentials(u), {
-      message: "URL must not contain credentials: store them in the vault",
-    }),
+    .refine((u) => !hasUrlCredentials(u), noCredentials),
 })
 const Click = z.strictObject({
   action: z.literal("click"),
@@ -172,17 +158,14 @@ const Click = z.strictObject({
 const Type = z.strictObject({
   action: z.literal("type"),
   target: Target,
-  /** Text to type, or exactly a secret reference `{{secrets.<name>}}` (nothing around it). */
-  value: z.string().refine((v) => !isMalformedSecretRef(v), {
-    message:
-      "malformed secret reference: use exactly `{{secrets.<name>}}`, with no spaces or other text",
-  }),
+  /** Text to type, or exactly a secret reference `{{secrets.<name>}}` (checked by the guards). */
+  value: z.string(),
   clear: z.boolean().optional(),
   submit: z.boolean().optional(),
   /** Off camera: fill instantly instead of human typing. */
   instant: z.boolean().optional(),
 })
-const Press = z.strictObject({ action: z.literal("press"), keys: PlainText.min(1) })
+const Press = z.strictObject({ action: z.literal("press"), keys: z.string().min(1) })
 const Scroll = z.strictObject({
   action: z.literal("scroll"),
   to: Target.optional(),
@@ -272,7 +255,8 @@ function hasTarget(step: Step): boolean {
   return (
     step.action === "click" ||
     step.action === "type" ||
-    (step.action === "scroll" && (step.to !== undefined || step.until !== undefined))
+    (step.action === "scroll" &&
+      (step.to !== undefined || step.until !== undefined || step.within !== undefined))
   )
 }
 
@@ -293,7 +277,7 @@ function cameraUntil(step: Step): string | undefined {
   return typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
 }
 
-export const Scenario = z
+const ScenarioBase = z
   .strictObject({
     version: z.literal(1),
     overrides: ScenarioOverrides.optional(),
@@ -349,7 +333,9 @@ export const Scenario = z
       }
     })
   })
-export type Scenario = z.infer<typeof Scenario>
+/** A scene's scenario, with whole-document guards (forbidden keys, secret references). */
+export const Scenario = guarded(ScenarioBase)
+export type Scenario = z.infer<typeof ScenarioBase>
 
 /** Names of the presets a scenario uses (checked against the project by `checkScenarioAgainstProject`). */
 export function presetRefs(scenario: Scenario): string[] {
