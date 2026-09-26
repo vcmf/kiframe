@@ -35,9 +35,14 @@ export interface RunOptions {
   approveRisky?: (step: StepRef) => boolean | Promise<boolean>
   /** Per-step timeout for finding targets and waiting on conditions. Default 5000 ms. */
   timeoutMs?: number
+  /** Timeout of a `goto` navigation (page load). Default 30000 ms. */
+  navigationTimeoutMs?: number
 }
 
 type AnyAction = Action | Step
+
+/** Delay between keystrokes of on-camera typing (human-like pacing comes with P0-4). */
+const TYPING_DELAY_MS = 30
 
 /** Playwright treats a timeout of 0 as "wait forever": never pass it through. */
 const MIN_TIMEOUT_MS = 1
@@ -63,6 +68,7 @@ export async function runScenario(
     options,
     network,
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
+    navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
   try {
     let failure: Error | undefined
@@ -93,7 +99,18 @@ export async function runScenario(
       }
     } catch (error) {
       if (failure === undefined) throw error
-      if (error instanceof StepError) options.onEvent?.({ kind: "teardown_failed", error })
+      const reported =
+        error instanceof StepError
+          ? error
+          : new StepError(
+              { phase: "teardown", index: -1, action: "teardown" },
+              "action-failed",
+              String(error),
+              {
+                cause: error,
+              },
+            )
+      options.onEvent?.({ kind: "teardown_failed", error: reported })
     }
     if (failure !== undefined) throw failure
   } finally {
@@ -106,30 +123,37 @@ interface Ctx {
   base: URL
   settleMs: number
   timeoutMs: number
+  navigationTimeoutMs: number
   network: NetworkTracker
   options: RunOptions
 }
 
-/** Inlines presets into setup. `ensure` items are handled in P0-9: rejected clearly for now. */
+/**
+ * Inlines presets into setup. `ensure` items are handled in P0-9: rejected clearly for now. Error
+ * indexes are post-expansion, like the `setup[i]` of runtime errors.
+ */
 function expandSetup(items: readonly SetupItem[], project: ProjectConfig): Action[] {
-  const invalid = (index: number, detail: string) =>
-    new StepError({ phase: "setup", index, action: "setup" }, "invalid-setup", detail)
-  return items.flatMap((item, index): Action[] => {
+  const out: Action[] = []
+  const invalid = (detail: string) =>
+    new StepError({ phase: "setup", index: out.length, action: "setup" }, "invalid-setup", detail)
+  for (const item of items) {
     if ("preset" in item) {
       const preset = Object.hasOwn(project.presets, item.preset)
         ? project.presets[item.preset]
         : undefined
-      if (preset === undefined) throw invalid(index, `unknown preset "${item.preset}"`)
-      return preset.steps.map((s) => {
+      if (preset === undefined) throw invalid(`unknown preset "${item.preset}"`)
+      for (const s of preset.steps) {
         if ("ensure" in s)
-          throw invalid(index, "`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
-        return s
-      })
+          throw invalid("`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
+        out.push(s)
+      }
+    } else if ("ensure" in item) {
+      throw invalid("`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
+    } else {
+      out.push(item)
     }
-    if ("ensure" in item)
-      throw invalid(index, "`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
-    return [item]
-  })
+  }
+  return out
 }
 
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
@@ -153,11 +177,15 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         throw new StepError(step, "off-origin", `goto would leave the target app (${url.origin})`)
       }
       await guard(step, async () => {
-        await page.goto(url.href, { waitUntil: "load", timeout: ctx.timeoutMs })
+        await page.goto(url.href, { waitUntil: "load", timeout: ctx.navigationTimeoutMs })
         // Input sent before the first rendered frame (e.g. a wheel) is dropped by the browser.
+        // Bounded: rAF is paused in background windows (headed, CDP-connected, Electron).
         await page.evaluate(
           () =>
-            new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+            new Promise((resolve) => {
+              requestAnimationFrame(() => requestAnimationFrame(resolve))
+              setTimeout(resolve, 500)
+            }),
         )
       })
       ctx.options.onEvent?.({ kind: "navigate", step, url: url.href })
@@ -185,7 +213,14 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         const timeout = ctx.timeoutMs
         if (action.clear === true) await target.fill("", { timeout })
         if (action.instant === true || secret !== undefined) await target.fill(text, { timeout })
-        else await target.pressSequentially(text, { delay: 30, timeout })
+        else {
+          // Playwright's timeout covers the whole typing: give it the keystroke time on top.
+          const typing = text.length * TYPING_DELAY_MS
+          await target.pressSequentially(text, {
+            delay: TYPING_DELAY_MS,
+            timeout: timeout + typing,
+          })
+        }
         if (action.submit === true) await target.press("Enter", { timeout })
       })
       ctx.options.onEvent?.({ kind: "type", step, secret })
@@ -362,18 +397,26 @@ function describeCondition(condition: Condition): string {
 
 /**
  * URL condition: same origin, the path equals the expected path or continues it at a segment
- * boundary (`/projects/1` matches `/projects/1` and `/projects/1/edit`, not `/projects/12`), and
- * every expected query parameter is present with its value.
+ * boundary (`/projects/1` matches `/projects/1` and `/projects/1/edit`, not `/projects/12`); the root
+ * `/` only matches the root itself. Every expected query parameter must be present with its value,
+ * and an expected `#hash` (hash-routed apps) is matched the same way as a path.
  */
 export function urlMatches(actual: URL, expected: URL): boolean {
   if (actual.origin !== expected.origin) return false
-  const want = expected.pathname.replace(/\/+$/, "")
-  const path = actual.pathname.replace(/\/+$/, "")
-  if (want !== "" && path !== want && !path.startsWith(`${want}/`)) return false
+  if (!pathMatches(actual.pathname, expected.pathname)) return false
   for (const [key, value] of expected.searchParams) {
     if (!actual.searchParams.getAll(key).includes(value)) return false
   }
+  if (expected.hash !== "" && !pathMatches(actual.hash.slice(1), expected.hash.slice(1)))
+    return false
   return true
+}
+
+function pathMatches(actual: string, expected: string): boolean {
+  const want = expected.replace(/\/+$/, "")
+  const path = actual.replace(/\/+$/, "")
+  if (want === "") return path === ""
+  return path === want || path.startsWith(`${want}/`)
 }
 
 /** Runs a Playwright call and turns its failure into a StepError on this step. */

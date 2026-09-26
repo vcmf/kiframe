@@ -51,9 +51,11 @@ export function visibleOnly(locator: Locator): Locator {
 }
 
 /**
- * Resolves a target to exactly one visible element: the primary locator first, then each fallback
- * in order. The time budget is shared: each candidate gets an equal slice. Hidden matches are
- * ignored; several VISIBLE matches are an error unless `nth` picks one (never guess which).
+ * Resolves a target to exactly one visible element. Until the deadline, every round checks the
+ * primary locator and then each fallback, in priority order, and takes the first one that has a
+ * visible match, so a primary element that renders late still wins while time is left. Hidden matches
+ * are ignored and `nth` counts visible matches only. Several visible matches are an error unless
+ * `nth` picks one (never guess which).
  */
 export async function resolveTarget(
   page: Page,
@@ -68,36 +70,28 @@ export async function resolveTarget(
     }
   }
   const { fallbacks = [], nth } = target
-  const primary: SchemaLocator = stripExtras(target)
-  const candidates = [primary, ...fallbacks]
-  const slice = Math.max(250, Math.floor(timeoutMs / candidates.length))
-  const tried: string[] = []
-  for (const [i, candidate] of candidates.entries()) {
-    const visible = visibleOnly(toPlaywright(page, candidate))
-    const locator = nth === undefined ? visible : visible.nth(nth)
-    try {
-      await locator.first().waitFor({ state: "visible", timeout: slice })
-    } catch {
-      tried.push(describeLocator(candidate))
-      continue
-    }
-    if (nth === undefined) {
+  const candidates = [stripExtras(target), ...fallbacks]
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    for (const [i, candidate] of candidates.entries()) {
+      const visible = visibleOnly(toPlaywright(page, candidate))
       const count = await visible.count()
-      if (count > 1) {
+      if (count === 0 || (nth !== undefined && count <= nth)) continue
+      if (nth === undefined && count > 1) {
         return {
           ok: false,
           reason: "target-ambiguous",
           detail: `${describeLocator(candidate)} matches ${count} visible elements — add \`nth\` or a more precise locator`,
         }
       }
+      const locator = nth === undefined ? visible : visible.nth(nth)
+      return { ok: true, locator, used: candidate, fallbackIndex: i === 0 ? undefined : i - 1 }
     }
-    return { ok: true, locator, used: candidate, fallbackIndex: i === 0 ? undefined : i - 1 }
+    if (Date.now() >= deadline) break
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  return {
-    ok: false,
-    reason: "target-not-found",
-    detail: `target not found — tried ${tried.join(", then ")}`,
-  }
+  const tried = candidates.map(describeLocator).join(", then ")
+  return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
 }
 
 /** The locator part of a grounded target, without the healing metadata. */

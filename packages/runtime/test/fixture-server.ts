@@ -3,6 +3,14 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/live": `<!doctype html><title>Live</title>
+    <button id="save">Save</button><p id="s"></p>
+    <script>
+      new EventSource("/api/stream")
+      document.getElementById("save").onclick = async () => {
+        await fetch("/api/slow"); document.getElementById("s").textContent = "Saved"
+      }
+    </script>`,
   "/": `<!doctype html><title>Home</title>
     <nav><a href="/projects">Projects</a></nav>
     <h1>Welcome</h1>`,
@@ -47,6 +55,12 @@ const pages: Record<string, string> = {
 export async function startFixtureServer(): Promise<{ url: string; close: () => Promise<void> }> {
   const server: Server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://x").pathname
+    if (path === "/api/stream") {
+      // Server-sent events that never end (notifications): must not block "network idle".
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" })
+      res.write("data: hello\n\n")
+      return
+    }
     if (path === "/api/slow") {
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" })
