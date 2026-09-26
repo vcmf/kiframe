@@ -349,9 +349,11 @@ The real need behind `if` is **unpredictable interruptions**: cookie banners, "W
 ```yaml
 # project.json
 interrupts:                      # checked before each step; handled off camera
-  - when: { by: role, role: dialog, name: "Cookie preferences" }
+  - id: cookie-banner            # required: interrupt events in the take refer to it
+    when: { by: role, role: dialog, name: "Cookie preferences" }
     do: { action: click, target: { by: role, role: button, name: "Accept all" } }
-  - when: { text: "What's new" }
+  - id: whats-new
+    when: { text: "What's new" }
     do: { action: press, keys: "Escape" }
 hide:                            # removed from the frame with injected CSS (display: none)
   - "#intercom-container"

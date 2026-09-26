@@ -22,6 +22,19 @@ export const NRect = z
   .refine((r) => fitsViewport(r.x, r.y, r.w, r.h), fitsMessage)
 export type NRect = z.infer<typeof NRect>
 
+/**
+ * A rect as observed in the page, normalized to the viewport but NOT clipped to it: an element can
+ * be partly or fully off screen, or collapsed to zero size. Takes record these as-is (a sensitive
+ * field half scrolled out of view must still be masked); the renderer clips to the frame.
+ */
+export const ViewportRect = z.strictObject({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  w: z.number().finite().nonnegative(),
+  h: z.number().finite().nonnegative(),
+})
+export type ViewportRect = z.infer<typeof ViewportRect>
+
 /** A normalized rect written as `[x, y, w, h]` (author-facing form used in scenarios). */
 export const RectTuple = z
   .tuple([unit, unit, size, size])
@@ -69,3 +82,35 @@ export function mentionsSecret(value: string): boolean {
 export const PlainText = z.string().refine((v) => !mentionsSecret(v), {
   message: "secret references are only allowed as the whole `value` of a `type` action",
 })
+
+/** The `id` of an item, if it has a string one (steps, actions, rules, segments). */
+export function idOf(item: object): string | undefined {
+  return "id" in item && typeof item.id === "string" ? item.id : undefined
+}
+
+/**
+ * Registers the ids of `items` in `claims` (id → section where it was first seen) and reports
+ * duplicates, both within `items` and against ids already claimed by other sections.
+ */
+export function claimIds(
+  items: readonly object[] | undefined,
+  section: (string | number)[],
+  ctx: z.RefinementCtx,
+  claims: Map<string, string> = new Map(),
+): Map<string, string> {
+  items?.forEach((item, i) => {
+    const id = idOf(item)
+    if (id === undefined) return
+    const previous = claims.get(id)
+    if (previous !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: `duplicate id "${id}" (already used in ${previous})`,
+        path: [...section, i, "id"],
+      })
+    } else {
+      claims.set(id, section.join("."))
+    }
+  })
+  return claims
+}

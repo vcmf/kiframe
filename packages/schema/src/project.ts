@@ -1,6 +1,14 @@
 import * as z from "zod"
-import { PlainText } from "./common.ts"
-import { Action, CameraDefault, Ensure, Locator, presetRefs, type Scenario } from "./scenario.ts"
+import { claimIds, idOf, PlainText } from "./common.ts"
+import {
+  Action,
+  CameraDefault,
+  Ensure,
+  hasUrlCredentials,
+  Locator,
+  presetRefs,
+  type Scenario,
+} from "./scenario.ts"
 import { Pacing, RuleName, Viewport } from "./settings.ts"
 
 // Project-level configuration shared by every scene (docs/OBJECT-MODEL.md §2, §2b).
@@ -9,28 +17,12 @@ import { Pacing, RuleName, Viewport } from "./settings.ts"
 export const TargetApp = z.strictObject({
   kind: z.literal("web"),
   /** http(s) only, and no embedded credentials (use the vault): the app Kiframe drives. */
-  url: z.url({ protocol: /^https?$/ }).refine(
-    (u) => {
-      const parsed = new URL(u)
-      return parsed.username === "" && parsed.password === ""
-    },
-    { message: "URL must not contain credentials: store them in the vault" },
-  ),
+  url: z.url({ protocol: /^https?$/ }).refine((u) => !hasUrlCredentials(u), {
+    message: "URL must not contain credentials: store them in the vault",
+  }),
   viewport: Viewport,
 })
 export type TargetApp = z.infer<typeof TargetApp>
-
-/** Reports duplicate `id`s in a list (items without an id are ignored). */
-function uniqueIds(items: readonly object[], ctx: z.RefinementCtx) {
-  const seen = new Set<string>()
-  items.forEach((item, i) => {
-    const id = "id" in item && typeof item.id === "string" ? item.id : undefined
-    if (id === undefined) return
-    if (seen.has(id))
-      ctx.addIssue({ code: "custom", message: `duplicate id "${id}"`, path: [i, "id"] })
-    seen.add(id)
-  })
-}
 
 /** A shared off-camera setup. Presets are flat: they can't reference other presets (no recursion). */
 export const Preset = z.strictObject({
@@ -39,13 +31,14 @@ export const Preset = z.strictObject({
   steps: z
     .array(z.union([Ensure, Action]))
     .min(1)
-    .superRefine((steps, ctx) => uniqueIds(steps, ctx)),
+    .superRefine((steps, ctx) => void claimIds(steps, [], ctx)),
 })
 export type Preset = z.infer<typeof Preset>
 
 /** Off-camera handling of unpredictable popups, checked before each step (§2b). */
 export const InterruptRule = z.strictObject({
-  id: RuleName.optional(),
+  /** Required: interrupt take events refer to the rule by this id. */
+  id: RuleName,
   when: z.union([Locator, z.strictObject({ text: PlainText.min(1) })]),
   do: Action,
 })
@@ -65,7 +58,7 @@ export const ProjectConfig = z.strictObject({
   interrupts: z
     .array(InterruptRule)
     .default([])
-    .superRefine((rules, ctx) => uniqueIds(rules, ctx)),
+    .superRefine((rules, ctx) => void claimIds(rules, [], ctx)),
   /** CSS selectors hidden from the frame (display: none). */
   hide: z.array(z.string().min(1)).default([]),
   redaction: z
@@ -79,7 +72,24 @@ export type ProjectConfig = z.infer<typeof ProjectConfig>
 
 /** Cross-file checks a single schema can't do. Returns human-readable problems (empty = OK). */
 export function checkScenarioAgainstProject(scenario: Scenario, project: ProjectConfig): string[] {
-  return presetRefs(scenario)
-    .filter((name) => !Object.hasOwn(project.presets, name))
-    .map((name) => `setup uses unknown preset "${name}"`)
+  const problems: string[] = []
+  const scenarioIds = new Set(
+    [...(scenario.setup ?? []), ...scenario.steps, ...(scenario.teardown ?? [])].flatMap((item) => {
+      const id = idOf(item)
+      return id === undefined ? [] : [id]
+    }),
+  )
+  for (const name of new Set(presetRefs(scenario))) {
+    if (!Object.hasOwn(project.presets, name)) {
+      problems.push(`setup uses unknown preset "${name}"`)
+      continue
+    }
+    for (const step of project.presets[name]?.steps ?? []) {
+      const id = idOf(step)
+      if (id !== undefined && scenarioIds.has(id)) {
+        problems.push(`preset "${name}" step id "${id}" collides with an id in the scenario`)
+      }
+    }
+  }
+  return problems
 }

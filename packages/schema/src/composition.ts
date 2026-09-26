@@ -1,5 +1,5 @@
 import * as z from "zod"
-import { Ms, NPoint, NRect, StepId } from "./common.ts"
+import { claimIds, Ms, NPoint, NRect, PlainText, StepId } from "./common.ts"
 import { CAMERA_SCALE, MAX_SPEED } from "./settings.ts"
 
 // The edit: parallel typed tracks of segments (docs/OBJECT-MODEL.md §4).
@@ -65,7 +65,7 @@ export type CameraSegment = z.infer<typeof CameraSegment>
 
 export const CaptionSegment = z.strictObject({
   ...segmentBase,
-  text: z.string().min(1),
+  text: PlainText.min(1),
   position: z.enum(["bottom", "top", "near-target"]).optional(),
 })
 export type CaptionSegment = z.infer<typeof CaptionSegment>
@@ -90,7 +90,7 @@ export type CursorSegment = z.infer<typeof CursorSegment>
 export const CalloutSegment = z.strictObject({
   ...segmentBase,
   kind: z.enum(["arrow", "text", "badge"]),
-  text: z.string().optional(),
+  text: PlainText.optional(),
   target: z.union([
     z.strictObject({ frameRef: z.string().min(1) }),
     z.strictObject({ rect: NRect }),
@@ -119,17 +119,11 @@ export const Composition = z
     }),
   })
   .superRefine((c, ctx) => {
-    const seen = new Set<string>()
+    // Segment ids are unique across all tracks: regeneration keeps manual segments by id.
+    const claims = new Map<string, string>()
     for (const [track, segments] of Object.entries(c.tracks)) {
-      segments.forEach((segment: { id: string; at: Anchor; until?: Anchor }, i: number) => {
-        if (seen.has(segment.id)) {
-          ctx.addIssue({
-            code: "custom",
-            message: `duplicate segment id "${segment.id}"`,
-            path: ["tracks", track, i, "id"],
-          })
-        }
-        seen.add(segment.id)
+      claimIds(segments, ["tracks", track], ctx, claims)
+      segments.forEach((segment: { at: Anchor; until?: Anchor }, i: number) => {
         // Spans between two absolute times can be checked here; step/event anchors are checked
         // once resolved against a take (generators, P0-6).
         const { at, until } = segment

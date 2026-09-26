@@ -37,9 +37,13 @@ function loadYaml(text: string, what: string): unknown {
   })
   if (forbidden !== undefined) throw new SchemaError(what, `forbidden key "${forbidden}"`)
   try {
-    return doc.toJS()
+    // maxAliasCount guards against "billion laughs" alias expansion.
+    return doc.toJS({ maxAliasCount: 100 })
   } catch (error) {
-    if (error instanceof YAMLParseError) throw new SchemaError(what, error.message)
+    // yaml throws ReferenceError for unresolved or excessive aliases, YAMLParseError otherwise.
+    if (error instanceof YAMLParseError || error instanceof ReferenceError) {
+      throw new SchemaError(what, error.message)
+    }
     throw error
   }
 }
