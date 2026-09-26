@@ -134,9 +134,7 @@ export async function isOnScreen(
 ): Promise<boolean> {
   const box = await locator.boundingBox({ timeout: timeoutMs }).catch(() => null)
   if (box === null) return false
-  // Pages without a fixed viewport (CDP-connected, Electron) have no viewportSize(): ask the page.
-  const viewport =
-    page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+  const viewport = await viewportOf(page)
   const x = box.x + box.width / 2
   const y = box.y + box.height / 2
   if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return false
@@ -161,5 +159,12 @@ export function isNavigationError(error: unknown): boolean {
   return (
     error instanceof Error &&
     /execution context was destroyed|frame was detached/i.test(error.message)
+  )
+}
+
+/** The viewport size. Pages without a fixed viewport (CDP-connected, Electron) are asked directly. */
+export async function viewportOf(page: Page): Promise<{ width: number; height: number }> {
+  return (
+    page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
   )
 }

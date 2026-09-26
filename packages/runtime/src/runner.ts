@@ -20,7 +20,14 @@ import {
   type TypingPacing,
 } from "./motion.ts"
 import { NetworkTracker } from "./network.ts"
-import { describeLocator, isOnScreen, resolveTarget, toPlaywright, visibleOnly } from "./targets.ts"
+import {
+  describeLocator,
+  isOnScreen,
+  resolveTarget,
+  toPlaywright,
+  viewportOf,
+  visibleOnly,
+} from "./targets.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
 // expanded), steps, teardown. Phase 0 scope: no human motion yet (P0-4), no recording (P0-5), no
@@ -233,45 +240,58 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
  * word, the click needs approval. A harmless control that merely mentions one (a row or card with a
  * "Delete" button inside) asks for approval too, and `risky: false` on the step opts out.
  */
-async function controlName(target: Locator, timeout: number): Promise<string> {
-  // Waits for the element like any action (a re-render can't make the check silently pass).
-  const rendered = await target.evaluate(
-    (t) => {
-      const CONTROLS =
-        "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
-      const control = t.closest(CONTROLS) ?? t
-      const texts: (string | null | undefined)[] = [
-        control instanceof HTMLElement ? control.innerText : control.textContent,
-        control.textContent,
-        control.getAttribute("aria-label"),
-        control.getAttribute("title"),
-        ...(control.getAttribute("aria-labelledby") ?? "")
-          .split(/\s+/)
-          .map((id) => (id === "" ? "" : document.getElementById(id)?.textContent)),
-        ...[...control.querySelectorAll("img[alt], [aria-label], [title]"), control].map(
-          (e) => e.getAttribute("alt") ?? e.getAttribute("aria-label") ?? e.getAttribute("title"),
-        ),
-      ]
-      if (
-        control instanceof HTMLInputElement &&
-        ["submit", "button", "reset", "image"].includes(control.type.toLowerCase())
-      ) {
-        texts.push(control.value, control.alt)
-      }
-      return texts.filter((s): s is string => typeof s === "string").join(" ")
-    },
-    undefined,
-    { timeout },
-  )
-  const snapshot = await target.ariaSnapshot({ timeout }).catch(() => "")
-  const fromSnapshot = [...snapshot.matchAll(/"((?:[^"\\]|\\.)*)"|text: (.*)$/gm)].map(
+async function controlName(
+  target: Locator,
+  timeout: number,
+): Promise<{ text: string; complete: boolean }> {
+  const [rendered, snapshot] = await Promise.all([
+    // Waits for the element like any action (a re-render can't make the check silently pass).
+    target.evaluate(
+      (t) => {
+        const CONTROLS =
+          "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
+        const control = t.closest(CONTROLS) ?? t
+        const root = control.getRootNode() as Document | ShadowRoot
+        const texts: (string | null | undefined)[] = [
+          control instanceof HTMLElement ? control.innerText : control.textContent,
+          control.textContent,
+        ]
+        // Every naming attribute of the control and of everything inside it (not the first one only).
+        for (const e of [control, ...control.querySelectorAll("*")]) {
+          for (const attr of ["alt", "aria-label", "title", "placeholder"])
+            texts.push(e.getAttribute(attr))
+          for (const id of (e.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
+            if (id !== "")
+              texts.push(
+                root.getElementById(id)?.textContent ?? document.getElementById(id)?.textContent,
+              )
+          }
+        }
+        if (
+          control instanceof HTMLInputElement &&
+          ["submit", "button", "reset", "image"].includes(control.type.toLowerCase())
+        ) {
+          texts.push(control.value)
+        }
+        return texts.filter((s): s is string => typeof s === "string").join(" ")
+      },
+      undefined,
+      { timeout },
+    ),
+    target.ariaSnapshot({ timeout }).then(
+      (s) => s,
+      () => undefined, // unknown: the caller fails closed
+    ),
+  ])
+  const fromSnapshot = [...(snapshot ?? "").matchAll(/"((?:[^"\\]|\\.)*)"|text: (.*)$/gm)].map(
     (m) => m[1] ?? m[2] ?? "",
   )
-  return [rendered, ...fromSnapshot]
+  const text = [rendered, ...fromSnapshot]
     .map((s) => s.replace(/\\(.)/g, "$1").replace(/([a-z])([A-Z])/g, "$1 $2"))
     .join(" ")
     .replace(/\s+/g, " ")
     .trim()
+  return { text, complete: snapshot !== undefined }
 }
 
 /**
@@ -367,7 +387,14 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       if (action.risky === undefined) {
         const label = await guard(step, () => controlName(target, ctx.timeoutMs))
-        const risky = RISKY_LABEL.exec(label)
+        if (!label.complete) {
+          await requireApproval(
+            ctx,
+            step,
+            "couldn't read everything the control is called: approve it, or set `risky: false`",
+          )
+        }
+        const risky = RISKY_LABEL.exec(label.text)
         if (risky !== null) {
           await requireApproval(
             ctx,
@@ -376,40 +403,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
       }
-      const aim = await moveCursorTo(ctx, target, step)
-      await guard(step, async () => {
-        const clicks = action.count ?? 1
-        try {
-          if (aim !== undefined) {
-            // One press/release pair per click (a double click shows two ripples); the last
-            // release is sent after the click, in `finally`.
-            for (let i = 0; i < clicks; i++) {
-              ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: true })
-              if (i < clicks - 1)
-                ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: false })
-            }
-          }
-          await target.click({
-            timeout: ctx.timeoutMs,
-            // The click lands exactly where the cursor stopped: no visible jump.
-            ...(aim !== undefined && { position: aim.offset }),
-            ...(action.button !== undefined && { button: action.button }),
-            ...(action.count !== undefined && { clickCount: action.count }),
-            ...(action.modifiers !== undefined && {
-              modifiers: action.modifiers.map(toPlaywrightModifier),
-            }),
-          })
-        } finally {
-          // Always release, even if the click failed: the recorder must never see a held cursor.
-          // A failing callback here must not hide the click's own error.
-          try {
-            if (aim !== undefined)
-              ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: false })
-          } catch {
-            // the error of the press (or of the click) is the one reported
-          }
-        }
-      })
+      await clickAtCursor(ctx, target, step, action)
       return
     }
     case "type": {
@@ -417,7 +411,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
-      if (step.phase === "steps") await moveCursorTo(ctx, target, step, { forClick: false })
+      if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -822,93 +816,120 @@ async function moveCursorTo(
   ctx: Ctx,
   target: Locator,
   step: StepRef,
-  { forClick = true }: { forClick?: boolean } = {},
-): Promise<CursorTarget | undefined> {
+  { correction = false }: { correction?: boolean } = {},
+): Promise<Point | undefined> {
   return guard(step, async () => {
-    const viewport =
-      ctx.page.viewportSize() ??
-      (await ctx.page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
-    const pacing = step.phase === "steps" ? ctx.pacing.cursor : "instant"
-    const random = seededRandom(`${seedOf(step)}:cursor`)
+    const viewport = await viewportOf(ctx.page)
+    const onCamera = step.phase === "steps" && ctx.pacing.cursor !== "instant"
+    const pacing = !onCamera ? "instant" : correction ? "fast" : ctx.pacing.cursor
+    const random = seededRandom(`${seedOf(step)}:cursor${correction ? ":again" : ""}`)
     // No box (display: contents, re-rendering…): skip the visual movement, the action still runs.
-    const box = await target.boundingBox({ timeout: ctx.timeoutMs })
-    const first = visiblePart(box, viewport)
-    if (box === null || first === undefined) return undefined
-    const to = clickPoint(first, random)
+    const visible = visiblePart(await target.boundingBox({ timeout: ctx.timeoutMs }), viewport)
+    if (visible === undefined) return undefined
+    const to = clickPoint(visible, random)
     await travel(
       ctx,
       step,
       planPath(ctx.cursor ?? center(viewport), to, {
         pacing,
-        targetWidth: first.width,
+        targetWidth: visible.width,
         viewport,
         random,
       }),
     )
-    // Typing only needs the visual movement: no re-measure, no click offset.
-    if (!forClick) return { point: ctx.cursor ?? to, offset: { x: 0, y: 0 } }
-    if (pacing === "instant") {
-      const at = ctx.cursor ?? to
-      return { point: at, offset: await clickOffset(target, box, at, ctx.timeoutMs) }
-    }
-    // The target may have moved during the travel (menu sliding in, layout shift on hover): keep
-    // the same relative spot on its new box, with a short correction move if needed.
-    const nowBox = await target.boundingBox({ timeout: ctx.timeoutMs })
-    const now = visiblePart(nowBox, viewport)
-    if (nowBox === null || now === undefined) return undefined
-    const point = {
-      x: now.x + ((to.x - first.x) / first.width) * now.width,
-      y: now.y + ((to.y - first.y) / first.height) * now.height,
-    }
-    if (Math.hypot(point.x - to.x, point.y - to.y) > 2) {
-      await travel(
-        ctx,
-        step,
-        planPath(ctx.cursor ?? to, point, {
-          pacing: "fast",
-          targetWidth: now.width,
-          viewport,
-          random,
-        }),
-      )
-    }
-    const at = ctx.cursor ?? point
-    // Playwright's click position is relative to the element's REAL box, not its visible part.
-    return { point: at, offset: await clickOffset(target, nowBox, at, ctx.timeoutMs) }
+    return ctx.cursor
   })
 }
 
 /**
- * The click `position` for a point on screen. Playwright measures it from the element's padding
- * box (it adds parseInt(border width)), so the same value is subtracted: the click lands on `at`.
+ * Clicks where the cursor is, by construction: actionability is checked with a trial click (no
+ * click), a hit test confirms the point under the cursor belongs to the target (re-aiming once if
+ * it moved or is covered there), then the real mouse is pressed and released at that point. Press
+ * and release events are reported at the moment they happen, one pair per click.
  */
-async function clickOffset(
+async function clickAtCursor(
+  ctx: Ctx,
   target: Locator,
-  box: { x: number; y: number },
-  at: Point,
-  timeout: number,
-): Promise<Point> {
-  // Short timeout: the element was just measured, a slow answer means it's re-rendering.
-  const border = await target
-    .evaluate(
-      (el) => {
-        const style = getComputedStyle(el)
-        return {
-          left: parseFloat(style.borderLeftWidth) || 0,
-          top: parseFloat(style.borderTopWidth) || 0,
-        }
-      },
-      undefined,
-      { timeout: Math.min(timeout, 500) },
-    )
-    .catch(() => ({ left: 0, top: 0 }))
-  return { x: at.x - box.x - border.left, y: at.y - box.y - border.top }
+  step: StepRef,
+  action: Extract<AnyAction, { action: "click" }>,
+): Promise<void> {
+  let point = await moveCursorTo(ctx, target, step)
+  await guard(step, async () => {
+    const button = action.button ?? "left"
+    const modifiers = (action.modifiers ?? []).map(toPlaywrightModifier)
+    await target.click({ trial: true, timeout: ctx.timeoutMs, button, modifiers })
+    if (point === undefined || !(await hitsTarget(target, point, ctx.timeoutMs))) {
+      point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
+      if (point === undefined || !(await hitsTarget(target, point, ctx.timeoutMs))) {
+        throw new StepError(
+          step,
+          "action-failed",
+          "the target is covered where the cursor would click it",
+        )
+      }
+    }
+    // The trial may have moved the mouse: put it back where the cursor is.
+    await ctx.page.mouse.move(point.x, point.y)
+    for (const m of modifiers) await ctx.page.keyboard.down(m)
+    try {
+      for (let clickCount = 1; clickCount <= (action.count ?? 1); clickCount++) {
+        await pressAndRelease(ctx, step, point, button, clickCount)
+      }
+    } finally {
+      for (const m of [...modifiers].reverse()) await ctx.page.keyboard.up(m)
+    }
+  })
 }
 
-/** Where the cursor stopped, and its offset inside the target's box (for a click at that spot). */
-interface CursorTarget {
-  point: Point
-  offset: Point
+/** One mouse click at `point`, with its press/release cursor events; the release is always reported. */
+async function pressAndRelease(
+  ctx: Ctx,
+  step: StepRef,
+  point: Point,
+  button: "left" | "right",
+  clickCount: number,
+): Promise<void> {
+  let clickError: Error | undefined
+  try {
+    ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: true })
+    await ctx.page.mouse.down({ button, clickCount })
+    await ctx.page.mouse.up({ button, clickCount })
+  } catch (error) {
+    clickError = error instanceof Error ? error : new Error(String(error))
+  }
+  let releaseError: Error | undefined
+  try {
+    ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: false })
+  } catch (error) {
+    releaseError = error instanceof Error ? error : new Error(String(error))
+  }
+  // The click's own error wins; a failing release callback fails the step only on its own.
+  if (clickError !== undefined) throw clickError
+  if (releaseError !== undefined) throw releaseError
+}
+
+/** Is the element under `point` the target (or inside it), through shadow roots? */
+async function hitsTarget(target: Locator, point: Point, timeout: number): Promise<boolean> {
+  return target.evaluate(
+    (el, [x, y]) => {
+      let hit = document.elementFromPoint(x ?? 0, y ?? 0)
+      while (hit?.shadowRoot) {
+        const inner = hit.shadowRoot.elementFromPoint(x ?? 0, y ?? 0)
+        if (inner === null || inner === hit) break
+        hit = inner
+      }
+      for (
+        let node: Node | null = hit;
+        node !== null;
+        node = node.parentNode ?? (node as ShadowRoot).host ?? null
+      ) {
+        if (node === el) return true
+      }
+      return false
+    },
+    [point.x, point.y],
+    { timeout },
+  )
 }
 
 const center = (viewport: { width: number; height: number }): Point => ({

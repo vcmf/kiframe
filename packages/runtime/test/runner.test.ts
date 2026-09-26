@@ -848,9 +848,11 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
         { timeoutMs: 1000, onEvent: (e) => events.push(e) },
       ),
     ).rejects.toThrow()
+    // The trial click fails before any press: the video never shows a click that didn't happen,
+    // and nothing is left held down.
     const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
-    expect(pressed.filter(Boolean)).toHaveLength(1)
-    expect(pressed.at(-1)).toBe(false)
+    expect(pressed.filter(Boolean)).toHaveLength(0)
+    expect(pressed.at(-1) ?? false).toBe(false)
   })
 
   // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────
@@ -1031,4 +1033,36 @@ teardown:
     )
     expect(error.reason).toBe("risky-not-approved")
   })
+
+  // ─── P0-4 review round 6: clicks at the cursor by construction ─────────────
+
+  it("fails closed on names hidden behind other attributes", async () => {
+    await page.setContent(`
+      <button id="title"><span aria-label="Trash" title="Delete forever">🗑</span></button>
+      <button id="alt"><img alt="" aria-label="Delete" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="10" height="10"></button>`)
+    for (const id of ["title", "alt"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
+  })
+
+  it("reports the release of a successful click even if the release callback throws", async () => {
+    const error = await failure(
+      `setup: [{ preset: open-projects }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: New project } }
+`,
+      {
+        onEvent: (e) => {
+          if (e.kind === "cursor" && !e.pressed && e.step.stepId === "open" && seenPress)
+            throw new Error("recorder closed")
+          if (e.kind === "cursor" && e.pressed) seenPress = true
+        },
+      },
+    )
+    expect(error.message).toMatch(/recorder closed/)
+  })
+  let seenPress = false
 })
