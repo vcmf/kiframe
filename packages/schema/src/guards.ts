@@ -70,6 +70,13 @@ function walk(value: unknown, parent: unknown, w: Walk): void {
     return
   }
   if (typeof value !== "object" || value === null) return
+  // Only plain objects and arrays (what JSON and YAML produce): a Map, Set, Date… would hide its
+  // contents from this walk.
+  const proto = Object.getPrototypeOf(value) as unknown
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) {
+    addIssue(w, undefined, "unsupported value: only plain objects, arrays and scalars are allowed")
+    return
+  }
   if (w.path.length > MAX_DEPTH) {
     w.structural = true
     addIssue(w, undefined, `document is nested too deeply (more than ${MAX_DEPTH} levels)`)
@@ -118,10 +125,11 @@ export function guarded<T extends z.ZodType>(schema: T, slots: readonly SecretSl
     walk(input, undefined, w)
     const result = w.structural ? undefined : schema.safeParse(input)
     if (result && !result.success) {
-      // A forbidden key is already reported by the guard, with its path: drop zod's duplicate
-      // "unrecognized key" issue when every key it lists is a forbidden one.
+      // A forbidden key is already reported by the guard: drop any schema issue about it, whether
+      // its path goes through the key (records) or it lists only forbidden keys (strict objects).
       const duplicate = (i: z.core.$ZodIssue) =>
-        i.code === "unrecognized_keys" && i.keys.every((k) => FORBIDDEN_KEYS.has(k))
+        i.path.some((p) => typeof p === "string" && FORBIDDEN_KEYS.has(p)) ||
+        (i.code === "unrecognized_keys" && i.keys.every((k) => FORBIDDEN_KEYS.has(k)))
       w.issues.push(...result.error.issues.filter((i) => !duplicate(i)))
     }
     if (result === undefined || !result.success || w.issues.length > 0) {

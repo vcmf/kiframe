@@ -8,7 +8,7 @@ import {
   withoutCredentials,
 } from "./common.ts"
 import { guarded } from "./guards.ts"
-import { RuleName, Viewport } from "./settings.ts"
+import { RuleName, ViewportShape } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
 // `t` is milliseconds from the first frame, on the same clock as the screencast frames.
@@ -71,7 +71,8 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
   z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Timestamp }),
 ])
-export const TakeEventBase = TakeEventVariants.refine(
+/** Unguarded: internal only, use the guarded export. */
+const TakeEventBase = TakeEventVariants.refine(
   // Interrupts are handled between steps, so they may have no step even on camera.
   (e) => e.phase !== "steps" || e.kind === "interrupt" || e.stepId !== undefined,
   { message: "on-camera events (phase `steps`) need a stepId", path: ["stepId"] },
@@ -92,7 +93,8 @@ export const CursorSample = z.strictObject({
 })
 export type CursorSample = z.infer<typeof CursorSample>
 
-export const TakeMetaBase = z.strictObject({
+/** Unguarded: internal only, use the guarded export. */
+const TakeMetaBase = z.strictObject({
   version: z.literal(1),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
@@ -100,7 +102,7 @@ export const TakeMetaBase = z.strictObject({
   appUrl: withoutCredentials(z.string()),
   /** The environment the take was recorded on (APPROACHES §10c), when known. */
   environment: RuleName.optional(),
-  viewport: Viewport.required(),
+  viewport: ViewportShape,
   /** Frame size of `frames.webm` in pixels (viewport × DPR). */
   frameSize: z.strictObject({
     width: z.number().int().positive(),

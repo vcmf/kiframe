@@ -485,7 +485,8 @@ type SegmentBase = {
 type Anchor =
   | { step: string; edge: "start" | "end"; offsetMs?: number }
   | { event: string; offsetMs?: number }            // e.g. the click in a step
-  | { scene: "start" | "end"; offsetMs?: number }   // card / still / media scenes
+  | { scene: "start"; offsetMs?: number }           // card / still / media scenes: offset >= 0 from the start…
+  | { scene: "end"; offsetMs?: number }             // …or <= 0 from the end (anchors stay inside the scene)
   | { ms: number };                                 // escape hatch: absolute source time
 
 type ClipSegment = SegmentBase & (

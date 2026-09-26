@@ -1025,3 +1025,64 @@ describe("round 11", () => {
     }
   })
 })
+
+// ─── Round 12 ────────────────────────────────────────────────────────────────
+
+describe("round 12", () => {
+  it("rejects `<` inside quoted CSS strings too", () => {
+    const sel = '[title="</style><img src=x onerror=alert(1)>"]'
+    expect(() => parseProjectYaml(project(`hide: [${JSON.stringify(sel)}]\n`))).toThrow(
+      /single CSS selector/,
+    )
+  })
+
+  it("maps null YAML keys like toJS does", () => {
+    expect(() => parseScenarioYaml(`~: 1\n"": 2\nversion: 1\n${steps}`)).toThrow(/duplicate key ""/)
+    expect(() => parseScenarioYaml(`null: 1\n"null": 2\nversion: 1\n${steps}`)).toThrow(SchemaError)
+  })
+
+  it("reports a forbidden record key once", () => {
+    const config = JSON.parse(
+      `{"version":1,"target":{"kind":"web","url":"https://x.test","viewport":{"width":1440,"height":900}},"presets":{"constructor":{"steps":[{"action":"goto","url":"/x"}]}}}`,
+    ) as unknown
+    const messages = ProjectConfig.safeParse(config).error?.issues.map((i) => i.message) ?? []
+    expect(messages).toEqual(['forbidden key "constructor"'])
+  })
+
+  it("rejects Maps and Sets that would hide their contents", () => {
+    const style = { x: new Set(["{{secrets.pw}}"]) }
+    expect(Composition.safeParse({ version: 1, tracks: {}, style }).success).toBe(false)
+  })
+
+  it("restricts freeze reasons to reading and user", () => {
+    const freeze = {
+      id: "f",
+      source: "auto",
+      mode: "freeze",
+      ms: 500,
+      at: { ms: 0 },
+      reason: "interrupt",
+    }
+    expect(Composition.safeParse({ version: 1, tracks: { clips: [freeze] } }).success).toBe(false)
+  })
+
+  it("gives a plain 'required' error for a missing DPR in take metadata", () => {
+    const meta = {
+      version: 1,
+      takeKey: "k",
+      scenarioHash: "h",
+      recordedAt: "2026-09-26T20:00:00Z",
+      appUrl: "https://x.test",
+      viewport: { width: 1440, height: 900 },
+      frameSize: { width: 2880, height: 1800 },
+      fps: 30,
+      durationMs: 1000,
+      kiframeVersion: "0.0.0",
+    }
+    const messages =
+      TakeMeta.safeParse(meta)
+        .error?.issues.map((i) => i.message)
+        .join(" ") ?? ""
+    expect(messages).not.toMatch(/nonoptional/)
+  })
+})

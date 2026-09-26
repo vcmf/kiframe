@@ -33,7 +33,14 @@ function loadYaml(text: string, what: string): unknown {
           problem = "keys must be plain values, not lists or maps"
           return visit.BREAK
         }
-        const name = String(isScalar(key) ? key.value : key)
+        // Same key string as toJS produces: a null key (`~:`) becomes "".
+        const raw = isScalar(key) ? key.value : key
+        const name =
+          raw === null || raw === undefined
+            ? ""
+            : typeof raw === "string"
+              ? raw
+              : JSON.stringify(raw)
         if (seen.has(name)) {
           problem = `duplicate key "${name}"`
           return visit.BREAK

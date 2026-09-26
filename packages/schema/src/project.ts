@@ -35,7 +35,8 @@ export const InterruptRule = z.strictObject({
 })
 export type InterruptRule = z.infer<typeof InterruptRule>
 
-export const ProjectConfigBase = z
+/** Unguarded: internal only, use the guarded export. */
+const ProjectConfigBase = z
   .strictObject({
     version: z.literal(1),
     environment: RuleName.optional(),

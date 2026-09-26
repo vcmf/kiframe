@@ -285,7 +285,8 @@ function cameraUntil(step: Step): string | undefined {
   return typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
 }
 
-export const ScenarioBase = z
+/** Unguarded: internal only, use the guarded export. */
+const ScenarioBase = z
   .strictObject({
     version: z.literal(1),
     overrides: ScenarioOverrides.optional(),
