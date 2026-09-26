@@ -7,6 +7,13 @@ const pages: Record<string, string> = {
     <nav><a href="/projects">Projects</a></nav>
     <h1>Welcome</h1>`,
   "/projects": `<!doctype html><title>Projects</title>
+    <nav style="display:none"><a href="/settings">Settings</a></nav>
+    <nav><a href="/settings">Settings</a></nav>
+    <template id="toast-template"><p>Saved!</p></template>
+    <p style="display:none">Saved!</p>
+    <aside id="sidebar" style="height:80px; overflow:auto"><div style="height:600px">
+      <button id="side-item">Sidebar item</button></div></aside>
+    <button id="save-remote">Save remotely</button>
     <h1>Projects</h1>
     <button id="new">New project</button>
     <button class="dup">Save</button><button class="dup">Save</button>
@@ -21,6 +28,10 @@ const pages: Record<string, string> = {
     <div style="height:3000px"></div>
     <footer>Footer text</footer>
     <script>
+      document.getElementById("save-remote").onclick = async () => {
+        await fetch("/api/slow")
+        document.getElementById("status").textContent = "Saved remotely"
+      }
       document.getElementById("new").onclick = () => { document.getElementById("create").hidden = false }
       function done() {
         const name = document.querySelector("[name=name]").value
@@ -36,7 +47,14 @@ const pages: Record<string, string> = {
 export async function startFixtureServer(): Promise<{ url: string; close: () => Promise<void> }> {
   const server: Server = createServer((req, res) => {
     const path = new URL(req.url ?? "/", "http://x").pathname
-    const body = pages[path]
+    if (path === "/api/slow") {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end("{}")
+      }, 700)
+      return
+    }
+    const body = pages[path] ?? (path.startsWith("/projects/") ? pages["/projects"] : undefined)
     res.writeHead(body === undefined ? 404 : 200, { "content-type": "text/html" })
     res.end(body ?? "not found")
   })

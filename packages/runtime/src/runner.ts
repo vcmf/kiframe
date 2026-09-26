@@ -10,7 +10,8 @@ import type {
 import { secretRefName } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
-import { describeLocator, isOnScreen, resolveTarget, toPlaywright } from "./targets.ts"
+import { NetworkTracker } from "./network.ts"
+import { describeLocator, isOnScreen, resolveTarget, toPlaywright, visibleOnly } from "./targets.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
 // expanded), steps, teardown. Phase 0 scope: no human motion yet (P0-4), no recording (P0-5), no
@@ -22,6 +23,8 @@ export type RunnerEvent =
   | { kind: "navigate"; step: StepRef; url: string }
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
   | { kind: "type"; step: StepRef; secret?: string | undefined }
+  /** Teardown failed after a step had already failed: the step's error is the one thrown. */
+  | { kind: "teardown_failed"; error: StepError }
 
 export interface RunOptions {
   /** Resolves a secret NAME to its value, at the moment of the fill. Throw if unavailable. */
@@ -36,7 +39,14 @@ export interface RunOptions {
 
 type AnyAction = Action | Step
 
-/** Runs a scenario. Throws a `StepError` naming the failing step. */
+/** Playwright treats a timeout of 0 as "wait forever": never pass it through. */
+const MIN_TIMEOUT_MS = 1
+
+/**
+ * Runs a scenario. Throws a `StepError` naming the failing step. Teardown runs even when a step
+ * fails (so the scene cleans up what it created); a teardown failure after a step failure is
+ * reported as a `teardown_failed` event and the step's error is thrown.
+ */
 export async function runScenario(
   page: Page,
   scenario: Scenario,
@@ -45,22 +55,49 @@ export async function runScenario(
 ): Promise<void> {
   const base = new URL(project.target.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
-  const ctx: Ctx = { page, base, settleMs, options, timeoutMs: options.timeoutMs ?? 5000 }
-
-  const setup = expandSetup(scenario.setup ?? [], project)
-  for (const [index, action] of setup.entries()) {
-    await runOne(ctx, action, { phase: "setup", index, stepId: action.id, action: action.action })
+  const network = new NetworkTracker(page)
+  const ctx: Ctx = {
+    page,
+    base,
+    settleMs,
+    options,
+    network,
+    timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
   }
-  for (const [index, step] of scenario.steps.entries()) {
-    await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
-  }
-  for (const [index, action] of (scenario.teardown ?? []).entries()) {
-    await runOne(ctx, action, {
-      phase: "teardown",
-      index,
-      stepId: action.id,
-      action: action.action,
-    })
+  try {
+    let failure: Error | undefined
+    try {
+      const setup = expandSetup(scenario.setup ?? [], project)
+      for (const [index, action] of setup.entries()) {
+        await runOne(ctx, action, {
+          phase: "setup",
+          index,
+          stepId: action.id,
+          action: action.action,
+        })
+      }
+      for (const [index, step] of scenario.steps.entries()) {
+        await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
+      }
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error))
+    }
+    try {
+      for (const [index, action] of (scenario.teardown ?? []).entries()) {
+        await runOne(ctx, action, {
+          phase: "teardown",
+          index,
+          stepId: action.id,
+          action: action.action,
+        })
+      }
+    } catch (error) {
+      if (failure === undefined) throw error
+      if (error instanceof StepError) options.onEvent?.({ kind: "teardown_failed", error })
+    }
+    if (failure !== undefined) throw failure
+  } finally {
+    network.dispose()
   }
 }
 
@@ -69,25 +106,28 @@ interface Ctx {
   base: URL
   settleMs: number
   timeoutMs: number
+  network: NetworkTracker
   options: RunOptions
 }
 
 /** Inlines presets into setup. `ensure` items are handled in P0-9: rejected clearly for now. */
 function expandSetup(items: readonly SetupItem[], project: ProjectConfig): Action[] {
-  return items.flatMap((item): Action[] => {
+  const invalid = (index: number, detail: string) =>
+    new StepError({ phase: "setup", index, action: "setup" }, "invalid-setup", detail)
+  return items.flatMap((item, index): Action[] => {
     if ("preset" in item) {
       const preset = Object.hasOwn(project.presets, item.preset)
         ? project.presets[item.preset]
         : undefined
-      if (preset === undefined) throw new Error(`setup uses unknown preset "${item.preset}"`)
+      if (preset === undefined) throw invalid(index, `unknown preset "${item.preset}"`)
       return preset.steps.map((s) => {
         if ("ensure" in s)
-          throw new Error("`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
+          throw invalid(index, "`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
         return s
       })
     }
     if ("ensure" in item)
-      throw new Error("`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
+      throw invalid(index, "`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
     return [item]
   })
 }
@@ -113,10 +153,11 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         throw new StepError(step, "off-origin", `goto would leave the target app (${url.origin})`)
       }
       await guard(step, async () => {
-        await page.goto(url.href, { waitUntil: "load" })
+        await page.goto(url.href, { waitUntil: "load", timeout: ctx.timeoutMs })
         // Input sent before the first rendered frame (e.g. a wheel) is dropped by the browser.
         await page.evaluate(
-          "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+          () =>
+            new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
         )
       })
       ctx.options.onEvent?.({ kind: "navigate", step, url: url.href })
@@ -126,6 +167,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       await guard(step, () =>
         target.click({
+          timeout: ctx.timeoutMs,
           ...(action.button !== undefined && { button: action.button }),
           ...(action.count !== undefined && { clickCount: action.count }),
           ...(action.modifiers !== undefined && {
@@ -140,10 +182,11 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const secret = secretRefName(action.value)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       await guard(step, async () => {
-        if (action.clear === true) await target.fill("")
-        if (action.instant === true || secret !== undefined) await target.fill(text)
-        else await target.pressSequentially(text, { delay: 30 })
-        if (action.submit === true) await target.press("Enter")
+        const timeout = ctx.timeoutMs
+        if (action.clear === true) await target.fill("", { timeout })
+        if (action.instant === true || secret !== undefined) await target.fill(text, { timeout })
+        else await target.pressSequentially(text, { delay: 30, timeout })
+        if (action.submit === true) await target.press("Enter", { timeout })
       })
       ctx.options.onEvent?.({ kind: "type", step, secret })
       return
@@ -158,7 +201,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       await waitForCondition(
         ctx,
         action.until,
-        action.timeout ?? ctx.timeoutMs,
+        timeoutOf(ctx, action.timeout),
         step,
         "condition-timeout",
       )
@@ -167,7 +210,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       await waitForCondition(
         ctx,
         action.that,
-        action.timeout ?? ctx.timeoutMs,
+        timeoutOf(ctx, action.timeout),
         step,
         "expectation-failed",
       )
@@ -176,6 +219,10 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       await page.waitForTimeout(action.ms)
       return
   }
+}
+
+function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
+  return Math.max(MIN_TIMEOUT_MS, stepTimeout ?? ctx.timeoutMs)
 }
 
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
@@ -202,41 +249,64 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
   }
 }
 
+/**
+ * Scrolls the right scroller explicitly (the page, or the `within` container) instead of sending
+ * wheel events wherever the mouse happens to be, which could scroll a sidebar clicked earlier.
+ * Smooth, human-like scrolling comes with P0-4; here it's instant and deterministic.
+ */
 async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>, step: StepRef) {
-  const { page } = ctx
-  // Inside a container, the mouse sits over it (so wheel events scroll it) and a scroll "page" is
-  // the container's height; otherwise it's the viewport's.
-  let pageHeight = page.viewportSize()?.height ?? 800
-  if (action.within !== undefined) {
-    const container = await find(ctx, action.within, step)
-    await guard(step, () => container.hover())
-    pageHeight = (await container.boundingBox())?.height ?? pageHeight
-  }
+  const container = action.within === undefined ? undefined : await find(ctx, action.within, step)
+  const scrollBy = (dy: number) =>
+    guard(step, async () => {
+      if (container === undefined) {
+        await ctx.page.evaluate((y) => window.scrollBy({ top: y, behavior: "instant" }), dy)
+      } else {
+        await container.evaluate((el, y) => el.scrollBy({ top: y, behavior: "instant" }), dy, {
+          timeout: ctx.timeoutMs,
+        })
+      }
+    })
   if (action.to !== undefined) {
     await find(ctx, action.to, step)
     return
   }
   if (action.by !== undefined) {
-    const { y } = action.by
-    await guard(step, () => page.mouse.wheel(0, y))
-    await scrollSettled(page)
+    await scrollBy(action.by.y)
     return
   }
   if (action.until !== undefined) {
-    // Scroll a viewport at a time until the target shows up (Maestro's scrollUntilVisible).
+    // Scroll a "page" (80% of the scroller's height) at a time until the target is on screen.
+    const pageHeight = await guard(step, async () =>
+      container === undefined
+        ? ctx.page.evaluate(() => innerHeight)
+        : ((await container.boundingBox({ timeout: ctx.timeoutMs }))?.height ?? 400),
+    )
     const deadline = Date.now() + ctx.timeoutMs
-    while (Date.now() < deadline) {
-      const result = await resolveTarget(page, action.until, 250)
-      if (result.ok && (await isOnScreen(page, result.locator))) return
+    for (;;) {
+      const left = deadline - Date.now()
+      if (left <= 0) break
+      const result = await resolveTarget(ctx.page, action.until, Math.min(250, left))
+      if (
+        result.ok &&
+        (await isOnScreen(ctx.page, result.locator, Math.max(MIN_TIMEOUT_MS, left)))
+      ) {
+        return
+      }
       if (!result.ok && result.reason !== "target-not-found") {
         throw new StepError(step, result.reason, result.detail)
       }
-      await page.mouse.wheel(0, Math.max(40, Math.round(pageHeight * 0.8)))
-      await scrollSettled(page)
+      await scrollBy(Math.max(40, Math.round(pageHeight * 0.8)))
     }
-    throw new StepError(step, "target-not-found", "scrolled until timeout, target never appeared")
+    throw new StepError(
+      step,
+      "target-not-found",
+      "scrolled until timeout, target never appeared on screen",
+    )
   }
 }
+
+/** Signals a condition that timed out without a Playwright TimeoutError (network idle). */
+class ConditionTimeout extends Error {}
 
 async function waitForCondition(
   ctx: Ctx,
@@ -246,48 +316,64 @@ async function waitForCondition(
   reason: "condition-timeout" | "expectation-failed",
 ) {
   const { page } = ctx
-  const fail = (what: string) => new StepError(step, reason, `${what} (after ${timeout} ms)`)
+  const what = describeCondition(condition)
   try {
     if ("visible" in condition) {
-      await toPlaywright(page, condition.visible).first().waitFor({ state: "visible", timeout })
+      // Any VISIBLE match counts (a hidden template of the same element doesn't block).
+      await visibleOnly(toPlaywright(page, condition.visible))
+        .first()
+        .waitFor({ state: "visible", timeout })
     } else if ("hidden" in condition) {
-      await toPlaywright(page, condition.hidden).first().waitFor({ state: "hidden", timeout })
+      // Hidden = no visible match left.
+      await visibleOnly(toPlaywright(page, condition.hidden))
+        .first()
+        .waitFor({ state: "detached", timeout })
     } else if ("text" in condition) {
-      await page.getByText(condition.text).first().waitFor({ state: "visible", timeout })
+      await visibleOnly(page.getByText(condition.text))
+        .first()
+        .waitFor({ state: "visible", timeout })
     } else if ("url" in condition) {
       const expected = new URL(condition.url, ctx.base)
-      await page.waitForURL((url) => url.href.startsWith(expected.href), { timeout })
-    } else {
-      await page.waitForLoadState("networkidle", { timeout })
+      await page.waitForURL((url) => urlMatches(url, expected), { timeout })
+    } else if (!(await ctx.network.waitForIdle(timeout))) {
+      throw new ConditionTimeout()
     }
-  } catch {
-    if ("visible" in condition)
-      throw fail(`${describeLocator(condition.visible)} never became visible`)
-    if ("hidden" in condition) throw fail(`${describeLocator(condition.hidden)} never disappeared`)
-    if ("text" in condition) throw fail(`text "${condition.text}" never appeared`)
-    if ("url" in condition) throw fail(`URL never matched ${condition.url}`)
-    throw fail("network never went idle")
+  } catch (cause) {
+    // Only a timeout means "the condition wasn't met"; anything else (page closed, crashed…) is
+    // reported as an action failure with its cause, so it isn't mistaken for a locator problem.
+    if (
+      cause instanceof ConditionTimeout ||
+      (cause instanceof Error && cause.name === "TimeoutError")
+    ) {
+      throw new StepError(step, reason, `${what} (after ${timeout} ms)`)
+    }
+    const message = cause instanceof Error ? (cause.message.split("\n")[0] ?? "") : String(cause)
+    throw new StepError(step, "action-failed", message, { cause })
   }
 }
 
+function describeCondition(condition: Condition): string {
+  if ("visible" in condition) return `${describeLocator(condition.visible)} never became visible`
+  if ("hidden" in condition) return `${describeLocator(condition.hidden)} never disappeared`
+  if ("text" in condition) return `text "${condition.text}" never appeared`
+  if ("url" in condition) return `URL never matched ${condition.url}`
+  return "network never went idle"
+}
+
 /**
- * `mouse.wheel` returns before the page has scrolled. Wait until the scroll position of the
- * document and of every scrolled element stops changing between two animation frames.
+ * URL condition: same origin, the path equals the expected path or continues it at a segment
+ * boundary (`/projects/1` matches `/projects/1` and `/projects/1/edit`, not `/projects/12`), and
+ * every expected query parameter is present with its value.
  */
-async function scrollSettled(page: Page): Promise<void> {
-  await page.evaluate(`new Promise((resolve) => {
-    const position = () => [window.scrollX, window.scrollY,
-      ...Array.from(document.querySelectorAll("*"), (el) => el.scrollTop + "," + el.scrollLeft)].join("|")
-    let last = position(), stable = 0, frames = 0
-    const tick = () => {
-      const now = position()
-      stable = now === last ? stable + 1 : 0
-      last = now
-      if (stable >= 3 || ++frames > 120) resolve(undefined)
-      else requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
-  })`)
+export function urlMatches(actual: URL, expected: URL): boolean {
+  if (actual.origin !== expected.origin) return false
+  const want = expected.pathname.replace(/\/+$/, "")
+  const path = actual.pathname.replace(/\/+$/, "")
+  if (want !== "" && path !== want && !path.startsWith(`${want}/`)) return false
+  for (const [key, value] of expected.searchParams) {
+    if (!actual.searchParams.getAll(key).includes(value)) return false
+  }
+  return true
 }
 
 /** Runs a Playwright call and turns its failure into a StepError on this step. */
