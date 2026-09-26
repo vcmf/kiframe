@@ -76,6 +76,8 @@ export interface RunOptions {
   timeoutMs?: number
   /** Timeout of a `goto` navigation (page load). Default 30000 ms. */
   navigationTimeoutMs?: number
+  /** Set by the recorder: measure targets and fields for the take (extra page round trips). */
+  recording?: boolean
 }
 
 type AnyAction = Action | Step
@@ -376,12 +378,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
-      // Short timeout: the field was just scrolled into view (and only measured when recording).
-      const fieldBox =
-        ctx.options.onEvent === undefined
-          ? null
-          : await target.boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) }).catch(() => null)
-      ctx.options.onEvent?.({ kind: "type_start", step, secret, box: fieldBox ?? undefined })
+      let fieldBox: Box | null = null
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -409,6 +406,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
+        // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
+        if (ctx.options.recording === true) {
+          fieldBox = await target
+            .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
+            .catch(() => null)
+        }
+        ctx.options.onEvent?.({ kind: "type_start", step, secret, box: fieldBox ?? undefined })
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
@@ -478,7 +482,7 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
-  if (ctx.options.onEvent !== undefined) {
+  if (ctx.options.onEvent !== undefined && ctx.options.recording === true) {
     // Short: the element was just scrolled into view; a slow answer means it's re-rendering.
     const box = await result.locator
       .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
@@ -911,7 +915,7 @@ async function clickAtCursor(
       ...(action.button !== undefined && { button: action.button }),
       // No modifiers: Playwright presses them even for a trial, the page would see them twice.
     })
-    if (ctx.options.onEvent !== undefined) {
+    if (ctx.options.onEvent !== undefined && ctx.options.recording === true) {
       const clickBox = box ?? (await target.boundingBox({ timeout: left() }).catch(() => null))
       if (clickBox !== null) {
         const where = point ?? {
@@ -1047,15 +1051,15 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       if (v !== "") variants.add(v)
     }
   }
-  // Every variant of every secret, longest first: a secret that contains another one ("password123"
-  // and "pass") is replaced whole, never partially.
-  let out = text
-  for (const v of [...variants].sort((a, b) => b.length - a.length)) {
-    const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    // Percent-encodings are case-insensitive (%2F = %2f).
-    out = out.replace(new RegExp(escaped, v.includes("%") ? "gi" : "g"), "[secret]")
-  }
-  return out
+  // One pass over one alternation of every variant of every secret, longest first: a secret that
+  // contains another ("password123", "pass") is replaced whole, and a replacement is never re-scanned
+  // (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and over-scrubbing is safe.
+  if (variants.size === 0) return text
+  const alternation = [...variants]
+    .sort((a, b) => b.length - a.length)
+    .map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")
+  return text.replace(new RegExp(alternation, "gi"), "[secret]")
 }
 
 /** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */
@@ -1093,8 +1097,8 @@ function moveCaretToEnd(el: Element) {
 /** The same error with its message (and a StepError's detail) scrubbed of secret values; no cause kept. */
 function scrubError(error: Error, secrets: Set<string>): Error {
   if (secrets.size === 0) return error
+  // Rebuilt even when the message is clean: the cause (Playwright's full call log) could hold a secret.
   const message = scrubSecrets(error.message, secrets)
-  if (message === error.message) return error
   if (error instanceof StepError) {
     const detail = message.slice(message.indexOf(": ") + 2)
     return new StepError(error.step, error.reason, detail)
