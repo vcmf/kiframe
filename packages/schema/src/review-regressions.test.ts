@@ -166,3 +166,133 @@ describe("input hygiene", () => {
     ).toThrow(SchemaError)
   })
 })
+
+// ─── Round 2 ─────────────────────────────────────────────────────────────────
+
+describe("round 2: overrides don't re-fill defaults", () => {
+  it("keeps only the fields the override sets", () => {
+    const s = parseScenarioYaml(
+      `version: 1\noverrides: { pacing: { settleMs: 100 }, viewport: { width: 800 } }\n${steps}`,
+    )
+    expect(s.overrides?.pacing).toEqual({ settleMs: 100 })
+    expect(s.overrides?.viewport).toEqual({ width: 800 })
+  })
+
+  it("rejects `until` in project and scene camera defaults", () => {
+    expect(() =>
+      parseProjectYaml(project("defaults: { camera: { follow: cursor, until: foo } }\n")),
+    ).toThrow(SchemaError)
+    expect(() =>
+      parseScenarioYaml(
+        `version: 1\noverrides: { camera: { follow: cursor, until: z } }\n${steps}`,
+      ),
+    ).toThrow(SchemaError)
+  })
+})
+
+describe("round 2: preset names and ids", () => {
+  it("doesn't treat prototype keys as existing presets", () => {
+    const p = parseProjectYaml(project())
+    const s = parseScenarioYaml(
+      `version: 1\nsetup:\n  - preset: constructor\n  - preset: toString\n${steps}`,
+    )
+    expect(checkScenarioAgainstProject(s, p)).toHaveLength(2)
+  })
+
+  it("rejects __proto__ as a preset name and duplicate ids inside a preset", () => {
+    expect(() =>
+      parseProjectYaml(
+        project('presets:\n  "__proto__":\n    steps: [{ action: goto, url: /x }]\n'),
+      ),
+    ).toThrow(SchemaError)
+    expect(() =>
+      parseProjectYaml(
+        project(
+          "presets:\n  p:\n    steps:\n      - { id: a, action: goto, url: /x }\n      - { id: a, action: goto, url: /y }\n",
+        ),
+      ),
+    ).toThrow(/duplicate id "a"/)
+  })
+
+  it("rejects duplicate segment ids across tracks", () => {
+    const seg = { id: "c", source: "auto", at: { ms: 0 }, until: { ms: 10 } }
+    expect(
+      Composition.safeParse({
+        version: 1,
+        tracks: {
+          clips: [
+            { ...seg, mode: "cut" },
+            { ...seg, mode: "cut" },
+          ],
+        },
+      }).success,
+    ).toBe(false)
+  })
+})
+
+describe("round 2: secrets", () => {
+  it.each(["{{secret.x}}", "{{Secrets.x}}", "{{secretsx}}", "{{secrets..}}"])(
+    "rejects %j as a type value",
+    (value) => {
+      const yaml = `version: 1\nsteps:\n  - id: t\n    action: type\n    target: { intent: "field" }\n    value: ${JSON.stringify(value)}\n`
+      expect(() => parseScenarioYaml(yaml)).toThrow(SchemaError)
+    },
+  )
+
+  it("rejects secret references outside `type.value`", () => {
+    expect(() =>
+      parseScenarioYaml(
+        `version: 1\nsteps:\n  - { id: g, action: goto, url: "https://x/?t={{secrets.x}}" }\n`,
+      ),
+    ).toThrow(/only allowed/)
+    expect(() =>
+      parseScenarioYaml(
+        `version: 1\nsteps:\n  - { id: p, action: pause, ms: 1, caption: "{{secrets.x}}" }\n`,
+      ),
+    ).toThrow(/only allowed/)
+  })
+
+  it("rejects credentials embedded in the target URL", () => {
+    expect(() =>
+      parseProjectYaml(project().replace("https://staging.acme.com", "https://user:pass@x.com")),
+    ).toThrow(/credentials/)
+  })
+})
+
+describe("round 2: time spans", () => {
+  it("rejects inverted interrupt spans and ms-anchored segments", () => {
+    expect(
+      TakeEvent.safeParse({ t: 100, phase: "steps", kind: "interrupt", rule: "r", until: 50 })
+        .success,
+    ).toBe(false)
+    expect(
+      Composition.safeParse({
+        version: 1,
+        tracks: {
+          clips: [{ id: "c", source: "auto", mode: "cut", at: { ms: 100 }, until: { ms: 50 } }],
+        },
+      }).success,
+    ).toBe(false)
+  })
+
+  it("allows an on-camera interrupt between steps without a step id", () => {
+    expect(
+      TakeEvent.safeParse({ t: 0, phase: "steps", kind: "interrupt", rule: "r", until: 5 }).success,
+    ).toBe(true)
+  })
+})
+
+describe("round 2: target-only presentation", () => {
+  it("rejects camera: target and emphasis on steps without a target", () => {
+    expect(() =>
+      parseScenarioYaml(
+        `version: 1\nsteps:\n  - { id: p, action: pause, ms: 1, camera: target }\n`,
+      ),
+    ).toThrow(/no target/)
+    expect(() =>
+      parseScenarioYaml(
+        `version: 1\nsteps:\n  - { id: p, action: press, keys: Enter, emphasis: highlight }\n`,
+      ),
+    ).toThrow(/no target/)
+  })
+})

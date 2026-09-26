@@ -39,10 +39,10 @@ export const Ms = z.number().int().nonnegative()
 export type Ms = z.infer<typeof Ms>
 
 /** Reference to a vault secret by name, e.g. `{{secrets.acme_staging.password}}`. The value never appears in files. */
-export const SECRET_REF = /^\{\{secrets\.([A-Za-z0-9_.-]+)\}\}$/
+export const SECRET_REF = /^\{\{secrets\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/
 
-/** Anything that looks like an attempt at a secret reference (spaces, extra text, newlines…). */
-const SECRET_REF_LIKE = /\{\{\s*secrets\b/
+/** Anything that looks like an attempt at a secret reference: `{{secret…`, any case, any spacing. */
+const SECRET_REF_LIKE = /\{\{\s*secrets?/i
 
 /** Returns the secret name if `value` is exactly a secret reference, otherwise undefined. */
 export function secretRefName(value: string): string | undefined {
@@ -56,3 +56,16 @@ export function secretRefName(value: string): string | undefined {
 export function isMalformedSecretRef(value: string): boolean {
   return SECRET_REF_LIKE.test(value) && secretRefName(value) === undefined
 }
+
+/** True if `value` mentions a secret reference in any form (exact or malformed). */
+export function mentionsSecret(value: string): boolean {
+  return SECRET_REF_LIKE.test(value)
+}
+
+/**
+ * A string that must not contain any secret reference. Secrets are only allowed as the whole value
+ * of a `type` action (resolved in the runtime); anywhere else they would be shown or logged literally.
+ */
+export const PlainText = z.string().refine((v) => !mentionsSecret(v), {
+  message: "secret references are only allowed as the whole `value` of a `type` action",
+})

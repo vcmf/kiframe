@@ -1,6 +1,6 @@
 import * as z from "zod"
-import { isMalformedSecretRef, Ms, RectTuple, StepId } from "./common.ts"
-import { CAMERA_SCALE, MAX_SPEED, Pacing, Viewport } from "./settings.ts"
+import { isMalformedSecretRef, Ms, PlainText, RectTuple, StepId } from "./common.ts"
+import { CAMERA_SCALE, MAX_SPEED, PacingShape, ViewportShape } from "./settings.ts"
 
 // ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
 // Black box: locators use roles, labels and text. `css` is a last resort.
@@ -72,24 +72,30 @@ export function isGrounded(target: Target): target is GroundedTarget {
 export const Condition = z.union([
   z.strictObject({ visible: Locator }),
   z.strictObject({ hidden: Locator }),
-  z.strictObject({ text: z.string().min(1) }),
-  z.strictObject({ url: z.string().min(1) }),
+  z.strictObject({ text: PlainText.min(1) }),
+  z.strictObject({ url: PlainText.min(1) }),
   z.strictObject({ networkIdle: z.literal(true) }),
 ])
 export type Condition = z.infer<typeof Condition>
 
 // ─── Presentation directives (§2b) ────────────────────────────────────────────
 
-const Until = z.strictObject({ until: StepId.optional() })
+const frameTarget = z.union([z.literal("target"), Locator, z.strictObject({ rect: RectTuple })])
+const scale = z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max).optional()
 
+/** Camera default for a project or a scene: no `until` (it only makes sense on a step). */
+export const CameraDefault = z.union([
+  z.enum(["auto", "wide", "target"]),
+  z.strictObject({ follow: z.literal("cursor") }),
+  z.strictObject({ frame: frameTarget, scale }),
+])
+export type CameraDefault = z.infer<typeof CameraDefault>
+
+/** Camera directive on a step. `until` keeps the framing until a later step. */
 export const CameraDirective = z.union([
   z.enum(["auto", "wide", "target"]),
-  z.strictObject({ follow: z.literal("cursor"), ...Until.shape }),
-  z.strictObject({
-    frame: z.union([z.literal("target"), Locator, z.strictObject({ rect: RectTuple })]),
-    scale: z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max).optional(),
-    ...Until.shape,
-  }),
+  z.strictObject({ follow: z.literal("cursor"), until: StepId.optional() }),
+  z.strictObject({ frame: frameTarget, scale, until: StepId.optional() }),
 ])
 export type CameraDirective = z.infer<typeof CameraDirective>
 
@@ -104,8 +110,8 @@ export type Emphasis = z.infer<typeof Emphasis>
 
 /** Presentation fields shared by every recorded step. They have no effect on the app. */
 const presentation = {
-  caption: z.string().min(1).optional(),
-  instruction: z.string().min(1).optional(),
+  caption: PlainText.min(1).optional(),
+  instruction: PlainText.min(1).optional(),
   camera: CameraDirective.optional(),
   emphasis: Emphasis.optional(),
   /** Presentation beat after the step, in ms. Never sped up. */
@@ -119,7 +125,7 @@ const presentation = {
 
 // ─── Actions (Phase 0 subset; full set in M1-1) ───────────────────────────────
 
-const Goto = z.strictObject({ action: z.literal("goto"), url: z.string().min(1) })
+const Goto = z.strictObject({ action: z.literal("goto"), url: PlainText.min(1) })
 const Click = z.strictObject({
   action: z.literal("click"),
   target: Target,
@@ -140,7 +146,7 @@ const Type = z.strictObject({
   /** Off camera: fill instantly instead of human typing. */
   instant: z.boolean().optional(),
 })
-const Press = z.strictObject({ action: z.literal("press"), keys: z.string().min(1) })
+const Press = z.strictObject({ action: z.literal("press"), keys: PlainText.min(1) })
 const Scroll = z.strictObject({
   action: z.literal("scroll"),
   to: Target.optional(),
@@ -219,11 +225,33 @@ export type SetupItem = z.infer<typeof SetupItem>
 
 /** Per-scene overrides of project settings. Same validation as the project level. */
 export const ScenarioOverrides = z.strictObject({
-  viewport: Viewport.partial().optional(),
-  pacing: Pacing.partial().optional(),
-  camera: CameraDirective.optional(),
+  viewport: ViewportShape.partial().optional(),
+  pacing: PacingShape.partial().optional(),
+  camera: CameraDefault.optional(),
 })
 export type ScenarioOverrides = z.infer<typeof ScenarioOverrides>
+
+/** Does this step act on an element that `camera: target` / `emphasis` can frame? */
+function hasTarget(step: Step): boolean {
+  return (
+    step.action === "click" ||
+    step.action === "type" ||
+    (step.action === "scroll" && step.to !== undefined)
+  )
+}
+
+function usesStepTarget(step: Step): boolean {
+  const camera = step.camera
+  const cameraOnTarget =
+    camera === "target" ||
+    (typeof camera === "object" && "frame" in camera && camera.frame === "target")
+  const emphasis = step.emphasis
+  const emphasisOnTarget =
+    emphasis === "highlight" ||
+    emphasis === "spotlight" ||
+    (typeof emphasis === "object" && emphasis.on === "target")
+  return cameraOnTarget || emphasisOnTarget
+}
 
 function cameraUntil(step: Step): string | undefined {
   return typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
@@ -256,6 +284,17 @@ export const Scenario = z
     s.setup?.forEach((item, i) => claim("id" in item ? item.id : undefined, ["setup", i, "id"]))
     s.steps.forEach((step, i) => claim(step.id, ["steps", i, "id"]))
     s.teardown?.forEach((action, i) => claim(action.id, ["teardown", i, "id"]))
+
+    // `camera: target` and `emphasis` on the target need a step that acts on an element.
+    s.steps.forEach((step, i) => {
+      if (usesStepTarget(step) && !hasTarget(step)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `"${step.action}" has no target to frame or emphasize: use a locator instead of "target"`,
+          path: ["steps", i],
+        })
+      }
+    })
 
     // camera.until must point to a LATER step, so the framing span is never empty or inverted.
     const position = new Map(s.steps.map((step, i) => [step.id, i]))

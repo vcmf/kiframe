@@ -101,20 +101,46 @@ export type CalloutSegment = z.infer<typeof CalloutSegment>
 export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })
 export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 
-export const Composition = z.strictObject({
-  version: z.literal(1),
-  /** The take the auto segments were generated from. */
-  take: z.strictObject({ key: z.string().min(1) }).optional(),
-  /** Scene-level style overrides. Typed with the compositor (P0-7); kept verbatim until then. */
-  style: z.record(z.string(), z.unknown()).optional(),
-  tracks: z.strictObject({
-    clips: z.array(ClipSegment).default([]),
-    camera: z.array(CameraSegment).default([]),
-    cursor: z.array(CursorSegment).default([]),
-    captions: z.array(CaptionSegment).default([]),
-    masks: z.array(MaskSegment).default([]),
-    callouts: z.array(CalloutSegment).default([]),
-    keystrokes: z.array(KeystrokeSegment).default([]),
-  }),
-})
+export const Composition = z
+  .strictObject({
+    version: z.literal(1),
+    /** The take the auto segments were generated from. */
+    take: z.strictObject({ key: z.string().min(1) }).optional(),
+    /** Scene-level style overrides. Typed with the compositor (P0-7); kept verbatim until then. */
+    style: z.record(z.string(), z.unknown()).optional(),
+    tracks: z.strictObject({
+      clips: z.array(ClipSegment).default([]),
+      camera: z.array(CameraSegment).default([]),
+      cursor: z.array(CursorSegment).default([]),
+      captions: z.array(CaptionSegment).default([]),
+      masks: z.array(MaskSegment).default([]),
+      callouts: z.array(CalloutSegment).default([]),
+      keystrokes: z.array(KeystrokeSegment).default([]),
+    }),
+  })
+  .superRefine((c, ctx) => {
+    const seen = new Set<string>()
+    for (const [track, segments] of Object.entries(c.tracks)) {
+      segments.forEach((segment: { id: string; at: Anchor; until?: Anchor }, i: number) => {
+        if (seen.has(segment.id)) {
+          ctx.addIssue({
+            code: "custom",
+            message: `duplicate segment id "${segment.id}"`,
+            path: ["tracks", track, i, "id"],
+          })
+        }
+        seen.add(segment.id)
+        // Spans between two absolute times can be checked here; step/event anchors are checked
+        // once resolved against a take (generators, P0-6).
+        const { at, until } = segment
+        if (until !== undefined && "ms" in at && "ms" in until && until.ms <= at.ms) {
+          ctx.addIssue({
+            code: "custom",
+            message: "`until` must be after `at`",
+            path: ["tracks", track, i, "until"],
+          })
+        }
+      })
+    }
+  })
 export type Composition = z.infer<typeof Composition>
