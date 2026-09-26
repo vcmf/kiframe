@@ -99,6 +99,11 @@ export async function runScenario(
     options,
     network,
     setCurrent: (step) => (current = step),
+    throwListenerError: () => {
+      const error = listenerError
+      listenerError = undefined
+      if (error !== undefined) throw error
+    },
     cursor: undefined,
     pacing: {
       cursor: scenario.overrides?.pacing?.cursor ?? project.defaults.pacing.cursor,
@@ -157,6 +162,8 @@ interface Ctx {
   navigationTimeoutMs: number
   network: NetworkTracker
   setCurrent: (step: StepRef | undefined) => void
+  /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
+  throwListenerError: () => void
   /** Where the cursor is (CSS pixels); undefined until the first movement. */
   cursor: Point | undefined
   pacing: { cursor: CursorPacing; typing: TypingPacing }
@@ -202,6 +209,7 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
+  ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
 }
 
@@ -216,34 +224,35 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
  * mistaken for a delete. Empty string for anything else.
  */
 function controlLabel(target: Element): string {
+  const CONTROLS =
+    "button, a, input[type=submit], input[type=button], input[type=reset], input[type=image], [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
   // A click resolved to the text or icon INSIDE a button counts as clicking the button.
-  const el =
-    target.closest(
-      "button, a, input[type=submit], input[type=button], input[type=reset], input[type=image], [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]",
-    ) ?? target
-  const role = el.getAttribute("role")
+  const el = target.closest(CONTROLS)
+  if (el === null) return ""
   const isInput =
     el instanceof HTMLInputElement && ["submit", "button", "reset", "image"].includes(el.type)
-  const isControl =
-    el instanceof HTMLButtonElement ||
-    el instanceof HTMLAnchorElement ||
-    isInput ||
-    ["button", "link", "menuitem", "menuitemradio", "menuitemcheckbox", "tab", "option"].includes(
-      role ?? "",
-    )
-  if (!isControl) return ""
   const byIds = (el.getAttribute("aria-labelledby") ?? "")
     .split(/\s+/)
     .map((id) => (id === "" ? "" : (document.getElementById(id)?.textContent ?? "")))
     .join(" ")
+  // The control's own text, WITHOUT nested controls: clicking the title of a link card that also
+  // contains a "Delete" button must not be judged by that button's label.
+  const ownText = (() => {
+    const clone = el.cloneNode(true) as Element
+    for (const nested of clone.querySelectorAll(CONTROLS)) nested.remove()
+    return clone.textContent ?? ""
+  })()
   const candidates = [
     el.getAttribute("aria-label"),
     byIds,
     isInput ? el.value : null,
-    el instanceof HTMLElement ? el.innerText : el.textContent,
+    ownText,
     el.getAttribute("title"),
   ]
-  return (candidates.find((c) => c !== null && c.trim() !== "") ?? "").trim().slice(0, 80)
+  return (candidates.find((c) => c !== null && c.trim() !== "") ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80)
 }
 
 /**
@@ -349,21 +358,29 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
       }
-      const point = await moveCursorTo(ctx, target, step)
+      const aim = await moveCursorTo(ctx, target, step)
       await guard(step, async () => {
-        ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: true })
-        // The click lands exactly where the cursor stopped: no visible jump.
-        const box = await target.boundingBox({ timeout: ctx.timeoutMs })
-        await target.click({
-          timeout: ctx.timeoutMs,
-          ...(box !== null && { position: { x: point.x - box.x, y: point.y - box.y } }),
-          ...(action.button !== undefined && { button: action.button }),
-          ...(action.count !== undefined && { clickCount: action.count }),
-          ...(action.modifiers !== undefined && {
-            modifiers: action.modifiers.map(toPlaywrightModifier),
-          }),
-        })
-        ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: false })
+        const clicks = action.count ?? 1
+        try {
+          if (aim !== undefined) {
+            for (let i = 0; i < clicks; i++)
+              ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: true })
+          }
+          await target.click({
+            timeout: ctx.timeoutMs,
+            // The click lands exactly where the cursor stopped: no visible jump.
+            ...(aim !== undefined && { position: aim.offset }),
+            ...(action.button !== undefined && { button: action.button }),
+            ...(action.count !== undefined && { clickCount: action.count }),
+            ...(action.modifiers !== undefined && {
+              modifiers: action.modifiers.map(toPlaywrightModifier),
+            }),
+          })
+        } finally {
+          // Always release, even if the click failed: the recorder must never see a held cursor.
+          if (aim !== undefined)
+            ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: false })
+        }
       })
       return
     }
@@ -410,11 +427,15 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           // caret to the start when the window doesn't have OS focus (headed, Electron).
           const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
           const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
-          // delays[i] is the pause BEFORE character i (word and sentence boundaries).
-          for (const [i, char] of [...text].entries()) {
-            const delay = delays[i] ?? 0
-            if (delay > 0) await sleep(delay)
-            await page.keyboard.type(char)
+          if (delays.every((d) => d === 0)) {
+            await page.keyboard.type(text)
+          } else {
+            // delays[i] is the pause BEFORE character i (word and sentence boundaries).
+            for (const [i, char] of [...text].entries()) {
+              const delay = delays[i] ?? 0
+              if (delay > 0) await sleep(delay)
+              await page.keyboard.type(char)
+            }
           }
         }
         if (action.submit === true) await target.press("Enter", { timeout })
@@ -769,31 +790,95 @@ function seedOf(step: StepRef): string {
  * in the app), reporting cursor samples. Off camera, or with `cursor: instant`, it jumps. Returns
  * the point it stopped on, where the action then happens.
  */
-async function moveCursorTo(ctx: Ctx, target: Locator, step: StepRef): Promise<Point> {
+async function moveCursorTo(
+  ctx: Ctx,
+  target: Locator,
+  step: StepRef,
+): Promise<CursorTarget | undefined> {
   return guard(step, async () => {
-    const box = await target.boundingBox({ timeout: ctx.timeoutMs })
-    if (box === null)
-      throw new StepError(step, "action-failed", "target has no box to move the cursor to")
-    const random = seededRandom(`${seedOf(step)}:cursor`)
-    const to = clickPoint(box, random)
     const viewport =
       ctx.page.viewportSize() ??
       (await ctx.page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
-    const from = ctx.cursor ?? { x: viewport.width / 2, y: viewport.height / 2 }
     const pacing = step.phase === "steps" ? ctx.pacing.cursor : "instant"
-    const path = planPath(from, to, { pacing, targetWidth: box.width, viewport, random })
-    const start = Date.now()
-    for (const sample of path) {
-      const wait = start + sample.t - Date.now()
-      if (wait > 0) await sleep(wait)
-      await ctx.page.mouse.move(sample.x, sample.y)
-      ctx.options.onEvent?.({ kind: "cursor", step, x: sample.x, y: sample.y, pressed: false })
+    const random = seededRandom(`${seedOf(step)}:cursor`)
+    // No box (display: contents, re-rendering…): skip the visual movement, the action still runs.
+    const first = visiblePart(await target.boundingBox({ timeout: ctx.timeoutMs }), viewport)
+    if (first === undefined) return undefined
+    const to = clickPoint(first, random)
+    await travel(
+      ctx,
+      step,
+      planPath(ctx.cursor ?? center(viewport), to, {
+        pacing,
+        targetWidth: first.width,
+        viewport,
+        random,
+      }),
+    )
+    // The target may have moved during the travel (menu sliding in, layout shift on hover): keep
+    // the same relative spot on its new box, with a short correction move if needed.
+    const now = visiblePart(await target.boundingBox({ timeout: ctx.timeoutMs }), viewport)
+    if (now === undefined) return undefined
+    const point = {
+      x: now.x + ((to.x - first.x) / first.width) * now.width,
+      y: now.y + ((to.y - first.y) / first.height) * now.height,
     }
-    // Where the mouse really is (the path is clamped to the viewport).
-    const end = path.at(-1) ?? { x: to.x, y: to.y }
-    ctx.cursor = { x: end.x, y: end.y }
-    return ctx.cursor
+    if (Math.hypot(point.x - to.x, point.y - to.y) > 2) {
+      const correction = pacing === "instant" ? "instant" : "fast"
+      await travel(
+        ctx,
+        step,
+        planPath(ctx.cursor ?? to, point, {
+          pacing: correction,
+          targetWidth: now.width,
+          viewport,
+          random,
+        }),
+      )
+    }
+    const at = ctx.cursor ?? point
+    return { point: at, offset: { x: at.x - now.x, y: at.y - now.y } }
   })
+}
+
+/** Where the cursor stopped, and its offset inside the target's box (for a click at that spot). */
+interface CursorTarget {
+  point: Point
+  offset: Point
+}
+
+const center = (viewport: { width: number; height: number }): Point => ({
+  x: viewport.width / 2,
+  y: viewport.height / 2,
+})
+
+/**
+ * The part of a box that's inside the viewport (a tall textarea or a board can be bigger than the
+ * screen): the cursor aims there, never off screen. Undefined if nothing is visible.
+ */
+function visiblePart(
+  box: { x: number; y: number; width: number; height: number } | null,
+  viewport: { width: number; height: number },
+) {
+  if (box === null) return undefined
+  const x = Math.max(0, box.x)
+  const y = Math.max(0, box.y)
+  const width = Math.min(viewport.width, box.x + box.width) - x
+  const height = Math.min(viewport.height, box.y + box.height) - y
+  return width > 0 && height > 0 ? { x, y, width, height } : undefined
+}
+
+/** Plays a planned path with the real mouse, in real time, reporting cursor samples. */
+async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: number }[]) {
+  const start = Date.now()
+  for (const sample of path) {
+    const wait = start + sample.t - Date.now()
+    if (wait > 0) await sleep(wait)
+    await ctx.page.mouse.move(sample.x, sample.y)
+    ctx.options.onEvent?.({ kind: "cursor", step, x: sample.x, y: sample.y, pressed: false })
+  }
+  const end = path.at(-1)
+  if (end !== undefined) ctx.cursor = { x: end.x, y: end.y }
 }
 
 /** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */

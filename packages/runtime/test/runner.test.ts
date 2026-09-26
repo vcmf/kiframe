@@ -777,4 +777,87 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
     }
     expect(await replay()).toEqual(await replay())
   })
+
+  // ─── P0-4 review round 1 (regressions) ─────────────────────────────────────
+
+  const humanProject = () =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
+`)
+
+  it("still hits a target that moves while the cursor travels", async () => {
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /moving }
+  - { id: hit, action: click, target: { by: role, role: button, name: Moving target } }
+  - { id: ok, action: expect, that: { text: Hit } }
+`),
+      humanProject(),
+      { timeoutMs: 3000 },
+    )
+  })
+
+  it("aims inside the visible part of an element taller than the viewport", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /tall }
+  - { id: board, action: click, target: { by: role, role: region, name: Board } }
+`),
+      humanProject(),
+      { timeoutMs: 3000, onEvent: (e) => events.push(e) },
+    )
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    expect(press?.kind === "cursor" && press.y >= 0 && press.y < 800).toBe(true)
+    await expect(page.getByText(/^Board \d+/).isVisible()).resolves.toBe(true)
+  })
+
+  it("doesn't judge a link card by the Delete button nested in it", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /cards }
+  - { id: open, action: click, target: { by: text, text: Acme project } }
+  - { id: at, action: expect, that: { url: "/cards#opened" } }
+`)
+  })
+
+  it("releases the cursor even when the click fails", async () => {
+    const events: RunnerEvent[] = []
+    await page.goto(`${server.url}/moving`)
+    await expect(
+      runScenario(
+        page,
+        scenario(`steps:
+  - { id: hit, action: click, target: { by: role, role: button, name: Moving target } }
+`),
+        humanProject(),
+        {
+          timeoutMs: 1500,
+          onEvent: (e) => {
+            events.push(e)
+            // Make the click fail after the cursor arrived: cover the button.
+            if (e.kind === "cursor" && e.pressed) {
+              void page.evaluate(() =>
+                document.body.insertAdjacentHTML(
+                  "beforeend",
+                  "<div style='position:fixed; inset:0; z-index:9'></div>",
+                ),
+              )
+            }
+          },
+        },
+      ),
+    ).rejects.toThrow()
+    const presses = events.filter((e) => e.kind === "cursor" && e.pressed).length
+    const releases = events.filter(
+      (e, i) =>
+        e.kind === "cursor" &&
+        !e.pressed &&
+        events.slice(0, i).some((p) => p.kind === "cursor" && p.pressed),
+    ).length
+    expect(presses).toBeGreaterThan(0)
+    expect(releases).toBeGreaterThanOrEqual(1)
+  })
 })

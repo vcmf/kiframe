@@ -73,7 +73,7 @@ export interface PlanOptions {
   pacing: CursorPacing
   /** Width of the target, for Fitts's law. */
   targetWidth: number
-  /** The path stays inside [0, width] × [0, height]. */
+  /** The path stays inside the viewport's pixels, [0, width-1] × [0, height-1]. */
   viewport: { width: number; height: number }
   random: () => number
   /** Samples per second. Default 60. */
@@ -90,7 +90,12 @@ export function planPath(from: Point, to: Point, options: PlanOptions): PathSamp
   const dy = to.y - from.y
   const distance = Math.hypot(dx, dy)
   const duration = movementDuration(distance, options.targetWidth, options.pacing)
-  if (duration === 0) return [{ t: 0, ...to }]
+  // Pixels are 0..width-1 and 0..height-1: clamp inside them, for every pacing (instant too).
+  const clamp = (p: Point): Point => ({
+    x: Math.min(options.viewport.width - 1, Math.max(0, p.x)),
+    y: Math.min(options.viewport.height - 1, Math.max(0, p.y)),
+  })
+  if (duration === 0) return [{ t: 0, ...clamp(to) }]
 
   const { random } = options
   // Arc: both control points on one side, bending by up to ~20% of the distance.
@@ -113,10 +118,6 @@ export function planPath(from: Point, to: Point, options: PlanOptions): PathSamp
 
   const fps = options.fps ?? 60
   const frame = 1000 / fps
-  const clamp = (p: Point): Point => ({
-    x: Math.min(options.viewport.width, Math.max(0, p.x)),
-    y: Math.min(options.viewport.height, Math.max(0, p.y)),
-  })
   const samples: PathSample[] = []
   for (let t = frame; t < mainDuration; t += frame) {
     const u = easeInOut(t / mainDuration)
