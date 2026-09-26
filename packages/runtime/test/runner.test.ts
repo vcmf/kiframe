@@ -842,9 +842,11 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
         { timeoutMs: 800, onEvent: (e) => events.push(e) },
       ),
     ).rejects.toThrow(/Timeout/)
+    // Actionability is checked (trial) before the press is reported: a click that can't happen
+    // shows no press at all, and nothing is left held.
     const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
-    expect(pressed.filter(Boolean)).toHaveLength(1)
-    expect(pressed.at(-1)).toBe(false)
+    expect(pressed.filter(Boolean)).toHaveLength(0)
+    expect(events.some((e) => e.kind === "click")).toBe(false)
   })
 
   // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────

@@ -104,7 +104,8 @@ const TakeMetaBase = z.strictObject({
   appUrl: withoutCredentials(z.string()),
   /** The environment the take was recorded on (APPROACHES §10c), when known. */
   environment: RuleName.optional(),
-  viewport: ViewportShape,
+  /** The page's CSS viewport, and the capture scale actually obtained (frame pixels per CSS pixel). */
+  viewport: ViewportShape.extend({ deviceScaleFactor: z.number().gt(0).max(3) }),
   /** Frame size of `frames.webm` in pixels (viewport × DPR). */
   frameSize: z.strictObject({
     width: z.number().int().positive(),

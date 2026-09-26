@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -11,7 +18,7 @@ import {
 } from "@kiframe/schema"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { recordScenario } from "../src/index.ts"
+import { recordScenario, scrubSecrets } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -193,5 +200,54 @@ steps:
     await context.close()
     expect(existsSync(join(outDir, "meta.json"))).toBe(true)
     expect(existsSync(join(outDir, "frames"))).toBe(false)
+  })
+
+  it("scrubs WHATWG-encoded secrets from GET form URLs", async () => {
+    const tricky = "Pa55!(x)~y'z"
+    const { outDir } = await record(
+      `setup: [{ action: goto, url: /get-login }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}", submit: true }
+  - { id: after, action: waitFor, until: { url: /get-login } }
+`,
+      { resolveSecret: () => tricky },
+    )
+    const events = readFileSync(join(outDir, "events.jsonl"), "utf8")
+    expect(events).not.toContain(new URLSearchParams({ v: tricky }).toString().slice(2))
+    expect(events).not.toContain(tricky)
+  })
+
+  it("refuses to overwrite a folder that isn't a take", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-not-a-take-"))
+    mkdirSync(join(dir, "src"))
+    writeFileSync(join(dir, "package.json"), "{}")
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    await expect(
+      recordScenario(
+        page,
+        parseScenarioYaml("version: 1\nsteps: [{ id: a, action: pause, ms: 1 }]\n"),
+        project(),
+        { outDir: dir },
+      ),
+    ).rejects.toThrow(/refusing to overwrite/)
+    await context.close()
+    expect(existsSync(join(dir, "package.json"))).toBe(true)
+  })
+})
+
+describe("scrubSecrets", () => {
+  it("catches percent-encodings in any case and base64url", () => {
+    const secret = "a/b+c?d"
+    const b64url = Buffer.from(secret)
+      .toString("base64")
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "")
+    const text = `?p=${encodeURIComponent(secret).toLowerCase()}&t=${b64url}&raw=${secret}`
+    const scrubbed = scrubSecrets(text, [secret])
+    expect(scrubbed).not.toContain(secret)
+    expect(scrubbed.toLowerCase()).not.toContain(encodeURIComponent(secret).toLowerCase())
+    expect(scrubbed).not.toContain(b64url)
   })
 })

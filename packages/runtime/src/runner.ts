@@ -12,6 +12,7 @@ import type { ElementHandle, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import {
   clickPoint,
+  type Box,
   planPath,
   seededRandom,
   typingDelays,
@@ -34,8 +35,6 @@ import {
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
 // expanded), steps, teardown. Phase 0 scope: no human motion yet (P0-4), no recording (P0-5), no
 // `ensure` / session reuse (P0-9).
-
-type Box = { x: number; y: number; width: number; height: number }
 
 /** What the runner reports as it goes. The recorder (P0-5) turns these into take events. */
 export type RunnerEvent =
@@ -880,8 +879,9 @@ async function clickAtCursor(
       }
     }
     let position: Point | undefined
+    let box: Box | null = null
     if (point !== undefined) {
-      const box = await target.boundingBox({ timeout: left() })
+      box = await target.boundingBox({ timeout: left() })
       // The box vanished after the check: never fall back to the element's center, which wasn't
       // checked (it could be the Delete button in the middle of a card).
       if (box === null)
@@ -892,10 +892,16 @@ async function clickAtCursor(
         )
       position = await clickOffset(target, box, point, left())
     }
-    // The click event the recorder logs: where it's dispatched (our point, or the box center when
-    // Playwright picks it) and with which button.
+    // The click event the recorder logs, as close as possible to the real dispatch: after Playwright's
+    // actionability checks (a trial click), at our point or the box center when Playwright picks it.
     if (ctx.options.onEvent !== undefined) {
-      const clickBox = await target.boundingBox({ timeout: left() }).catch(() => null)
+      await target.click({
+        trial: true,
+        timeout: left(),
+        ...(position !== undefined && { position }),
+        ...(action.button !== undefined && { button: action.button }),
+      })
+      const clickBox = box ?? (await target.boundingBox({ timeout: left() }).catch(() => null))
       if (clickBox !== null) {
         const where = point ?? {
           x: clickBox.x + clickBox.width / 2,
@@ -1011,16 +1017,25 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
 export function scrubSecrets(text: string, values: Iterable<string>): string {
   let out = text
   for (const value of values) {
+    const component = encodeURIComponent(value)
+    // WHATWG application/x-www-form-urlencoded (what browsers use for GET forms): also encodes !'()~
+    const form = new URLSearchParams({ v: value }).toString().slice(2)
+    const base64 = Buffer.from(value).toString("base64")
     const variants = new Set([
       value,
-      encodeURIComponent(value),
-      encodeURIComponent(value).replace(/%20/g, "+"),
+      component,
+      component.replace(/%20/g, "+"),
+      form,
       encodeURI(value),
-      Buffer.from(value).toString("base64"),
+      base64,
+      base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
       JSON.stringify(value).slice(1, -1),
     ])
+    // Percent-encodings are case-insensitive (%2F = %2f): match those variants in any case.
     for (const v of [...variants].sort((a, b) => b.length - a.length)) {
-      if (v !== "") out = out.split(v).join("[secret]")
+      if (v === "") continue
+      const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      out = out.replace(new RegExp(escaped, v.includes("%") ? "gi" : "g"), "[secret]")
     }
   }
   return out

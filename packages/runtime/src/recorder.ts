@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import {
@@ -12,6 +12,7 @@ import {
 } from "@kiframe/schema"
 import type { Page } from "playwright"
 import type { StepRef } from "./errors.ts"
+import type { Box } from "./motion.ts"
 import { runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
 
@@ -51,7 +52,7 @@ export async function recordScenario(
   options: RecordOptions,
 ): Promise<Take> {
   const { outDir } = options
-  rmSync(outDir, { recursive: true, force: true })
+  prepareOutDir(outDir)
   const framesDir = join(outDir, "frames")
   mkdirSync(framesDir, { recursive: true })
   mkdirSync(join(outDir, "shots"), { recursive: true })
@@ -64,7 +65,7 @@ export async function recordScenario(
     x: clamp01(x / viewport.width),
     y: clamp01(y / viewport.height),
   })
-  const rect = (b: { x: number; y: number; width: number; height: number }) => ({
+  const rect = (b: Box) => ({
     x: b.x / viewport.width,
     y: b.y / viewport.height,
     w: Math.max(0, b.width / viewport.width),
@@ -74,6 +75,12 @@ export async function recordScenario(
   // ── frames ──
   const frames: { file: string; t: number }[] = []
   const pendingWrites: Promise<void>[] = []
+  // A failed write (disk full…) is recorded and reported after the run, never an unhandled rejection.
+  let writeError: Error | undefined
+  const track = (p: Promise<void>) =>
+    p.catch((error: unknown) => {
+      writeError ??= error instanceof Error ? error : new Error(String(error))
+    })
   let frameSize: { width: number; height: number } | undefined
   let lastFrame: Buffer | undefined
   await page.screencast.start({
@@ -84,7 +91,7 @@ export async function recordScenario(
     onFrame: ({ data, timestamp }) => {
       const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
       // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
-      pendingWrites.push(writeFile(join(framesDir, file), data))
+      pendingWrites.push(track(writeFile(join(framesDir, file), data)))
       frames.push({ file, t: Math.max(0, timestamp - t0) })
       frameSize ??= jpegSize(data)
       lastFrame = data
@@ -94,7 +101,7 @@ export async function recordScenario(
   // ── events ──
   const events: TakeEvent[] = []
   const cursor: CursorSample[] = []
-  const lastTarget = new Map<string, { x: number; y: number; width: number; height: number }>()
+  const lastTarget = new Map<string, Box>()
   const keyOf = (s: StepRef) => `${s.phase}:${s.index}`
   const base = (s: StepRef) => ({
     t: at(),
@@ -118,7 +125,9 @@ export async function recordScenario(
         push({ ...base(e.step), kind: "step_start" })
         // Storyboard / guide shot: the frame at the start of each on-camera step.
         if (e.step.phase === "steps" && e.step.stepId !== undefined && lastFrame !== undefined) {
-          pendingWrites.push(writeFile(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame))
+          pendingWrites.push(
+            track(writeFile(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame)),
+          )
         }
         break
       case "step_end":
@@ -152,6 +161,8 @@ export async function recordScenario(
             rect: rect(box),
             ...(e.secret !== undefined && { secret: e.secret }),
           })
+        } else {
+          warnings.push(`no box for the ${kind} of ${keyOf(e.step)}: typing not logged`)
         }
         // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
         // whole frame is marked (fails closed: better a blurred frame than a visible secret).
@@ -195,13 +206,15 @@ export async function recordScenario(
     failure = error instanceof Error ? error : new Error(String(error))
   }
   await page.screencast.stop().catch(() => undefined)
+  // Capture time, not disk-flush time.
+  const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
 
   // ── files ── (the runner's failure, if any, is the error that's thrown; raw frames never stay)
   let meta: TakeMeta | undefined
   let fileError: Error | undefined
   try {
     await Promise.all(pendingWrites)
-    const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
+    if (writeError !== undefined) throw writeError
     writeFileSync(
       join(outDir, "events.jsonl"),
       events.map((e) => JSON.stringify(e)).join("\n") + "\n",
@@ -331,3 +344,21 @@ export function jpegSize(data: Buffer): { width: number; height: number } | unde
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
+
+/**
+ * Makes `outDir` an empty take directory. An existing directory is only replaced if it's empty or
+ * is a previous take (it has a meta.json or an events.jsonl): never a project folder or a path that
+ * resolved to something unexpected.
+ */
+function prepareOutDir(outDir: string) {
+  if (existsSync(outDir)) {
+    const entries = readdirSync(outDir)
+    const isTake = entries.includes("meta.json") || entries.includes("events.jsonl")
+    if (entries.length > 0 && !isTake) {
+      throw new Error(
+        `refusing to overwrite ${outDir}: it isn't empty and doesn't look like a take`,
+      )
+    }
+    rmSync(outDir, { recursive: true, force: true })
+  }
+}
