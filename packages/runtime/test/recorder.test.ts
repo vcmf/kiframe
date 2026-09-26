@@ -316,4 +316,38 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     const meta = TakeMeta.parse(JSON.parse(readFileSync(join(outDir, "meta.json"), "utf8")))
     expect(meta.outcome.status).toBe("failed")
   })
+
+  it("scrubs secret values out of the errors it records", async () => {
+    // The typed secret happens to equal a word in a later failing step's error message.
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const error = await recordScenario(
+      page,
+      scenario(`  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: boom, action: click, target: { by: role, role: button, name: Zebra42 } }
+`),
+      project(),
+      { outDir, timeoutMs: 500, resolveSecret: () => "Zebra42" },
+    ).then(
+      () => new Error("expected the recording to fail"),
+      (e: unknown) => e as Error,
+    )
+    await context.close()
+    expect(error.message).toMatch(/boom/)
+    expect(error.message).not.toContain("Zebra42")
+    expect(readFileSync(join(outDir, "meta.json"), "utf8")).not.toContain("Zebra42")
+  })
+
+  it("writes empty JSONL files when there's nothing to log", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    await recordScenario(page, scenario("  - { id: a, action: pause, ms: 50 }\n"), project(), {
+      outDir,
+    })
+    await context.close()
+    expect(readFileSync(join(outDir, "cursor.jsonl"), "utf8")).toBe("")
+  })
 })
