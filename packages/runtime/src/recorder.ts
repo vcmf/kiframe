@@ -2,7 +2,7 @@ import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
-import { join } from "node:path"
+import { basename, dirname, join, resolve } from "node:path"
 import {
   CursorSample,
   TakeEvent,
@@ -51,239 +51,278 @@ export async function recordScenario(
   project: ProjectConfig,
   options: RecordOptions,
 ): Promise<Take> {
-  const finalDir = options.outDir
-  // Record into a fresh sibling folder; it replaces the previous take only once this one exists.
+  // Record into a fresh hidden SIBLING folder (never inside the take, whatever the trailing slash):
+  // it replaces the previous take only once it exists, and is removed if anything goes wrong.
+  const finalDir = resolve(options.outDir)
   checkReplaceable(finalDir)
-  const outDir = `${finalDir}.recording-${process.pid}-${Date.now()}`
+  const outDir = join(
+    dirname(finalDir),
+    `.${basename(finalDir)}.recording-${process.pid}-${Date.now()}`,
+  )
   prepareOutDir(outDir)
-  const framesDir = join(outDir, "frames")
-  mkdirSync(framesDir, { recursive: true })
-  mkdirSync(join(outDir, "shots"), { recursive: true })
+  let placed = false
+  try {
+    const framesDir = join(outDir, "frames")
+    mkdirSync(framesDir, { recursive: true })
+    mkdirSync(join(outDir, "shots"), { recursive: true })
 
-  const viewport = await viewportOf(page)
-  const recordedAt = new Date()
-  const t0 = Date.now()
-  const at = () => Math.max(0, Date.now() - t0)
-  const norm = (x: number, y: number) => ({
-    x: clamp01(x / viewport.width),
-    y: clamp01(y / viewport.height),
-  })
-  const rect = (b: Box) => ({
-    x: b.x / viewport.width,
-    y: b.y / viewport.height,
-    w: Math.max(0, b.width / viewport.width),
-    h: Math.max(0, b.height / viewport.height),
-  })
-
-  /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
-  const warnings: string[] = []
-
-  // ── frames ──
-  const frames: { file: string; t: number }[] = []
-  const pendingWrites: Promise<void>[] = []
-  // A failed write (disk full…) is recorded and reported after the run, never an unhandled rejection.
-  let writeError: Error | undefined
-  const track = (p: Promise<void>) =>
-    p.catch((error: unknown) => {
-      writeError ??= error instanceof Error ? error : new Error(String(error))
+    const viewport = await viewportOf(page)
+    const recordedAt = new Date()
+    const t0 = Date.now()
+    const at = () => Math.max(0, Date.now() - t0)
+    const norm = (x: number, y: number) => ({
+      x: clamp01(x / viewport.width),
+      y: clamp01(y / viewport.height),
     })
-  let frameSize: { width: number; height: number } | undefined
-  let lastFrame: Buffer | undefined
-  await page.screencast.start({
-    // Without `size`, frames are scaled down to fit a small default box. Frames come out at CSS
-    // resolution at most anyway (Phase 0 finding F1).
-    size: { width: viewport.width, height: viewport.height },
-    quality: options.quality ?? 85,
-    onFrame: ({ data, timestamp }) => {
-      const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
-      // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
-      pendingWrites.push(track(writeFile(join(framesDir, file), data)))
-      frames.push({ file, t: Math.max(0, timestamp - t0) })
-      const size = jpegSize(data)
-      if (size !== undefined) {
-        if (
-          frameSize !== undefined &&
-          (size.width !== frameSize.width || size.height !== frameSize.height)
-        ) {
-          warnings.push(
-            `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
-          )
-        }
-        frameSize ??= size
-      }
-      lastFrame = data
-    },
-  })
+    const rect = (b: Box) => ({
+      x: b.x / viewport.width,
+      y: b.y / viewport.height,
+      w: Math.max(0, b.width / viewport.width),
+      h: Math.max(0, b.height / viewport.height),
+    })
 
-  // ── events ──
-  const events: TakeEvent[] = []
-  const cursor: CursorSample[] = []
-  const lastTarget = new Map<string, Box>()
-  const keyOf = (s: StepRef) => `${s.phase}:${s.index}`
-  const base = (s: StepRef) => ({
-    t: at(),
-    phase: s.phase,
-    ...(s.stepId !== undefined && { stepId: s.stepId }),
-  })
-  const push = (event: unknown) => {
-    const parsed = TakeEvent.safeParse(event)
-    if (parsed.success) events.push(parsed.data)
-    else
-      warnings.push(
-        `dropped a ${(event as { kind?: string }).kind ?? "?"} event: ${parsed.error.issues[0]?.message ?? "invalid"}`,
-      )
-  }
-  const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
-  const handle = (e: RunnerEvent) => {
-    switch (e.kind) {
-      case "step_start":
-        push({ ...base(e.step), kind: "step_start" })
-        // Storyboard / guide shot: the frame at the start of each on-camera step.
-        if (e.step.phase === "steps" && e.step.stepId !== undefined && lastFrame !== undefined) {
-          pendingWrites.push(
-            track(writeFile(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame)),
-          )
-        }
-        break
-      case "step_end":
-        push({ ...base(e.step), kind: "step_end" })
-        break
-      case "navigate":
-        push({ ...base(e.step), kind: "navigate", url: e.url })
-        break
-      case "click":
-        push({
-          ...base(e.step),
-          kind: "click",
-          point: norm(e.x, e.y),
-          rect: rect(e.box),
-          button: e.button,
-          ...(e.count > 1 && { count: e.count }),
-        })
-        break
-      case "cursor": {
-        const sample = CursorSample.safeParse({ t: at(), p: norm(e.x, e.y), pressed: e.pressed })
-        if (sample.success) cursor.push(sample.data)
-        break
-      }
-      case "type_start":
-      case "type": {
-        const kind = e.kind === "type_start" ? "type_start" : "type_end"
-        const box = e.box ?? lastTarget.get(keyOf(e.step))
-        if (box !== undefined) {
-          push({
-            ...base(e.step),
-            kind,
-            rect: rect(box),
-            ...(e.secret !== undefined && { secret: e.secret }),
-          })
-        } else {
-          warnings.push(`no box for the ${kind} of ${keyOf(e.step)}: typing not logged`)
-        }
-        // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
-        // whole frame is marked (fails closed: better a blurred frame than a visible secret).
-        if (e.secret !== undefined && e.kind === "type_start") {
-          push({
-            ...base(e.step),
-            kind: "sensitive",
-            id: `secret:${e.secret}:${keyOf(e.step)}`,
-            rect: box === undefined ? fullFrame : rect(box),
-            why: "secret-field",
-          })
-        }
-        break
-      }
-      case "target":
-        lastTarget.set(keyOf(e.step), e.box)
-        break
-      case "key":
-        push({ ...base(e.step), kind: "key", key: e.keys })
-        break
-      case "target_fallback":
-      case "teardown_failed":
-        break
-    }
-  }
-  const onEvent = (e: RunnerEvent) => {
-    try {
-      handle(e)
-    } catch (error) {
-      warnings.push(`recorder: ${firstLine(error)}`)
-    }
-    options.onEvent?.(e)
-  }
+    /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
+    const warnings: string[] = []
 
-  let failure: Error | undefined
-  try {
-    await runScenario(page, scenario, project, { ...options, onEvent })
-  } catch (error) {
-    failure = error instanceof Error ? error : new Error(String(error))
-  }
-  await page.screencast.stop().catch(() => undefined)
-  // Capture time, not disk-flush time.
-  const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
-
-  // ── files ── (the runner's failure, if any, is the error that's thrown; raw frames never stay)
-  let meta: TakeMeta | undefined
-  let fileError: Error | undefined
-  try {
-    await Promise.all(pendingWrites)
-    if (writeError !== undefined) throw writeError
-    writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
-    writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))
-    if (frames.length === 0) throw new Error("no frames were captured (the page never painted?)")
-    await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
-    if (frameSize === undefined)
-      warnings.push("couldn't read the frame size: assuming the CSS viewport")
-    const size = frameSize ?? viewport
-    const scenarioHash = sha256(JSON.stringify(scenario))
-    meta = TakeMeta.parse({
-      version: 1,
-      takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
-      scenarioHash,
-      recordedAt: recordedAt.toISOString(),
-      appUrl: project.target.url,
-      ...(project.environment !== undefined && { environment: project.environment }),
-      // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
-      viewport: {
-        width: viewport.width,
-        height: viewport.height,
-        deviceScaleFactor: size.width / viewport.width,
+    // ── frames ──
+    const frames: { file: string; t: number }[] = []
+    const pendingWrites: Promise<void>[] = []
+    // A failed write (disk full…) is recorded and reported after the run, never an unhandled rejection.
+    let writeError: Error | undefined
+    const track = (p: Promise<void>) =>
+      p.catch((error: unknown) => {
+        writeError ??= error instanceof Error ? error : new Error(String(error))
+      })
+    let frameSize: { width: number; height: number } | undefined
+    let lastSize: { width: number; height: number } | undefined
+    let sizeChanged = false
+    let lastFrame: Buffer | undefined
+    await page.screencast.start({
+      // Without `size`, frames are scaled down to fit a small default box. Frames come out at CSS
+      // resolution at most anyway (Phase 0 finding F1).
+      size: { width: viewport.width, height: viewport.height },
+      quality: options.quality ?? 85,
+      onFrame: ({ data, timestamp }) => {
+        const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
+        // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
+        pendingWrites.push(track(writeFile(join(framesDir, file), data)))
+        frames.push({ file, t: Math.max(0, timestamp - t0) })
+        const size = jpegSize(data)
+        if (size !== undefined) {
+          if (
+            lastSize !== undefined &&
+            (size.width !== lastSize.width || size.height !== lastSize.height) &&
+            !sizeChanged
+          ) {
+            sizeChanged = true
+            warnings.push(
+              `frame size changed mid-take (${lastSize.width}×${lastSize.height} → ${size.width}×${size.height})`,
+            )
+          }
+          lastSize = size
+          frameSize ??= size
+        }
+        lastFrame = data
       },
-      frameSize: size,
-      // Average capture rate; at least 1 (a static page sends few frames).
-      fps: Math.max(
-        1,
-        frames.length > 1 ? Math.round((frames.length - 1) / (Math.max(1, durationMs) / 1000)) : 1,
-      ),
-      durationMs,
-      kiframeVersion: options.kiframeVersion ?? "0.0.0",
-      outcome:
-        failure === undefined
-          ? { status: "complete" }
-          : { status: "failed", error: firstLine(failure) },
     })
-    writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
-    if (warnings.length > 0)
-      writeFileSync(join(outDir, "warnings.json"), JSON.stringify(warnings, null, 2) + "\n")
-  } catch (error) {
-    fileError = error instanceof Error ? error : new Error(String(error))
+
+    // ── events ──
+    const events: TakeEvent[] = []
+    const cursor: CursorSample[] = []
+    const lastTarget = new Map<string, Box>()
+    const keyOf = (s: StepRef) => `${s.phase}:${s.index}`
+    const base = (s: StepRef) => ({
+      t: at(),
+      phase: s.phase,
+      ...(s.stepId !== undefined && { stepId: s.stepId }),
+    })
+    const push = (event: unknown) => {
+      const parsed = TakeEvent.safeParse(event)
+      if (parsed.success) events.push(parsed.data)
+      else
+        warnings.push(
+          `dropped a ${(event as { kind?: string }).kind ?? "?"} event: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+        )
+    }
+    const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
+    const handle = (e: RunnerEvent) => {
+      switch (e.kind) {
+        case "step_start":
+          push({ ...base(e.step), kind: "step_start" })
+          // Storyboard / guide shot: the frame at the start of each on-camera step.
+          if (e.step.phase === "steps" && e.step.stepId !== undefined && lastFrame !== undefined) {
+            pendingWrites.push(
+              track(writeFile(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame)),
+            )
+          }
+          break
+        case "step_end":
+          push({ ...base(e.step), kind: "step_end" })
+          break
+        case "navigate":
+          push({ ...base(e.step), kind: "navigate", url: e.url })
+          break
+        case "click":
+          push({
+            ...base(e.step),
+            kind: "click",
+            point: norm(e.x, e.y),
+            rect: rect(e.box),
+            button: e.button,
+            ...(e.count > 1 && { count: e.count }),
+          })
+          break
+        case "cursor": {
+          const sample = CursorSample.safeParse({ t: at(), p: norm(e.x, e.y), pressed: e.pressed })
+          if (sample.success) cursor.push(sample.data)
+          break
+        }
+        case "type_start":
+        case "type": {
+          const kind = e.kind === "type_start" ? "type_start" : "type_end"
+          const box = e.box ?? lastTarget.get(keyOf(e.step))
+          if (box !== undefined) {
+            push({
+              ...base(e.step),
+              kind,
+              rect: rect(box),
+              ...(e.secret !== undefined && { secret: e.secret }),
+            })
+          } else {
+            warnings.push(`no box for the ${kind} of ${keyOf(e.step)}: typing not logged`)
+          }
+          // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
+          // whole frame is marked (fails closed: better a blurred frame than a visible secret).
+          if (e.secret !== undefined && e.kind === "type_start") {
+            push({
+              ...base(e.step),
+              kind: "sensitive",
+              id: `secret:${e.secret}:${keyOf(e.step)}`,
+              rect: box === undefined ? fullFrame : rect(box),
+              why: "secret-field",
+            })
+          }
+          break
+        }
+        case "target":
+          lastTarget.set(keyOf(e.step), e.box)
+          break
+        case "key":
+          push({ ...base(e.step), kind: "key", key: e.keys })
+          break
+        case "target_fallback":
+        case "teardown_failed":
+          break
+      }
+    }
+    const onEvent = (e: RunnerEvent) => {
+      try {
+        handle(e)
+      } catch (error) {
+        warnings.push(`recorder: ${firstLine(error)}`)
+      }
+      try {
+        options.onEvent?.(e)
+      } catch (error) {
+        // The caller's callback must not break the replay either.
+        warnings.push(`onEvent: ${firstLine(error)}`)
+      }
+    }
+
+    let failure: Error | undefined
+    try {
+      await runScenario(page, scenario, project, { ...options, onEvent, recording: true })
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error))
+    }
+    await page.screencast.stop().catch(() => undefined)
+    // Capture time, not disk-flush time.
+    const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
+
+    // ── files ── (the runner's failure, if any, is the error that's thrown; raw frames never stay)
+    let meta: TakeMeta | undefined
+    let fileError: Error | undefined
+    try {
+      await Promise.all(pendingWrites)
+      if (writeError !== undefined) throw writeError
+      writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
+      writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))
+      if (frames.length === 0) throw new Error("no frames were captured (the page never painted?)")
+      await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
+      if (frameSize === undefined)
+        warnings.push("couldn't read the frame size: assuming the CSS viewport")
+      const size = frameSize ?? viewport
+      const scenarioHash = sha256(JSON.stringify(scenario))
+      meta = TakeMeta.parse({
+        version: 1,
+        takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
+        scenarioHash,
+        recordedAt: recordedAt.toISOString(),
+        appUrl: project.target.url,
+        ...(project.environment !== undefined && { environment: project.environment }),
+        // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
+        viewport: {
+          width: viewport.width,
+          height: viewport.height,
+          deviceScaleFactor: size.width / viewport.width,
+        },
+        frameSize: size,
+        // Average capture rate; at least 1 (a static page sends few frames).
+        fps: Math.max(
+          1,
+          frames.length > 1
+            ? Math.round((frames.length - 1) / (Math.max(1, durationMs) / 1000))
+            : 1,
+        ),
+        durationMs,
+        kiframeVersion: options.kiframeVersion ?? "0.0.0",
+        outcome:
+          failure === undefined
+            ? { status: "complete" }
+            : { status: "failed", error: firstLine(failure) },
+      })
+      writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
+      if (warnings.length > 0)
+        writeFileSync(join(outDir, "warnings.json"), JSON.stringify(warnings, null, 2) + "\n")
+    } catch (error) {
+      fileError = error instanceof Error ? error : new Error(String(error))
+    } finally {
+      // Individual JPEG frames are temporary (frames.webm has them). Like every take file they're
+      // unblurred: the take store is sensitive by design (encrypted at rest from M1-8).
+      if (options.keepFrames !== true) rmSync(framesDir, { recursive: true, force: true })
+    }
+    // A complete take replaces the previous one; a failed take is kept next to it (`<name>.failed`)
+    // for debugging and never replaces a good take.
+    if (meta !== undefined) {
+      const dest = meta.outcome.status === "complete" ? finalDir : `${finalDir}.failed`
+      swapInto(outDir, dest)
+      placed = true
+    }
+    if (failure !== undefined) throw failure
+    if (fileError !== undefined || meta === undefined)
+      throw fileError ?? new Error("take metadata missing")
+    return { dir: finalDir, meta, events, cursor, warnings }
   } finally {
-    // Individual JPEG frames are temporary (frames.webm has them). Like every take file they're
-    // unblurred: the take store is sensitive by design (encrypted at rest from M1-8).
-    if (options.keepFrames !== true) rmSync(framesDir, { recursive: true, force: true })
+    if (!placed) rmSync(outDir, { recursive: true, force: true })
   }
-  // Swap in the new take (complete or failed, both are kept) as long as it has its metadata.
-  if (meta !== undefined) {
-    rmSync(finalDir, { recursive: true, force: true })
-    renameSync(outDir, finalDir)
-  } else {
-    rmSync(outDir, { recursive: true, force: true })
+}
+
+/**
+ * Puts the take at `src` in place of `dest`: the old take is moved aside first, the new one renamed
+ * in, then the old one deleted; if the rename fails, the old take is put back. `dest` is re-checked
+ * (it must still be a take or absent).
+ */
+function swapInto(src: string, dest: string) {
+  checkReplaceable(dest)
+  const aside = existsSync(dest) ? `${dest}.old-${process.pid}-${Date.now()}` : undefined
+  if (aside !== undefined) renameSync(dest, aside)
+  try {
+    renameSync(src, dest)
+  } catch (error) {
+    if (aside !== undefined) renameSync(aside, dest)
+    throw error
   }
-  if (failure !== undefined) throw failure
-  if (fileError !== undefined || meta === undefined)
-    throw fileError ?? new Error("take metadata missing")
-  return { dir: finalDir, meta, events, cursor, warnings }
+  if (aside !== undefined) rmSync(aside, { recursive: true, force: true })
 }
 
 /**

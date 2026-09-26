@@ -198,8 +198,9 @@ steps:
       ),
     ).rejects.toThrow(/boom/)
     await context.close()
-    expect(existsSync(join(outDir, "meta.json"))).toBe(true)
-    expect(existsSync(join(outDir, "frames"))).toBe(false)
+    // A failed take is kept next to where the take would be, never in its place.
+    expect(existsSync(join(`${outDir}.failed`, "meta.json"))).toBe(true)
+    expect(existsSync(join(`${outDir}.failed`, "frames"))).toBe(false)
   })
 
   it("scrubs WHATWG-encoded secrets from GET form URLs", async () => {
@@ -313,7 +314,9 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       ),
     ).rejects.toThrow(/boom/)
     await context.close()
-    const meta = TakeMeta.parse(JSON.parse(readFileSync(join(outDir, "meta.json"), "utf8")))
+    const meta = TakeMeta.parse(
+      JSON.parse(readFileSync(join(`${outDir}.failed`, "meta.json"), "utf8")),
+    )
     expect(meta.outcome.status).toBe("failed")
   })
 
@@ -337,7 +340,9 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     await context.close()
     expect(error.message).toMatch(/boom/)
     expect(error.message).not.toContain("Zebra42")
-    expect(readFileSync(join(outDir, "meta.json"), "utf8")).not.toContain("Zebra42")
+    // Playwright's full call log (the cause) is never carried out of the runner once secrets were used.
+    expect(error.cause).toBeUndefined()
+    expect(readFileSync(join(`${outDir}.failed`, "meta.json"), "utf8")).not.toContain("Zebra42")
   })
 
   it("writes empty JSONL files when there's nothing to log", async () => {
@@ -349,5 +354,45 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     })
     await context.close()
     expect(readFileSync(join(outDir, "cursor.jsonl"), "utf8")).toBe("")
+  })
+
+  it("keeps the good take when a re-record fails, whatever the trailing slash", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const good = await recordScenario(
+      page,
+      scenario("  - { id: a, action: pause, ms: 50 }\n"),
+      project(),
+      { outDir: `${outDir}/` },
+    )
+    expect(good.meta.outcome.status).toBe("complete")
+    await expect(
+      recordScenario(
+        page,
+        scenario(
+          "  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }\n",
+        ),
+        project(),
+        {
+          outDir: `${outDir}/`,
+          timeoutMs: 400,
+        },
+      ),
+    ).rejects.toThrow(/boom/)
+    await context.close()
+    const kept = TakeMeta.parse(JSON.parse(readFileSync(join(outDir, "meta.json"), "utf8")))
+    expect(kept.takeKey).toBe(good.meta.takeKey)
+    expect(existsSync(`${outDir}.failed`)).toBe(true)
+    // No temporary folder left behind.
+    expect(readdirSync(join(outDir, "..")).filter((n) => n.includes(".recording-"))).toEqual([])
+  })
+})
+
+describe("scrubbing, one pass", () => {
+  it("never nests markers when one secret is part of the marker or of another secret", () => {
+    expect(scrubSecrets("pw=hunter2&x=secret", ["hunter2", "secret", "sec"])).toBe(
+      "pw=[secret]&x=[secret]",
+    )
   })
 })
