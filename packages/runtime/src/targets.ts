@@ -139,18 +139,8 @@ export async function isOnScreen(
   const y = box.y + box.height / 2
   if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return false
   return locator
-    .evaluate(
-      (el, [px, py]) => {
-        // Hit-test in the element's own root: in shadow DOM, document.elementFromPoint returns the
-        // shadow host, never the element inside it.
-        const root = el.getRootNode()
-        const scope = root instanceof ShadowRoot || root instanceof Document ? root : document
-        const hit = scope.elementFromPoint(px ?? 0, py ?? 0)
-        return hit !== null && (hit === el || el.contains(hit))
-      },
-      [x, y],
-      { timeout: timeoutMs },
-    )
+    .evaluate(pointProbe, [x, y] as [number, number], { timeout: timeoutMs })
+    .then((probe) => probe.hits)
     .catch(() => false)
 }
 
@@ -167,4 +157,65 @@ export async function viewportOf(page: Page): Promise<{ width: number; height: n
   return (
     page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
   )
+}
+
+/**
+ * What's under a point, for hit tests (runs in the page, self-contained so it can be passed to
+ * `evaluate`). Goes down through open shadow roots to the deepest element, then reports whether
+ * it's `el` or inside it, or inside `el`'s enclosing control (Playwright accepts a hit anywhere in
+ * the button a target sits in), plus everything the hit control is called (for the risky check).
+ */
+export function pointProbe(
+  el: Element,
+  [x, y]: [number, number],
+): { hits: boolean; label: string } {
+  const CONTROLS =
+    "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
+  let hit = document.elementFromPoint(x, y)
+  while (hit?.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y)
+    if (inner === null || inner === hit) break
+    hit = inner
+  }
+  const up = (n: Node): Node | null => n.parentNode ?? (n instanceof ShadowRoot ? n.host : null)
+  const closest = (from: Element | null): Element | null => {
+    for (let n: Node | null = from; n !== null; n = up(n))
+      if (n instanceof Element && n.matches(CONTROLS)) return n
+    return null
+  }
+  const within = (node: Node | null, ancestor: Element | null): boolean => {
+    for (let n = node; n !== null; n = up(n)) if (n === ancestor) return true
+    return false
+  }
+  const hits = hit !== null && (within(hit, el) || within(hit, closest(el)))
+  // The label of what the press would actually activate: the control under the point (its text,
+  // hidden text included, and every naming attribute in it), or the element itself if it's no control.
+  const control = closest(hit) ?? hit
+  const texts: (string | null | undefined)[] = []
+  if (control !== null) {
+    const root = control.getRootNode() as Document | ShadowRoot
+    texts.push(control instanceof HTMLElement ? control.innerText : null, control.textContent)
+    for (const e of [control, ...control.querySelectorAll("*")]) {
+      for (const attr of ["alt", "aria-label", "title"]) texts.push(e.getAttribute(attr))
+      for (const id of (e.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
+        if (id !== "")
+          texts.push(
+            root.getElementById(id)?.textContent ?? document.getElementById(id)?.textContent,
+          )
+      }
+    }
+    if (
+      control instanceof HTMLInputElement &&
+      ["submit", "button", "reset", "image"].includes(control.type.toLowerCase())
+    ) {
+      texts.push(control.value)
+    }
+  }
+  const label = texts
+    .filter((s): s is string => typeof s === "string")
+    .join(" ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+  return { hits, label }
 }
