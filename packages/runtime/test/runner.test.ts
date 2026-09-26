@@ -657,4 +657,54 @@ teardown:
     const failed = events.find((e) => e.kind === "teardown_failed")
     expect(failed?.kind === "teardown_failed" && failed.error.step.index).toBe(1)
   })
+
+  // ─── Review round 7 (P0-3) ─────────────────────────────────────────────────
+
+  it("types into inputs inside shadow DOM", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /wc-form }
+  - { id: nick, action: type, target: { by: label, name: Nickname }, value: Bob }
+`)
+    expect(await page.getByLabel("Nickname").inputValue()).toBe("Bob")
+  })
+
+  it("detects risky submit inputs by their value, and doesn't flag a row containing a Delete button", async () => {
+    const error = await failure(`steps:
+  - { id: go, action: goto, url: /wc-form }
+  - { id: rm, action: click, target: { by: role, role: button, name: Remove member } }
+`)
+    expect(error.reason).toBe("risky-not-approved")
+    await run(`steps:
+  - { id: go, action: goto, url: /wc-form }
+  - { id: open, action: click, target: { by: role, role: row, name: Acme project Delete } }
+`)
+  })
+
+  it("matches hash routes that carry their own query", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: "/projects#/projects?tab=members&x=1" }
+  - { id: at, action: expect, that: { url: "/projects#/projects" } }
+  - { id: tab, action: expect, that: { url: "/projects#/projects?tab=members" } }
+`)
+  })
+
+  it("reports when a fallback locator had to be used", async () => {
+    const events = await run(`setup: [{ preset: open-projects }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Renamed, fallbacks: [{ by: text, text: New project }] } }
+`)
+    expect(events.find((e) => e.kind === "target_fallback")).toMatchObject({ fallbackIndex: 0 })
+  })
+
+  it("names the step when a callback throws", async () => {
+    const error = await failure(
+      `setup: [{ preset: open-projects }]\nsteps:\n  - { id: a, action: pause, ms: 1 }\n`,
+      {
+        onEvent: (e) => {
+          if (e.kind === "step_start" && e.step.stepId === "a") throw new Error("listener broke")
+        },
+      },
+    )
+    expect(error.message).toMatch(/^steps\[0\] \(a, pause\): listener broke/)
+  })
 })
