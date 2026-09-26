@@ -143,6 +143,7 @@ export async function recordScenario(
           point: norm(e.x, e.y),
           rect: rect(e.box),
           button: e.button,
+          ...(e.count > 1 && { count: e.count }),
         })
         break
       case "cursor": {
@@ -223,8 +224,8 @@ export async function recordScenario(
       join(outDir, "cursor.jsonl"),
       cursor.map((c) => JSON.stringify(c)).join("\n") + "\n",
     )
-    if (frames.length > 0)
-      await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
+    if (frames.length === 0) throw new Error("no frames were captured (the page never painted?)")
+    await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
     const size = frameSize ?? viewport
     const scenarioHash = sha256(JSON.stringify(scenario))
     meta = TakeMeta.parse({
@@ -248,6 +249,10 @@ export async function recordScenario(
       ),
       durationMs,
       kiframeVersion: options.kiframeVersion ?? "0.0.0",
+      outcome:
+        failure === undefined
+          ? { status: "complete" }
+          : { status: "failed", error: failure.message.split("\n")[0] ?? "failed" },
     })
     writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
     if (warnings.length > 0)
@@ -345,20 +350,24 @@ export function jpegSize(data: Buffer): { width: number; height: number } | unde
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
+/** Written first in every take directory: only a folder with it may be replaced by a new take. */
+const TAKE_MARKER = ".kiframe-take"
+
 /**
  * Makes `outDir` an empty take directory. An existing directory is only replaced if it's empty or
- * is a previous take (it has a meta.json or an events.jsonl): never a project folder or a path that
- * resolved to something unexpected.
+ * holds the take marker (a previous take, complete or interrupted): never a project folder or a path
+ * that resolved to something unexpected.
  */
 function prepareOutDir(outDir: string) {
   if (existsSync(outDir)) {
     const entries = readdirSync(outDir)
-    const isTake = entries.includes("meta.json") || entries.includes("events.jsonl")
-    if (entries.length > 0 && !isTake) {
+    if (entries.length > 0 && !entries.includes(TAKE_MARKER)) {
       throw new Error(
-        `refusing to overwrite ${outDir}: it isn't empty and doesn't look like a take`,
+        `refusing to overwrite ${outDir}: it isn't empty and isn't a take (no ${TAKE_MARKER})`,
       )
     }
     rmSync(outDir, { recursive: true, force: true })
   }
+  mkdirSync(outDir, { recursive: true })
+  writeFileSync(join(outDir, TAKE_MARKER), "kiframe take\n")
 }

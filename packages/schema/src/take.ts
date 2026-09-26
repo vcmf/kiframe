@@ -32,6 +32,8 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
     point: NPoint,
     rect: ViewportRect,
     button: z.enum(["left", "right"]),
+    /** 2 for a double click. */
+    count: z.number().int().min(1).max(3).optional(),
   }),
   z.strictObject({
     ...base,
@@ -115,6 +117,11 @@ const TakeMetaBase = z.strictObject({
   /** On the screencast clock, like event timestamps: may be fractional. */
   durationMs: Timestamp,
   kiframeVersion: z.string(),
+  /** How the replay ended: a failed take is kept (for debugging) but must never be used as-is. */
+  outcome: z.discriminatedUnion("status", [
+    z.strictObject({ status: z.literal("complete") }),
+    z.strictObject({ status: z.literal("failed"), error: z.string() }),
+  ]),
 })
 /** Frame pixels must equal viewport × DPR (±1 for rounding): overlays are placed with it. */
 const frameMatchesViewport = (m: z.infer<typeof TakeMetaBase>) =>
