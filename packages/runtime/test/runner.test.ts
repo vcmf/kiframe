@@ -300,4 +300,77 @@ teardown:
     ).rejects.toThrow(/boom/)
     expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "cleanup")).toBe(true)
   })
+
+  // ─── Review round 2 (P0-3) ─────────────────────────────────────────────────
+
+  it("types long text without hitting the step timeout", async () => {
+    const long = "A".repeat(200)
+    await run(`setup: [{ preset: open-projects }, { action: click, target: { by: role, role: button, name: New project } }]
+steps:
+  - { id: name, action: type, target: { by: label, name: Project name }, value: "${long}" }
+`)
+    expect(await page.getByLabel("Project name").inputValue()).toBe(long)
+  })
+
+  it("still picks the primary locator when it renders late, with fallbacks around", async () => {
+    await page.goto(`${server.url}/projects`)
+    await page.evaluate(() => {
+      setTimeout(
+        () => document.body.insertAdjacentHTML("beforeend", "<button>Late button</button>"),
+        1200,
+      )
+    })
+    await runScenario(
+      page,
+      scenario(`steps:
+  - id: late
+    action: click
+    target:
+      by: role
+      role: button
+      name: Late button
+      fallbacks: [{ by: text, text: Nope 1 }, { by: text, text: Nope 2 }, { by: text, text: Nope 3 }, { by: text, text: Nope 4 }]
+`),
+      project,
+      { timeoutMs: 5000 },
+    )
+  })
+
+  it("sees a request the previous step just started, even after a quiet period", async () => {
+    await run(
+      `setup: [{ preset: open-projects }, { action: pause, ms: 800 }]
+steps:
+  - { id: save, action: click, target: { by: role, role: button, name: Save remotely } }
+  - { id: idle, action: waitFor, until: { networkIdle: true } }
+  - { id: saved, action: expect, that: { text: Saved remotely }, timeout: 50 }
+`,
+      { timeoutMs: 4000 },
+    )
+  })
+
+  it("reaches network idle with an open SSE stream", async () => {
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /live }
+  - { id: save, action: click, target: { by: role, role: button, name: Save } }
+  - { id: idle, action: waitFor, until: { networkIdle: true } }
+  - { id: saved, action: expect, that: { text: Saved }, timeout: 50 }
+`,
+      { timeoutMs: 4000 },
+    )
+  })
+
+  it("treats `/` as the root only, and matches hash routes", async () => {
+    const rootFails = await failure(
+      `steps:\n  - { id: go, action: goto, url: /projects/12 }\n  - { id: home, action: expect, that: { url: / }, timeout: 200 }\n`,
+    )
+    expect(rootFails.reason).toBe("expectation-failed")
+    await run(
+      `steps:\n  - { id: go, action: goto, url: /projects#/settings/team }\n  - { id: at, action: expect, that: { url: "/projects#/settings" } }\n`,
+    )
+    const hashFails = await failure(
+      `steps:\n  - { id: go, action: goto, url: /projects#/billing }\n  - { id: at, action: expect, that: { url: "/projects#/settings" }, timeout: 200 }\n`,
+    )
+    expect(hashFails.reason).toBe("expectation-failed")
+  })
 })

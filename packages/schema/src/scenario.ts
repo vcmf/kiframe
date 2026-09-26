@@ -52,7 +52,7 @@ const targetExtras = {
   fallbacks: z.array(Locator).optional(),
   /** Path to a screenshot crop of the element, used as visual reference for self-healing. */
   fingerprint: SceneFilePath.optional(),
-  /** Pick the n-th match (0-based) when the locator matches several elements. */
+  /** Pick the n-th VISIBLE match (0-based) when the locator matches several elements. Hidden matches don't count. */
   nth: z.number().int().nonnegative().optional(),
 }
 
