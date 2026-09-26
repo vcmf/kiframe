@@ -17,6 +17,23 @@ export const Anchor = z.union([
 ])
 export type Anchor = z.infer<typeof Anchor>
 
+/**
+ * Orders two anchors when that's possible without a take: both absolute, both scene edges, or both
+ * on the same step/event. Returns a negative number if `a` is before `b`, 0 if equal, positive if
+ * after, and undefined when only a take can tell.
+ */
+export function compareStaticAnchors(a: Anchor, b: Anchor): number | undefined {
+  const edge = (e: "start" | "end") => (e === "start" ? 0 : 1)
+  const offset = (x: { offsetMs?: number | undefined }) => x.offsetMs ?? 0
+  if ("ms" in a && "ms" in b) return a.ms - b.ms
+  if ("scene" in a && "scene" in b) return edge(a.scene) - edge(b.scene) || offset(a) - offset(b)
+  if ("step" in a && "step" in b && a.step === b.step) {
+    return edge(a.edge) - edge(b.edge) || offset(a) - offset(b)
+  }
+  if ("event" in a && "event" in b && a.event === b.event) return offset(a) - offset(b)
+  return undefined
+}
+
 const segmentBase = {
   id: z.string().min(1),
   /** Regeneration replaces `auto` segments and keeps `manual` ones. */
@@ -98,7 +115,7 @@ export const CalloutSegment = z.strictObject({
 })
 export type CalloutSegment = z.infer<typeof CalloutSegment>
 
-export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })
+export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: PlainText.min(1) })
 export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 
 export const Composition = z
@@ -124,10 +141,11 @@ export const Composition = z
     for (const [track, segments] of Object.entries(c.tracks)) {
       claimIds(segments, ["tracks", track], ctx, claims)
       segments.forEach((segment: { at: Anchor; until?: Anchor }, i: number) => {
-        // Spans between two absolute times can be checked here; step/event anchors are checked
+        // Spans that can be ordered without a take are checked here; the others are checked
         // once resolved against a take (generators, P0-6).
         const { at, until } = segment
-        if (until !== undefined && "ms" in at && "ms" in until && until.ms <= at.ms) {
+        const order = until === undefined ? undefined : compareStaticAnchors(until, at)
+        if (order !== undefined && order <= 0) {
           ctx.addIssue({
             code: "custom",
             message: "`until` must be after `at`",

@@ -22,7 +22,7 @@ export const PacingShape = z.strictObject({
   /** Wait after each action for the UI to settle, in ms. */
   settleMs: Ms,
 })
-export const Pacing = z.strictObject({
+export const Pacing = PacingShape.extend({
   cursor: PacingShape.shape.cursor.default("natural"),
   typing: PacingShape.shape.typing.default("human"),
   settleMs: PacingShape.shape.settleMs.default(400),

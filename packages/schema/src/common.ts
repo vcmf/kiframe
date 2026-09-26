@@ -28,10 +28,10 @@ export type NRect = z.infer<typeof NRect>
  * field half scrolled out of view must still be masked); the renderer clips to the frame.
  */
 export const ViewportRect = z.strictObject({
-  x: z.number().finite(),
-  y: z.number().finite(),
-  w: z.number().finite().nonnegative(),
-  h: z.number().finite().nonnegative(),
+  x: z.number(),
+  y: z.number(),
+  w: z.number().nonnegative(),
+  h: z.number().nonnegative(),
 })
 export type ViewportRect = z.infer<typeof ViewportRect>
 
@@ -109,7 +109,7 @@ export function claimIds(
         path: [...section, i, "id"],
       })
     } else {
-      claims.set(id, section.join("."))
+      claims.set(id, [...section, i].join("."))
     }
   })
   return claims
