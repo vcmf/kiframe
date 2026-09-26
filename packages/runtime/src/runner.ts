@@ -23,6 +23,7 @@ import { NetworkTracker } from "./network.ts"
 import {
   describeLocator,
   isOnScreen,
+  pointProbe,
   resolveTarget,
   toPlaywright,
   viewportOf,
@@ -143,6 +144,9 @@ export async function runScenario(
           ? (error as Error)
           : new StepError(current, "action-failed", firstLine(error), { cause: error })
     }
+    // Teardown is best effort: every step runs (cleanup must go as far as it can), each failure is
+    // reported, and the first one is thrown if nothing failed before.
+    let teardownFailure: StepError | undefined
     for (const [index, action] of (scenario.teardown ?? []).entries()) {
       const ref: StepRef = { phase: "teardown", index, stepId: action.id, action: action.action }
       try {
@@ -152,12 +156,12 @@ export async function runScenario(
           error instanceof StepError
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
-        if (failure === undefined) throw stepError
         options.onEvent?.({ kind: "teardown_failed", error: stepError })
-        break
+        teardownFailure ??= stepError
       }
     }
     if (failure !== undefined) throw failure
+    if (teardownFailure !== undefined) throw teardownFailure
     if (listenerError !== undefined) throw listenerError
   } finally {
     network.dispose()
@@ -228,70 +232,6 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
 async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise<void> {
   const approved = await guard(step, async () => (await ctx.options.approveRisky?.(step)) ?? false)
   if (!approved) throw new StepError(step, "risky-not-approved", detail)
-}
-
-/**
- * Everything a click's target is called, from every source, for the risky check: the rendered
- * text of the nearest control (or of the target itself when it's no control), its aria-label,
- * aria-labelledby, title, image alt texts and submit-input value, plus every name and text in its
- * accessibility snapshot (parsed leniently, whatever Playwright's quoting).
- *
- * The risky check built on it is a safety net that FAILS CLOSED: if ANY source contains a risky
- * word, the click needs approval. A harmless control that merely mentions one (a row or card with a
- * "Delete" button inside) asks for approval too, and `risky: false` on the step opts out.
- */
-async function controlName(
-  target: Locator,
-  timeout: number,
-): Promise<{ text: string; complete: boolean }> {
-  const [rendered, snapshot] = await Promise.all([
-    // Waits for the element like any action (a re-render can't make the check silently pass).
-    target.evaluate(
-      (t) => {
-        const CONTROLS =
-          "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
-        const control = t.closest(CONTROLS) ?? t
-        const root = control.getRootNode() as Document | ShadowRoot
-        const texts: (string | null | undefined)[] = [
-          control instanceof HTMLElement ? control.innerText : control.textContent,
-          control.textContent,
-        ]
-        // Every naming attribute of the control and of everything inside it (not the first one only).
-        for (const e of [control, ...control.querySelectorAll("*")]) {
-          for (const attr of ["alt", "aria-label", "title", "placeholder"])
-            texts.push(e.getAttribute(attr))
-          for (const id of (e.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
-            if (id !== "")
-              texts.push(
-                root.getElementById(id)?.textContent ?? document.getElementById(id)?.textContent,
-              )
-          }
-        }
-        if (
-          control instanceof HTMLInputElement &&
-          ["submit", "button", "reset", "image"].includes(control.type.toLowerCase())
-        ) {
-          texts.push(control.value)
-        }
-        return texts.filter((s): s is string => typeof s === "string").join(" ")
-      },
-      undefined,
-      { timeout },
-    ),
-    target.ariaSnapshot({ timeout }).then(
-      (s) => s,
-      () => undefined, // unknown: the caller fails closed
-    ),
-  ])
-  const fromSnapshot = [...(snapshot ?? "").matchAll(/"((?:[^"\\]|\\.)*)"|text: (.*)$/gm)].map(
-    (m) => m[1] ?? m[2] ?? "",
-  )
-  const text = [rendered, ...fromSnapshot]
-    .map((s) => s.replace(/\\(.)/g, "$1").replace(/([a-z])([A-Z])/g, "$1 $2"))
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim()
-  return { text, complete: snapshot !== undefined }
 }
 
 /**
@@ -385,24 +325,6 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     }
     case "click": {
       const target = await find(ctx, action.target, step)
-      if (action.risky === undefined) {
-        const label = await guard(step, () => controlName(target, ctx.timeoutMs))
-        if (!label.complete) {
-          await requireApproval(
-            ctx,
-            step,
-            "couldn't read everything the control is called: approve it, or set `risky: false`",
-          )
-        }
-        const risky = RISKY_LABEL.exec(label.text)
-        if (risky !== null) {
-          await requireApproval(
-            ctx,
-            step,
-            `clicking a control that mentions "${risky[0]}" looks risky: approve it, or set \`risky: false\` if it's safe`,
-          )
-        }
-      }
       await clickAtCursor(ctx, target, step, action)
       return
     }
@@ -842,10 +764,13 @@ async function moveCursorTo(
 }
 
 /**
- * Clicks where the cursor is, by construction: actionability is checked with a trial click (no
- * click), a hit test confirms the point under the cursor belongs to the target (re-aiming once if
- * it moved or is covered there), then the real mouse is pressed and released at that point. Press
- * and release events are reported at the moment they happen, one pair per click.
+ * Clicks where the cursor is, by construction, within ONE time budget for the whole step:
+ * 1. the cursor travels to a point on the target (no box: Playwright's regular click, no visuals);
+ * 2. a trial click checks actionability without clicking;
+ * 3. a probe at the press point checks the hit lands on the target (or in its enclosing control;
+ *    one re-aim otherwise) and reads what the press would really activate, right now (after hover):
+ *    if it mentions a risky word, the click needs approval (fails closed, `risky: false` opts out);
+ * 4. the real mouse is pressed and released there, events reported at the moment they happen.
  */
 async function clickAtCursor(
   ctx: Ctx,
@@ -853,27 +778,62 @@ async function clickAtCursor(
   step: StepRef,
   action: Extract<AnyAction, { action: "click" }>,
 ): Promise<void> {
+  const deadline = Date.now() + ctx.timeoutMs
+  const left = () => Math.max(MIN_TIMEOUT_MS, deadline - Date.now())
+  const button = action.button ?? "left"
+  const modifiers = (action.modifiers ?? []).map(toPlaywrightModifier)
   let point = await moveCursorTo(ctx, target, step)
   await guard(step, async () => {
-    const button = action.button ?? "left"
-    const modifiers = (action.modifiers ?? []).map(toPlaywrightModifier)
-    await target.click({ trial: true, timeout: ctx.timeoutMs, button, modifiers })
-    if (point === undefined || !(await hitsTarget(target, point, ctx.timeoutMs))) {
+    if (point === undefined) {
+      // No visible box to aim at (display: contents, zero-size…): Playwright decides where to click.
+      if (action.risky !== true && action.risky !== false) {
+        await requireApproval(
+          ctx,
+          step,
+          "can't see what this click would activate: approve it, or set `risky: false`",
+        )
+      }
+      await target.click({
+        timeout: left(),
+        button,
+        modifiers,
+        ...(action.count !== undefined && { clickCount: action.count }),
+      })
+      return
+    }
+    await target.click({ trial: true, timeout: left(), button, modifiers })
+    let probe = await target.evaluate(pointProbe, [point.x, point.y] as [number, number], {
+      timeout: left(),
+    })
+    if (!probe.hits) {
       point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
-      if (point === undefined || !(await hitsTarget(target, point, ctx.timeoutMs))) {
+      probe = await target.evaluate(pointProbe, [point.x, point.y] as [number, number], {
+        timeout: left(),
+      })
+      if (!probe.hits)
         throw new StepError(
           step,
           "action-failed",
           "the target is covered where the cursor would click it",
         )
+    }
+    if (action.risky === undefined) {
+      const risky = RISKY_LABEL.exec(probe.label)
+      if (risky !== null) {
+        await requireApproval(
+          ctx,
+          step,
+          `this click activates something that mentions "${risky[0]}": approve it, or set \`risky: false\` if it's safe`,
+        )
       }
     }
     // The trial may have moved the mouse: put it back where the cursor is.
-    await ctx.page.mouse.move(point.x, point.y)
+    const at = point
+    await ctx.page.mouse.move(at.x, at.y)
     for (const m of modifiers) await ctx.page.keyboard.down(m)
     try {
       for (let clickCount = 1; clickCount <= (action.count ?? 1); clickCount++) {
-        await pressAndRelease(ctx, step, point, button, clickCount)
+        await pressAndRelease(ctx, step, at, button, clickCount)
       }
     } finally {
       for (const m of [...modifiers].reverse()) await ctx.page.keyboard.up(m)
@@ -906,30 +866,6 @@ async function pressAndRelease(
   // The click's own error wins; a failing release callback fails the step only on its own.
   if (clickError !== undefined) throw clickError
   if (releaseError !== undefined) throw releaseError
-}
-
-/** Is the element under `point` the target (or inside it), through shadow roots? */
-async function hitsTarget(target: Locator, point: Point, timeout: number): Promise<boolean> {
-  return target.evaluate(
-    (el, [x, y]) => {
-      let hit = document.elementFromPoint(x ?? 0, y ?? 0)
-      while (hit?.shadowRoot) {
-        const inner = hit.shadowRoot.elementFromPoint(x ?? 0, y ?? 0)
-        if (inner === null || inner === hit) break
-        hit = inner
-      }
-      for (
-        let node: Node | null = hit;
-        node !== null;
-        node = node.parentNode ?? (node as ShadowRoot).host ?? null
-      ) {
-        if (node === el) return true
-      }
-      return false
-    },
-    [point.x, point.y],
-    { timeout },
-  )
 }
 
 const center = (viewport: { width: number; height: number }): Point => ({

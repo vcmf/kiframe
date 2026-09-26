@@ -674,7 +674,7 @@ teardown:
   - { id: rm, action: click, target: { by: role, role: button, name: Remove member } }
 `)
     expect(error.reason).toBe("risky-not-approved")
-    // Fail closed: a row that contains a Delete button asks for approval too (risky: false opts out).
+    // This row's aim point lands on its Delete button: the press would delete, so it needs approval.
     const row = (risky: string) => `steps:
   - { id: go, action: goto, url: /wc-form }
   - { id: open, action: click, target: { by: role, role: row, name: Acme project Delete }${risky} }
@@ -1065,4 +1065,54 @@ steps:
     expect(error.message).toMatch(/recorder closed/)
   })
   let seenPress = false
+
+  // ─── P0-4 review round 7: the risky check at the press point ───────────────
+
+  it("reads the label at press time, after hover changed it", async () => {
+    await page.setContent(
+      `<button id="follow" onmouseenter="this.textContent='Remove follow'">Following</button>`,
+    )
+    const error = await failure(
+      `steps:\n  - { id: c, action: click, target: { by: css, selector: "#follow" } }\n`,
+    )
+    expect(error.reason).toBe("risky-not-approved")
+  })
+
+  it("accepts a hit on a layer inside the target's button", async () => {
+    await page.setContent(`
+      <button id="save" style="position:relative; width:200px; height:60px" onclick="document.body.dataset.saved='1'">
+        <span id="text">Save</span>
+        <span style="position:absolute; inset:0; background:transparent"></span>
+      </button>`)
+    await run(`steps:\n  - { id: c, action: click, target: { by: css, selector: "#text" } }\n`)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.saved")).toBe("1")
+  })
+
+  it("judges a card click by what the press activates, not by the card's other buttons", async () => {
+    await page.setContent(`
+      <div id="card" style="width:600px; height:200px; position:relative" onclick="document.body.dataset.opened='1'">
+        <h3 id="title" style="margin:0; height:200px; width:400px">Acme project</h3>
+        <button style="position:absolute; right:0; top:0" onclick="event.stopPropagation()">Delete</button>
+      </div>`)
+    await run(`steps:\n  - { id: open, action: click, target: { by: css, selector: "#title" } }\n`)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.opened")).toBe("1")
+  })
+
+  it("runs every teardown step even when one fails", async () => {
+    const events: RunnerEvent[] = []
+    await expect(
+      runScenario(
+        page,
+        scenario(`setup: [{ preset: open-projects }]
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { id: t1, action: click, target: { by: role, role: button, name: Missing } }
+  - { id: t2, action: pause, ms: 1 }
+`),
+        project,
+        { timeoutMs: 300, onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow(/t1/)
+    expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "t2")).toBe(true)
+  })
 })

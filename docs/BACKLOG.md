@@ -19,8 +19,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Text conditions are substring and case-insensitive:** `expect text: Saved` passes on "Unsaved changes". Consider an `exact` option or word boundaries.
 - **Settle / scroll cost on large DOMs:** a full TreeWalker per settle to find shadow roots, and an `isConnected` round trip before each scroll.
 - **Cursor when the target is off screen before a click:** `find()` scrolls the target into view first, but if it moves off screen after the cursor travel, no cursor event is emitted and `ctx.cursor` keeps the old position while Playwright moves the real mouse.
-- **No cursor events without a box:** when the target has no box (display: contents) or no visible part, the cursor doesn't move visibly and `ctx.cursor` goes stale while Playwright's click moves the real mouse.
+- **No cursor events without a box:** when the target has no visible box, Playwright's regular click is used (approval required unless `risky` is set): no cursor movement is shown and `ctx.cursor` goes stale.
 - **Listener errors across step boundaries:** a late navigation from a step that already finished/failed can be attributed to the next step (or teardown) and fail it.
 - **Box lost after the cursor travel:** if the target re-renders or slides off screen during the travel, the click runs at the element's center without press/release events, and `ctx.cursor` is wrong.
 - **Instant pacing doesn't re-measure after the hover:** a control that changes size on hover can be clicked at a stale offset (off camera only).
 - **Clip the aim point to clipping ancestors / fixed headers:** `visiblePart` clips to the viewport only. The hit test now catches a covered point (one re-aim, then a clear error), but aiming directly at the uncovered part would avoid the failure.
+- **Race between the press-point probe and mouse.down:** a re-render between the two (row inserted, toast) can put another element under the point. Playwright's own click checks the hit target at dispatch; ours checks just before.
