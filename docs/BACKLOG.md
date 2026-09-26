@@ -18,3 +18,4 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Main scroller inside shadow DOM:** `findMainScroller` doesn't search shadow roots (web-component app shells).
 - **Text conditions are substring and case-insensitive:** `expect text: Saved` passes on "Unsaved changes". Consider an `exact` option or word boundaries.
 - **Settle / scroll cost on large DOMs:** a full TreeWalker per settle to find shadow roots, and an `isConnected` round trip before each scroll.
+- **Cursor when the target is off screen before a click:** `find()` scrolls the target into view first, but if it moves off screen after the cursor travel, no cursor event is emitted and `ctx.cursor` keeps the old position while Playwright moves the real mouse.

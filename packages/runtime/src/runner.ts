@@ -99,6 +99,7 @@ export async function runScenario(
     options,
     network,
     setCurrent: (step) => (current = step),
+    clearListenerError: () => (listenerError = undefined),
     throwListenerError: () => {
       const error = listenerError
       listenerError = undefined
@@ -127,6 +128,9 @@ export async function runScenario(
         await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
       }
     } catch (error) {
+      // The step's own error is the one reported: don't let a pending listener error from the same
+      // step resurface later and cut teardown short.
+      ctx.clearListenerError()
       failure =
         error instanceof StepError || current === undefined
           ? (error as Error)
@@ -164,6 +168,7 @@ interface Ctx {
   setCurrent: (step: StepRef | undefined) => void
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void
+  clearListenerError: () => void
   /** Where the cursor is (CSS pixels); undefined until the first movement. */
   cursor: Point | undefined
   pacing: { cursor: CursorPacing; typing: TypingPacing }
@@ -229,24 +234,43 @@ function controlLabel(target: Element): string {
   // A click resolved to the text or icon INSIDE a button counts as clicking the button.
   const el = target.closest(CONTROLS)
   if (el === null) return ""
+  /**
+   * Rendered text like innerText, but word-separated and without the subtrees `skip` rejects:
+   * hidden elements, <script>/<style>/<template> and SVG (an icon's <title> isn't visible text).
+   */
+  const visibleText = (root: Element, skip: (e: Element) => boolean): string => {
+    const parts: string[] = []
+    const walk = (node: Node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) {
+          parts.push(child.textContent ?? "")
+        } else if (child instanceof Element) {
+          if (skip(child) || child instanceof SVGElement) continue
+          if (["SCRIPT", "STYLE", "TEMPLATE"].includes(child.tagName)) continue
+          if (!child.checkVisibility()) continue
+          walk(child)
+        }
+      }
+    }
+    walk(root)
+    return parts.join(" ").replace(/\s+/g, " ").trim()
+  }
   const isInput =
     el instanceof HTMLInputElement && ["submit", "button", "reset", "image"].includes(el.type)
   const byIds = (el.getAttribute("aria-labelledby") ?? "")
     .split(/\s+/)
     .map((id) => (id === "" ? "" : (document.getElementById(id)?.textContent ?? "")))
     .join(" ")
-  // The control's own text, WITHOUT nested controls: clicking the title of a link card that also
-  // contains a "Delete" button must not be judged by that button's label.
-  const ownText = (() => {
-    const clone = el.cloneNode(true) as Element
-    for (const nested of clone.querySelectorAll(CONTROLS)) nested.remove()
-    return clone.textContent ?? ""
-  })()
+  // The control's own text WITHOUT nested controls (clicking a link card's title must not be judged
+  // by a "Delete" button inside the card)… unless the control has no text of its own: then it's a
+  // wrapper (<li role=menuitem><a>Delete</a></li>) and the nested control's text is its label.
+  const own = visibleText(el, (e) => e.matches(CONTROLS))
+  const text = own !== "" ? own : visibleText(el, () => false)
   const candidates = [
     el.getAttribute("aria-label"),
     byIds,
     isInput ? el.value : null,
-    ownText,
+    text,
     el.getAttribute("title"),
   ]
   return (candidates.find((c) => c !== null && c.trim() !== "") ?? "")
@@ -363,8 +387,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         const clicks = action.count ?? 1
         try {
           if (aim !== undefined) {
-            for (let i = 0; i < clicks; i++)
+            // One press/release pair per click (a double click shows two ripples); the last
+            // release is sent after the click, in `finally`.
+            for (let i = 0; i < clicks; i++) {
               ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: true })
+              if (i < clicks - 1)
+                ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: false })
+            }
           }
           await target.click({
             timeout: ctx.timeoutMs,
@@ -426,10 +455,10 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
           // caret to the start when the window doesn't have OS focus (headed, Electron).
           const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
-          const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
-          if (delays.every((d) => d === 0)) {
+          if (pacing === "instant") {
             await page.keyboard.type(text)
           } else {
+            const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
             // delays[i] is the pause BEFORE character i (word and sentence boundaries).
             for (const [i, char] of [...text].entries()) {
               const delay = delays[i] ?? 0
@@ -802,8 +831,9 @@ async function moveCursorTo(
     const pacing = step.phase === "steps" ? ctx.pacing.cursor : "instant"
     const random = seededRandom(`${seedOf(step)}:cursor`)
     // No box (display: contents, re-rendering…): skip the visual movement, the action still runs.
-    const first = visiblePart(await target.boundingBox({ timeout: ctx.timeoutMs }), viewport)
-    if (first === undefined) return undefined
+    const box = await target.boundingBox({ timeout: ctx.timeoutMs })
+    const first = visiblePart(box, viewport)
+    if (box === null || first === undefined) return undefined
     const to = clickPoint(first, random)
     await travel(
       ctx,
@@ -815,21 +845,23 @@ async function moveCursorTo(
         random,
       }),
     )
+    if (pacing === "instant")
+      return { point: ctx.cursor ?? to, offset: { x: to.x - box.x, y: to.y - box.y } }
     // The target may have moved during the travel (menu sliding in, layout shift on hover): keep
     // the same relative spot on its new box, with a short correction move if needed.
-    const now = visiblePart(await target.boundingBox({ timeout: ctx.timeoutMs }), viewport)
-    if (now === undefined) return undefined
+    const nowBox = await target.boundingBox({ timeout: ctx.timeoutMs })
+    const now = visiblePart(nowBox, viewport)
+    if (nowBox === null || now === undefined) return undefined
     const point = {
       x: now.x + ((to.x - first.x) / first.width) * now.width,
       y: now.y + ((to.y - first.y) / first.height) * now.height,
     }
     if (Math.hypot(point.x - to.x, point.y - to.y) > 2) {
-      const correction = pacing === "instant" ? "instant" : "fast"
       await travel(
         ctx,
         step,
         planPath(ctx.cursor ?? to, point, {
-          pacing: correction,
+          pacing: "fast",
           targetWidth: now.width,
           viewport,
           random,
@@ -837,7 +869,8 @@ async function moveCursorTo(
       )
     }
     const at = ctx.cursor ?? point
-    return { point: at, offset: { x: at.x - now.x, y: at.y - now.y } }
+    // Playwright's click position is relative to the element's REAL box, not its visible part.
+    return { point: at, offset: { x: at.x - nowBox.x, y: at.y - nowBox.y } }
   })
 }
 

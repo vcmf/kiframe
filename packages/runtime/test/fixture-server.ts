@@ -18,6 +18,12 @@ const pages: Record<string, string> = {
     <div id="board" role="region" aria-label="Board" style="height:1500px; background:#eee"></div>
     <p id="s"></p>
     <script>document.getElementById("board").onclick = (e) => document.getElementById("s").textContent = "Board " + e.clientY</script>`,
+  "/labels": `<!doctype html><title>Labels</title>
+    <ul role="menu"><li role="menuitem"><a href="#">Delete</a></li></ul>
+    <button id="trash"><svg width="10" height="10"><title>trash</title></svg>Delete</button>
+    <button id="save">Save<span hidden>Delete draft</span></button>
+    <p id="s"></p>
+    <script>document.getElementById("save").onclick = () => document.getElementById("s").textContent = "Saved it"</script>`,
   "/cards": `<!doctype html><title>Cards</title>
     <a href="#opened" class="card"><span>Acme project</span> <button onclick="event.preventDefault()">Delete</button></a>`,
   "/wc-form": `<!doctype html><title>WC form</title>
