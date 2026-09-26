@@ -52,9 +52,14 @@ export class NetworkTracker {
     const deadline = start + timeoutMs
     for (;;) {
       const now = Date.now()
-      const pending = [...this.inflight.values()].filter((since) => now - since < LONG_LIVED_MS)
+      // Long-lived requests stop counting, and stop being tracked: their eventual end must not
+      // reset the quiet period.
+      for (const [request, since] of this.inflight) {
+        if (now - since >= LONG_LIVED_MS) this.inflight.delete(request)
+      }
+      const pending = this.inflight.size
       const quietSince = Math.max(this.lastChange, start)
-      if (pending.length === 0 && now - quietSince >= quiet) return true
+      if (pending === 0 && now - quietSince >= quiet) return true
       if (now >= deadline) return false
       await new Promise((resolve) => setTimeout(resolve, 50))
     }

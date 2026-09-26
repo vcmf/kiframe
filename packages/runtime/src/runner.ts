@@ -101,29 +101,19 @@ export async function runScenario(
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
     }
-    try {
-      for (const [index, action] of (scenario.teardown ?? []).entries()) {
-        await runOne(ctx, action, {
-          phase: "teardown",
-          index,
-          stepId: action.id,
-          action: action.action,
-        })
+    for (const [index, action] of (scenario.teardown ?? []).entries()) {
+      const ref: StepRef = { phase: "teardown", index, stepId: action.id, action: action.action }
+      try {
+        await runOne(ctx, action, ref)
+      } catch (error) {
+        const stepError =
+          error instanceof StepError
+            ? error
+            : new StepError(ref, "action-failed", firstLine(error), { cause: error })
+        if (failure === undefined) throw stepError
+        options.onEvent?.({ kind: "teardown_failed", error: stepError })
+        break
       }
-    } catch (error) {
-      if (failure === undefined) throw error
-      const reported =
-        error instanceof StepError
-          ? error
-          : new StepError(
-              { phase: "teardown", index: 0, action: "teardown" },
-              "action-failed",
-              firstLine(error),
-              {
-                cause: error,
-              },
-            )
-      options.onEvent?.({ kind: "teardown_failed", error: reported })
     }
     if (failure !== undefined) throw failure
   } finally {
@@ -174,18 +164,24 @@ function expandSetup(items: readonly SetupItem[], project: ProjectConfig): Actio
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
   ctx.setCurrent(step)
-  if (action.risky === true) {
-    const approved = await guard(
-      step,
-      async () => (await ctx.options.approveRisky?.(step)) ?? false,
-    )
-    if (!approved) throw new StepError(step, "risky-not-approved", "risky step needs approval")
-  }
+  if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
   await perform(ctx, action, step)
   if (action.action !== "pause") await guard(step, () => settle(ctx))
   ctx.options.onEvent?.({ kind: "step_end", step })
 }
+
+async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise<void> {
+  const approved = await guard(step, async () => (await ctx.options.approveRisky?.(step)) ?? false)
+  if (!approved) throw new StepError(step, "risky-not-approved", detail)
+}
+
+/**
+ * Obvious risky actions, detected from the clicked element's label even without `risky: true`
+ * (docs/OBJECT-MODEL.md §2b). `risky: false` on the step is an explicit opt-out.
+ */
+const RISKY_LABEL =
+  /\b(delete|remove|destroy|erase|drop|revoke|cancel subscription|send|submit payment|pay|purchase|buy|checkout|transfer|invite|publish|deploy)\b/i
 
 /** Upper bound of each settle wait: pages with constant activity (animations, polling) never block. */
 const SETTLE_MAX_MS = 3000
@@ -207,10 +203,26 @@ async function domQuiet(ctx: Ctx): Promise<void> {
       ({ quiet, max }) =>
         new Promise<void>((resolve) => {
           let timer = setTimeout(done, quiet)
-          const observer = new MutationObserver(() => {
+          const bump = () => {
             clearTimeout(timer)
             timer = setTimeout(done, quiet)
-          })
+          }
+          const options = { subtree: true, childList: true, attributes: true, characterData: true }
+          const observer = new MutationObserver(bump)
+          // MutationObserver doesn't see into shadow roots: observe every open one as well
+          // (web-component apps render inside them).
+          const observed = new Set<Node>()
+          const observe = (root: Node) => {
+            if (observed.has(root)) return
+            observed.add(root)
+            observer.observe(root, options)
+            const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+            for (let n = walker.nextNode(); n !== null; n = walker.nextNode()) {
+              const shadow = (n as Element).shadowRoot
+              if (shadow !== null) observe(shadow)
+            }
+          }
+          observe(document)
           const cap = setTimeout(done, max)
           function done() {
             observer.disconnect()
@@ -218,12 +230,6 @@ async function domQuiet(ctx: Ctx): Promise<void> {
             clearTimeout(cap)
             resolve()
           }
-          observer.observe(document, {
-            subtree: true,
-            childList: true,
-            attributes: true,
-            characterData: true,
-          })
         }),
       { quiet: 150, max: SETTLE_MAX_MS },
     )
@@ -261,6 +267,27 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     }
     case "click": {
       const target = await find(ctx, action.target, step)
+      if (action.risky === undefined) {
+        const label = await guard(step, () =>
+          target.evaluate(
+            (el) =>
+              (
+                el.getAttribute("aria-label") ??
+                (el instanceof HTMLElement ? el.innerText : el.textContent) ??
+                ""
+              ).trim(),
+            undefined,
+            { timeout: ctx.timeoutMs },
+          ),
+        )
+        if (RISKY_LABEL.test(label)) {
+          await requireApproval(
+            ctx,
+            step,
+            `"${label}" looks risky: approve it, or set \`risky: false\` if it's safe`,
+          )
+        }
+      }
       await guard(step, () =>
         target.click({
           timeout: ctx.timeoutMs,
@@ -276,15 +303,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     case "type": {
       const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
-      // A secret is never typed outside the target app (a redirect may have left it, e.g. SSO).
-      // Per-secret origin binding comes with the vault (APPROACHES §7.4).
-      if (secret !== undefined && new URL(page.url()).origin !== ctx.base.origin) {
-        throw new StepError(
-          step,
-          "off-origin",
-          `refusing to type secret "${secret}" on ${new URL(page.url()).origin}`,
-        )
-      }
+      assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
@@ -292,25 +311,24 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // unless `clear` empties the field first.
         if (action.clear === true) await target.fill("", { timeout })
         await target.focus({ timeout })
-        // Not the End key: on macOS it scrolls instead of moving the caret, and in a textarea
-        // it only goes to the end of the current line.
-        await target.evaluate(
-          (el) => {
-            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
-              const end = el.value.length
-              el.setSelectionRange(end, end)
-            } else if (el instanceof HTMLElement && el.isContentEditable) {
-              const range = document.createRange()
-              range.selectNodeContents(el)
-              range.collapse(false)
-              const selection = getSelection()
-              selection?.removeAllRanges()
-              selection?.addRange(range)
-            }
-          },
+        // The text goes to the focused element: make sure it's the target, never the field focused
+        // before (a secret would land there, on camera).
+        const focused = await target.evaluate(
+          (el) => el === document.activeElement || el.contains(document.activeElement),
           undefined,
           { timeout },
         )
+        if (!focused) {
+          throw new StepError(
+            step,
+            "action-failed",
+            "target can't take keyboard focus (use a locator for the input itself)",
+          )
+        }
+        await target.evaluate(moveCaretToEnd, undefined, { timeout })
+        // Checked again right before the text is sent: the page may have navigated while the
+        // secret was being resolved.
+        assertSecretOrigin(ctx, secret, step)
         if (action.instant === true || secret !== undefined) {
           await page.keyboard.insertText(text)
         } else {
@@ -400,8 +418,12 @@ async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>
   // The scroller is detected once per action and reused (a full style scan per scroll is costly),
   // and re-detected if the app re-mounts it.
   let handle: ElementHandle<Element> | undefined
+  let container: Locator | undefined
   const scroller = async (): Promise<Locator | ElementHandle<Element>> => {
-    if (within !== undefined) return find(ctx, within, step)
+    if (within !== undefined) {
+      container ??= await find(ctx, within, step)
+      return container
+    }
     if (
       handle === undefined ||
       !(await handle.evaluate((el) => el.isConnected).catch(() => false))
@@ -468,6 +490,8 @@ async function scrollUntil(
   const step80 = Math.max(40, Math.round(first.height * 0.8))
   const deadline = Date.now() + ctx.timeoutMs
   let lazyRetry = true
+  let lastDirection = 0
+  let reversals = 0
   for (;;) {
     const left = deadline - Date.now()
     if (left <= 0) {
@@ -495,6 +519,17 @@ async function scrollUntil(
         .catch(() => null)
       if (box !== null && box.y + box.height / 2 < area.top) direction = -1
     }
+    // A target that's in view but covered (sticky header, banner) makes the direction flip every
+    // round: after two reversals, stop and say so instead of swinging until the timeout.
+    if (result.ok && lastDirection !== 0 && direction !== lastDirection) reversals++
+    if (reversals >= 2) {
+      throw new StepError(
+        step,
+        "target-not-found",
+        "target is in the page but stays off screen (covered, or in another scroller: use `within`)",
+      )
+    }
+    lastDirection = direction
     const { moved } = await scrollBy(direction * step80)
     if (moved) {
       lazyRetry = true
@@ -631,6 +666,38 @@ function pathMatches(actual: string, expected: string): boolean {
   return path === want || path.startsWith(`${want}/`)
 }
 
+/** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */
+function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef) {
+  if (secret === undefined) return
+  const origin = new URL(ctx.page.url()).origin
+  // Per-secret origin binding comes with the vault (APPROACHES §7.4).
+  if (origin !== ctx.base.origin) {
+    throw new StepError(step, "off-origin", `refusing to type secret "${secret}" on ${origin}`)
+  }
+}
+
+/**
+ * Puts the caret at the end of the field (runs in the page). Not the End key: on macOS it scrolls
+ * instead of moving the caret, and in a textarea it only goes to the end of the current line. Some
+ * input types (email, number, date…) don't support selection: typing there appends anyway.
+ */
+function moveCaretToEnd(el: Element) {
+  if (
+    (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) &&
+    el.selectionStart !== null
+  ) {
+    const end = el.value.length
+    el.setSelectionRange(end, end)
+  } else if (el instanceof HTMLElement && el.isContentEditable) {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+    const selection = getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+  }
+}
+
 /** First line of an error's message (Playwright errors carry long call logs after it). */
 function firstLine(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause)
@@ -653,7 +720,7 @@ function modKey(key: string): string {
 }
 
 function toPlaywrightModifier(m: "Alt" | "Control" | "Meta" | "Shift" | "Mod") {
-  return m === "Mod" ? ("ControlOrMeta" as const) : m
+  return modKey(m) as "Alt" | "Control" | "Meta" | "Shift" | "ControlOrMeta"
 }
 
 function toPlaywrightKeys(keys: string): string {
