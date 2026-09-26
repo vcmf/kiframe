@@ -27,7 +27,7 @@ describe("Scenario", () => {
     const yaml = minimal(
       `  - { id: a, action: pause, ms: 100 }\n  - { id: a, action: pause, ms: 100 }\n`,
     )
-    expect(() => parseScenarioYaml(yaml)).toThrow(/duplicate step id "a"/)
+    expect(() => parseScenarioYaml(yaml)).toThrow(/duplicate id "a"/)
   })
 
   it("rejects non-kebab-case step ids", () => {
@@ -59,7 +59,7 @@ describe("Scenario", () => {
     const yaml = minimal(
       `  - { id: a, action: pause, ms: 10, camera: { follow: cursor, until: nope } }\n`,
     )
-    expect(() => parseScenarioYaml(yaml)).toThrow(/unknown step "nope"/)
+    expect(() => parseScenarioYaml(yaml)).toThrow(/later step, got "nope"/)
   })
 
   it("rejects presentation fields on off-camera actions", () => {
@@ -94,6 +94,7 @@ describe("Take and Composition", () => {
   it("parses a click event", () => {
     const e = TakeEvent.parse({
       t: 1200,
+      phase: "steps",
       stepId: "open-new",
       kind: "click",
       point: { x: 0.5, y: 0.2 },

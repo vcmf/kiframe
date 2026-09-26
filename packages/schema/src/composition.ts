@@ -1,5 +1,6 @@
 import * as z from "zod"
 import { Ms, NPoint, NRect, StepId } from "./common.ts"
+import { CAMERA_SCALE, MAX_SPEED } from "./settings.ts"
 
 // The edit: parallel typed tracks of segments (docs/OBJECT-MODEL.md §4).
 // Segments are anchored to steps/events in SOURCE time. `clips` maps source → output time.
@@ -27,15 +28,15 @@ const segmentBase = {
 export const ClipReason = z.enum(["idle", "network", "setup", "interrupt", "reading", "user"])
 
 export const ClipSegment = z.discriminatedUnion("mode", [
-  z.object({
+  z.strictObject({
     ...segmentBase,
     mode: z.literal("speed"),
-    speed: z.number().positive().max(16),
+    speed: z.number().positive().max(MAX_SPEED),
     reason: ClipReason.optional(),
   }),
-  z.object({ ...segmentBase, mode: z.literal("cut"), reason: ClipReason.optional() }),
+  z.strictObject({ ...segmentBase, mode: z.literal("cut"), reason: ClipReason.optional() }),
   /** Hold the source frame at `at` for `ms` of output time (e.g. caption reading time). No `until`. */
-  z.object({
+  z.strictObject({
     id: segmentBase.id,
     source: segmentBase.source,
     at: Anchor,
@@ -47,29 +48,29 @@ export const ClipSegment = z.discriminatedUnion("mode", [
 export type ClipSegment = z.infer<typeof ClipSegment>
 
 export const CameraFocus = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("follow-cursor") }),
-  z.object({ mode: z.literal("rect"), rect: NRect }),
-  z.object({ mode: z.literal("point"), p: NPoint }),
+  z.strictObject({ mode: z.literal("follow-cursor") }),
+  z.strictObject({ mode: z.literal("rect"), rect: NRect }),
+  z.strictObject({ mode: z.literal("point"), p: NPoint }),
 ])
 export type CameraFocus = z.infer<typeof CameraFocus>
 
-export const CameraSegment = z.object({
+export const CameraSegment = z.strictObject({
   ...segmentBase,
   /** 1 = full frame. Capped at render time by the source resolution (§2b). */
-  scale: z.number().min(1).max(4),
+  scale: z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max),
   focus: CameraFocus,
   ease: z.enum(["spring", "instant"]).optional(),
 })
 export type CameraSegment = z.infer<typeof CameraSegment>
 
-export const CaptionSegment = z.object({
+export const CaptionSegment = z.strictObject({
   ...segmentBase,
   text: z.string().min(1),
   position: z.enum(["bottom", "top", "near-target"]).optional(),
 })
 export type CaptionSegment = z.infer<typeof CaptionSegment>
 
-export const MaskSegment = z.object({
+export const MaskSegment = z.strictObject({
   ...segmentBase,
   kind: z.enum(["blur", "pixelate", "highlight", "spotlight"]),
   target: z.union([
@@ -80,22 +81,40 @@ export const MaskSegment = z.object({
 })
 export type MaskSegment = z.infer<typeof MaskSegment>
 
-export const CursorSegment = z.object({
+export const CursorSegment = z.strictObject({
   ...segmentBase,
   kind: z.enum(["hidden", "click-ripple"]),
 })
 export type CursorSegment = z.infer<typeof CursorSegment>
 
-export const Composition = z.object({
+export const CalloutSegment = z.strictObject({
+  ...segmentBase,
+  kind: z.enum(["arrow", "text", "badge"]),
+  text: z.string().optional(),
+  target: z.union([
+    z.strictObject({ frameRef: z.string().min(1) }),
+    z.strictObject({ rect: NRect }),
+  ]),
+})
+export type CalloutSegment = z.infer<typeof CalloutSegment>
+
+export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })
+export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
+
+export const Composition = z.strictObject({
   version: z.literal(1),
   /** The take the auto segments were generated from. */
-  take: z.object({ key: z.string().min(1) }).optional(),
-  tracks: z.object({
+  take: z.strictObject({ key: z.string().min(1) }).optional(),
+  /** Scene-level style overrides. Typed with the compositor (P0-7); kept verbatim until then. */
+  style: z.record(z.string(), z.unknown()).optional(),
+  tracks: z.strictObject({
     clips: z.array(ClipSegment).default([]),
     camera: z.array(CameraSegment).default([]),
     cursor: z.array(CursorSegment).default([]),
     captions: z.array(CaptionSegment).default([]),
     masks: z.array(MaskSegment).default([]),
+    callouts: z.array(CalloutSegment).default([]),
+    keystrokes: z.array(KeystrokeSegment).default([]),
   }),
 })
 export type Composition = z.infer<typeof Composition>
