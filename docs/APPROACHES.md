@@ -28,6 +28,8 @@
 | Accounts | **User + Org** model: each user has a **personal org** and a `defaultOrgId`, and can be invited to other orgs. Billing and shared settings at org level. Vault values stay **per user, per machine**, never synced (§10c) | 2026-09-26 |
 | Server stack | **TypeScript on Node.js (24 LTS)**, not Bun, with **Hono** + Postgres + Drizzle, to share `packages/schema` with the desktop app. One runtime for the whole monorepo (Electron main and Playwright are Node anyway). Hono is runtime-agnostic, so moving to Bun later would be cheap. cooldown's proxy **design** is ported, not its Python code (IMPLEMENTATION-PLAN §1) | 2026-09-26 |
 | Account required | **Yes, a free account for everyone, BYOK included.** Orgs, invitations and settings sync need it. Works offline after the first sign-in (§10c) | 2026-09-26 |
+| Phase 0 test apps | Web: **app.dim0.net** (ours). Electron: **smterm** (github.com/vcmf/smterm, ours) for P0-10. Plus one third-party web app for grounding (P0-8), chosen then | 2026-09-26 |
+| Phase 0 review rule | Spike PRs: `/code-review medium`. A finding is **severe** only if it blocks the Phase 0 exit criteria on the test apps. Everything else goes to the backlog / failure catalogue and is fixed when a real app hits it. `high` review from v0 and for security PRs | 2026-09-26 |
 | Versions | **v0** = first release (Sequence list, no canvas). **v0.1** = canvas + Electron targets (§11) | 2026-09-26 |
 
 ---
