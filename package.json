@@ -1,0 +1,31 @@
+{
+  "name": "kiframe",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && pnpm -r --no-bail typecheck",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.4",
+    "eslint": "^10.11.0",
+    "prettier": "^3.9.9",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.2",
+    "@kiframe/schema": "workspace:*",
+    "@kiframe/runtime": "workspace:*",
+    "@kiframe/generators": "workspace:*",
+    "@kiframe/compositor": "workspace:*"
+  }
+}
