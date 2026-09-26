@@ -206,9 +206,11 @@ The format, refined with ideas from demo-machine, VHS and Maestro. **The scenari
 **Project level** (`project.json`, shown as YAML for readability):
 
 ```yaml
+version: 1
 environment: staging             # org-level environment (APPROACHES §10c): URL, sandbox flag, pre-approvals
 target:
   kind: web                      # web (v0) | electron (v0.1) | tauri (later)
+  url: https://staging.acme.com  # Phase 0: set here. Later: comes from the environment
   viewport: { width: 1440, height: 900, deviceScaleFactor: 2 }
 defaults:                        # like VHS `Set`: global, separate from actions
   pacing: { cursor: natural, typing: human, settleMs: 400 }
@@ -229,8 +231,8 @@ presets:                         # shared off-camera setups (§0.4)
         instant: true
       - action: click
         target: { by: role, role: button, name: "Sign in" }
-interrupts: [ … ]                # §2b
-hide: [ … ]                      # §2b
+interrupts: []                   # §2b
+hide: []                         # §2b
 redaction:
   selectors: [ ".customer-email" ]
   secrets: auto                  # anything filled from the vault, and any occurrence of it on screen, is masked

@@ -1,0 +1,248 @@
+import * as z from "zod"
+import { Ms, RectTuple, StepId } from "./common.ts"
+
+// ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
+// Black box: locators use roles, labels and text. `css` is a last resort.
+
+const RoleLocator = z.strictObject({
+  by: z.literal("role"),
+  role: z.string().min(1),
+  name: z.string().optional(),
+  exact: z.boolean().optional(),
+})
+const LabelLocator = z.strictObject({
+  by: z.literal("label"),
+  name: z.string().min(1),
+  exact: z.boolean().optional(),
+})
+const TextLocator = z.strictObject({
+  by: z.literal("text"),
+  text: z.string().min(1),
+  exact: z.boolean().optional(),
+})
+const PlaceholderLocator = z.strictObject({ by: z.literal("placeholder"), text: z.string().min(1) })
+const CssLocator = z.strictObject({ by: z.literal("css"), selector: z.string().min(1) })
+
+export const Locator = z.discriminatedUnion("by", [
+  RoleLocator,
+  LabelLocator,
+  TextLocator,
+  PlaceholderLocator,
+  CssLocator,
+])
+export type Locator = z.infer<typeof Locator>
+
+/** Fields every target can carry on top of its locator. */
+const targetExtras = {
+  /** Natural-language intent from the chat. Used to heal the locator when it breaks. */
+  intent: z.string().min(1).optional(),
+  /** Alternative locators tried in order if the primary one fails. */
+  fallbacks: z.array(Locator).optional(),
+  /** Path to a screenshot crop of the element, used as visual reference for self-healing. */
+  fingerprint: z.string().optional(),
+  /** Pick the n-th match (0-based) when the locator matches several elements. */
+  nth: z.number().int().nonnegative().optional(),
+}
+
+/** A grounded target: a locator plus healing metadata. */
+export const GroundedTarget = z.discriminatedUnion("by", [
+  RoleLocator.extend(targetExtras),
+  LabelLocator.extend(targetExtras),
+  TextLocator.extend(targetExtras),
+  PlaceholderLocator.extend(targetExtras),
+  CssLocator.extend(targetExtras),
+])
+export type GroundedTarget = z.infer<typeof GroundedTarget>
+
+/** A target the agent hasn't grounded yet: only the intent is known (scene status `draft`). */
+export const UngroundedTarget = z.strictObject({ intent: z.string().min(1) })
+export type UngroundedTarget = z.infer<typeof UngroundedTarget>
+
+export const Target = z.union([GroundedTarget, UngroundedTarget])
+export type Target = z.infer<typeof Target>
+
+export function isGrounded(target: Target): target is GroundedTarget {
+  return "by" in target
+}
+
+// ─── Conditions (waitFor / expect / ensure) ───────────────────────────────────
+
+/** Exactly one condition form. */
+export const Condition = z.union([
+  z.strictObject({ visible: Locator }),
+  z.strictObject({ hidden: Locator }),
+  z.strictObject({ text: z.string().min(1) }),
+  z.strictObject({ url: z.string().min(1) }),
+  z.strictObject({ networkIdle: z.literal(true) }),
+])
+export type Condition = z.infer<typeof Condition>
+
+// ─── Presentation directives (§2b) ────────────────────────────────────────────
+
+const Until = z.strictObject({ until: StepId.optional() })
+
+export const CameraDirective = z.union([
+  z.enum(["auto", "wide", "target"]),
+  z.strictObject({ follow: z.literal("cursor"), ...Until.shape }),
+  z.strictObject({
+    frame: z.union([z.literal("target"), Locator, z.strictObject({ rect: RectTuple })]),
+    scale: z.number().min(1).max(4).optional(),
+    ...Until.shape,
+  }),
+])
+export type CameraDirective = z.infer<typeof CameraDirective>
+
+export const Emphasis = z.union([
+  z.enum(["none", "highlight", "spotlight"]),
+  z.strictObject({
+    kind: z.enum(["highlight", "spotlight"]),
+    on: z.union([z.literal("target"), Locator, z.strictObject({ rect: RectTuple })]),
+  }),
+])
+export type Emphasis = z.infer<typeof Emphasis>
+
+/** Presentation fields shared by every recorded step. They have no effect on the app. */
+const presentation = {
+  caption: z.string().min(1).optional(),
+  instruction: z.string().min(1).optional(),
+  camera: CameraDirective.optional(),
+  emphasis: Emphasis.optional(),
+  /** Presentation beat after the step, in ms. Never sped up. */
+  hold: Ms.optional(),
+  cursor: z.enum(["show", "hide"]).optional(),
+  speed: z.number().positive().optional(),
+  keystrokes: z.enum(["show", "hide"]).optional(),
+  /** Deletes, sends, pays or invites: needs confirmation unless pre-approved on a sandbox environment. */
+  risky: z.boolean().optional(),
+}
+
+// ─── Actions (Phase 0 subset; full set in M1-1) ───────────────────────────────
+
+const Goto = z.strictObject({ action: z.literal("goto"), url: z.string().min(1) })
+const Click = z.strictObject({
+  action: z.literal("click"),
+  target: Target,
+  button: z.enum(["left", "right"]).optional(),
+  count: z.union([z.literal(1), z.literal(2)]).optional(),
+  modifiers: z.array(z.enum(["Alt", "Control", "Meta", "Shift", "Mod"])).optional(),
+})
+const Type = z.strictObject({
+  action: z.literal("type"),
+  target: Target,
+  /** Text to type, or a secret reference `{{secrets.<name>}}`. */
+  value: z.string(),
+  clear: z.boolean().optional(),
+  submit: z.boolean().optional(),
+  /** Off camera: fill instantly instead of human typing. */
+  instant: z.boolean().optional(),
+})
+const Press = z.strictObject({ action: z.literal("press"), keys: z.string().min(1) })
+const Scroll = z.strictObject({
+  action: z.literal("scroll"),
+  to: Target.optional(),
+  by: z.strictObject({ y: z.number() }).optional(),
+  until: Target.optional(),
+  within: Target.optional(),
+})
+const WaitFor = z.strictObject({
+  action: z.literal("waitFor"),
+  until: Condition,
+  timeout: Ms.optional(),
+})
+const Pause = z.strictObject({ action: z.literal("pause"), ms: Ms })
+const Expect = z.strictObject({
+  action: z.literal("expect"),
+  that: Condition,
+  timeout: Ms.optional(),
+})
+
+const scrollHasExactlyOneMode = (s: {
+  action: string
+  to?: unknown
+  by?: unknown
+  until?: unknown
+}) => s.action !== "scroll" || [s.to, s.by, s.until].filter((v) => v !== undefined).length === 1
+const scrollModeError = { message: "scroll needs exactly one of `to`, `by` or `until`" }
+
+/** Off-camera fields (setup, teardown, presets): IDs are optional there. */
+const offCamera = { id: StepId.optional(), risky: z.boolean().optional() }
+
+/** An off-camera action (setup, teardown, presets). */
+export const Action = z
+  .discriminatedUnion("action", [
+    Goto.extend(offCamera),
+    Click.extend(offCamera),
+    Type.extend(offCamera),
+    Press.extend(offCamera),
+    Scroll.extend(offCamera),
+    WaitFor.extend(offCamera),
+    Pause.extend(offCamera),
+    Expect.extend(offCamera),
+  ])
+  .refine(scrollHasExactlyOneMode, scrollModeError)
+export type Action = z.infer<typeof Action>
+
+/** On-camera fields: a stable ID plus presentation directives. */
+const onCamera = { id: StepId, ...presentation }
+
+/** A recorded step: an action with a stable ID and presentation fields. */
+export const Step = z
+  .discriminatedUnion("action", [
+    Goto.extend(onCamera),
+    Click.extend(onCamera),
+    Type.extend(onCamera),
+    Press.extend(onCamera),
+    Scroll.extend(onCamera),
+    WaitFor.extend(onCamera),
+    Pause.extend(onCamera),
+    Expect.extend(onCamera),
+  ])
+  .refine(scrollHasExactlyOneMode, scrollModeError)
+export type Step = z.infer<typeof Step>
+
+// ─── Setup / teardown items ───────────────────────────────────────────────────
+
+/** Run a shared preset. Session presets run once per recording batch. */
+export const PresetRef = z.strictObject({ preset: z.string().min(1) })
+/** The only idempotency primitive: declarative, not a condition (§2). */
+export const Ensure = z.strictObject({
+  ensure: z.union([z.strictObject({ absent: Locator }), z.strictObject({ present: Locator })]),
+})
+export const SetupItem = z.union([PresetRef, Ensure, Action])
+export type SetupItem = z.infer<typeof SetupItem>
+
+// ─── Scenario (one per scene) ─────────────────────────────────────────────────
+
+export const Scenario = z
+  .object({
+    version: z.literal(1),
+    overrides: z.record(z.string(), z.unknown()).optional(),
+    setup: z.array(SetupItem).optional(),
+    steps: z.array(Step).min(1),
+    teardown: z.array(Action).optional(),
+  })
+  .superRefine((s, ctx) => {
+    const seen = new Set<string>()
+    s.steps.forEach((step, i) => {
+      if (seen.has(step.id)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `duplicate step id "${step.id}"`,
+          path: ["steps", i, "id"],
+        })
+      }
+      seen.add(step.id)
+    })
+    s.steps.forEach((step, i) => {
+      const until =
+        typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
+      if (until !== undefined && !seen.has(until)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `camera.until refers to unknown step "${until}"`,
+          path: ["steps", i, "camera", "until"],
+        })
+      }
+    })
+  })
+export type Scenario = z.infer<typeof Scenario>
