@@ -326,7 +326,7 @@ Principles:
 
 Setup/teardown-only directives: `preset`, `ensure` (§2).
 
-A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases (buttons named Delete/Send/Pay).
+A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases from the clicked control's **standard accessible name** (Delete/Remove/Send/Pay/Invite…). This detection is a safety net that **fails closed**: a harmless control whose name contains such a word (a link card "Acme project Delete") asks for approval too, and `risky: false` on the step opts out.
 
 **Implicit behaviors (runtime, not actions):**
 - the **interrupt check** before each step (see below)

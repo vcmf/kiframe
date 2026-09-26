@@ -815,12 +815,14 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
     await expect(page.getByText(/^Board \d+/).isVisible()).resolves.toBe(true)
   })
 
-  it("doesn't judge a link card by the Delete button nested in it", async () => {
-    await run(`steps:
+  it("fails closed on a link card whose accessible name contains Delete (risky: false opts out)", async () => {
+    const card = (risky: string) => `steps:
   - { id: go, action: goto, url: /cards }
-  - { id: open, action: click, target: { by: text, text: Acme project } }
+  - { id: open, action: click, target: { by: text, text: Acme project }${risky} }
   - { id: at, action: expect, that: { url: "/cards#opened" } }
-`)
+`
+    expect((await failure(card(""))).reason).toBe("risky-not-approved")
+    await run(card(", risky: false"))
   })
 
   it("releases the cursor even when the click fails", async () => {
@@ -943,12 +945,15 @@ teardown:
 `)
   })
 
-  it("doesn't treat an image card as a wrapper of its Delete button", async () => {
-    await run(`steps:
+  it("names an image card from its alt text, and fails closed on its nested Delete", async () => {
+    const card = (risky: string) => `steps:
   - { id: go, action: goto, url: /labels }
-  - { id: open, action: click, target: { by: css, selector: "#thumbcard img" } }
+  - { id: open, action: click, target: { by: css, selector: "#thumbcard img" }${risky} }
   - { id: at, action: expect, that: { url: "/labels#thumb" } }
-`)
+`
+    const error = await failure(card(""))
+    expect(error.message).toMatch(/Q4 plan Delete/)
+    await run(card(", risky: false"))
   })
 
   it("clicks exactly on the pressed point of a bordered element", async () => {
@@ -972,5 +977,22 @@ teardown:
         Math.abs(press.x - (x ?? 0)) <= 1 &&
         Math.abs(press.y - (y ?? 0)) <= 1,
     ).toBe(true)
+  })
+
+  // ─── P0-4 review round 4: accessible names, failing closed ─────────────────
+
+  it("flags risky controls by their accessible name in every DOM shape", async () => {
+    await page.setContent(`
+      <a href="#d" id="nested">Delete draft <span role="button"><button>Delete</button></span></a>
+      <button id="hidden-child">Delete file<span role="button" style="display:none">Delete</span></button>
+      <ul><li role="menuitem" id="icon-item"><svg width="8" height="8"></svg><a href="#">Delete</a></li></ul>
+      <input type="image" id="img-input" alt="Delete" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+      <button id="img-button"><img alt="Remove" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="10" height="10"></button>`)
+    for (const id of ["nested", "hidden-child", "icon-item", "img-input", "img-button"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
   })
 })

@@ -223,48 +223,36 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
   if (!approved) throw new StepError(step, "risky-not-approved", detail)
 }
 
+/** The nearest control at or above the target: a click inside a button counts as clicking it. */
+const NEAREST_CONTROL =
+  "xpath=ancestor-or-self::*[self::button or self::a[@href] or self::input[@type='submit' or @type='button' or @type='reset' or @type='image'] or @role='button' or @role='link' or @role='menuitem' or @role='menuitemradio' or @role='menuitemcheckbox' or @role='tab' or @role='option'][1]"
+
 /**
- * The accessible label of a control (runs in the page): only buttons, links, menu items and
- * submit-like inputs count, so clicking a row or card that merely CONTAINS a "Delete" button isn't
- * mistaken for a delete. Empty string for anything else.
+ * The accessible name of the control a click acts on, as the W3C algorithm defines it (Playwright's
+ * aria snapshot: alt text, aria-labelledby, input values, hidden content and display: contents are
+ * all handled). "" when the click isn't on a control (a row, a card without a link…).
+ *
+ * The risky check built on it is a safety net that FAILS CLOSED: a name like a link card's "Acme
+ * project Delete" asks for approval (safe, and `risky: false` opts out), while a real Delete never
+ * runs unapproved.
  */
-function controlLabel(target: Element): string {
-  const CONTROLS =
-    "button, a, input[type=submit], input[type=button], input[type=reset], input[type=image], [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
-  // A click resolved to the text or icon INSIDE a button counts as clicking the button.
-  const el = target.closest(CONTROLS)
-  if (el === null) return ""
-  // innerText is the browser's own rendered text: words across inline tags stay whole, hidden
-  // content is left out, `display: contents` wrappers are kept.
-  const rendered = (e: Element) => (e instanceof HTMLElement ? e.innerText : (e.textContent ?? ""))
-  const nested = [...el.querySelectorAll(CONTROLS)].filter((n) => !n.contains(el))
-  // The control's OWN text: its text minus nested controls' (clicking a link card's title must not
-  // be judged by a "Delete" button inside the card).
-  let own = rendered(el)
-  for (const n of nested) own = own.replace(rendered(n), " ")
-  // Content of its own that isn't text (a thumbnail): the control isn't a mere wrapper.
-  const ownMedia = [...el.querySelectorAll("img, svg, [role=img]")].some(
-    (m) => !nested.some((n) => n.contains(m)),
-  )
-  // A wrapper with nothing of its own (<li role=menuitem><a>Delete</a></li>) is labeled by what it wraps.
-  const text = own.trim() !== "" || ownMedia ? own : rendered(el)
-  const isInput =
-    el instanceof HTMLInputElement && ["submit", "button", "reset", "image"].includes(el.type)
-  const byIds = (el.getAttribute("aria-labelledby") ?? "")
-    .split(/\s+/)
-    .map((id) => (id === "" ? "" : (document.getElementById(id)?.textContent ?? "")))
+async function controlName(target: Locator, timeout: number): Promise<string> {
+  const control = target.locator(NEAREST_CONTROL)
+  if ((await control.count()) === 0) return ""
+  const snapshot = await control.first().ariaSnapshot({ timeout })
+  // The control's name plus the names and texts of what it contains: the name alone can glue words
+  // together (an icon's <title> + text gives "trashDelete"). camelCase joins are split again.
+  const parts = snapshot.split("\n").flatMap((line) => {
+    const named = /^\s*- [\w-]+ "((?:[^"\\]|\\.)*)"/.exec(line)?.[1]
+    const text = /^\s*- text: (.*)$/.exec(line)?.[1]
+    return [named, text].filter((s): s is string => s !== undefined)
+  })
+  return parts
+    .map((s) => s.replace(/\\(.)/g, "$1").replace(/([a-z])([A-Z])/g, "$1 $2"))
     .join(" ")
-  const candidates = [
-    el.getAttribute("aria-label"),
-    byIds,
-    isInput ? el.value : null,
-    text,
-    el.getAttribute("title"),
-  ]
-  return (candidates.find((c) => c !== null && c.trim() !== "") ?? "")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 80)
+    .slice(0, 200)
 }
 
 /**
@@ -359,9 +347,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     case "click": {
       const target = await find(ctx, action.target, step)
       if (action.risky === undefined) {
-        const label = await guard(step, () =>
-          target.evaluate(controlLabel, undefined, { timeout: ctx.timeoutMs }),
-        )
+        const label = await guard(step, () => controlName(target, ctx.timeoutMs))
         if (RISKY_LABEL.test(label)) {
           await requireApproval(
             ctx,
@@ -406,7 +392,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
-      if (step.phase === "steps") await moveCursorTo(ctx, target, step)
+      if (step.phase === "steps") await moveCursorTo(ctx, target, step, { forClick: false })
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -811,6 +797,7 @@ async function moveCursorTo(
   ctx: Ctx,
   target: Locator,
   step: StepRef,
+  { forClick = true }: { forClick?: boolean } = {},
 ): Promise<CursorTarget | undefined> {
   return guard(step, async () => {
     const viewport =
@@ -833,6 +820,8 @@ async function moveCursorTo(
         random,
       }),
     )
+    // Typing only needs the visual movement: no re-measure, no click offset.
+    if (!forClick) return { point: ctx.cursor ?? to, offset: { x: 0, y: 0 } }
     if (pacing === "instant") {
       const at = ctx.cursor ?? to
       return { point: at, offset: await clickOffset(target, box, at, ctx.timeoutMs) }
@@ -874,6 +863,7 @@ async function clickOffset(
   at: Point,
   timeout: number,
 ): Promise<Point> {
+  // Short timeout: the element was just measured, a slow answer means it's re-rendering.
   const border = await target
     .evaluate(
       (el) => {
@@ -884,7 +874,7 @@ async function clickOffset(
         }
       },
       undefined,
-      { timeout },
+      { timeout: Math.min(timeout, 500) },
     )
     .catch(() => ({ left: 0, top: 0 }))
   return { x: at.x - box.x - border.left, y: at.y - box.y - border.top }
