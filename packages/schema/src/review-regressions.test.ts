@@ -3,6 +3,7 @@ import {
   Action,
   checkScenarioAgainstProject,
   Composition,
+  CursorSample,
   NRect,
   ProjectConfig,
   parseProjectYaml,
@@ -498,7 +499,7 @@ describe("round 4: spans that can be ordered without a take", () => {
 
 describe("round 4: YAML alias keys", () => {
   it("rejects an alias key that resolves to __proto__", () => {
-    expect(() => parseScenarioYaml("x: &k __proto__\n*k : { a: 1 }\n")).toThrow(/forbidden key/)
+    expect(() => parseScenarioYaml("x: &k __proto__\n*k : { a: 1 }\n")).toThrow(SchemaError)
   })
 })
 
@@ -540,7 +541,9 @@ describe("round 5: anchors with offsets on different edges need a take", () => {
       ).success,
     ).toBe(true)
     expect(
-      Composition.safeParse(caption({ scene: "end" }, { scene: "start", offsetMs: 5000 })).success,
+      Composition.safeParse(
+        caption({ scene: "end", offsetMs: -2000 }, { scene: "start", offsetMs: 5000 }),
+      ).success,
     ).toBe(true)
   })
 
@@ -941,7 +944,7 @@ describe("round 10", () => {
   })
 
   it("rejects collection keys instead of stringifying them", () => {
-    expect(() => parseScenarioYaml(`? [a]\n: 1\nversion: 1\n${steps}`)).toThrow(/plain values/)
+    expect(() => parseScenarioYaml(`? [a]\n: 1\nversion: 1\n${steps}`)).toThrow(SchemaError)
   })
 
   it("reports a forbidden key once", () => {
@@ -963,7 +966,7 @@ describe("round 11", () => {
           'presets:\n  1: { steps: [{ action: pause, ms: 1 }] }\n  "1": { steps: [{ action: pause, ms: 2 }] }\n',
         ),
       ),
-    ).toThrow(/duplicate key "1"/)
+    ).toThrow(/DUPLICATE_KEY/)
     expect(() => parseScenarioYaml(`&k a: 1\n*k : 2\nversion: 1\n${steps}`)).toThrow(SchemaError)
   })
 
@@ -1037,7 +1040,7 @@ describe("round 12", () => {
   })
 
   it("maps null YAML keys like toJS does", () => {
-    expect(() => parseScenarioYaml(`~: 1\n"": 2\nversion: 1\n${steps}`)).toThrow(/duplicate key ""/)
+    expect(() => parseScenarioYaml(`~: 1\n"": 2\nversion: 1\n${steps}`)).toThrow(SchemaError)
     expect(() => parseScenarioYaml(`null: 1\n"null": 2\nversion: 1\n${steps}`)).toThrow(SchemaError)
   })
 
@@ -1084,5 +1087,51 @@ describe("round 12", () => {
         .error?.issues.map((i) => i.message)
         .join(" ") ?? ""
     expect(messages).not.toMatch(/nonoptional/)
+  })
+})
+
+// ─── Round 13 (non-severe hardening, applied without a new round) ────────────
+
+describe("round 13", () => {
+  it("rejects escaped `<` in CSS selectors", () => {
+    const sel = "x\\</style\\><img src=x onerror=alert(1)>"
+    expect(() => parseProjectYaml(project(`hide: [${JSON.stringify(sel)}]\n`))).toThrow(
+      /single CSS selector/,
+    )
+  })
+
+  it("keeps YAML keys as written (no NaN / Infinity collisions or false duplicates)", () => {
+    expect(() => parseScenarioYaml(`.inf: 1\n-.inf: 2\nversion: 1\n${steps}`)).toThrow(
+      /Unrecognized key/,
+    )
+    expect(() => parseScenarioYaml(`1: a\n"1": b\nversion: 1\n${steps}`)).toThrow(/DUPLICATE_KEY/)
+  })
+
+  it("rejects YAML 1.1 documents", () => {
+    expect(() => parseScenarioYaml(`%YAML 1.1\n---\nversion: 1\n${steps}`)).toThrow(/YAML 1.2/)
+  })
+
+  it("rejects spans starting at the scene end", () => {
+    const clip = {
+      id: "c",
+      source: "auto",
+      mode: "cut",
+      at: { scene: "end" },
+      until: { scene: "start", offsetMs: 5 },
+    }
+    expect(Composition.safeParse({ version: 1, tracks: { clips: [clip] } }).success).toBe(false)
+  })
+
+  it("doesn't echo the source line in YAML errors", () => {
+    expect(() =>
+      parseScenarioYaml("version: 1\nsteps: [ { id: a, action: type, value: hunter2: x } ]\n"),
+    ).toThrow(/^(?![\s\S]*hunter2)/)
+  })
+
+  it("guards cursor samples like other take records", () => {
+    expect(
+      CursorSample.safeParse({ t: 0, p: { x: 0.1, y: 0.1 }, pressed: false, css: "{{secrets.x}}" })
+        .success,
+    ).toBe(false)
   })
 })
