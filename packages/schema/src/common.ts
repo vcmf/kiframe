@@ -47,9 +47,13 @@ export const StepId = z
   .regex(/^[a-z0-9][a-z0-9-]*$/, "step id must be kebab-case (a-z, 0-9, -)")
 export type StepId = z.infer<typeof StepId>
 
-/** A duration or timestamp in milliseconds. */
+/** A duration or authored time in milliseconds (integer). */
 export const Ms = z.number().int().nonnegative()
 export type Ms = z.infer<typeof Ms>
+
+/** A recorded timestamp in milliseconds. Fractional: screencast frame timestamps are floats. */
+export const Timestamp = z.number().nonnegative()
+export type Timestamp = z.infer<typeof Timestamp>
 
 /** Pattern of a secret NAME: dotted segments of letters, digits, `_` and `-`. */
 const SECRET_NAME = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*"
@@ -63,8 +67,11 @@ export type SecretName = z.infer<typeof SecretName>
 /** Reference to a vault secret by name, e.g. `{{secrets.acme_staging.password}}`. The value never appears in files. */
 export const SECRET_REF = new RegExp(`^\\{\\{secrets\\.(${SECRET_NAME})\\}\\}$`)
 
-/** Anything that looks like an attempt at a secret reference: `{{secret…`, any case, any spacing. */
-const SECRET_REF_LIKE = /\{\{\s*secrets?/i
+/**
+ * An attempt at a secret reference: `{{secret.` / `{{ Secrets.` … (any case or spacing, then a dot).
+ * The dot keeps ordinary template text like `{{ secretary }}` or `{{secret_key}}` from matching.
+ */
+const SECRET_REF_LIKE = /\{\{\s*secrets?\s*\./i
 
 /** Returns the secret name if `value` is exactly a secret reference, otherwise undefined. */
 export function secretRefName(value: string): string | undefined {
@@ -100,9 +107,12 @@ export function isNavigableUrl(url: string): boolean {
   return protocol === "http:" || protocol === "https:"
 }
 
-export const noCredentials = {
-  message: "URL must not contain credentials: store them in the vault",
-} as const
+/** Adds the "no embedded credentials" rule to a URL-ish string schema (one rule for every URL field). */
+export function withoutCredentials<T extends z.ZodType<string>>(schema: T) {
+  return schema.refine((u) => !hasUrlCredentials(u), {
+    message: "URL must not contain credentials: store them in the vault",
+  })
+}
 
 /**
  * A CSS selector Kiframe injects into the page (`hide`, redaction) or queries with. Braces,
@@ -117,6 +127,14 @@ export const CssSelector = z
 /** The `id` of an item, if it has a string one (steps, actions, rules, segments). */
 export function idOf(item: object): string | undefined {
   return "id" in item && typeof item.id === "string" ? item.id : undefined
+}
+
+/** The ids of the items that have one, in order. */
+export function idsOf(items: readonly object[]): string[] {
+  return items.flatMap((item) => {
+    const id = idOf(item)
+    return id === undefined ? [] : [id]
+  })
 }
 
 /**

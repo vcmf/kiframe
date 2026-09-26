@@ -1,5 +1,5 @@
 import * as z from "zod"
-import { claimIds, CssSelector, hasUrlCredentials, idOf, noCredentials } from "./common.ts"
+import { claimIds, CssSelector, idsOf, withoutCredentials } from "./common.ts"
 import { guarded } from "./guards.ts"
 import { Action, CameraDefault, Ensure, Locator, presetRefs, type Scenario } from "./scenario.ts"
 import { Pacing, RuleName, Viewport } from "./settings.ts"
@@ -10,7 +10,7 @@ import { Pacing, RuleName, Viewport } from "./settings.ts"
 export const TargetApp = z.strictObject({
   kind: z.literal("web"),
   /** http(s) only, and no embedded credentials (use the vault): the app Kiframe drives. */
-  url: z.url({ protocol: /^https?$/ }).refine((u) => !hasUrlCredentials(u), noCredentials),
+  url: withoutCredentials(z.url({ protocol: /^https?$/ })),
   viewport: Viewport,
 })
 export type TargetApp = z.infer<typeof TargetApp>
@@ -32,7 +32,7 @@ export const InterruptRule = z.strictObject({
   id: RuleName,
   when: z.union([Locator, z.strictObject({ text: z.string().min(1) })]),
   /** No `id` on the action: interrupt events are identified by the rule id, not a step id. */
-  do: Action.refine((action) => idOf(action) === undefined, {
+  do: Action.refine((action) => !("id" in action) || action.id === undefined, {
     message: "interrupt actions can't have an id (the rule id identifies them)",
   }),
 })
@@ -70,10 +70,7 @@ export type ProjectConfig = z.infer<typeof ProjectConfigBase>
 export function checkScenarioAgainstProject(scenario: Scenario, project: ProjectConfig): string[] {
   const problems: string[] = []
   const scenarioIds = new Set(
-    [...(scenario.setup ?? []), ...scenario.steps, ...(scenario.teardown ?? [])].flatMap((item) => {
-      const id = idOf(item)
-      return id === undefined ? [] : [id]
-    }),
+    idsOf([...(scenario.setup ?? []), ...scenario.steps, ...(scenario.teardown ?? [])]),
   )
   // Ids of every used preset must be unique among themselves and against the scenario. A preset
   // used twice would repeat its ids, so that's reported too (unless its steps have no ids).
@@ -84,10 +81,7 @@ export function checkScenarioAgainstProject(scenario: Scenario, project: Project
       problems.push(`setup uses unknown preset "${name}"`)
       continue
     }
-    const stepIds = (project.presets[name]?.steps ?? []).flatMap((step) => {
-      const id = idOf(step)
-      return id === undefined ? [] : [id]
-    })
+    const stepIds = idsOf(project.presets[name]?.steps ?? [])
     if (used.has(name)) {
       if (stepIds.length > 0) problems.push(`preset "${name}" is used twice and has step ids`)
       continue

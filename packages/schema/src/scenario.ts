@@ -2,13 +2,12 @@ import * as z from "zod"
 import {
   claimIds,
   CssSelector,
-  hasUrlCredentials,
   isNavigableUrl,
   Ms,
-  noCredentials,
   RectTuple,
   secretRefName,
   StepId,
+  withoutCredentials,
 } from "./common.ts"
 import { guarded } from "./guards.ts"
 import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from "./settings.ts"
@@ -84,7 +83,7 @@ export const Condition = z.union([
   z.strictObject({ visible: Locator }),
   z.strictObject({ hidden: Locator }),
   z.strictObject({ text: z.string().min(1) }),
-  z.strictObject({ url: z.string().min(1) }),
+  z.strictObject({ url: withoutCredentials(z.string().min(1)) }),
   z.strictObject({ networkIdle: z.literal(true) }),
 ])
 export type Condition = z.infer<typeof Condition>
@@ -139,14 +138,13 @@ const presentation = {
 
 // ─── Actions (Phase 0 subset; full set in M1-1) ───────────────────────────────
 
-/** True if `url` is absolute and embeds credentials (`https://user:pass@host`). Relative URLs can't. */
 const Goto = z.strictObject({
   action: z.literal("goto"),
   url: z
     .string()
     .min(1)
     .refine(isNavigableUrl, { message: "goto URL must be relative or http(s)" })
-    .refine((u) => !hasUrlCredentials(u), noCredentials),
+    .pipe(withoutCredentials(z.string())),
 })
 const Click = z.strictObject({
   action: z.literal("click"),

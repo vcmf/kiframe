@@ -1,6 +1,5 @@
-import { isAlias, isScalar, parseDocument, visit, YAMLParseError } from "yaml"
+import { parseDocument, YAMLParseError } from "yaml"
 import * as z from "zod"
-import { FORBIDDEN_KEYS } from "./guards.ts"
 import { ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
 
@@ -19,21 +18,9 @@ function loadYaml(text: string, what: string): unknown {
   const doc = parseDocument(text)
   const [firstError] = doc.errors
   if (firstError) throw new SchemaError(what, firstError.message)
-  let forbidden: string | undefined
-  visit(doc, {
-    Pair(_, pair) {
-      // Resolve alias keys (`*k: …` where `k: &k __proto__`) before checking them.
-      const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
-      if (isScalar(key) && typeof key.value === "string" && FORBIDDEN_KEYS.has(key.value)) {
-        forbidden = key.value
-        return visit.BREAK
-      }
-      return undefined
-    },
-  })
-  if (forbidden !== undefined) throw new SchemaError(what, `forbidden key "${forbidden}"`)
   try {
-    // maxAliasCount guards against "billion laughs" alias expansion.
+    // maxAliasCount guards against "billion laughs" alias expansion. Forbidden keys such as
+    // `__proto__` stay own keys in the output and are rejected by the schema guards.
     return doc.toJS({ maxAliasCount: 100 })
   } catch (error) {
     // yaml throws ReferenceError for unresolved or excessive aliases, YAMLParseError otherwise.

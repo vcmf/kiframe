@@ -1,5 +1,6 @@
 import * as z from "zod"
 import { Ms } from "./common.ts"
+import { FORBIDDEN_KEYS } from "./guards.ts"
 
 // Settings shared by the project config and per-scene overrides.
 // Each setting has a "shape" without defaults (used for partial overrides, so an override never
@@ -39,6 +40,6 @@ export const CAMERA_SCALE = { min: 1, max: 4 } as const
 export const RuleName = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]*$/, "names must start with a-z or 0-9 and use a-z, 0-9, - or _")
-  .refine((name) => !["constructor", "prototype"].includes(name), {
+  .refine((name) => !FORBIDDEN_KEYS.has(name), {
     message: "reserved name (it clashes with JavaScript object keys)",
   })

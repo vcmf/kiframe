@@ -14,59 +14,85 @@ export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
 
 type Path = (string | number)[]
 
+/** Lists of actions whose `type` items may hold a secret reference, by the key that holds them. */
+const ACTION_LISTS = new Set(["setup", "steps", "teardown"])
+
 /**
  * Secrets are allowed in exactly one place: the whole `value` of a `type` action, where the runtime
- * resolves them. Anywhere else a reference would be shown, logged or injected literally.
+ * resolves it. That means `…/<setup|steps|teardown>/<i>/value` (scenarios, presets) or
+ * `interrupts/<i>/do/value`, on an object whose `action` is `type`. Matching the position, not only
+ * the shape, keeps free-form objects (e.g. composition `style`) from opening a slot.
  */
-function isSecretSlot(parent: unknown, key: string | number): boolean {
-  return (
-    key === "value" &&
+function isSecretSlot(path: Path, parent: unknown): boolean {
+  const isTypeAction =
     typeof parent === "object" &&
     parent !== null &&
     (parent as { action?: unknown }).action === "type"
-  )
+  if (!isTypeAction || path[path.length - 1] !== "value") return false
+  const [container, index] = [path[path.length - 3], path[path.length - 2]]
+  if (typeof index === "number" && typeof container === "string" && ACTION_LISTS.has(container)) {
+    return true
+  }
+  return path[path.length - 2] === "do" && path[path.length - 4] === "interrupts"
 }
 
-function walk(value: unknown, path: Path, parent: unknown, ctx: z.RefinementCtx): void {
+function walk(value: unknown, path: Path, parent: unknown, issues: z.core.$ZodIssue[]): void {
+  const issue = (at: Path, message: string) =>
+    issues.push({ code: "custom", path: at, message, input: value })
   if (typeof value === "string") {
-    const key = path[path.length - 1]
-    if (key !== undefined && isSecretSlot(parent, key)) {
+    if (isSecretSlot(path, parent)) {
       if (isMalformedSecretRef(value)) {
-        ctx.addIssue({
-          code: "custom",
+        issue(
           path,
-          message:
-            "malformed secret reference: use exactly `{{secrets.<name>}}`, with no spaces or other text",
-        })
+          "malformed secret reference: use exactly `{{secrets.<name>}}`, with no spaces or other text",
+        )
       }
     } else if (mentionsSecret(value)) {
-      ctx.addIssue({
-        code: "custom",
-        path,
-        message: "secret references are only allowed as the whole `value` of a `type` action",
-      })
+      issue(path, "secret references are only allowed as the whole `value` of a `type` action")
     }
     return
   }
   if (Array.isArray(value)) {
-    value.forEach((item, i) => walk(item, [...path, i], value, ctx))
+    value.forEach((item, i) => walk(item, [...path, i], value, issues))
     return
   }
   if (typeof value === "object" && value !== null) {
     for (const key of Object.keys(value)) {
       if (FORBIDDEN_KEYS.has(key)) {
-        ctx.addIssue({ code: "custom", path: [...path, key], message: `forbidden key "${key}"` })
+        issue([...path, key], `forbidden key "${key}"`)
         continue
       }
-      walk((value as Record<string, unknown>)[key], [...path, key], value, ctx)
+      if (mentionsSecret(key)) {
+        issue([...path, key], "secret references can't be used as keys")
+      }
+      walk((value as Record<string, unknown>)[key], [...path, key], value, issues)
     }
   }
 }
 
-/** Wraps a top-level schema with the whole-document guards (forbidden keys, secret references). */
+/**
+ * Wraps a top-level schema with the whole-document guards (forbidden keys, secret references).
+ * Guard issues and schema issues are reported together, so one pass shows every problem.
+ */
 export function guarded<T extends z.ZodType>(schema: T) {
-  return z.preprocess((input, ctx) => {
-    walk(input, [], undefined, ctx)
-    return input
-  }, schema)
+  return z.unknown().transform((input, ctx): z.output<T> => {
+    const issues: z.core.$ZodIssue[] = []
+    walk(input, [], undefined, issues)
+    const result = schema.safeParse(input)
+    if (!result.success) issues.push(...result.error.issues)
+    if (!result.success || issues.length > 0) {
+      // Forwarded as custom issues; the original zod code is kept in `params.code`.
+      for (const i of issues) {
+        ctx.addIssue({
+          code: "custom",
+          message: i.message,
+          path: i.path,
+          input,
+          params: { code: i.code },
+        })
+      }
+      return z.NEVER
+    }
+    return result.data
+  })
 }

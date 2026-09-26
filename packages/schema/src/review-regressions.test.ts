@@ -230,7 +230,7 @@ describe("round 2: preset names and ids", () => {
 })
 
 describe("round 2: secrets", () => {
-  it.each(["{{secret.x}}", "{{Secrets.x}}", "{{secretsx}}", "{{secrets..}}"])(
+  it.each(["{{secret.x}}", "{{Secrets.x}}", "{{ secrets . x }}", "{{secrets..}}"])(
     "rejects %j as a type value",
     (value) => {
       const yaml = `version: 1\nsteps:\n  - id: t\n    action: type\n    target: { intent: "field" }\n    value: ${JSON.stringify(value)}\n`
@@ -688,5 +688,66 @@ describe("round 6: scroll within has a target", () => {
   it("accepts emphasis on a scroll inside a container", () => {
     const yaml = `version: 1\nsteps:\n  - { id: a, action: scroll, by: { y: 400 }, within: { by: css, selector: .list }, emphasis: highlight }\n`
     expect(parseScenarioYaml(yaml).steps).toHaveLength(1)
+  })
+})
+
+// ─── Round 7 ─────────────────────────────────────────────────────────────────
+
+describe("round 7: guards report every problem at once", () => {
+  it("returns guard issues and schema issues together", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: a, action: pause, ms: 1, caption: "{{secrets.a}}", bogus: 1 }\n`
+    const error = (() => {
+      try {
+        parseScenarioYaml(yaml)
+      } catch (e) {
+        return e as SchemaError
+      }
+      throw new Error("expected a SchemaError")
+    })()
+    expect(error.issues.map((i) => i.message).join("\n")).toMatch(
+      /only allowed[\s\S]*bogus|bogus[\s\S]*only allowed/,
+    )
+  })
+})
+
+describe("round 7: secret slots are positional", () => {
+  it("rejects type-shaped objects and secret keys in free-form style", () => {
+    expect(
+      Composition.safeParse({
+        version: 1,
+        tracks: {},
+        style: { x: { action: "type", value: "{{secrets.a}}" } },
+      }).success,
+    ).toBe(false)
+    expect(
+      Composition.safeParse({ version: 1, tracks: {}, style: { "{{secrets.a}}": 1 } }).success,
+    ).toBe(false)
+  })
+
+  it("still allows secrets in preset and interrupt type actions", () => {
+    const p = parseProjectYaml(
+      project(
+        'presets:\n  login:\n    steps: [{ action: type, target: { by: label, name: Email }, value: "{{secrets.acme.email}}" }]\ninterrupts:\n  - id: otp\n    when: { text: Code }\n    do: { action: type, target: { by: label, name: Code }, value: "{{secrets.acme.otp}}" }\n',
+      ),
+    )
+    expect(p.interrupts).toHaveLength(1)
+  })
+
+  it("doesn't flag ordinary template text as a secret", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: t, action: type, target: { intent: "body" }, value: "Dear {{ secretary }}, see {{secret_key}}" }\n`
+    expect(parseScenarioYaml(yaml).steps).toHaveLength(1)
+  })
+})
+
+describe("round 7: URLs and timestamps", () => {
+  it("rejects credentials in waitFor / expect URL conditions", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: w, action: waitFor, until: { url: "https://admin:hunter2@staging.acme.com" } }\n`
+    expect(() => parseScenarioYaml(yaml)).toThrow(/credentials/)
+  })
+
+  it("accepts fractional take timestamps", () => {
+    expect(
+      TakeEvent.safeParse({ t: 1.5, phase: "steps", stepId: "a", kind: "settled" }).success,
+    ).toBe(true)
   })
 })
