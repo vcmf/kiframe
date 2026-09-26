@@ -3,6 +3,19 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/wc-form": `<!doctype html><title>WC form</title>
+    <my-field></my-field>
+    <form onsubmit="event.preventDefault(); document.getElementById('s').textContent='Removed'">
+      <input type="submit" value="Remove member"></form>
+    <table><tr role="row"><td>Acme project</td><td><button>Delete</button></td></tr></table>
+    <p id="s"></p>
+    <script>
+      customElements.define("my-field", class extends HTMLElement {
+        connectedCallback() {
+          this.attachShadow({ mode: "open" }).innerHTML = "<label>Nickname <input></label>"
+        }
+      })
+    </script>`,
   "/login-form": `<!doctype html><title>Login form</title>
     <label>Email <input type="email"></label>
     <label>Age <input type="number"></label>

@@ -23,6 +23,8 @@ export type RunnerEvent =
   | { kind: "navigate"; step: StepRef; url: string }
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
   | { kind: "type"; step: StepRef; secret?: string | undefined }
+  /** A fallback locator was used: the primary one no longer matches (a signal for self-healing). */
+  | { kind: "target_fallback"; step: StepRef; fallbackIndex: number }
   /** Teardown failed after a step had already failed: the step's error is the one thrown. */
   | { kind: "teardown_failed"; error: StepError }
 
@@ -99,7 +101,10 @@ export async function runScenario(
         await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
       }
     } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error))
+      failure =
+        error instanceof StepError || current === undefined
+          ? (error as Error)
+          : new StepError(current, "action-failed", firstLine(error), { cause: error })
     }
     for (const [index, action] of (scenario.teardown ?? []).entries()) {
       const ref: StepRef = { phase: "teardown", index, stepId: action.id, action: action.action }
@@ -167,13 +172,48 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
   await perform(ctx, action, step)
-  if (action.action !== "pause") await guard(step, () => settle(ctx))
+  // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
+  // pacing is a presentation choice: on camera only.
+  if (!["pause", "expect", "waitFor"].includes(action.action)) {
+    await guard(step, () => settle(ctx, step.phase === "steps"))
+  }
   ctx.options.onEvent?.({ kind: "step_end", step })
 }
 
 async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise<void> {
   const approved = await guard(step, async () => (await ctx.options.approveRisky?.(step)) ?? false)
   if (!approved) throw new StepError(step, "risky-not-approved", detail)
+}
+
+/**
+ * The accessible label of a control (runs in the page): only buttons, links, menu items and
+ * submit-like inputs count, so clicking a row or card that merely CONTAINS a "Delete" button isn't
+ * mistaken for a delete. Empty string for anything else.
+ */
+function controlLabel(el: Element): string {
+  const role = el.getAttribute("role")
+  const isInput =
+    el instanceof HTMLInputElement && ["submit", "button", "reset", "image"].includes(el.type)
+  const isControl =
+    el instanceof HTMLButtonElement ||
+    el instanceof HTMLAnchorElement ||
+    isInput ||
+    ["button", "link", "menuitem", "menuitemradio", "menuitemcheckbox", "tab", "option"].includes(
+      role ?? "",
+    )
+  if (!isControl) return ""
+  const byIds = (el.getAttribute("aria-labelledby") ?? "")
+    .split(/\s+/)
+    .map((id) => (id === "" ? "" : (document.getElementById(id)?.textContent ?? "")))
+    .join(" ")
+  const candidates = [
+    el.getAttribute("aria-label"),
+    byIds,
+    isInput ? el.value : null,
+    el instanceof HTMLElement ? el.innerText : el.textContent,
+    el.getAttribute("title"),
+  ]
+  return (candidates.find((c) => c !== null && c.trim() !== "") ?? "").trim().slice(0, 80)
 }
 
 /**
@@ -191,10 +231,10 @@ const SETTLE_MAX_MS = 3000
  * no DOM mutation for a short quiet period, then the project's extra `settleMs`. Each wait is
  * bounded and never fails the step.
  */
-async function settle(ctx: Ctx): Promise<void> {
+async function settle(ctx: Ctx, onCamera: boolean): Promise<void> {
   // Network and DOM are independent: wait for both at once, so the worst case is one cap.
   await Promise.all([ctx.network.waitForIdle(SETTLE_MAX_MS, 200), domQuiet(ctx)])
-  if (ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
+  if (onCamera && ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
 }
 
 async function domQuiet(ctx: Ctx): Promise<void> {
@@ -269,16 +309,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       if (action.risky === undefined) {
         const label = await guard(step, () =>
-          target.evaluate(
-            (el) =>
-              (
-                el.getAttribute("aria-label") ??
-                (el instanceof HTMLElement ? el.innerText : el.textContent) ??
-                ""
-              ).trim(),
-            undefined,
-            { timeout: ctx.timeoutMs },
-          ),
+          target.evaluate(controlLabel, undefined, { timeout: ctx.timeoutMs }),
         )
         if (RISKY_LABEL.test(label)) {
           await requireApproval(
@@ -314,7 +345,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // The text goes to the focused element: make sure it's the target, never the field focused
         // before (a secret would land there, on camera).
         const focused = await target.evaluate(
-          (el) => el === document.activeElement || el.contains(document.activeElement),
+          (el) => {
+            // In shadow DOM, document.activeElement is the host: ask the element's own root.
+            const root = el.getRootNode()
+            const active =
+              root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
+            return active !== null && (el === active || el.contains(active))
+          },
           undefined,
           { timeout },
         )
@@ -381,6 +418,9 @@ function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
+  if (result.fallbackIndex !== undefined) {
+    ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
+  }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
   return result.locator
@@ -438,13 +478,12 @@ async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>
     const isDocument = el === (document.scrollingElement ?? document.documentElement)
     const before = el.scrollTop
     el.scrollBy({ top: y, behavior: "instant" })
-    const rect = isDocument ? { top: 0, bottom: innerHeight } : el.getBoundingClientRect()
+    const rect = isDocument ? { top: 0 } : el.getBoundingClientRect()
     return {
       moved: el.scrollTop !== before,
       height: isDocument ? innerHeight : el.clientHeight,
       contentHeight: el.scrollHeight,
       top: rect.top,
-      bottom: rect.bottom,
     }
   }
   /** Scrolls by dy; returns whether anything moved and the scroller's visible area. */
@@ -472,7 +511,6 @@ interface ScrollState {
   height: number
   contentHeight: number
   top: number
-  bottom: number
 }
 
 /**
@@ -654,8 +692,15 @@ export function urlMatches(actual: URL, expected: URL): boolean {
   for (const [key, value] of expected.searchParams) {
     if (!actual.searchParams.getAll(key).includes(value)) return false
   }
-  if (expected.hash !== "" && !pathMatches(actual.hash.slice(1), expected.hash.slice(1)))
-    return false
+  if (expected.hash !== "") {
+    // Hash routes (`#/projects?tab=members`) have their own path and query.
+    const want = new URL(expected.hash.slice(1), "http://hash.invalid")
+    const have = new URL(actual.hash.slice(1), "http://hash.invalid")
+    if (!pathMatches(have.pathname, want.pathname)) return false
+    for (const [key, value] of want.searchParams) {
+      if (!have.searchParams.getAll(key).includes(value)) return false
+    }
+  }
   return true
 }
 
