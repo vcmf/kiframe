@@ -1,28 +1,28 @@
 import * as z from "zod"
-import { isMalformedSecretRef, Ms, PlainText, RectTuple, StepId } from "./common.ts"
-import { CAMERA_SCALE, MAX_SPEED, PacingShape, ViewportShape } from "./settings.ts"
+import { claimIds, isMalformedSecretRef, Ms, PlainText, RectTuple, StepId } from "./common.ts"
+import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from "./settings.ts"
 
 // ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
 // Black box: locators use roles, labels and text. `css` is a last resort.
 
 const RoleLocator = z.strictObject({
   by: z.literal("role"),
-  role: z.string().min(1),
-  name: z.string().optional(),
+  role: PlainText.min(1),
+  name: PlainText.optional(),
   exact: z.boolean().optional(),
 })
 const LabelLocator = z.strictObject({
   by: z.literal("label"),
-  name: z.string().min(1),
+  name: PlainText.min(1),
   exact: z.boolean().optional(),
 })
 const TextLocator = z.strictObject({
   by: z.literal("text"),
-  text: z.string().min(1),
+  text: PlainText.min(1),
   exact: z.boolean().optional(),
 })
-const PlaceholderLocator = z.strictObject({ by: z.literal("placeholder"), text: z.string().min(1) })
-const CssLocator = z.strictObject({ by: z.literal("css"), selector: z.string().min(1) })
+const PlaceholderLocator = z.strictObject({ by: z.literal("placeholder"), text: PlainText.min(1) })
+const CssLocator = z.strictObject({ by: z.literal("css"), selector: PlainText.min(1) })
 
 export const Locator = z.discriminatedUnion("by", [
   RoleLocator,
@@ -36,7 +36,7 @@ export type Locator = z.infer<typeof Locator>
 /** Fields every target can carry on top of its locator. */
 const targetExtras = {
   /** Natural-language intent from the chat. Used to heal the locator when it breaks. */
-  intent: z.string().min(1).optional(),
+  intent: PlainText.min(1).optional(),
   /** Alternative locators tried in order if the primary one fails. */
   fallbacks: z.array(Locator).optional(),
   /** Path to a screenshot crop of the element, used as visual reference for self-healing. */
@@ -56,7 +56,7 @@ export const GroundedTarget = z.discriminatedUnion("by", [
 export type GroundedTarget = z.infer<typeof GroundedTarget>
 
 /** A target the agent hasn't grounded yet: only the intent is known (scene status `draft`). */
-export const UngroundedTarget = z.strictObject({ intent: z.string().min(1) })
+export const UngroundedTarget = z.strictObject({ intent: PlainText.min(1) })
 export type UngroundedTarget = z.infer<typeof UngroundedTarget>
 
 export const Target = z.union([GroundedTarget, UngroundedTarget])
@@ -125,7 +125,19 @@ const presentation = {
 
 // ─── Actions (Phase 0 subset; full set in M1-1) ───────────────────────────────
 
-const Goto = z.strictObject({ action: z.literal("goto"), url: PlainText.min(1) })
+/** True if `url` is absolute and embeds credentials (`https://user:pass@host`). Relative URLs can't. */
+export function hasUrlCredentials(url: string): boolean {
+  if (!URL.canParse(url)) return false
+  const parsed = new URL(url)
+  return parsed.username !== "" || parsed.password !== ""
+}
+
+const Goto = z.strictObject({
+  action: z.literal("goto"),
+  url: PlainText.min(1).refine((u) => !hasUrlCredentials(u), {
+    message: "URL must not contain credentials: store them in the vault",
+  }),
+})
 const Click = z.strictObject({
   action: z.literal("click"),
   target: Target,
@@ -213,7 +225,7 @@ export type Step = z.infer<typeof Step>
 // ─── Setup / teardown items ───────────────────────────────────────────────────
 
 /** Run a shared preset. Session presets run once per recording batch. */
-export const PresetRef = z.strictObject({ preset: z.string().min(1) })
+export const PresetRef = z.strictObject({ preset: RuleName })
 /** The only idempotency primitive: declarative, not a condition (§2). */
 export const Ensure = z.strictObject({
   ensure: z.union([z.strictObject({ absent: Locator }), z.strictObject({ present: Locator })]),
@@ -236,7 +248,7 @@ function hasTarget(step: Step): boolean {
   return (
     step.action === "click" ||
     step.action === "type" ||
-    (step.action === "scroll" && step.to !== undefined)
+    (step.action === "scroll" && (step.to !== undefined || step.until !== undefined))
   )
 }
 
@@ -267,23 +279,10 @@ export const Scenario = z
   })
   .superRefine((s, ctx) => {
     // IDs are unique across setup, steps and teardown, so anchors are never ambiguous.
-    const ids = new Map<string, string>()
-    const claim = (id: string | undefined, path: (string | number)[]) => {
-      if (id === undefined) return
-      const previous = ids.get(id)
-      if (previous !== undefined) {
-        ctx.addIssue({
-          code: "custom",
-          message: `duplicate id "${id}" (already used in ${previous})`,
-          path,
-        })
-      } else {
-        ids.set(id, String(path[0]))
-      }
-    }
-    s.setup?.forEach((item, i) => claim("id" in item ? item.id : undefined, ["setup", i, "id"]))
-    s.steps.forEach((step, i) => claim(step.id, ["steps", i, "id"]))
-    s.teardown?.forEach((action, i) => claim(action.id, ["teardown", i, "id"]))
+    // (Preset step ids are checked against these by `checkScenarioAgainstProject`.)
+    const claims = claimIds(s.setup, ["setup"], ctx)
+    claimIds(s.steps, ["steps"], ctx, claims)
+    claimIds(s.teardown, ["teardown"], ctx, claims)
 
     // `camera: target` and `emphasis` on the target need a step that acts on an element.
     s.steps.forEach((step, i) => {

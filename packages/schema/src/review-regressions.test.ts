@@ -193,10 +193,8 @@ describe("round 2: overrides don't re-fill defaults", () => {
 describe("round 2: preset names and ids", () => {
   it("doesn't treat prototype keys as existing presets", () => {
     const p = parseProjectYaml(project())
-    const s = parseScenarioYaml(
-      `version: 1\nsetup:\n  - preset: constructor\n  - preset: toString\n${steps}`,
-    )
-    expect(checkScenarioAgainstProject(s, p)).toHaveLength(2)
+    const s = parseScenarioYaml(`version: 1\nsetup:\n  - preset: constructor\n${steps}`)
+    expect(checkScenarioAgainstProject(s, p)).toEqual(['setup uses unknown preset "constructor"'])
   })
 
   it("rejects __proto__ as a preset name and duplicate ids inside a preset", () => {
@@ -294,5 +292,112 @@ describe("round 2: target-only presentation", () => {
         `version: 1\nsteps:\n  - { id: p, action: press, keys: Enter, emphasis: highlight }\n`,
       ),
     ).toThrow(/no target/)
+  })
+})
+
+// ─── Round 3 ─────────────────────────────────────────────────────────────────
+
+describe("round 3: errors are always SchemaError", () => {
+  it("reports a malformed target URL instead of throwing TypeError", () => {
+    for (const url of ["staging.acme.com", "not a url"]) {
+      expect(() => parseProjectYaml(project().replace("https://staging.acme.com", url))).toThrow(
+        SchemaError,
+      )
+    }
+  })
+
+  it("wraps unresolved and excessive YAML aliases", () => {
+    expect(() => parseScenarioYaml("version: 1\nsteps: *nope\n")).toThrow(SchemaError)
+    const bomb = [
+      "a: &a [x, x, x, x, x, x, x, x, x]",
+      ...Array.from({ length: 8 }, (_, i) => {
+        const prev = String.fromCharCode(97 + i)
+        const next = String.fromCharCode(98 + i)
+        return `${next}: &${next} [*${prev}, *${prev}, *${prev}, *${prev}, *${prev}, *${prev}, *${prev}, *${prev}, *${prev}]`
+      }),
+    ].join("\n")
+    expect(() => parseScenarioYaml(bomb)).toThrow(SchemaError)
+  })
+})
+
+describe("round 3: observed rects", () => {
+  it("accepts rects partly off screen or collapsed in take events", () => {
+    const e = {
+      t: 0,
+      phase: "steps",
+      stepId: "a",
+      kind: "sensitive",
+      id: "pw",
+      why: "secret-field",
+    }
+    expect(TakeEvent.safeParse({ ...e, rect: { x: 0.2, y: -0.05, w: 0.3, h: 0.1 } }).success).toBe(
+      true,
+    )
+    expect(TakeEvent.safeParse({ ...e, rect: { x: 0.2, y: 0.3, w: 0.3, h: 0 } }).success).toBe(true)
+  })
+})
+
+describe("round 3: cross-file ids and rule ids", () => {
+  it("reports preset step ids that collide with scenario ids", () => {
+    const p = parseProjectYaml(
+      project("presets:\n  p:\n    steps: [{ id: a, action: goto, url: /x }]\n"),
+    )
+    const s = parseScenarioYaml(`version: 1\nsetup:\n  - preset: p\n${steps}`)
+    expect(checkScenarioAgainstProject(s, p)).toEqual([
+      'preset "p" step id "a" collides with an id in the scenario',
+    ])
+  })
+
+  it("requires an id on interrupt rules", () => {
+    expect(() =>
+      parseProjectYaml(
+        project("interrupts:\n  - when: { text: Hi }\n    do: { action: press, keys: Escape }\n"),
+      ),
+    ).toThrow(SchemaError)
+  })
+
+  it("validates preset references as names at parse time", () => {
+    expect(() => parseScenarioYaml(`version: 1\nsetup:\n  - preset: Login\n${steps}`)).toThrow(
+      SchemaError,
+    )
+  })
+})
+
+describe("round 3: secrets and credentials in every author string", () => {
+  it("rejects credentials in goto URLs but allows relative URLs", () => {
+    expect(() =>
+      parseScenarioYaml(
+        `version: 1\nsteps:\n  - { id: g, action: goto, url: "https://u:p@x.com" }\n`,
+      ),
+    ).toThrow(/credentials/)
+    expect(
+      parseScenarioYaml(`version: 1\nsteps:\n  - { id: g, action: goto, url: /projects }\n`).steps,
+    ).toHaveLength(1)
+  })
+
+  it("rejects secret references in locators, intents and composition captions", () => {
+    const click = (target: string) =>
+      `version: 1\nsteps:\n  - { id: c, action: click, target: ${target} }\n`
+    expect(() => parseScenarioYaml(click('{ by: text, text: "{{secrets.pw}}" }'))).toThrow(
+      /only allowed/,
+    )
+    expect(() => parseScenarioYaml(click('{ intent: "{{secrets.pw}}" }'))).toThrow(/only allowed/)
+    const caption = {
+      id: "c",
+      source: "manual",
+      text: "{{secrets.pw}}",
+      at: { ms: 0 },
+      until: { ms: 10 },
+    }
+    expect(Composition.safeParse({ version: 1, tracks: { captions: [caption] } }).success).toBe(
+      false,
+    )
+  })
+})
+
+describe("round 3: scroll until has a target", () => {
+  it("accepts camera: target on scroll until", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: a, action: scroll, until: { intent: footer }, camera: target }\n`
+    expect(parseScenarioYaml(yaml).steps).toHaveLength(1)
   })
 })

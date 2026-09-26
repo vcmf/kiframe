@@ -1,5 +1,5 @@
 import * as z from "zod"
-import { Ms, NPoint, NRect, StepId } from "./common.ts"
+import { Ms, NPoint, StepId, ViewportRect } from "./common.ts"
 import { Viewport } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
@@ -20,14 +20,15 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   z.strictObject({
     ...base,
     kind: z.literal("click"),
+    /** The click point itself is always inside the viewport. */
     point: NPoint,
-    rect: NRect,
+    rect: ViewportRect,
     button: z.enum(["left", "right"]),
   }),
   z.strictObject({
     ...base,
     kind: z.enum(["type_start", "type_end"]),
-    rect: NRect,
+    rect: ViewportRect,
     /** Secret NAME only, never its value. */
     secret: z.string().optional(),
   }),
@@ -41,13 +42,18 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   z.strictObject({ ...base, kind: z.literal("navigate"), url: z.string() }),
   z.strictObject({ ...base, kind: z.literal("settled") }),
   /** Rect of an element referenced by a `camera.frame` or `emphasis` locator. */
-  z.strictObject({ ...base, kind: z.literal("frame_target"), ref: z.string().min(1), rect: NRect }),
+  z.strictObject({
+    ...base,
+    kind: z.literal("frame_target"),
+    ref: z.string().min(1),
+    rect: ViewportRect,
+  }),
   /** Re-logged whenever the element moves. */
   z.strictObject({
     ...base,
     kind: z.literal("sensitive"),
     id: z.string().min(1),
-    rect: NRect,
+    rect: ViewportRect,
     why: z.enum(["secret-field", "secret-text", "redaction"]),
   }),
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
