@@ -842,11 +842,14 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
         { timeoutMs: 800, onEvent: (e) => events.push(e) },
       ),
     ).rejects.toThrow(/Timeout/)
-    // Actionability is checked (trial) before the press is reported: a click that can't happen
-    // shows no press at all, and nothing is left held.
+    // Not recording (no trial click): the press is reported, the click fails, the release is
+    // reported anyway. Nothing is ever left held. (When recording, the trial fails before any press.)
     const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
-    expect(pressed.filter(Boolean)).toHaveLength(0)
-    expect(events.some((e) => e.kind === "click")).toBe(false)
+    // Movement samples are pressed: false too, so count transitions: every press is released.
+    const presses = pressed.filter((p, i) => p && pressed[i - 1] !== true).length
+    const releases = pressed.filter((p, i) => !p && pressed[i - 1] === true).length
+    expect(releases).toBe(presses)
+    expect(pressed.at(-1) ?? false).toBe(false)
   })
 
   // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────
