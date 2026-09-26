@@ -127,7 +127,8 @@ export function hasUrlCredentials(url: string): boolean {
  * `https:`, `javascript:`, `http:host` and `//host`.
  */
 export function isRelativeUrl(url: string): boolean {
-  return ["http://base.invalid", "https://base.invalid"].every(
+  // Two bases with different hosts: a URL naming one base's host (`//a.invalid/x`) still leaves the other.
+  return ["http://a.invalid", "https://b.invalid"].every(
     (base) => URL.parse(url, base)?.origin === base,
   )
 }
@@ -155,6 +156,8 @@ function isSelfContainedSelector(selector: string): boolean {
       continue
     }
     if (quote !== undefined) {
+      // An unescaped newline ends a CSS string early ("bad string"): what follows is real syntax.
+      if (c === "\n" || c === "\r" || c === "\f") return false
       if (c === quote) quote = undefined
       continue
     }

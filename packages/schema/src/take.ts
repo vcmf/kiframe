@@ -1,6 +1,5 @@
 import * as z from "zod"
 import {
-  Ms,
   NPoint,
   SecretName,
   StepId,
@@ -106,7 +105,8 @@ export const TakeMetaBase = z.strictObject({
     height: z.number().int().positive(),
   }),
   fps: z.number().positive(),
-  durationMs: Ms,
+  /** On the screencast clock, like event timestamps: may be fractional. */
+  durationMs: Timestamp,
   kiframeVersion: z.string(),
 })
 /** Frame pixels must equal viewport × DPR (±1 for rounding): overlays are placed with it. */

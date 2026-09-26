@@ -1,4 +1,4 @@
-import { parseDocument, YAMLParseError } from "yaml"
+import { isAlias, isScalar, parseDocument, visit, YAMLParseError } from "yaml"
 import * as z from "zod"
 import { ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
@@ -18,6 +18,21 @@ function loadYaml(text: string, what: string): unknown {
   const doc = parseDocument(text)
   const [firstError] = doc.errors
   if (firstError) throw new SchemaError(what, firstError.message)
+  const [firstWarning] = doc.warnings
+  if (firstWarning) throw new SchemaError(what, firstWarning.message)
+  // Collection keys (`? [a]: 1`) would be silently stringified by toJS: reject them.
+  let collectionKey = false
+  visit(doc, {
+    Pair(_, pair) {
+      const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
+      if (key !== null && key !== undefined && !isScalar(key)) {
+        collectionKey = true
+        return visit.BREAK
+      }
+      return undefined
+    },
+  })
+  if (collectionKey) throw new SchemaError(what, "keys must be plain values, not lists or maps")
   try {
     // maxAliasCount guards against "billion laughs" alias expansion. Forbidden keys such as
     // `__proto__` stay own keys in the output and are rejected by the schema guards.

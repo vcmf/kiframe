@@ -905,3 +905,48 @@ describe("on-camera and off-camera actions stay in sync", () => {
     expect(kinds(Step)).toHaveLength(8)
   })
 })
+
+// ─── Round 10 ────────────────────────────────────────────────────────────────
+
+describe("round 10", () => {
+  it("rejects goto URLs naming a placeholder host", () => {
+    for (const url of ["//base.invalid/admin", "//a.invalid/x", "//b.invalid/x"]) {
+      const yaml = `version: 1\nsteps:\n  - { id: g, action: goto, url: ${JSON.stringify(url)} }\n`
+      expect(() => parseScenarioYaml(yaml)).toThrow(/relative to the environment/)
+    }
+  })
+
+  it("accepts a fractional take duration", () => {
+    const meta = {
+      version: 1,
+      takeKey: "k",
+      scenarioHash: "h",
+      recordedAt: "2026-09-26T20:00:00Z",
+      appUrl: "https://x.test",
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
+      frameSize: { width: 2880, height: 1800 },
+      fps: 30,
+      durationMs: 1234.5,
+      kiframeVersion: "0.0.0",
+    }
+    expect(TakeMeta.safeParse(meta).success).toBe(true)
+  })
+
+  it("rejects CSS strings broken by a newline", () => {
+    expect(() =>
+      parseProjectYaml(project(`hide: ${JSON.stringify(['a"\n}body{display:none}"'])}\n`)),
+    ).toThrow(/single CSS selector/)
+  })
+
+  it("rejects collection keys instead of stringifying them", () => {
+    expect(() => parseScenarioYaml(`? [a]\n: 1\nversion: 1\n${steps}`)).toThrow(/plain values/)
+  })
+
+  it("reports a forbidden key once", () => {
+    const r = Scenario.safeParse(
+      JSON.parse(`{"version":1,"steps":[{"id":"a","action":"pause","ms":1}],"__proto__":1}`),
+    )
+    const messages = r.error?.issues.map((i) => i.message) ?? []
+    expect(messages).toEqual(['forbidden key "__proto__"'])
+  })
+})
