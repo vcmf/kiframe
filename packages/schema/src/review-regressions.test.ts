@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  Action,
   checkScenarioAgainstProject,
   Composition,
   NRect,
@@ -9,6 +10,7 @@ import {
   RectTuple,
   Scenario,
   SchemaError,
+  Step,
   TakeEvent,
   TakeMeta,
 } from "./index.ts"
@@ -829,5 +831,77 @@ describe("round 8: duplicate interrupt ids say where", () => {
     expect(() => parseProjectYaml(project(`interrupts:\n${rule}${rule}`))).toThrow(
       /already used in interrupts\.0/,
     )
+  })
+})
+
+// ─── Round 9 ─────────────────────────────────────────────────────────────────
+
+describe("round 9: goto can't leave the app through parser quirks", () => {
+  const goto = (url: string) =>
+    `version: 1\nsteps:\n  - { id: g, action: goto, url: ${JSON.stringify(url)} }\n`
+  it.each([
+    " https://evil.com",
+    "\thttps://evil.com",
+    "h\nttps://evil.com",
+    "/\t/evil.com",
+    "\\\\evil.com",
+  ])("rejects %j", (url) => {
+    expect(() => parseScenarioYaml(goto(url))).toThrow(/relative to the environment/)
+  })
+})
+
+describe("round 9: CSS selectors are self-contained", () => {
+  it.each([":is(a", "a[x", "a\\", "a)", "a[x)"])("rejects %j", (sel) => {
+    expect(() => parseProjectYaml(project(`hide: [${JSON.stringify(sel)}]\n`))).toThrow(
+      /single CSS selector/,
+    )
+  })
+
+  it("accepts balanced brackets and escapes", () => {
+    const p = parseProjectYaml(project(`hide: [":is(.a, .b) > li", "a[data-x='(']", ".x\\\\:y"]\n`))
+    expect(p.hide).toHaveLength(3)
+  })
+})
+
+describe("round 9: secret names", () => {
+  it.each(["{{secrets.constructor}}", "{{secrets.acme.__proto__}}"])("rejects %j", (value) => {
+    const yaml = `version: 1\nsteps:\n  - id: t\n    action: type\n    target: { intent: "field" }\n    value: ${JSON.stringify(value)}\n`
+    expect(() => parseScenarioYaml(yaml)).toThrow(/malformed secret reference/)
+  })
+})
+
+describe("round 9: issues point at the offending value", () => {
+  it("never puts the whole document in an issue's input", () => {
+    const doc = {
+      version: 1,
+      steps: [{ id: "a", action: "pause", ms: 1, caption: "{{secrets.x}}", bogus: 1 }],
+    }
+    const issues = Scenario.safeParse(doc).error?.issues ?? []
+    expect(issues.length).toBeGreaterThanOrEqual(2)
+    for (const issue of issues) expect(issue.input).not.toBe(doc)
+  })
+})
+
+describe("round 9: time zero is before everything", () => {
+  it("rejects a span ending at time zero", () => {
+    const caption = (until: object) => ({
+      version: 1,
+      tracks: {
+        captions: [
+          { id: "c", source: "manual", text: "Hi", at: { step: "a", edge: "end" }, until },
+        ],
+      },
+    })
+    expect(Composition.safeParse(caption({ ms: 0 })).success).toBe(false)
+    expect(Composition.safeParse(caption({ scene: "start" })).success).toBe(false)
+  })
+})
+
+describe("on-camera and off-camera actions stay in sync", () => {
+  it("Action and Step accept the same action kinds", () => {
+    const kinds = (u: { options: readonly { shape: { action: { value: string } } }[] }) =>
+      u.options.map((o) => o.shape.action.value).sort()
+    expect(kinds(Step)).toEqual(kinds(Action))
+    expect(kinds(Step)).toHaveLength(8)
   })
 })

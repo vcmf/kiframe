@@ -1,16 +1,9 @@
 import * as z from "zod"
-import { isMalformedSecretRef, mentionsSecret } from "./common.ts"
+import { FORBIDDEN_KEYS, isMalformedSecretRef, mentionsSecret } from "./common.ts"
 
 // Whole-document guards, applied once to the raw input of every top-level schema (scenario,
 // project config, composition, take events and metadata). Doing it in one pass, instead of one
 // refinement per string field, means a new field can't forget the rule.
-
-/** Keys that would change an object's prototype instead of creating a property. */
-export const FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
-  "__proto__",
-  "constructor",
-  "prototype",
-])
 
 /** Maximum nesting depth of a document. Real files are far shallower; this stops runaway input. */
 const MAX_DEPTH = 64
@@ -47,47 +40,68 @@ interface Walk {
   issues: z.core.$ZodIssue[]
   ancestors: WeakSet<object>
   structural: boolean
+  /** One mutable path stack; copied only when an issue is recorded. */
+  path: Path
 }
 
-function walk(value: unknown, path: Path, parent: unknown, w: Walk): void {
-  const issue = (at: Path, message: string) =>
-    w.issues.push({ code: "custom", path: at, message, input: value })
+function addIssue(w: Walk, value: unknown, message: string, extra?: string | number) {
+  const path = extra === undefined ? [...w.path] : [...w.path, extra]
+  w.issues.push({ code: "custom", path, message, input: value })
+}
+
+function walk(value: unknown, parent: unknown, w: Walk): void {
   if (typeof value === "string") {
-    const isSlot = isTypeAction(parent) && w.slots.some((slot) => matchesSlot(path, slot))
+    const isSlot = isTypeAction(parent) && w.slots.some((slot) => matchesSlot(w.path, slot))
     if (isSlot) {
       if (isMalformedSecretRef(value)) {
-        issue(
-          path,
+        addIssue(
+          w,
+          value,
           "malformed secret reference: use exactly `{{secrets.<name>}}`, with no spaces or other text",
         )
       }
     } else if (mentionsSecret(value)) {
-      issue(path, "secret references are only allowed as the whole `value` of a `type` action")
+      addIssue(
+        w,
+        value,
+        "secret references are only allowed as the whole `value` of a `type` action",
+      )
     }
     return
   }
   if (typeof value !== "object" || value === null) return
-  if (path.length > MAX_DEPTH) {
+  if (w.path.length > MAX_DEPTH) {
     w.structural = true
-    issue(path, `document is nested too deeply (more than ${MAX_DEPTH} levels)`)
+    addIssue(w, undefined, `document is nested too deeply (more than ${MAX_DEPTH} levels)`)
     return
   }
   if (w.ancestors.has(value)) {
     w.structural = true
-    issue(path, "document contains a cycle (a YAML alias refers to one of its own parents)")
+    addIssue(
+      w,
+      undefined,
+      "document contains a cycle (a YAML alias refers to one of its own parents)",
+    )
     return
   }
   w.ancestors.add(value)
   if (Array.isArray(value)) {
-    value.forEach((item, i) => walk(item, [...path, i], value, w))
+    value.forEach((item, i) => {
+      w.path.push(i)
+      walk(item, value, w)
+      w.path.pop()
+    })
   } else {
     for (const key of Object.keys(value)) {
       if (FORBIDDEN_KEYS.has(key)) {
-        issue([...path, key], `forbidden key "${key}"`)
+        addIssue(w, undefined, `forbidden key "${key}"`, key)
         continue
       }
-      if (mentionsSecret(key)) issue([...path, key], "secret references can't be used as keys")
-      walk((value as Record<string, unknown>)[key], [...path, key], value, w)
+      if (mentionsSecret(key))
+        addIssue(w, undefined, "secret references can't be used as keys", key)
+      w.path.push(key)
+      walk((value as Record<string, unknown>)[key], value, w)
+      w.path.pop()
     }
   }
   w.ancestors.delete(value)
@@ -100,13 +114,14 @@ function walk(value: unknown, path: Path, parent: unknown, w: Walk): void {
  */
 export function guarded<T extends z.ZodType>(schema: T, slots: readonly SecretSlot[] = []) {
   return z.unknown().transform((input, ctx): z.output<T> => {
-    const w: Walk = { slots, issues: [], ancestors: new WeakSet(), structural: false }
-    walk(input, [], undefined, w)
+    const w: Walk = { slots, issues: [], ancestors: new WeakSet(), structural: false, path: [] }
+    walk(input, undefined, w)
     const result = w.structural ? undefined : schema.safeParse(input)
     if (result && !result.success) w.issues.push(...result.error.issues)
     if (result === undefined || !result.success || w.issues.length > 0) {
-      // Keep zod's own issues as they are (code, keys, union errors…), not flattened to "custom".
-      ctx.issues.push(...(w.issues.map((i) => ({ ...i, input })) as typeof ctx.issues))
+      // Keep every issue as it is: zod's own (code, keys, union errors…) and the guard's, whose
+      // `input` is the offending value only (never the whole document, which may contain secrets).
+      ctx.issues.push(...(w.issues as typeof ctx.issues))
       return z.NEVER
     }
     return result.data
