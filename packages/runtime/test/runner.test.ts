@@ -926,4 +926,51 @@ teardown:
     ).rejects.toThrow()
     expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "t2")).toBe(true)
   })
+
+  // ─── P0-4 review round 3 (label regressions) ───────────────────────────────
+
+  it("labels split words, display:contents and visibility like the browser does", async () => {
+    for (const id of ["split", "contents"]) {
+      const error = await failure(
+        `steps:\n  - { id: go, action: goto, url: /labels }\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason).toBe("risky-not-approved")
+    }
+    await run(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: vis, action: click, target: { by: css, selector: "#vis" } }
+  - { id: ok, action: expect, that: { text: Saved vis } }
+`)
+  })
+
+  it("doesn't treat an image card as a wrapper of its Delete button", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: open, action: click, target: { by: css, selector: "#thumbcard img" } }
+  - { id: at, action: expect, that: { url: "/labels#thumb" } }
+`)
+  })
+
+  it("clicks exactly on the pressed point of a bordered element", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: b, action: click, target: { by: css, selector: "#bordered" } }
+`),
+      humanProject(),
+      { onEvent: (e) => events.push(e) },
+    )
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    const [x, y] = ((await page.getByText(/^B \d/).textContent()) ?? "")
+      .slice(2)
+      .split(",")
+      .map(Number)
+    expect(
+      press?.kind === "cursor" &&
+        Math.abs(press.x - (x ?? 0)) <= 1 &&
+        Math.abs(press.y - (y ?? 0)) <= 1,
+    ).toBe(true)
+  })
 })

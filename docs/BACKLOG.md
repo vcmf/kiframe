@@ -19,3 +19,6 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Text conditions are substring and case-insensitive:** `expect text: Saved` passes on "Unsaved changes". Consider an `exact` option or word boundaries.
 - **Settle / scroll cost on large DOMs:** a full TreeWalker per settle to find shadow roots, and an `isConnected` round trip before each scroll.
 - **Cursor when the target is off screen before a click:** `find()` scrolls the target into view first, but if it moves off screen after the cursor travel, no cursor event is emitted and `ctx.cursor` keeps the old position while Playwright moves the real mouse.
+- **Double-click event timing:** press/release pairs of a `count: 2` click are emitted back to back before Playwright's click (which may wait for actionability), not at the real mousedown/mouseup times.
+- **No cursor events without a box:** when the target has no box (display: contents) or no visible part, the cursor doesn't move visibly and `ctx.cursor` goes stale while Playwright's click moves the real mouse.
+- **Listener errors across step boundaries:** a late navigation from a step that already finished/failed can be attributed to the next step (or teardown) and fail it.
