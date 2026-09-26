@@ -674,10 +674,13 @@ teardown:
   - { id: rm, action: click, target: { by: role, role: button, name: Remove member } }
 `)
     expect(error.reason).toBe("risky-not-approved")
-    await run(`steps:
+    // This row's aim point lands on its Delete button: the press would delete, so it needs approval.
+    const row = (risky: string) => `steps:
   - { id: go, action: goto, url: /wc-form }
-  - { id: open, action: click, target: { by: role, role: row, name: Acme project Delete } }
-`)
+  - { id: open, action: click, target: { by: role, role: row, name: Acme project Delete }${risky} }
+`
+    expect((await failure(row(""))).reason).toBe("risky-not-approved")
+    await run(row(", risky: false"))
   })
 
   it("matches hash routes that carry their own query", async () => {
@@ -776,5 +779,421 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
       )
     }
     expect(await replay()).toEqual(await replay())
+  })
+
+  // ─── P0-4 review round 1 (regressions) ─────────────────────────────────────
+
+  const humanProject = () =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
+`)
+
+  it("still hits a target that moves while the cursor travels", async () => {
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /moving }
+  - { id: hit, action: click, target: { by: role, role: button, name: Moving target } }
+  - { id: ok, action: expect, that: { text: Hit } }
+`),
+      humanProject(),
+      { timeoutMs: 3000 },
+    )
+  })
+
+  it("aims inside the visible part of an element taller than the viewport", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /tall }
+  - { id: board, action: click, target: { by: role, role: region, name: Board } }
+`),
+      humanProject(),
+      { timeoutMs: 3000, onEvent: (e) => events.push(e) },
+    )
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    expect(press?.kind === "cursor" && press.y >= 0 && press.y < 800).toBe(true)
+    await expect(page.getByText(/^Board \d+/).isVisible()).resolves.toBe(true)
+  })
+
+  it("fails closed on a link card whose accessible name contains Delete (risky: false opts out)", async () => {
+    const card = (risky: string) => `steps:
+  - { id: go, action: goto, url: /cards }
+  - { id: open, action: click, target: { by: text, text: Acme project }${risky} }
+  - { id: at, action: expect, that: { url: "/cards#opened" } }
+`
+    expect((await failure(card(""))).reason).toBe("risky-not-approved")
+    await run(card(", risky: false"))
+  })
+
+  it("releases the cursor even when the click fails", async () => {
+    const events: RunnerEvent[] = []
+    // A disabled button: the probe hits it, Playwright's click waits for "enabled" and times out.
+    await page.setContent(`<button id="b" disabled style="width:200px; height:60px">Save</button>`)
+    await expect(
+      runScenario(
+        page,
+        scenario(
+          `steps:\n  - { id: hit, action: click, target: { by: css, selector: "#b" }, risky: false }\n`,
+        ),
+        humanProject(),
+        { timeoutMs: 800, onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow(/Timeout/)
+    const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
+    expect(pressed.filter(Boolean)).toHaveLength(1)
+    expect(pressed.at(-1)).toBe(false)
+  })
+
+  // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────
+
+  it("labels controls from their visible text, wrappers from what they wrap", async () => {
+    for (const target of [
+      "{ by: role, role: menuitem, name: Delete }",
+      "{ by: css, selector: '#trash' }",
+    ]) {
+      const error = await failure(
+        `steps:\n  - { id: go, action: goto, url: /labels }\n  - { id: c, action: click, target: ${target} }\n`,
+      )
+      expect(error.reason).toBe("risky-not-approved")
+    }
+    // Fail closed: hidden text that mentions Delete counts too.
+    expect(
+      (
+        await failure(
+          `steps:\n  - { id: go, action: goto, url: /labels }\n  - { id: save, action: click, target: { by: css, selector: "#save" } }\n`,
+        )
+      ).reason,
+    ).toBe("risky-not-approved")
+    await run(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: save, action: click, target: { by: css, selector: "#save" }, risky: false }
+  - { id: ok, action: expect, that: { text: Saved it } }
+`)
+  })
+
+  it("clicks where the cursor pressed on a board scrolled past its top", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /tall }
+  - { id: down, action: scroll, by: { y: 900 } }
+  - { id: board, action: click, target: { by: role, role: region, name: Board } }
+`),
+      humanProject(),
+      { timeoutMs: 3000, onEvent: (e) => events.push(e) },
+    )
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    const clicked = Number((await page.getByText(/^Board \d+/).textContent())?.split(" ")[1])
+    expect(press?.kind === "cursor" && Math.abs(press.y - clicked) < 2).toBe(true)
+  })
+
+  it("reports one press/release pair per click of a double click", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /projects }
+  - { id: dbl, action: click, count: 2, target: { by: role, role: button, name: New project } }
+`),
+      humanProject(),
+      { onEvent: (e) => events.push(e) },
+    )
+    const pressed = events.flatMap((e) =>
+      e.kind === "cursor" && e.step.stepId === "dbl" ? [e.pressed] : [],
+    )
+    const transitions = pressed.filter((p, i) => i > 0 && p !== pressed[i - 1])
+    expect(transitions).toEqual([true, false, true, false])
+  })
+
+  it("finishes teardown after a step failed with a pending listener error", async () => {
+    const events: RunnerEvent[] = []
+    await expect(
+      runScenario(
+        page,
+        scenario(`steps:
+  - { id: go, action: goto, url: /projects }
+  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }
+teardown:
+  - { id: t1, action: pause, ms: 1 }
+  - { id: t2, action: pause, ms: 1 }
+`),
+        project,
+        {
+          timeoutMs: 300,
+          onEvent: (e) => {
+            events.push(e)
+            if (e.kind === "navigate") throw new Error("recorder closed")
+          },
+        },
+      ),
+    ).rejects.toThrow()
+    expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "t2")).toBe(true)
+  })
+
+  // ─── P0-4 review round 3 (label regressions) ───────────────────────────────
+
+  it("labels split words, display:contents and visibility like the browser does", async () => {
+    for (const id of ["split", "contents"]) {
+      const error = await failure(
+        `steps:\n  - { id: go, action: goto, url: /labels }\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason).toBe("risky-not-approved")
+    }
+    await run(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: vis, action: click, target: { by: css, selector: "#vis" }, risky: false }
+  - { id: ok, action: expect, that: { text: Saved vis } }
+`)
+  })
+
+  it("names an image card from its alt text, and fails closed on its nested Delete", async () => {
+    const card = (risky: string) => `steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: open, action: click, target: { by: css, selector: "#thumbcard img" }${risky} }
+  - { id: at, action: expect, that: { url: "/labels#thumb" } }
+`
+    const error = await failure(card(""))
+    expect(error.message).toMatch(/mentions "Delete"/)
+    await run(card(", risky: false"))
+  })
+
+  it("clicks exactly on the pressed point of a bordered element", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: b, action: click, target: { by: css, selector: "#bordered" } }
+`),
+      humanProject(),
+      { onEvent: (e) => events.push(e) },
+    )
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    const [x, y] = ((await page.getByText(/^B \d/).textContent()) ?? "")
+      .slice(2)
+      .split(",")
+      .map(Number)
+    expect(
+      press?.kind === "cursor" &&
+        Math.abs(press.x - (x ?? 0)) <= 1 &&
+        Math.abs(press.y - (y ?? 0)) <= 1,
+    ).toBe(true)
+  })
+
+  // ─── P0-4 review round 4: accessible names, failing closed ─────────────────
+
+  it("flags risky controls by their accessible name in every DOM shape", async () => {
+    await page.setContent(`
+      <a href="#d" id="nested">Delete draft <span role="button"><button>Delete</button></span></a>
+      <button id="hidden-child">Delete file<span role="button" style="display:none">Delete</span></button>
+      <ul><li role="menuitem" id="icon-item"><svg width="8" height="8"></svg><a href="#">Delete</a></li></ul>
+      <input type="image" id="img-input" alt="Delete" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=">
+      <button id="img-button"><img alt="Remove" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="10" height="10"></button>`)
+    for (const id of ["nested", "hidden-child", "icon-item", "img-input", "img-button"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
+  })
+
+  // ─── P0-4 review round 5: every label source, failing closed ───────────────
+
+  it("fails closed on quoted names, aria-hidden content, links without href and odd input types", async () => {
+    await page.setContent(`
+      <button id="hash">Delete item #42</button>
+      <button id="colon">Delete: permanently</button>
+      <div aria-hidden="true"><button id="hidden-toolbar">Delete</button></div>
+      <a id="nohref" onclick="void 0">Delete</a>
+      <input id="upper" type="Submit" value="Delete">`)
+    for (const id of ["hash", "colon", "hidden-toolbar", "nohref", "upper"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
+  })
+
+  it("doesn't truncate before looking for risky words", async () => {
+    await page.setContent(`<button id="long">${"Very long description ".repeat(20)}Send</button>`)
+    const error = await failure(
+      `steps:\n  - { id: c, action: click, target: { by: css, selector: "#long" } }\n`,
+    )
+    expect(error.reason).toBe("risky-not-approved")
+  })
+
+  // ─── P0-4 review round 6: clicks at the cursor by construction ─────────────
+
+  it("fails closed on names hidden behind other attributes", async () => {
+    await page.setContent(`
+      <button id="title"><span aria-label="Trash" title="Delete forever">🗑</span></button>
+      <button id="alt"><img alt="" aria-label="Delete" src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width="10" height="10"></button>`)
+    for (const id of ["title", "alt"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
+  })
+
+  it("reports the release of a successful click even if the release callback throws", async () => {
+    const error = await failure(
+      `setup: [{ preset: open-projects }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: New project } }
+`,
+      {
+        onEvent: (e) => {
+          if (e.kind === "cursor" && !e.pressed && e.step.stepId === "open" && seenPress)
+            throw new Error("recorder closed")
+          if (e.kind === "cursor" && e.pressed) seenPress = true
+        },
+      },
+    )
+    expect(error.message).toMatch(/recorder closed/)
+  })
+  let seenPress = false
+
+  // ─── P0-4 review round 7: the risky check at the press point ───────────────
+
+  it("reads the label at press time, after hover changed it", async () => {
+    await page.setContent(
+      `<button id="follow" onmouseenter="this.textContent='Remove follow'">Following</button>`,
+    )
+    const error = await failure(
+      `steps:\n  - { id: c, action: click, target: { by: css, selector: "#follow" } }\n`,
+    )
+    expect(error.reason).toBe("risky-not-approved")
+  })
+
+  it("accepts a hit on a layer inside the target's button", async () => {
+    await page.setContent(`
+      <button id="save" style="position:relative; width:200px; height:60px" onclick="document.body.dataset.saved='1'">
+        <span id="text">Save</span>
+        <span style="position:absolute; inset:0; background:transparent"></span>
+      </button>`)
+    await run(`steps:\n  - { id: c, action: click, target: { by: css, selector: "#text" } }\n`)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.saved")).toBe("1")
+  })
+
+  it("judges a card click by what the press activates, not by the card's other buttons", async () => {
+    await page.setContent(`
+      <div id="card" style="width:600px; height:200px; position:relative" onclick="document.body.dataset.opened='1'">
+        <h3 id="title" style="margin:0; height:200px; width:400px">Acme project</h3>
+        <button style="position:absolute; right:0; top:0" onclick="event.stopPropagation()">Delete</button>
+      </div>`)
+    await run(`steps:\n  - { id: open, action: click, target: { by: css, selector: "#title" } }\n`)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.opened")).toBe("1")
+  })
+
+  it("runs every teardown step even when one fails", async () => {
+    const events: RunnerEvent[] = []
+    await expect(
+      runScenario(
+        page,
+        scenario(`setup: [{ preset: open-projects }]
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { id: t1, action: click, target: { by: role, role: button, name: Missing } }
+  - { id: t2, action: pause, ms: 1 }
+`),
+        project,
+        { timeoutMs: 300, onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow(/t1/)
+    expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "t2")).toBe(true)
+  })
+
+  // ─── P0-4 review round 8 ───────────────────────────────────────────────────
+
+  it("doesn't count the human approval wait against the click's time budget", async () => {
+    await page.setContent(`<button onclick="document.body.dataset.done='1'">Delete draft</button>`)
+    await run(
+      `steps:\n  - { id: del, action: click, target: { by: role, role: button, name: Delete draft } }\n`,
+      {
+        timeoutMs: 500,
+        approveRisky: () => new Promise((resolve) => setTimeout(() => resolve(true), 1200)),
+      },
+    )
+    expect(await page.evaluate<string | undefined>("document.body.dataset.done")).toBe("1")
+  })
+
+  it("doesn't press if the page changed during the approval", async () => {
+    await page.setContent(
+      `<button id="b" onclick="document.body.dataset.done='1'">Delete draft</button>`,
+    )
+    const error = await failure(
+      `steps:\n  - { id: del, action: click, target: { by: css, selector: "#b" } }\n`,
+      {
+        approveRisky: async () => {
+          await page.evaluate(() => {
+            document.getElementById("b")!.textContent = "Send invite"
+          })
+          return true
+        },
+      },
+    )
+    expect(error.message).toMatch(/page changed while waiting for approval/)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.done")).toBeUndefined()
+  })
+
+  it("judges a press on a card's background by the card's own text only", async () => {
+    await page.setContent(`
+      <div id="card" style="width:600px; height:300px; padding:40px" onclick="document.body.dataset.opened='1'">
+        Acme project
+        <button onclick="event.stopPropagation()">Delete</button>
+      </div>`)
+    await run(`steps:\n  - { id: open, action: click, target: { by: css, selector: "#card" } }\n`)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.opened")).toBe("1")
+  })
+
+  // ─── P0-4 review round 9: back to Playwright's click ───────────────────────
+
+  it("clicks a shadow-DOM button whose label is slotted, and flags it", async () => {
+    await page.setContent(`
+      <my-button><span>Delete</span></my-button>
+      <script>
+        customElements.define("my-button", class extends HTMLElement {
+          connectedCallback() {
+            this.attachShadow({ mode: "open" }).innerHTML =
+              "<button onclick=\\"document.body.dataset.done='1'\\"><slot></slot></button>"
+          }
+        })
+      </script>`)
+    const flagged = await failure(
+      `steps:\n  - { id: c, action: click, target: { by: role, role: button, name: Delete } }\n`,
+    )
+    expect(flagged.reason).toBe("risky-not-approved")
+    await run(
+      `steps:\n  - { id: c, action: click, target: { by: role, role: button, name: Delete }, risky: false }\n`,
+    )
+    expect(await page.evaluate<string | undefined>("document.body.dataset.done")).toBe("1")
+  })
+
+  it("waits for the navigation a click starts before the next step", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: / }
+  - { id: open, action: click, target: { by: role, role: link, name: Projects } }
+  - { id: at, action: expect, that: { url: /projects }, timeout: 50 }
+`)
+  })
+
+  // ─── P0-4 review round 10 (cheap hardening before merge) ───────────────────
+
+  it("fails closed on outer controls, the target's own title and split words outside controls", async () => {
+    await page.setContent(`
+      <div role="button" aria-label="Delete row" id="outer"><span role="button" id="inner">Open</span></div>
+      <div class="trash" id="trash" title="Delete" style="width:40px; height:40px"><svg width="40" height="40"><rect width="40" height="40"/></svg></div>
+      <div id="split" style="width:120px; height:30px"><b>Del</b>ete</div>`)
+    for (const id of ["inner", "trash", "split"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
   })
 })
