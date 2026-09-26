@@ -234,38 +234,26 @@ function controlLabel(target: Element): string {
   // A click resolved to the text or icon INSIDE a button counts as clicking the button.
   const el = target.closest(CONTROLS)
   if (el === null) return ""
-  /**
-   * Rendered text like innerText, but word-separated and without the subtrees `skip` rejects:
-   * hidden elements, <script>/<style>/<template> and SVG (an icon's <title> isn't visible text).
-   */
-  const visibleText = (root: Element, skip: (e: Element) => boolean): string => {
-    const parts: string[] = []
-    const walk = (node: Node) => {
-      for (const child of node.childNodes) {
-        if (child.nodeType === Node.TEXT_NODE) {
-          parts.push(child.textContent ?? "")
-        } else if (child instanceof Element) {
-          if (skip(child) || child instanceof SVGElement) continue
-          if (["SCRIPT", "STYLE", "TEMPLATE"].includes(child.tagName)) continue
-          if (!child.checkVisibility()) continue
-          walk(child)
-        }
-      }
-    }
-    walk(root)
-    return parts.join(" ").replace(/\s+/g, " ").trim()
-  }
+  // innerText is the browser's own rendered text: words across inline tags stay whole, hidden
+  // content is left out, `display: contents` wrappers are kept.
+  const rendered = (e: Element) => (e instanceof HTMLElement ? e.innerText : (e.textContent ?? ""))
+  const nested = [...el.querySelectorAll(CONTROLS)].filter((n) => !n.contains(el))
+  // The control's OWN text: its text minus nested controls' (clicking a link card's title must not
+  // be judged by a "Delete" button inside the card).
+  let own = rendered(el)
+  for (const n of nested) own = own.replace(rendered(n), " ")
+  // Content of its own that isn't text (a thumbnail): the control isn't a mere wrapper.
+  const ownMedia = [...el.querySelectorAll("img, svg, [role=img]")].some(
+    (m) => !nested.some((n) => n.contains(m)),
+  )
+  // A wrapper with nothing of its own (<li role=menuitem><a>Delete</a></li>) is labeled by what it wraps.
+  const text = own.trim() !== "" || ownMedia ? own : rendered(el)
   const isInput =
     el instanceof HTMLInputElement && ["submit", "button", "reset", "image"].includes(el.type)
   const byIds = (el.getAttribute("aria-labelledby") ?? "")
     .split(/\s+/)
     .map((id) => (id === "" ? "" : (document.getElementById(id)?.textContent ?? "")))
     .join(" ")
-  // The control's own text WITHOUT nested controls (clicking a link card's title must not be judged
-  // by a "Delete" button inside the card)… unless the control has no text of its own: then it's a
-  // wrapper (<li role=menuitem><a>Delete</a></li>) and the nested control's text is its label.
-  const own = visibleText(el, (e) => e.matches(CONTROLS))
-  const text = own !== "" ? own : visibleText(el, () => false)
   const candidates = [
     el.getAttribute("aria-label"),
     byIds,
@@ -845,8 +833,10 @@ async function moveCursorTo(
         random,
       }),
     )
-    if (pacing === "instant")
-      return { point: ctx.cursor ?? to, offset: { x: to.x - box.x, y: to.y - box.y } }
+    if (pacing === "instant") {
+      const at = ctx.cursor ?? to
+      return { point: at, offset: await clickOffset(target, box, at, ctx.timeoutMs) }
+    }
     // The target may have moved during the travel (menu sliding in, layout shift on hover): keep
     // the same relative spot on its new box, with a short correction move if needed.
     const nowBox = await target.boundingBox({ timeout: ctx.timeoutMs })
@@ -870,8 +860,34 @@ async function moveCursorTo(
     }
     const at = ctx.cursor ?? point
     // Playwright's click position is relative to the element's REAL box, not its visible part.
-    return { point: at, offset: { x: at.x - nowBox.x, y: at.y - nowBox.y } }
+    return { point: at, offset: await clickOffset(target, nowBox, at, ctx.timeoutMs) }
   })
+}
+
+/**
+ * The click `position` for a point on screen. Playwright measures it from the element's padding
+ * box (it adds the border), so the border width is subtracted: the click lands exactly on `at`.
+ */
+async function clickOffset(
+  target: Locator,
+  box: { x: number; y: number },
+  at: Point,
+  timeout: number,
+): Promise<Point> {
+  const border = await target
+    .evaluate(
+      (el) => {
+        const style = getComputedStyle(el)
+        return {
+          left: parseFloat(style.borderLeftWidth) || 0,
+          top: parseFloat(style.borderTopWidth) || 0,
+        }
+      },
+      undefined,
+      { timeout },
+    )
+    .catch(() => ({ left: 0, top: 0 }))
+  return { x: at.x - box.x - border.left, y: at.y - box.y - border.top }
 }
 
 /** Where the cursor stopped, and its offset inside the target's box (for a click at that spot). */
