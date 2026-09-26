@@ -68,7 +68,10 @@ steps:
   - { id: url, action: expect, that: { url: /projects/1 } }
 `)
     const starts = events
-      .filter((e) => e.kind === "step_start")
+      .filter(
+        (e): e is Extract<RunnerEvent, { kind: "step_start" | "step_end" }> =>
+          e.kind === "step_start",
+      )
       .map((e) => `${e.step.phase}:${e.step.stepId ?? e.step.index}`)
     expect(starts).toEqual([
       "setup:0",
@@ -202,14 +205,99 @@ steps:
     expect(error.message).toMatch(/^steps\[0\] \(never, waitFor\): .*Never shown/)
   })
 
-  it("rejects presets it doesn't know and `ensure` (P0-9) with a clear error", async () => {
+  it("rejects presets it doesn't know and `ensure` (P0-9) with a StepError", async () => {
+    const unknown = await failure(
+      `setup: [{ preset: missing }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+    )
+    expect(unknown.reason).toBe("invalid-setup")
+    expect(unknown.message).toMatch(/unknown preset "missing"/)
+    const ensure = await failure(
+      `setup: [{ ensure: { absent: { by: text, text: X } } }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+    )
+    expect(ensure.message).toMatch(/P0-9/)
+  })
+
+  // ─── Review round 1 (P0-3) ─────────────────────────────────────────────────
+
+  it("ignores hidden duplicates of a target (responsive menus)", async () => {
+    await run(`setup: [{ preset: open-projects }]
+steps:
+  - { id: settings, action: expect, that: { visible: { by: text, text: Settings } } }
+  - { id: go, action: click, target: { by: text, text: Settings } }
+`)
+  })
+
+  it("waits for visible text even when a hidden copy comes first", async () => {
+    await page.goto(`${server.url}/projects`)
+    await page.evaluate(() => {
+      setTimeout(() => document.body.insertAdjacentHTML("beforeend", "<p>Saved!</p>"), 200)
+    })
+    await runScenario(
+      page,
+      scenario(`steps:\n  - { id: saved, action: waitFor, until: { text: "Saved!" } }\n`),
+      project,
+      {
+        timeoutMs: 2000,
+      },
+    )
+  })
+
+  it("waits for requests started by the previous step (network idle)", async () => {
+    await run(
+      `setup: [{ preset: open-projects }]
+steps:
+  - { id: save, action: click, target: { by: role, role: button, name: Save remotely } }
+  - { id: idle, action: waitFor, until: { networkIdle: true } }
+  - { id: saved, action: expect, that: { text: Saved remotely }, timeout: 50 }
+`,
+      { timeoutMs: 4000 },
+    )
+  })
+
+  it("matches URL conditions at path-segment boundaries", async () => {
+    const expectUrl = (url: string) =>
+      failure(
+        `steps:\n  - { id: go, action: goto, url: /projects/12 }\n  - { id: at, action: expect, that: { url: ${url} }, timeout: 200 }\n`,
+      )
+    expect((await expectUrl("/projects/1")).reason).toBe("expectation-failed")
+    await run(
+      `steps:\n  - { id: go, action: goto, url: /projects/12 }\n  - { id: at, action: expect, that: { url: /projects } }\n`,
+    )
+  })
+
+  it("scrolls the page, not the container under the mouse", async () => {
+    await run(`setup: [{ preset: open-projects }]
+steps:
+  - { id: side, action: click, target: { by: role, role: button, name: Sidebar item } }
+  - { id: down, action: scroll, by: { y: 500 } }
+`)
+    expect(await page.evaluate<number>("window.scrollY")).toBeGreaterThan(0)
+    expect(await page.evaluate<number>("document.getElementById('sidebar').scrollTop")).toBe(0)
+  })
+
+  it("never waits forever on timeout: 0", async () => {
+    const error = await failure(`setup: [{ preset: open-projects }]
+steps:
+  - { id: never, action: waitFor, until: { text: "Never shown" }, timeout: 0 }
+`)
+    expect(error.reason).toBe("condition-timeout")
+  })
+
+  it("runs teardown even when a step fails", async () => {
+    const events: RunnerEvent[] = []
     await expect(
-      run(`setup: [{ preset: missing }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`),
-    ).rejects.toThrow(/unknown preset "missing"/)
-    await expect(
-      run(
-        `setup: [{ ensure: { absent: { by: text, text: X } } }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+      runScenario(
+        page,
+        scenario(`setup: [{ preset: open-projects }]
+steps:
+  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }
+teardown:
+  - { id: cleanup, action: goto, url: / }
+`),
+        project,
+        { timeoutMs: 500, onEvent: (e) => events.push(e) },
       ),
-    ).rejects.toThrow(/P0-9/)
+    ).rejects.toThrow(/boom/)
+    expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "cleanup")).toBe(true)
   })
 })

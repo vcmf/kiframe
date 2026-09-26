@@ -45,10 +45,15 @@ export type ResolveResult =
   | { ok: true; locator: Locator; used: SchemaLocator; fallbackIndex: number | undefined }
   | { ok: false; reason: "not-grounded" | "target-not-found" | "target-ambiguous"; detail: string }
 
+/** Only the elements that are actually rendered: hidden duplicates (a display:none mobile menu…) don't count. */
+export function visibleOnly(locator: Locator): Locator {
+  return locator.filter({ visible: true })
+}
+
 /**
  * Resolves a target to exactly one visible element: the primary locator first, then each fallback
- * in order. The time budget is shared: each candidate gets an equal slice. A locator matching
- * several elements is an error unless `nth` picks one (never guess which element was meant).
+ * in order. The time budget is shared: each candidate gets an equal slice. Hidden matches are
+ * ignored; several VISIBLE matches are an error unless `nth` picks one (never guess which).
  */
 export async function resolveTarget(
   page: Page,
@@ -68,8 +73,8 @@ export async function resolveTarget(
   const slice = Math.max(250, Math.floor(timeoutMs / candidates.length))
   const tried: string[] = []
   for (const [i, candidate] of candidates.entries()) {
-    const all = toPlaywright(page, candidate)
-    const locator = nth === undefined ? all : all.nth(nth)
+    const visible = visibleOnly(toPlaywright(page, candidate))
+    const locator = nth === undefined ? visible : visible.nth(nth)
     try {
       await locator.first().waitFor({ state: "visible", timeout: slice })
     } catch {
@@ -77,12 +82,12 @@ export async function resolveTarget(
       continue
     }
     if (nth === undefined) {
-      const count = await all.count()
+      const count = await visible.count()
       if (count > 1) {
         return {
           ok: false,
           reason: "target-ambiguous",
-          detail: `${describeLocator(candidate)} matches ${count} elements — add \`nth\` or a more precise locator`,
+          detail: `${describeLocator(candidate)} matches ${count} visible elements — add \`nth\` or a more precise locator`,
         }
       }
     }
@@ -112,18 +117,27 @@ function stripExtras(target: GroundedTarget): SchemaLocator {
  * element there is the element itself or one of its children. Playwright's "visible" only means
  * "has a box", which is also true when the element is scrolled out of view inside a container.
  */
-export async function isOnScreen(page: Page, locator: Locator): Promise<boolean> {
-  const box = await locator.boundingBox()
-  const viewport = page.viewportSize()
-  if (box === null || viewport === null) return false
+export async function isOnScreen(
+  page: Page,
+  locator: Locator,
+  timeoutMs: number,
+): Promise<boolean> {
+  const box = await locator.boundingBox({ timeout: timeoutMs }).catch(() => null)
+  if (box === null) return false
+  // Pages without a fixed viewport (CDP-connected, Electron) have no viewportSize(): ask the page.
+  const viewport =
+    page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
   const x = box.x + box.width / 2
   const y = box.y + box.height / 2
   if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return false
-  return locator.evaluate(
-    (el, [px, py]) => {
-      const hit = document.elementFromPoint(px ?? 0, py ?? 0)
-      return hit !== null && (hit === el || el.contains(hit))
-    },
-    [x, y],
-  )
+  return locator
+    .evaluate(
+      (el, [px, py]) => {
+        const hit = document.elementFromPoint(px ?? 0, py ?? 0)
+        return hit !== null && (hit === el || el.contains(hit))
+      },
+      [x, y],
+      { timeout: timeoutMs },
+    )
+    .catch(() => false)
 }

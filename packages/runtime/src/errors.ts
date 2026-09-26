@@ -17,6 +17,7 @@ export type StepErrorReason =
   | "risky-not-approved"
   | "secret-unavailable"
   | "action-failed"
+  | "invalid-setup"
 
 /**
  * A step failed. The message says which step and why, in words a user (or the agent) can act on:
