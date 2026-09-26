@@ -11,6 +11,18 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.11.0)
+      '@kiframe/compositor':
+        specifier: workspace:*
+        version: link:packages/compositor
+      '@kiframe/generators':
+        specifier: workspace:*
+        version: link:packages/generators
+      '@kiframe/runtime':
+        specifier: workspace:*
+        version: link:packages/runtime
+      '@kiframe/schema':
+        specifier: workspace:*
+        version: link:packages/schema
       '@types/node':
         specifier: ^22.20.4
         version: 22.20.4
@@ -21,7 +33,7 @@ importers:
         specifier: ^3.9.9
         version: 3.9.9
       typescript:
-        specifier: ^6.0.3
+        specifier: ~6.0.3
         version: 6.0.3
       typescript-eslint:
         specifier: ^8.70.1
