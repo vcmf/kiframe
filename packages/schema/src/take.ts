@@ -72,7 +72,7 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
   z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Timestamp }),
 ])
-const TakeEventBase = TakeEventVariants.refine(
+export const TakeEventBase = TakeEventVariants.refine(
   // Interrupts are handled between steps, so they may have no step even on camera.
   (e) => e.phase !== "steps" || e.kind === "interrupt" || e.stepId !== undefined,
   { message: "on-camera events (phase `steps`) need a stepId", path: ["stepId"] },
@@ -93,7 +93,7 @@ export const CursorSample = z.strictObject({
 })
 export type CursorSample = z.infer<typeof CursorSample>
 
-const TakeMetaBase = z.strictObject({
+export const TakeMetaBase = z.strictObject({
   version: z.literal(1),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),

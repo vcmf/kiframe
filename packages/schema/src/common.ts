@@ -90,21 +90,31 @@ export function isMalformedSecretRef(value: string): boolean {
 
 // ─── URLs ─────────────────────────────────────────────────────────────────────
 
-/** Parses `url` relative to a dummy base (so relative and protocol-relative URLs work), or null. */
-function parseUrl(url: string): URL | null {
-  return URL.parse(url, "http://base.invalid")
+/** Credentials `url` would carry once resolved against `base` (empty if none or unparseable). */
+function credentialsAgainst(url: string, base: string): string {
+  const parsed = URL.parse(url, base)
+  return parsed === null ? "" : parsed.username + parsed.password
 }
 
-/** True if `url` embeds credentials (`https://user:pass@host`, also protocol-relative `//u:p@host`). */
+/**
+ * True if `url` embeds credentials once resolved, whatever the app's scheme. Checked against both
+ * an http and an https base: `http:u:p@host` looks like a path on an http base but resolves to a
+ * credentialed URL on another host against an https app. Also catches `//user:pass@host`.
+ */
 export function hasUrlCredentials(url: string): boolean {
-  const parsed = parseUrl(url)
-  return parsed !== null && (parsed.username !== "" || parsed.password !== "")
+  return (
+    credentialsAgainst(url, "http://base.invalid") !== "" ||
+    credentialsAgainst(url, "https://base.invalid") !== ""
+  )
 }
 
-/** A navigable URL: relative, or absolute http(s). Never javascript:, file:, data:… */
-export function isNavigableUrl(url: string): boolean {
-  const protocol = parseUrl(url)?.protocol
-  return protocol === "http:" || protocol === "https:"
+/**
+ * A URL relative to the environment: a path (`/projects`) or query (`?tab=1`), never a scheme
+ * (`https:`, `javascript:`, `http:host`…) or protocol-relative (`//host`), so `goto` can't leave the
+ * target app (e.g. to type a secret on another origin).
+ */
+export function isRelativeUrl(url: string): boolean {
+  return !/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^[/\\]{2}/.test(url)
 }
 
 /** Adds the "no embedded credentials" rule to a URL-ish string schema (one rule for every URL field). */
@@ -114,15 +124,33 @@ export function withoutCredentials<T extends z.ZodType<string>>(schema: T) {
   })
 }
 
+/** Quotes are balanced (an unterminated string would swallow the rest of the stylesheet). */
+function balancedQuotes(selector: string): boolean {
+  let quote: string | undefined
+  for (let i = 0; i < selector.length; i++) {
+    const c = selector[i]
+    if (c === "\\") {
+      i++
+      continue
+    }
+    if (quote === undefined && (c === '"' || c === "'")) quote = c
+    else if (c === quote) quote = undefined
+  }
+  return quote === undefined
+}
+
 /**
- * A CSS selector Kiframe injects into the page (`hide`, redaction) or queries with. Braces,
- * semicolons and at-rules are rejected so a value can't inject extra CSS rules.
+ * A CSS selector Kiframe injects into the page (`hide`, redaction) or queries with. Anything that
+ * could escape the rule it's placed in is rejected: braces, semicolons, at-rules, comments, `<`
+ * (e.g. `</style>`) and unterminated strings.
  */
 export const CssSelector = z
   .string()
   .min(1)
   .max(500)
-  .regex(/^[^{};@]*$/, "must be a single CSS selector (no `{`, `}`, `;` or `@`)")
+  .refine((s) => !/[{};@<]|\/\*|\*\//.test(s) && balancedQuotes(s), {
+    message: "must be a single CSS selector (no `{`, `}`, `;`, `@`, `<`, comments or open quotes)",
+  })
 
 /** The `id` of an item, if it has a string one (steps, actions, rules, segments). */
 export function idOf(item: object): string | undefined {

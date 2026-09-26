@@ -1,9 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { parse as parseYaml } from "yaml"
 import { describe, expect, it } from "vitest"
-import * as z from "zod"
-import { InterruptRule, parseProjectYaml, parseScenarioYaml } from "./index.ts"
+import { parseProjectYaml, parseScenarioYaml } from "./index.ts"
 
 // The YAML examples in docs/OBJECT-MODEL.md must stay valid: this test reads them straight from the doc.
 const doc = readFileSync(join(import.meta.dirname, "../../../docs/OBJECT-MODEL.md"), "utf8")
@@ -32,10 +30,10 @@ describe("docs/OBJECT-MODEL.md examples", () => {
     expect(scenario.teardown?.[1]?.risky).toBe(true)
   })
 
-  it("interrupts example (§2b) is a valid list of interrupt rules", () => {
-    const data = parseYaml(yamlBlockAfter("Two project-level mechanisms")) as {
-      interrupts: unknown
-    }
-    expect(() => z.array(InterruptRule).parse(data.interrupts)).not.toThrow()
+  it("interrupts example (§2b) is valid inside a project config", () => {
+    const base = `version: 1\ntarget: { kind: web, url: "https://x.test", viewport: { width: 1440, height: 900 } }\n`
+    const project = parseProjectYaml(base + yamlBlockAfter("Two project-level mechanisms"))
+    expect(project.interrupts.map((r) => r.id)).toEqual(["cookie-banner", "whats-new"])
+    expect(project.hide).toHaveLength(2)
   })
 })
