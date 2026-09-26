@@ -206,9 +206,11 @@ The format, refined with ideas from demo-machine, VHS and Maestro. **The scenari
 **Project level** (`project.json`, shown as YAML for readability):
 
 ```yaml
+version: 1
 environment: staging             # org-level environment (APPROACHES §10c): URL, sandbox flag, pre-approvals
 target:
   kind: web                      # web (v0) | electron (v0.1) | tauri (later)
+  url: https://staging.acme.com  # Phase 0: set here. Later: comes from the environment
   viewport: { width: 1440, height: 900, deviceScaleFactor: 2 }
 defaults:                        # like VHS `Set`: global, separate from actions
   pacing: { cursor: natural, typing: human, settleMs: 400 }
@@ -229,8 +231,8 @@ presets:                         # shared off-camera setups (§0.4)
         instant: true
       - action: click
         target: { by: role, role: button, name: "Sign in" }
-interrupts: [ … ]                # §2b
-hide: [ … ]                      # §2b
+interrupts: []                   # §2b
+hide: []                         # §2b
 redaction:
   selectors: [ ".customer-email" ]
   secrets: auto                  # anything filled from the vault, and any occurrence of it on screen, is masked
@@ -309,7 +311,7 @@ Principles:
 ### App actions (v0)
 | Action | Key params | Notes |
 |---|---|---|
-| `goto` | `url` | Relative to the environment's URL |
+| `goto` | `url` | **Relative** to the environment's URL (absolute and `//host` URLs are rejected, so a scene never leaves the target app) |
 | `click` | `target`, `button?`, `count?` (2 = double-click), `modifiers?` | Also covers checkboxes, custom menus and dropdowns |
 | `hover` | `target`, `hold?` | Shows tooltips and menus |
 | `type` | `target`, `value`, `clear?`, `submit?` (Enter at the end), `instant?` (off camera) | Human typing by default. `value` can be `{{secrets.x}}` |
@@ -347,9 +349,11 @@ The real need behind `if` is **unpredictable interruptions**: cookie banners, "W
 ```yaml
 # project.json
 interrupts:                      # checked before each step; handled off camera
-  - when: { by: role, role: dialog, name: "Cookie preferences" }
+  - id: cookie-banner            # required: interrupt events in the take refer to it
+    when: { by: role, role: dialog, name: "Cookie preferences" }
     do: { action: click, target: { by: role, role: button, name: "Accept all" } }
-  - when: { text: "What's new" }
+  - id: whats-new
+    when: { text: "What's new" }
     do: { action: press, keys: "Escape" }
 hide:                            # removed from the frame with injected CSS (display: none)
   - "#intercom-container"
@@ -414,21 +418,25 @@ One replay of a scene produces a **take** in the take store (§0.6):
 ```
 
 ```ts
-// All coordinates normalized 0..1 relative to the viewport, so they're resolution independent.
-type NRect  = { x: number; y: number; w: number; h: number };
-type NPoint = { x: number; y: number };
+// Coordinates are normalized to the viewport (0..1 = on screen), so they're resolution independent.
+// Observed element rects are NOT clipped: an element can be partly off screen or zero-size, and a
+// half-hidden secret field must still be masked. The renderer clips to the frame.
+type ViewportRect = { x: number; y: number; w: number; h: number };  // w, h >= 0, any x/y
+type NPoint = { x: number; y: number };                              // 0..1 (the pointer is on screen)
 
-type TakeEvent = { t: number; stepId: string } & (   // t = ms from the first frame (screencast timestamps)
+// t = ms from the first frame (screencast timestamps). `phase` = which part of the scenario produced
+// the event; on-camera events (`steps`) carry a stepId, off-camera work (setup, presets) may not.
+type TakeEvent = { t: number; phase: "setup" | "steps" | "teardown"; stepId?: string } & (
   | { kind: "step_start" | "step_end" }
-  | { kind: "click"; point: NPoint; rect: NRect; button: "left" | "right" }
-  | { kind: "type_start" | "type_end"; rect: NRect; secret?: string }  // secret NAME only
+  | { kind: "click"; point: NPoint; rect: ViewportRect; button: "left" | "right" }
+  | { kind: "type_start" | "type_end"; rect: ViewportRect; secret?: string }  // secret NAME only
   | { kind: "key"; key: string }                                       // for keystroke overlays
-  | { kind: "scroll"; delta: NPoint }
+  | { kind: "scroll"; delta: { x: number; y: number } }                // normalized, unbounded
   | { kind: "navigate"; url: string }                                  // URL passed through the secret scrubber
   | { kind: "settled" }                                                // network idle + DOM stable
-  | { kind: "frame_target"; ref: string; rect: NRect }                 // rects for `camera.frame` / `emphasis` locators
-  | { kind: "sensitive"; id: string; rect: NRect; why: "secret-field" | "secret-text" | "redaction" }  // re-logged when it moves
-  | { kind: "interrupt"; rule: string; until: number }                 // span to cut (§2b)
+  | { kind: "frame_target"; ref: string; rect: ViewportRect }                 // rects for `camera.frame` / `emphasis` locators
+  | { kind: "sensitive"; id: string; rect: ViewportRect; why: "secret-field" | "secret-text" | "redaction" }  // re-logged when it moves
+  | { kind: "interrupt"; rule: string; until: number }                 // span to cut (§2b); rule = InterruptRule.id
 );
 
 type CursorSample = { t: number; p: NPoint; pressed: boolean; css?: string };  // css = computed `cursor` style (I-beam, pointer…)
@@ -477,14 +485,16 @@ type SegmentBase = {
 type Anchor =
   | { step: string; edge: "start" | "end"; offsetMs?: number }
   | { event: string; offsetMs?: number }            // e.g. the click in a step
-  | { scene: "start" | "end"; offsetMs?: number }   // card / still / media scenes
+  | { scene: "start"; offsetMs?: number }           // card / still / media scenes: offset >= 0 from the start…
+  | { scene: "end"; offsetMs?: number }             // …or <= 0 from the end (anchors stay inside the scene)
   | { ms: number };                                 // escape hatch: absolute source time
 
 type ClipSegment = SegmentBase & (
   | { mode: "speed"; speed: number }   // 1 = real time. Idle gaps and network waits → e.g. 4
   | { mode: "cut" }                    // removed from the output (setup, interrupts, very long waits)
-  | { mode: "freeze"; ms: number }     // hold the frame at `at` for ms (caption reading time)
-) & { reason?: "idle" | "network" | "setup" | "interrupt" | "reading" | "user" };
+) & { reason?: "idle" | "network" | "setup" | "interrupt" | "reading" | "user" }
+  // A freeze has no `until`: it holds the source frame at `at` for `ms` of output time.
+  | { id: string; source: "auto" | "manual"; at: Anchor; mode: "freeze"; ms: number; reason?: "reading" | "user" };
 
 type CameraSegment = SegmentBase & {
   scale: number;                               // 1 = full frame, 2 = 2x zoom (capped, §2b)
