@@ -76,7 +76,7 @@ export const ClipSegment = z.discriminatedUnion("mode", [
     at: Anchor,
     mode: z.literal("freeze"),
     ms: Ms.positive(),
-    reason: ClipReason.optional(),
+    reason: z.enum(["reading", "user"]).optional(),
   }),
 ])
 export type ClipSegment = z.infer<typeof ClipSegment>
@@ -136,13 +136,7 @@ export const CalloutSegment = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     ...segmentBase,
-    kind: z.literal("arrow"),
-    text: z.string().min(1).optional(),
-    target: calloutTarget,
-  }),
-  z.strictObject({
-    ...segmentBase,
-    kind: z.literal("badge"),
+    kind: z.enum(["arrow", "badge"]),
     text: z.string().min(1).optional(),
     target: calloutTarget,
   }),
@@ -152,7 +146,8 @@ export type CalloutSegment = z.infer<typeof CalloutSegment>
 export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })
 export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 
-export const CompositionBase = z
+/** Unguarded: internal only, use the guarded export. */
+const CompositionBase = z
   .strictObject({
     version: z.literal(1),
     /** The take the auto segments were generated from. */

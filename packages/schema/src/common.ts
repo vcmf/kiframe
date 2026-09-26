@@ -151,7 +151,6 @@ export const SceneFilePath = z
   .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/, {
     message: "must be a relative path inside the scene (no leading `/`, `\\`, `:` or `..`)",
   })
-  .refine((p) => !p.split("/").includes(".."), { message: "path can't contain `..`" })
 
 /**
  * Checks a selector can't escape the rule it's injected into: quotes closed, `()` and `[]` balanced
@@ -168,6 +167,9 @@ function isSelfContainedSelector(selector: string): boolean {
       i++
       continue
     }
+    // `<` is rejected everywhere, quotes included: an HTML tokenizer ignores CSS quoting, so a
+    // quoted `</style>` would still close a <style> element the selector is injected into.
+    if (c === "<") return false
     if (quote !== undefined) {
       // An unescaped newline ends a CSS string early ("bad string"): what follows is real syntax.
       if (c === "\n" || c === "\r" || c === "\f") return false
