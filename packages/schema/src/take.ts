@@ -54,9 +54,13 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   z.strictObject({ ...base, kind: z.literal("interrupt"), rule: z.string().min(1), until: Ms }),
 ])
 export const TakeEvent = TakeEventVariants.refine(
-  (e) => e.phase !== "steps" || e.stepId !== undefined,
+  // Interrupts are handled between steps, so they may have no step even on camera.
+  (e) => e.phase !== "steps" || e.kind === "interrupt" || e.stepId !== undefined,
   { message: "on-camera events (phase `steps`) need a stepId", path: ["stepId"] },
-)
+).refine((e) => e.kind !== "interrupt" || e.until >= e.t, {
+  message: "interrupt `until` must not be before `t`",
+  path: ["until"],
+})
 export type TakeEvent = z.infer<typeof TakeEvent>
 
 export const CursorSample = z.strictObject({
