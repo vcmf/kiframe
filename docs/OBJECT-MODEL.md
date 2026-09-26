@@ -326,7 +326,7 @@ Principles:
 
 Setup/teardown-only directives: `preset`, `ensure` (§2).
 
-A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases (buttons named Delete/Send/Pay).
+A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases (Delete/Remove/Send/Pay/Invite…) **at the press point, at press time** (after hover): it reads everything the control under the cursor is called (its text, hidden text included, and every aria-label / labelledby / title / alt / submit value inside it). This detection is a safety net that **fails closed**: if any of it mentions such a word, the click needs approval; `risky: false` on the step opts out. Clicking a card's title isn't judged by a Delete button elsewhere in the card, but a press that would land on that button is.
 
 **Implicit behaviors (runtime, not actions):**
 - the **interrupt check** before each step (see below)

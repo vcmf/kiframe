@@ -3,6 +3,36 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/moving": `<!doctype html><title>Moving</title>
+    <button id="b" style="position:absolute; left:400px; top:200px; transition: top 0.2s">Moving target</button>
+    <p id="s"></p>
+    <script>
+      let moved = false
+      addEventListener("mousemove", () => {
+        if (!moved) { moved = true; setTimeout(() => document.getElementById("b").style.top = "400px", 50) }
+      })
+      document.getElementById("b").onclick = () => document.getElementById("s").textContent = "Hit"
+    </script>`,
+  "/tall": `<!doctype html><title>Tall</title>
+    <div style="height:300px"></div>
+    <div id="board" role="region" aria-label="Board" style="height:1500px; background:#eee"></div>
+    <p id="s"></p>
+    <script>document.getElementById("board").onclick = (e) => document.getElementById("s").textContent = "Board " + e.clientY</script>`,
+  "/labels": `<!doctype html><title>Labels</title>
+    <ul role="menu"><li role="menuitem"><a href="#">Delete</a></li></ul>
+    <button id="trash"><svg width="10" height="10"><title>trash</title></svg>Delete</button>
+    <button id="save">Save<span hidden>Delete draft</span></button>
+    <button id="split"><u>D</u>elete</button>
+    <button id="contents"><span style="display:contents">Remove</span></button>
+    <button id="vis">Save<span style="visibility:hidden">Delete draft</span></button>
+    <a href="#thumb" id="thumbcard"><img alt="Q4 plan" width="40" height="40" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="><button onclick="event.preventDefault()">Delete</button></a>
+    <button id="bordered" style="border:6px solid #000; padding:4px">Bordered</button>
+    <p id="s"></p>
+    <script>document.getElementById("save").onclick = () => document.getElementById("s").textContent = "Saved it"
+      document.getElementById("vis").onclick = () => document.getElementById("s").textContent = "Saved vis"
+      document.getElementById("bordered").onclick = (e) => document.getElementById("s").textContent = "B " + e.clientX + "," + e.clientY</script>`,
+  "/cards": `<!doctype html><title>Cards</title>
+    <a href="#opened" class="card"><span>Acme project</span> <button onclick="event.preventDefault()">Delete</button></a>`,
   "/wc-form": `<!doctype html><title>WC form</title>
     <my-field></my-field>
     <form onsubmit="event.preventDefault(); document.getElementById('s').textContent='Removed'">

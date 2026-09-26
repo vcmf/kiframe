@@ -134,25 +134,15 @@ export async function isOnScreen(
 ): Promise<boolean> {
   const box = await locator.boundingBox({ timeout: timeoutMs }).catch(() => null)
   if (box === null) return false
-  // Pages without a fixed viewport (CDP-connected, Electron) have no viewportSize(): ask the page.
-  const viewport =
-    page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+  const viewport = await viewportOf(page)
   const x = box.x + box.width / 2
   const y = box.y + box.height / 2
   if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return false
   return locator
-    .evaluate(
-      (el, [px, py]) => {
-        // Hit-test in the element's own root: in shadow DOM, document.elementFromPoint returns the
-        // shadow host, never the element inside it.
-        const root = el.getRootNode()
-        const scope = root instanceof ShadowRoot || root instanceof Document ? root : document
-        const hit = scope.elementFromPoint(px ?? 0, py ?? 0)
-        return hit !== null && (hit === el || el.contains(hit))
-      },
-      [x, y],
-      { timeout: timeoutMs },
-    )
+    .evaluate(pointProbe, [x, y, false, true] as [number, number, boolean, boolean], {
+      timeout: timeoutMs,
+    })
+    .then((probe) => probe.hits)
     .catch(() => false)
 }
 
@@ -162,4 +152,118 @@ export function isNavigationError(error: unknown): boolean {
     error instanceof Error &&
     /execution context was destroyed|frame was detached/i.test(error.message)
   )
+}
+
+/** The viewport size. Pages without a fixed viewport (CDP-connected, Electron) are asked directly. */
+export async function viewportOf(page: Page): Promise<{ width: number; height: number }> {
+  return (
+    page.viewportSize() ?? (await page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+  )
+}
+
+/**
+ * What's under a point (runs in the page, self-contained so it can be passed to `evaluate`). Goes
+ * down through open shadow roots to the deepest element, then walks up the composed tree (slots,
+ * shadow hosts) to tell whether the hit is `el` or inside it (`strict`), or also inside `el`'s
+ * enclosing control (Playwright accepts a hit anywhere in the button a target sits in). With
+ * `withLabel`, also returns everything the element under the point is called, for the risky check:
+ * the control it belongs to (its text, shadow text and every naming attribute inside), or for a
+ * non-control its own text and attributes without nested controls' text.
+ */
+/** Arguments of `pointProbe`: point, whether to read the label, strict hit test, marker token. */
+export type ProbeArgs = [number, number, boolean, boolean, string?]
+
+export function pointProbe(
+  el: Element,
+  [x, y, withLabel, strict, token]: ProbeArgs,
+): { hits: boolean; label: string; sameAsMarked: boolean } {
+  const CONTROLS =
+    "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
+  let hit = document.elementFromPoint(x, y)
+  while (hit?.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y)
+    if (inner === null || inner === hit) break
+    hit = inner
+  }
+  const up = (n: Node): Node | null =>
+    (n instanceof Element ? n.assignedSlot : null) ??
+    n.parentNode ??
+    (n instanceof ShadowRoot ? n.host : null)
+  const closest = (from: Element | null): Element | null => {
+    for (let n: Node | null = from; n !== null; n = up(n))
+      if (n instanceof Element && n.matches(CONTROLS)) return n
+    return null
+  }
+  const within = (node: Node | null, ancestor: Element | null): boolean => {
+    for (let n = node; n !== null; n = up(n)) if (n === ancestor) return true
+    return false
+  }
+  const hits = hit !== null && (within(hit, el) || (!strict && within(hit, closest(el))))
+  // Mark the element under the point (a JS property, invisible to the page) so a later probe can
+  // tell whether the same node is still there.
+  const marks = hit as unknown as { __kiframeProbe?: string } | null
+  const sameAsMarked = token !== undefined && marks !== null && marks.__kiframeProbe === token
+  if (token !== undefined && marks !== null) marks.__kiframeProbe ??= token
+  if (!withLabel || hit === null) return { hits, label: "", sameAsMarked }
+  const texts: (string | null | undefined)[] = []
+  const attrs = (e: Element) => {
+    const root = e.getRootNode() as Document | ShadowRoot
+    for (const attr of ["alt", "aria-label", "title"]) texts.push(e.getAttribute(attr))
+    for (const id of (e.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
+      if (id !== "")
+        texts.push(root.getElementById(id)?.textContent ?? document.getElementById(id)?.textContent)
+    }
+    if (
+      e instanceof HTMLInputElement &&
+      ["submit", "button", "reset", "image"].includes(e.type.toLowerCase())
+    ) {
+      texts.push(e.value)
+    }
+  }
+  // Composed walk: light DOM children and open shadow roots, skipping nested controls if asked.
+  const walk = (node: Node, skipControls: boolean) => {
+    // A <slot> shows what's assigned to it (light-DOM content), not its own children.
+    const own =
+      node instanceof HTMLSlotElement ? node.assignedNodes({ flatten: true }) : [...node.childNodes]
+    const children = [
+      ...own,
+      ...(node instanceof Element && node.shadowRoot ? [node.shadowRoot] : []),
+    ]
+    for (const child of children) {
+      if (child.nodeType === Node.TEXT_NODE) texts.push("\uE000" + (child.textContent ?? ""))
+      else if (child instanceof Element) {
+        if (skipControls && child.matches(CONTROLS)) continue
+        attrs(child)
+        walk(child, skipControls)
+      } else if (child instanceof ShadowRoot) walk(child, skipControls)
+    }
+  }
+  // Fail closed on everything the press can activate: the target itself, and every control from
+  // the hit up (a click bubbles: an inner "Open" inside an outer "Delete row" activates both).
+  attrs(el)
+  const control = closest(hit)
+  if (control !== null) {
+    for (let c: Element | null = control; c !== null; c = closest(up(c) as Element | null)) {
+      texts.push(c instanceof HTMLElement ? c.innerText : null)
+      attrs(c)
+      walk(c, false)
+    }
+  } else {
+    // Not a control (a card's background, a row's cell): the element itself, not the buttons in it.
+    attrs(hit)
+    walk(hit, true)
+  }
+  // Two readings, both checked (fail closed): pieces separated by spaces, and adjacent text nodes
+  // glued (\uE000 marks them), so "<b>Del</b>ete" is found as "Delete" and "open"+"delete" as two words.
+  const pieces = texts.filter((s): s is string => typeof s === "string")
+  const spaced = pieces.join(" ").replace(/\uE000/g, "")
+  const glued = pieces
+    .join(" ")
+    .replace(/ \uE000/g, "")
+    .replace(/\uE000/g, "")
+  const label = `${spaced} ${glued}`
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\s+/g, " ")
+    .trim()
+  return { hits, label, sameAsMarked }
 }
