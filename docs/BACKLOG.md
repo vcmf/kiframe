@@ -22,3 +22,5 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Double-click event timing:** press/release pairs of a `count: 2` click are emitted back to back before Playwright's click (which may wait for actionability), not at the real mousedown/mouseup times.
 - **No cursor events without a box:** when the target has no box (display: contents) or no visible part, the cursor doesn't move visibly and `ctx.cursor` goes stale while Playwright's click moves the real mouse.
 - **Listener errors across step boundaries:** a late navigation from a step that already finished/failed can be attributed to the next step (or teardown) and fail it.
+- **Box lost after the cursor travel:** if the target re-renders or slides off screen during the travel, the click runs at the element's center without press/release events, and `ctx.cursor` is wrong.
+- **Instant pacing doesn't re-measure after the hover:** a control that changes size on hover can be clicked at a stale offset (off camera only).
