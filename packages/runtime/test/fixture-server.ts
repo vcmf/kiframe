@@ -3,6 +3,16 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/prefilled": `<!doctype html><title>Prefilled</title>
+    <label>Company <input value="Acme"></label>
+    <label>Notes <textarea>line1
+line2</textarea></label>`,
+  "/late-redirect": `<!doctype html><title>Late redirect</title>
+    <script>addEventListener("load", () => setTimeout(() => location.replace("/login"), 300))</script>`,
+  "/login": `<!doctype html><title>Login</title><button>Sign in</button>`,
+  "/covered": `<!doctype html><title>Covered</title>
+    <div style="height:1500px"></div><p id="t">Under the banner</p>
+    <div style="position:fixed; left:0; right:0; bottom:0; height:200px; background:#000">Cookie banner</div>`,
   "/redirect": `<!doctype html><title>Redirect</title>
     <script>addEventListener("load", () => location.replace("/projects"))</script>`,
   "/shell": `<!doctype html><title>Shell</title>
