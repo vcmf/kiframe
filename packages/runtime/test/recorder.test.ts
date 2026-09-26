@@ -1,10 +1,12 @@
 import { execFileSync } from "node:child_process"
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -18,7 +20,7 @@ import {
 } from "@kiframe/schema"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { recordScenario, scrubSecrets } from "../src/index.ts"
+import { pathOnly, recordScenario, scrubSecrets } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -403,5 +405,79 @@ describe("scrubbing, one pass", () => {
     const twice = encodeURIComponent(new URLSearchParams({ v: secret }).toString().slice(2))
     expect(scrubSecrets(`next=${twice}`, [secret])).toBe("next=[secret]")
     expect(() => scrubSecrets("x", ["bad\ud800"])).not.toThrow()
+  })
+})
+
+describe("take details", { timeout: 60_000 }, () => {
+  const project = () =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+  const scenario = (steps: string) =>
+    parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: /projects }]\nsteps:\n${steps}`)
+
+  it("follows a secret field with its blur when the page scrolls", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      scenario(`  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: down, action: scroll, by: { y: 150 } }
+`),
+      project(),
+      { outDir, resolveSecret: () => SECRET },
+    )
+    await context.close()
+    const rects = take.events.flatMap((e) => (e.kind === "sensitive" ? [e.rect.y] : []))
+    // Logged at type_start, then again after each step; after the scroll it's higher on screen.
+    expect(rects.length).toBeGreaterThanOrEqual(3)
+    expect(Math.min(...rects)).toBeLessThan(Math.max(...rects))
+  })
+
+  it("records into the real location of a symlinked take folder", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kiframe-link-"))
+    const real = join(root, "vault-volume", "scene")
+    mkdirSync(real, { recursive: true })
+    writeFileSync(join(real, ".kiframe-take"), "kiframe take\n")
+    const link = join(root, "scene")
+    symlinkSync(real, link)
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    await recordScenario(page, scenario("  - { id: a, action: pause, ms: 50 }\n"), project(), {
+      outDir: link,
+    })
+    await context.close()
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(existsSync(join(real, "meta.json"))).toBe(true)
+  })
+
+  it("logs the Enter of a submit as a key", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      scenario(`  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
+  - { id: name, action: type, target: { by: label, name: Project name }, value: Q4, submit: true }
+`),
+      project(),
+      { outDir },
+    )
+    await context.close()
+    const kinds = take.events
+      .filter((e) => e.stepId === "name")
+      .map((e) => (e.kind === "key" ? `key:${e.key}` : e.kind))
+    expect(kinds.indexOf("type_end")).toBeLessThan(kinds.indexOf("key:Enter"))
+  })
+})
+
+describe("pathOnly", () => {
+  it("keeps origin + path, and only the scheme of non-web URLs", () => {
+    expect(pathOnly("https://app.test/login?pw=x#h")).toBe("https://app.test/login")
+    expect(pathOnly("blob:https://app.test/1234-uuid")).toBe("blob:")
+    expect(pathOnly("data:text/html;base64,AAAA")).toBe("data:")
   })
 })

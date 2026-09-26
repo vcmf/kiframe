@@ -1,6 +1,14 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
 import { writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import {
@@ -53,7 +61,7 @@ export async function recordScenario(
 ): Promise<Take> {
   // Record into a fresh hidden SIBLING folder (never inside the take, whatever the trailing slash):
   // it replaces the previous take only once it exists, and is removed if anything goes wrong.
-  const finalDir = resolve(options.outDir)
+  const finalDir = realTakePath(options.outDir)
   checkReplaceable(finalDir)
   const outDir = join(
     dirname(finalDir),
@@ -201,15 +209,25 @@ export async function recordScenario(
             push({
               ...base(e.step),
               kind: "sensitive",
-              id: `secret:${e.secret}:${keyOf(e.step)}`,
+              id: `secret:${e.secret}:${e.step.phase}:${e.step.index}`,
               rect: box === undefined ? fullFrame : rect(box),
               why: "secret-field",
             })
           }
           break
         }
-        case "target":
-          // Not logged: clicks and typing carry their own fresh boxes.
+        case "secret_field":
+          // The blur follows the field: a new rect where it is now. A field that's gone (no box)
+          // shows nothing, so there's nothing to blur.
+          if (e.box !== undefined) {
+            push({
+              ...base(e.step),
+              kind: "sensitive",
+              id: e.id,
+              rect: rect(e.box),
+              why: "secret-field",
+            })
+          }
           break
         case "key":
           push({ ...base(e.step), kind: "key", key: e.keys })
@@ -303,6 +321,8 @@ export async function recordScenario(
       try {
         swapInto(outDir, dest)
         placed = true
+        // A newer complete take makes an older failed one obsolete.
+        if (dest === finalDir) removeTake(`${finalDir}.failed`)
       } catch (error) {
         // Placing a FAILED take is best effort: the replay's own error is the one that matters.
         if (failure === undefined) throw error
@@ -334,7 +354,14 @@ function swapInto(src: string, dest: string) {
   try {
     renameSync(src, dest)
   } catch (error) {
-    if (aside !== undefined) renameSync(aside, dest)
+    if (aside !== undefined) {
+      try {
+        renameSync(aside, dest)
+      } catch {
+        // The original error is the one reported; say where the previous take was left.
+        throw new Error(`${firstLine(error)} (the previous take is at ${aside})`)
+      }
+    }
     throw error
   }
   if (aside !== undefined) rmSync(aside, { recursive: true, force: true })
@@ -421,6 +448,18 @@ export function jpegSize(data: Buffer): { width: number; height: number } | unde
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
+/**
+ * The take folder's real location: symlinks are followed (a take store on an encrypted volume
+ * linked into place), so the swap happens there and never replaces the link itself.
+ */
+function realTakePath(outDir: string): string {
+  const absolute = resolve(outDir)
+  if (existsSync(absolute)) return realpathSync(absolute)
+  // Not there yet: resolve its parent (which may be a link) and keep the name.
+  const parent = dirname(absolute)
+  return join(existsSync(parent) ? realpathSync(parent) : parent, basename(absolute))
+}
+
 /** Written first in every take directory: only a folder with it may be replaced by a new take. */
 const TAKE_MARKER = ".kiframe-take"
 
@@ -437,6 +476,12 @@ function checkReplaceable(dir: string) {
       `refusing to overwrite ${dir}: it isn't empty and isn't a take (no ${TAKE_MARKER})`,
     )
   }
+}
+
+/** Deletes a take folder, only if it is one (it has the marker). */
+function removeTake(dir: string) {
+  if (existsSync(dir) && readdirSync(dir).includes(TAKE_MARKER))
+    rmSync(dir, { recursive: true, force: true })
 }
 
 function prepareOutDir(outDir: string) {
