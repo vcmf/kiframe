@@ -432,7 +432,7 @@ type TakeEvent = { t: number; phase: "setup" | "steps" | "teardown"; stepId?: st
   | { kind: "type_start" | "type_end"; rect: ViewportRect; secret?: string }  // secret NAME only
   | { kind: "key"; key: string }                                       // for keystroke overlays
   | { kind: "scroll"; delta: { x: number; y: number } }                // normalized, unbounded
-  | { kind: "navigate"; url: string }                                  // URL passed through the secret scrubber
+  | { kind: "navigate"; url: string }                                  // origin + path only (no query/hash), scrubbed
   | { kind: "settled" }                                                // network idle + DOM stable
   | { kind: "frame_target"; ref: string; rect: ViewportRect }                 // rects for `camera.frame` / `emphasis` locators
   | { kind: "sensitive"; id: string; rect: ViewportRect; why: "secret-field" | "secret-text" | "redaction" }  // re-logged when it moves

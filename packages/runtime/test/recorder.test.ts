@@ -171,7 +171,9 @@ steps:
     const events = readFileSync(join(outDir, "events.jsonl"), "utf8")
     expect(events).not.toContain(SECRET)
     expect(events).not.toContain(encodeURIComponent(SECRET))
-    expect(events).toContain("[secret]")
+    // Query strings aren't recorded at all: only origin + path.
+    expect(events).not.toContain("?")
+    expect(events).toContain("/get-login")
   })
 
   it("logs the real button of a click", async () => {
@@ -394,5 +396,12 @@ describe("scrubbing, one pass", () => {
     expect(scrubSecrets("pw=hunter2&x=secret", ["hunter2", "secret", "sec"])).toBe(
       "pw=[secret]&x=[secret]",
     )
+  })
+
+  it("handles double encodings and lone surrogates", () => {
+    const secret = "p@ss w0rd!"
+    const twice = encodeURIComponent(new URLSearchParams({ v: secret }).toString().slice(2))
+    expect(scrubSecrets(`next=${twice}`, [secret])).toBe("next=[secret]")
+    expect(() => scrubSecrets("x", ["bad\ud800"])).not.toThrow()
   })
 })

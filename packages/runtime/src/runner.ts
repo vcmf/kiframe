@@ -112,11 +112,13 @@ export async function runScenario(
   const onNavigated = (frame: Frame) => {
     if (frame === page.mainFrame() && current !== undefined) {
       try {
-        // URLs can carry a typed secret (a GET form, a token redirect): scrubbed before reporting.
+        // Only the origin and path are reported: a query string or hash can carry a typed secret or a
+        // token in any encoding (a GET form, a `?next=` redirect…). Not recording them removes the
+        // whole class; the path is scrubbed too.
         options.onEvent?.({
           kind: "navigate",
           step: current,
-          url: scrubSecrets(frame.url(), secretValues),
+          url: scrubSecrets(pathOnly(frame.url()), secretValues),
         })
       } catch (error) {
         // Thrown inside Playwright's event dispatch: keep it and fail the step afterwards.
@@ -1031,8 +1033,15 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
  */
 export function scrubSecrets(text: string, values: Iterable<string>): string {
   const variants = new Set<string>()
+  const encode = (f: (s: string) => string, s: string): string | undefined => {
+    try {
+      return f(s)
+    } catch {
+      return undefined // a lone surrogate can't be URI-encoded: the raw value is still matched
+    }
+  }
   for (const value of values) {
-    const component = encodeURIComponent(value)
+    const component = encode(encodeURIComponent, value)
     // WHATWG application/x-www-form-urlencoded (what browsers use for GET forms): also encodes !'()~
     const form = new URLSearchParams({ v: value }).toString().slice(2)
     const base64 = Buffer.from(value).toString("base64")
@@ -1040,15 +1049,18 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
     for (const v of [
       value,
       component,
-      component.replace(/%20/g, "+"),
+      component?.replace(/%20/g, "+"),
       form,
-      encodeURI(value),
+      // Encoded twice (a URL inside a `?next=` / `?return=` parameter).
+      component === undefined ? undefined : encode(encodeURIComponent, component),
+      encode(encodeURIComponent, form),
+      encode(encodeURI, value),
       base64,
-      encodeURIComponent(base64),
+      encode(encodeURIComponent, base64),
       base64url,
       JSON.stringify(value).slice(1, -1),
     ]) {
-      if (v !== "") variants.add(v)
+      if (v !== undefined && v !== "") variants.add(v)
     }
   }
   // One pass over one alternation of every variant of every secret, longest first: a secret that
@@ -1060,6 +1072,14 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
     .map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
     .join("|")
   return text.replace(new RegExp(alternation, "gi"), "[secret]")
+}
+
+/** `https://host/path?query#hash` → `https://host/path` (non-URLs are returned as they are). */
+export function pathOnly(url: string): string {
+  const parsed = URL.parse(url)
+  return parsed === null
+    ? url
+    : `${parsed.origin === "null" ? `${parsed.protocol}` : parsed.origin}${parsed.pathname}`
 }
 
 /** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */
@@ -1103,7 +1123,9 @@ function scrubError(error: Error, secrets: Set<string>): Error {
     const detail = message.slice(message.indexOf(": ") + 2)
     return new StepError(error.step, error.reason, detail)
   }
-  return new Error(message)
+  const scrubbed = new Error(message)
+  scrubbed.name = error.name // e.g. TimeoutError: callers may branch on it
+  return scrubbed
 }
 
 /** First line of an error's message (Playwright errors carry long call logs after it). */

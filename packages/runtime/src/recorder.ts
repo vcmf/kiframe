@@ -95,6 +95,7 @@ export async function recordScenario(
       })
     let frameSize: { width: number; height: number } | undefined
     let lastSize: { width: number; height: number } | undefined
+    let stopped = false
     let sizeChanged = false
     let lastFrame: Buffer | undefined
     await page.screencast.start({
@@ -103,6 +104,8 @@ export async function recordScenario(
       size: { width: viewport.width, height: viewport.height },
       quality: options.quality ?? 85,
       onFrame: ({ data, timestamp }) => {
+        // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
+        if (stopped) return
         const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
         // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
         pendingWrites.push(track(writeFile(join(framesDir, file), data)))
@@ -129,7 +132,6 @@ export async function recordScenario(
     // ── events ──
     const events: TakeEvent[] = []
     const cursor: CursorSample[] = []
-    const lastTarget = new Map<string, Box>()
     const keyOf = (s: StepRef) => `${s.phase}:${s.index}`
     const base = (s: StepRef) => ({
       t: at(),
@@ -180,7 +182,9 @@ export async function recordScenario(
         case "type_start":
         case "type": {
           const kind = e.kind === "type_start" ? "type_start" : "type_end"
-          const box = e.box ?? lastTarget.get(keyOf(e.step))
+          // Only the box measured right now (after focus): a stale one could point at where the field
+          // was before a scroll, and the blur would miss the secret.
+          const box = e.box
           if (box !== undefined) {
             push({
               ...base(e.step),
@@ -205,7 +209,7 @@ export async function recordScenario(
           break
         }
         case "target":
-          lastTarget.set(keyOf(e.step), e.box)
+          // Not logged: clicks and typing carry their own fresh boxes.
           break
         case "key":
           push({ ...base(e.step), kind: "key", key: e.keys })
@@ -235,6 +239,7 @@ export async function recordScenario(
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
     }
+    stopped = true
     await page.screencast.stop().catch(() => undefined)
     // Capture time, not disk-flush time.
     const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
@@ -295,10 +300,20 @@ export async function recordScenario(
     // for debugging and never replaces a good take.
     if (meta !== undefined) {
       const dest = meta.outcome.status === "complete" ? finalDir : `${finalDir}.failed`
-      swapInto(outDir, dest)
-      placed = true
+      try {
+        swapInto(outDir, dest)
+        placed = true
+      } catch (error) {
+        // Placing a FAILED take is best effort: the replay's own error is the one that matters.
+        if (failure === undefined) throw error
+        fileError ??= error instanceof Error ? error : new Error(String(error))
+      }
     }
-    if (failure !== undefined) throw failure
+    if (failure !== undefined) {
+      // Say why no failed take was kept, without replacing the replay's error.
+      if (fileError !== undefined) Object.assign(failure, { takeError: firstLine(fileError) })
+      throw failure
+    }
     if (fileError !== undefined || meta === undefined)
       throw fileError ?? new Error("take metadata missing")
     return { dir: finalDir, meta, events, cursor, warnings }
