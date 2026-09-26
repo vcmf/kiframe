@@ -578,4 +578,83 @@ teardown:
     expect(on).not.toHaveBeenCalled()
     on.mockRestore()
   })
+
+  // ─── Review round 6 (P0-3) ─────────────────────────────────────────────────
+
+  it("types into email and number inputs (no selection API there)", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /login-form }
+  - { id: email, action: type, target: { by: label, name: Email }, value: bob@acme.com }
+  - { id: age, action: type, target: { by: label, name: Age }, value: "42", instant: true }
+`)
+    expect(await page.getByLabel("Email").inputValue()).toBe("bob@acme.com")
+    expect(await page.getByLabel("Age").inputValue()).toBe("42")
+  })
+
+  it("refuses to type into a target that can't take focus (no secret in the previous field)", async () => {
+    const error = await failure(
+      `steps:
+  - { id: go, action: goto, url: /login-form }
+  - { id: email, action: type, target: { by: label, name: Email }, value: bob@acme.com }
+  - { id: pw, action: type, target: { by: css, selector: .password-field }, value: "{{secrets.acme.password}}" }
+`,
+      { resolveSecret: () => "hunter2" },
+    )
+    expect(error.message).toMatch(/can't take keyboard focus/)
+    expect(await page.getByLabel("Email").inputValue()).toBe("bob@acme.com")
+  })
+
+  it("detects obvious risky buttons without `risky: true`", async () => {
+    const error = await failure(`steps:
+  - { id: go, action: goto, url: /login-form }
+  - { id: del, action: click, target: { by: role, role: button, name: Delete project } }
+`)
+    expect(error.reason).toBe("risky-not-approved")
+    await run(`steps:
+  - { id: go, action: goto, url: /login-form }
+  - { id: del, action: click, target: { by: role, role: button, name: Delete project }, risky: false }
+  - { id: done, action: expect, that: { text: Deleted } }
+`)
+  })
+
+  it("settles while a web component renders inside its shadow root", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /shadow-render }
+  - { id: load, action: click, target: { by: role, role: button, name: Load panel } }
+  - { id: ready, action: expect, that: { text: Panel ready }, timeout: 50 }
+`)
+  })
+
+  it("stops quickly on a target covered by a sticky header mid-page", async () => {
+    const started = Date.now()
+    const error = await failure(
+      `steps:
+  - { id: go, action: goto, url: /covered-mid }
+  - { id: find, action: scroll, until: { by: text, text: Behind header } }
+`,
+      { timeoutMs: 8000 },
+    )
+    expect(error.message).toMatch(/stays off screen/)
+    expect(Date.now() - started).toBeLessThan(6000)
+  })
+
+  it("names the teardown step that failed", async () => {
+    const events: RunnerEvent[] = []
+    await expect(
+      runScenario(
+        page,
+        scenario(`setup: [{ preset: open-projects }]
+steps:
+  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }
+teardown:
+  - { id: first, action: pause, ms: 1 }
+  - { id: second, action: click, target: { by: role, role: button, name: Also missing } }
+`),
+        project,
+        { timeoutMs: 300, onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow(/boom/)
+    const failed = events.find((e) => e.kind === "teardown_failed")
+    expect(failed?.kind === "teardown_failed" && failed.error.step.index).toBe(1)
+  })
 })

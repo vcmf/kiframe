@@ -3,6 +3,31 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/login-form": `<!doctype html><title>Login form</title>
+    <label>Email <input type="email"></label>
+    <label>Age <input type="number"></label>
+    <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
+    <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
+  "/shadow-render": `<!doctype html><title>Shadow render</title>
+    <x-panel></x-panel><button id="go">Load panel</button>
+    <script>
+      customElements.define("x-panel", class extends HTMLElement {
+        connectedCallback() { this.attachShadow({ mode: "open" }) }
+        render() {
+          let i = 0
+          const tick = () => {
+            this.shadowRoot.innerHTML = "<p>Rendering " + i + "</p>"
+            if (++i < 5) setTimeout(tick, 100)
+            else this.shadowRoot.innerHTML = "<p>Panel ready</p>"
+          }
+          tick()
+        }
+      })
+      document.getElementById("go").onclick = () => document.querySelector("x-panel").render()
+    </script>`,
+  "/covered-mid": `<!doctype html><title>Covered mid</title>
+    <div style="position:fixed; top:0; left:0; right:0; height:760px; background:#000; z-index:9">Sticky header</div>
+    <div style="height:1000px"></div><p>Behind header</p><div style="height:4000px"></div>`,
   "/ambiguous": `<!doctype html><title>Ambiguous</title>
     <button>Delete</button><button>Delete</button><span>Delete</span>`,
   "/shadow": `<!doctype html><title>Shadow</title>
