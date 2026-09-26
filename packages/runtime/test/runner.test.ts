@@ -14,7 +14,7 @@ beforeAll(async () => {
   browser = await chromium.launch()
   project = parseProjectYaml(`version: 1
 target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
-defaults: { pacing: { settleMs: 0 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 presets:
   open-projects:
     steps: [{ action: goto, url: /projects }]
@@ -716,5 +716,65 @@ steps:
   - { id: del, action: click, target: { by: css, selector: "button > span" } }
 `)
     expect(error.reason).toBe("risky-not-approved")
+  })
+
+  // ─── P0-4: human motion ────────────────────────────────────────────────────
+
+  it("moves the cursor along a path and clicks exactly where it stopped", async () => {
+    const human = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: natural, typing: human } }
+`)
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /projects }
+  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
+  - { id: name, action: type, target: { by: label, name: Project name }, value: "Q4 Launch" }
+`),
+      human,
+      { timeoutMs: 3000, onEvent: (e) => events.push(e) },
+    )
+    const moves = events.filter(
+      (e) => e.kind === "cursor" && e.step.stepId === "open-new" && !e.pressed,
+    )
+    expect(moves.length).toBeGreaterThan(5)
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    const last = moves.at(-1)
+    expect(
+      press && last && press.kind === "cursor" && last.kind === "cursor" && [press.x, press.y],
+    ).toEqual(last && last.kind === "cursor" ? [last.x, last.y] : [])
+    // The click worked (the form opened) and the text was typed in the human rhythm.
+    expect(await page.getByLabel("Project name").inputValue()).toBe("Q4 Launch")
+    const box = await page.getByRole("button", { name: "New project" }).boundingBox()
+    expect(
+      press?.kind === "cursor" && box && press.x >= box.x && press.x <= box.x + box.width,
+    ).toBe(true)
+  })
+
+  it("moves the same way on every replay (seeded motion)", async () => {
+    const human = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
+`)
+    const replay = async () => {
+      const p = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+      const events: RunnerEvent[] = []
+      await runScenario(
+        p,
+        scenario(`steps:
+  - { id: go, action: goto, url: /projects }
+  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
+`),
+        human,
+        { onEvent: (e) => events.push(e) },
+      )
+      await p.close()
+      return events.flatMap((e) =>
+        e.kind === "cursor" ? [[Math.round(e.x), Math.round(e.y)]] : [],
+      )
+    }
+    expect(await replay()).toEqual(await replay())
   })
 })

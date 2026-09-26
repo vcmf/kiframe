@@ -10,6 +10,15 @@ import type {
 import { secretRefName } from "@kiframe/schema"
 import type { ElementHandle, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
+import {
+  clickPoint,
+  planPath,
+  seededRandom,
+  typingDelays,
+  type CursorPacing,
+  type Point,
+  type TypingPacing,
+} from "./motion.ts"
 import { NetworkTracker } from "./network.ts"
 import { describeLocator, isOnScreen, resolveTarget, toPlaywright, visibleOnly } from "./targets.ts"
 
@@ -23,6 +32,8 @@ export type RunnerEvent =
   | { kind: "navigate"; step: StepRef; url: string }
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
   | { kind: "type"; step: StepRef; secret?: string | undefined }
+  /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
+  | { kind: "cursor"; step: StepRef; x: number; y: number; pressed: boolean }
   /** A fallback locator was used: the primary one no longer matches (a signal for self-healing). */
   | { kind: "target_fallback"; step: StepRef; fallbackIndex: number }
   /** Teardown failed after a step had already failed: the step's error is the one thrown. */
@@ -42,9 +53,6 @@ export interface RunOptions {
 }
 
 type AnyAction = Action | Step
-
-/** Delay between keystrokes of on-camera typing (human-like pacing comes with P0-4). */
-const TYPING_DELAY_MS = 30
 
 /** Playwright treats a timeout of 0 as "wait forever": never pass it through. */
 const MIN_TIMEOUT_MS = 1
@@ -91,6 +99,11 @@ export async function runScenario(
     options,
     network,
     setCurrent: (step) => (current = step),
+    cursor: undefined,
+    pacing: {
+      cursor: scenario.overrides?.pacing?.cursor ?? project.defaults.pacing.cursor,
+      typing: scenario.overrides?.pacing?.typing ?? project.defaults.pacing.typing,
+    },
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
@@ -144,6 +157,9 @@ interface Ctx {
   navigationTimeoutMs: number
   network: NetworkTracker
   setCurrent: (step: StepRef | undefined) => void
+  /** Where the cursor is (CSS pixels); undefined until the first movement. */
+  cursor: Point | undefined
+  pacing: { cursor: CursorPacing; typing: TypingPacing }
   options: RunOptions
 }
 
@@ -333,16 +349,22 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
       }
-      await guard(step, () =>
-        target.click({
+      const point = await moveCursorTo(ctx, target, step)
+      await guard(step, async () => {
+        ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: true })
+        // The click lands exactly where the cursor stopped: no visible jump.
+        const box = await target.boundingBox({ timeout: ctx.timeoutMs })
+        await target.click({
           timeout: ctx.timeoutMs,
+          ...(box !== null && { position: { x: point.x - box.x, y: point.y - box.y } }),
           ...(action.button !== undefined && { button: action.button }),
           ...(action.count !== undefined && { clickCount: action.count }),
           ...(action.modifiers !== undefined && {
             modifiers: action.modifiers.map(toPlaywrightModifier),
           }),
-        }),
-      )
+        })
+        ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: false })
+      })
       return
     }
     case "type": {
@@ -350,6 +372,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
+      if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -385,7 +408,14 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         } else {
           // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
           // caret to the start when the window doesn't have OS focus (headed, Electron).
-          await page.keyboard.type(text, { delay: TYPING_DELAY_MS })
+          const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
+          const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
+          // delays[i] is the pause BEFORE character i (word and sentence boundaries).
+          for (const [i, char] of [...text].entries()) {
+            const delay = delays[i] ?? 0
+            if (delay > 0) await sleep(delay)
+            await page.keyboard.type(char)
+          }
         }
         if (action.submit === true) await target.press("Enter", { timeout })
       })
@@ -725,6 +755,45 @@ function pathMatches(actual: string, expected: string): boolean {
   const path = actual.replace(/\/+$/, "")
   if (want === "") return path === ""
   return path === want || path.startsWith(`${want}/`)
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Seed of a step's random motion: the same step always moves the same way. */
+function seedOf(step: StepRef): string {
+  return `${step.phase}:${step.stepId ?? step.index}`
+}
+
+/**
+ * Moves the real mouse to a point inside the target along a human-like path (so hover states happen
+ * in the app), reporting cursor samples. Off camera, or with `cursor: instant`, it jumps. Returns
+ * the point it stopped on, where the action then happens.
+ */
+async function moveCursorTo(ctx: Ctx, target: Locator, step: StepRef): Promise<Point> {
+  return guard(step, async () => {
+    const box = await target.boundingBox({ timeout: ctx.timeoutMs })
+    if (box === null)
+      throw new StepError(step, "action-failed", "target has no box to move the cursor to")
+    const random = seededRandom(`${seedOf(step)}:cursor`)
+    const to = clickPoint(box, random)
+    const viewport =
+      ctx.page.viewportSize() ??
+      (await ctx.page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
+    const from = ctx.cursor ?? { x: viewport.width / 2, y: viewport.height / 2 }
+    const pacing = step.phase === "steps" ? ctx.pacing.cursor : "instant"
+    const path = planPath(from, to, { pacing, targetWidth: box.width, viewport, random })
+    const start = Date.now()
+    for (const sample of path) {
+      const wait = start + sample.t - Date.now()
+      if (wait > 0) await sleep(wait)
+      await ctx.page.mouse.move(sample.x, sample.y)
+      ctx.options.onEvent?.({ kind: "cursor", step, x: sample.x, y: sample.y, pressed: false })
+    }
+    // Where the mouse really is (the path is clamped to the viewport).
+    const end = path.at(-1) ?? { x: to.x, y: to.y }
+    ctx.cursor = { x: end.x, y: end.y }
+    return ctx.cursor
+  })
 }
 
 /** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */
