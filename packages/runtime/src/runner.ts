@@ -430,8 +430,8 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     }
     case "press":
-      ctx.options.onEvent?.({ kind: "key", step, keys: action.keys })
       await guard(step, () => page.keyboard.press(toPlaywrightKeys(action.keys)))
+      ctx.options.onEvent?.({ kind: "key", step, keys: action.keys })
       return
     case "scroll":
       await scroll(ctx, action, step)
@@ -473,7 +473,10 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
   if (ctx.options.onEvent !== undefined) {
-    const box = await result.locator.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+    // Short: the element was just scrolled into view; a slow answer means it's re-rendering.
+    const box = await result.locator
+      .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
+      .catch(() => null)
     if (box !== null) ctx.options.onEvent({ kind: "target", step, box })
   }
   return result.locator
@@ -894,13 +897,17 @@ async function clickAtCursor(
     }
     // The click event the recorder logs, as close as possible to the real dispatch: after Playwright's
     // actionability checks (a trial click), at our point or the box center when Playwright picks it.
+    // Same behaviour recorded or not: actionability at the point first (a trial click), then the event.
+    await target.click({
+      trial: true,
+      timeout: left(),
+      ...(position !== undefined && { position }),
+      ...(action.button !== undefined && { button: action.button }),
+      ...(action.modifiers !== undefined && {
+        modifiers: action.modifiers.map(toPlaywrightModifier),
+      }),
+    })
     if (ctx.options.onEvent !== undefined) {
-      await target.click({
-        trial: true,
-        timeout: left(),
-        ...(position !== undefined && { position }),
-        ...(action.button !== undefined && { button: action.button }),
-      })
       const clickBox = box ?? (await target.boundingBox({ timeout: left() }).catch(() => null))
       if (clickBox !== null) {
         const where = point ?? {
@@ -1015,28 +1022,34 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
  * form-encoded, base64, JSON-escaped) with `[secret]`.
  */
 export function scrubSecrets(text: string, values: Iterable<string>): string {
-  let out = text
+  const variants = new Set<string>()
   for (const value of values) {
     const component = encodeURIComponent(value)
     // WHATWG application/x-www-form-urlencoded (what browsers use for GET forms): also encodes !'()~
     const form = new URLSearchParams({ v: value }).toString().slice(2)
     const base64 = Buffer.from(value).toString("base64")
-    const variants = new Set([
+    const base64url = base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    for (const v of [
       value,
       component,
       component.replace(/%20/g, "+"),
       form,
       encodeURI(value),
       base64,
-      base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""),
+      encodeURIComponent(base64),
+      base64url,
       JSON.stringify(value).slice(1, -1),
-    ])
-    // Percent-encodings are case-insensitive (%2F = %2f): match those variants in any case.
-    for (const v of [...variants].sort((a, b) => b.length - a.length)) {
-      if (v === "") continue
-      const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-      out = out.replace(new RegExp(escaped, v.includes("%") ? "gi" : "g"), "[secret]")
+    ]) {
+      if (v !== "") variants.add(v)
     }
+  }
+  // Every variant of every secret, longest first: a secret that contains another one ("password123"
+  // and "pass") is replaced whole, never partially.
+  let out = text
+  for (const v of [...variants].sort((a, b) => b.length - a.length)) {
+    const escaped = v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    // Percent-encodings are case-insensitive (%2F = %2f).
+    out = out.replace(new RegExp(escaped, v.includes("%") ? "gi" : "g"), "[secret]")
   }
   return out
 }

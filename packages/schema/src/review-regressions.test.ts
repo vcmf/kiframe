@@ -132,6 +132,7 @@ describe("take events for off-camera work", () => {
       fps: 30,
       durationMs: 1000,
       kiframeVersion: "0.0.0",
+      outcome: { status: "complete" },
     }
     expect(TakeMeta.safeParse(meta).success).toBe(true)
   })
@@ -687,6 +688,7 @@ describe("round 6: take metadata consistency", () => {
       fps: 30,
       durationMs: 1000,
       kiframeVersion: "0.0.0",
+      outcome: { status: "complete" },
     }
     expect(TakeMeta.safeParse(meta).success).toBe(false)
     expect(TakeMeta.safeParse({ ...meta, frameSize: { width: 2880, height: 1800 } }).success).toBe(
@@ -933,6 +935,7 @@ describe("round 10", () => {
       fps: 30,
       durationMs: 1234.5,
       kiframeVersion: "0.0.0",
+      outcome: { status: "complete" },
     }
     expect(TakeMeta.safeParse(meta).success).toBe(true)
   })
@@ -999,6 +1002,7 @@ describe("round 11", () => {
       fps: 30,
       durationMs: 1000,
       kiframeVersion: "0.0.0",
+      outcome: { status: "complete" },
     }
     expect(TakeMeta.safeParse(meta).success).toBe(true)
   })
@@ -1081,6 +1085,7 @@ describe("round 12", () => {
       fps: 30,
       durationMs: 1000,
       kiframeVersion: "0.0.0",
+      outcome: { status: "complete" },
     }
     const messages =
       TakeMeta.safeParse(meta)

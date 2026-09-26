@@ -250,4 +250,70 @@ describe("scrubSecrets", () => {
     expect(scrubbed.toLowerCase()).not.toContain(encodeURIComponent(secret).toLowerCase())
     expect(scrubbed).not.toContain(b64url)
   })
+
+  it("replaces overlapping secrets whole, and percent-encoded base64", () => {
+    const scrubbed = scrubSecrets(
+      `?pw=password123&t=${encodeURIComponent(Buffer.from("s3cr3t??>").toString("base64"))}`,
+      ["pass", "password123", "s3cr3t??>"],
+    )
+    expect(scrubbed).toBe("?pw=[secret]&t=[secret]")
+  })
+})
+
+describe("take directories", { timeout: 60_000 }, () => {
+  const project = () =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+  const scenario = (steps: string) =>
+    parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: /projects }]\nsteps:\n${steps}`)
+
+  it("re-records over an interrupted take, but never over a folder with an unrelated meta.json", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-take-"))
+    const interrupted = join(dir, "interrupted")
+    mkdirSync(join(interrupted, "frames"), { recursive: true })
+    writeFileSync(join(interrupted, ".kiframe-take"), "kiframe take\n")
+    const unrelated = join(dir, "project")
+    mkdirSync(unrelated)
+    writeFileSync(join(unrelated, "meta.json"), "{}")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      scenario("  - { id: a, action: pause, ms: 50 }\n"),
+      project(),
+      { outDir: interrupted },
+    )
+    expect(take.meta.outcome).toEqual({ status: "complete" })
+    await expect(
+      recordScenario(page, scenario("  - { id: a, action: pause, ms: 50 }\n"), project(), {
+        outDir: unrelated,
+      }),
+    ).rejects.toThrow(/refusing to overwrite/)
+    await context.close()
+    expect(existsSync(join(unrelated, "meta.json"))).toBe(true)
+  })
+
+  it("marks a failed take as failed in its metadata", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    await expect(
+      recordScenario(
+        page,
+        scenario(
+          "  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }\n",
+        ),
+        project(),
+        {
+          outDir,
+          timeoutMs: 500,
+        },
+      ),
+    ).rejects.toThrow(/boom/)
+    await context.close()
+    const meta = TakeMeta.parse(JSON.parse(readFileSync(join(outDir, "meta.json"), "utf8")))
+    expect(meta.outcome.status).toBe("failed")
+  })
 })
