@@ -41,6 +41,8 @@ kiframe/
     server/        auth, users/orgs/memberships/invitations, settings (v0); LLM proxy + metering (v0.1)
 ```
 
+**Node versions:** development and CI require Node ≥ 22.18 (native TypeScript type stripping); the server is deployed on Node 24 LTS, and Electron ships its own Node. CI should add a Node 24 job once the server package exists.
+
 **Server stack decision:** **TypeScript on Node.js 24 LTS** (**Hono** + Postgres + Drizzle), not cooldown's FastAPI/Python, and not Bun. Node is required anyway for Electron's main process and is Playwright's officially supported runtime, so using it everywhere means one runtime, one test runner (Vitest) and one debugging setup. Hono runs on both Node and Bun, which keeps a later switch cheap. The reason is to share `packages/schema` (settings, orgs) between desktop and server, and to keep one language for a small team. We port the **design** of cooldown's metered proxy (`/ai/llm/stream`, `X-Run-Id` per run, ADR-AGENT-003), not its code.
 
 ---

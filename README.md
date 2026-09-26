@@ -10,7 +10,7 @@ Requires Node.js ≥ 22.18 and pnpm 10.
 
 ```sh
 pnpm install
-pnpm check      # lint + typecheck + tests
+pnpm check      # lint + format check + typecheck + tests (same gate as CI)
 ```
 
 ## Packages
