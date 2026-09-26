@@ -70,14 +70,20 @@ describe("planPath", () => {
     )
     for (const p of edge) {
       expect(p.x).toBeGreaterThanOrEqual(0)
-      expect(p.x).toBeLessThanOrEqual(viewport.width)
+      expect(p.x).toBeLessThanOrEqual(viewport.width - 1)
       expect(p.y).toBeGreaterThanOrEqual(0)
-      expect(p.y).toBeLessThanOrEqual(viewport.height)
+      expect(p.y).toBeLessThanOrEqual(viewport.height - 1)
     }
   })
 
-  it("jumps with instant pacing", () => {
+  it("jumps with instant pacing, clamped to the viewport too", () => {
     expect(plan("a", "instant")).toEqual([{ t: 0, ...to }])
+    const off = planPath(
+      from,
+      { x: 1400, y: 900 },
+      { pacing: "instant", targetWidth: 10, viewport, random: seededRandom("o") },
+    )
+    expect(off).toEqual([{ t: 0, x: 1279, y: 799 }])
   })
 })
 
