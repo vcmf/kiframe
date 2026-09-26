@@ -1,5 +1,6 @@
 import * as z from "zod"
-import { Ms, RectTuple, StepId } from "./common.ts"
+import { isMalformedSecretRef, Ms, RectTuple, StepId } from "./common.ts"
+import { CAMERA_SCALE, MAX_SPEED, Pacing, Viewport } from "./settings.ts"
 
 // ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
 // Black box: locators use roles, labels and text. `css` is a last resort.
@@ -86,7 +87,7 @@ export const CameraDirective = z.union([
   z.strictObject({ follow: z.literal("cursor"), ...Until.shape }),
   z.strictObject({
     frame: z.union([z.literal("target"), Locator, z.strictObject({ rect: RectTuple })]),
-    scale: z.number().min(1).max(4).optional(),
+    scale: z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max).optional(),
     ...Until.shape,
   }),
 ])
@@ -110,7 +111,7 @@ const presentation = {
   /** Presentation beat after the step, in ms. Never sped up. */
   hold: Ms.optional(),
   cursor: z.enum(["show", "hide"]).optional(),
-  speed: z.number().positive().optional(),
+  speed: z.number().positive().max(MAX_SPEED).optional(),
   keystrokes: z.enum(["show", "hide"]).optional(),
   /** Deletes, sends, pays or invites: needs confirmation unless pre-approved on a sandbox environment. */
   risky: z.boolean().optional(),
@@ -129,8 +130,11 @@ const Click = z.strictObject({
 const Type = z.strictObject({
   action: z.literal("type"),
   target: Target,
-  /** Text to type, or a secret reference `{{secrets.<name>}}`. */
-  value: z.string(),
+  /** Text to type, or exactly a secret reference `{{secrets.<name>}}` (nothing around it). */
+  value: z.string().refine((v) => !isMalformedSecretRef(v), {
+    message:
+      "malformed secret reference: use exactly `{{secrets.<name>}}`, with no spaces or other text",
+  }),
   clear: z.boolean().optional(),
   submit: z.boolean().optional(),
   /** Off camera: fill instantly instead of human typing. */
@@ -213,36 +217,64 @@ export type SetupItem = z.infer<typeof SetupItem>
 
 // ─── Scenario (one per scene) ─────────────────────────────────────────────────
 
+/** Per-scene overrides of project settings. Same validation as the project level. */
+export const ScenarioOverrides = z.strictObject({
+  viewport: Viewport.partial().optional(),
+  pacing: Pacing.partial().optional(),
+  camera: CameraDirective.optional(),
+})
+export type ScenarioOverrides = z.infer<typeof ScenarioOverrides>
+
+function cameraUntil(step: Step): string | undefined {
+  return typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
+}
+
 export const Scenario = z
-  .object({
+  .strictObject({
     version: z.literal(1),
-    overrides: z.record(z.string(), z.unknown()).optional(),
+    overrides: ScenarioOverrides.optional(),
     setup: z.array(SetupItem).optional(),
     steps: z.array(Step).min(1),
     teardown: z.array(Action).optional(),
   })
   .superRefine((s, ctx) => {
-    const seen = new Set<string>()
-    s.steps.forEach((step, i) => {
-      if (seen.has(step.id)) {
+    // IDs are unique across setup, steps and teardown, so anchors are never ambiguous.
+    const ids = new Map<string, string>()
+    const claim = (id: string | undefined, path: (string | number)[]) => {
+      if (id === undefined) return
+      const previous = ids.get(id)
+      if (previous !== undefined) {
         ctx.addIssue({
           code: "custom",
-          message: `duplicate step id "${step.id}"`,
-          path: ["steps", i, "id"],
+          message: `duplicate id "${id}" (already used in ${previous})`,
+          path,
         })
+      } else {
+        ids.set(id, String(path[0]))
       }
-      seen.add(step.id)
-    })
+    }
+    s.setup?.forEach((item, i) => claim("id" in item ? item.id : undefined, ["setup", i, "id"]))
+    s.steps.forEach((step, i) => claim(step.id, ["steps", i, "id"]))
+    s.teardown?.forEach((action, i) => claim(action.id, ["teardown", i, "id"]))
+
+    // camera.until must point to a LATER step, so the framing span is never empty or inverted.
+    const position = new Map(s.steps.map((step, i) => [step.id, i]))
     s.steps.forEach((step, i) => {
-      const until =
-        typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
-      if (until !== undefined && !seen.has(until)) {
+      const until = cameraUntil(step)
+      if (until === undefined) return
+      const target = position.get(until)
+      if (target === undefined || target <= i) {
         ctx.addIssue({
           code: "custom",
-          message: `camera.until refers to unknown step "${until}"`,
+          message: `camera.until must refer to a later step, got "${until}"`,
           path: ["steps", i, "camera", "until"],
         })
       }
     })
   })
 export type Scenario = z.infer<typeof Scenario>
+
+/** Names of the presets a scenario uses (checked against the project by `checkScenarioAgainstProject`). */
+export function presetRefs(scenario: Scenario): string[] {
+  return (scenario.setup ?? []).flatMap((item) => ("preset" in item ? [item.preset] : []))
+}

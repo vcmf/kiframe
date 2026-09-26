@@ -1,40 +1,49 @@
 import * as z from "zod"
 import { Ms, NPoint, NRect, StepId } from "./common.ts"
+import { Viewport } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
 // `t` is milliseconds from the first frame, on the same clock as the screencast frames.
 
-const base = { t: Ms, stepId: StepId }
+/**
+ * `phase` says which part of the scenario produced the event. On-camera events (`steps`) carry the
+ * step ID; off-camera work (setup, teardown, presets, interrupts) may not have one.
+ */
+const base = {
+  t: Ms,
+  phase: z.enum(["setup", "steps", "teardown"]),
+  stepId: StepId.optional(),
+}
 
-export const TakeEvent = z.discriminatedUnion("kind", [
-  z.object({ ...base, kind: z.enum(["step_start", "step_end"]) }),
-  z.object({
+const TakeEventVariants = z.discriminatedUnion("kind", [
+  z.strictObject({ ...base, kind: z.enum(["step_start", "step_end"]) }),
+  z.strictObject({
     ...base,
     kind: z.literal("click"),
     point: NPoint,
     rect: NRect,
     button: z.enum(["left", "right"]),
   }),
-  z.object({
+  z.strictObject({
     ...base,
     kind: z.enum(["type_start", "type_end"]),
     rect: NRect,
     /** Secret NAME only, never its value. */
     secret: z.string().optional(),
   }),
-  z.object({ ...base, kind: z.literal("key"), key: z.string().min(1) }),
-  z.object({
+  z.strictObject({ ...base, kind: z.literal("key"), key: z.string().min(1) }),
+  z.strictObject({
     ...base,
     kind: z.literal("scroll"),
-    delta: z.object({ x: z.number(), y: z.number() }),
+    delta: z.strictObject({ x: z.number(), y: z.number() }),
   }),
   /** URL is passed through the secret scrubber before being logged. */
-  z.object({ ...base, kind: z.literal("navigate"), url: z.string() }),
-  z.object({ ...base, kind: z.literal("settled") }),
+  z.strictObject({ ...base, kind: z.literal("navigate"), url: z.string() }),
+  z.strictObject({ ...base, kind: z.literal("settled") }),
   /** Rect of an element referenced by a `camera.frame` or `emphasis` locator. */
-  z.object({ ...base, kind: z.literal("frame_target"), ref: z.string().min(1), rect: NRect }),
+  z.strictObject({ ...base, kind: z.literal("frame_target"), ref: z.string().min(1), rect: NRect }),
   /** Re-logged whenever the element moves. */
-  z.object({
+  z.strictObject({
     ...base,
     kind: z.literal("sensitive"),
     id: z.string().min(1),
@@ -42,11 +51,15 @@ export const TakeEvent = z.discriminatedUnion("kind", [
     why: z.enum(["secret-field", "secret-text", "redaction"]),
   }),
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
-  z.object({ ...base, kind: z.literal("interrupt"), rule: z.string().min(1), until: Ms }),
+  z.strictObject({ ...base, kind: z.literal("interrupt"), rule: z.string().min(1), until: Ms }),
 ])
+export const TakeEvent = TakeEventVariants.refine(
+  (e) => e.phase !== "steps" || e.stepId !== undefined,
+  { message: "on-camera events (phase `steps`) need a stepId", path: ["stepId"] },
+)
 export type TakeEvent = z.infer<typeof TakeEvent>
 
-export const CursorSample = z.object({
+export const CursorSample = z.strictObject({
   t: Ms,
   p: NPoint,
   pressed: z.boolean(),
@@ -55,19 +68,18 @@ export const CursorSample = z.object({
 })
 export type CursorSample = z.infer<typeof CursorSample>
 
-export const TakeMeta = z.object({
+export const TakeMeta = z.strictObject({
   version: z.literal(1),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
-  recordedAt: z.iso.datetime(),
+  recordedAt: z.iso.datetime({ offset: true }),
   appUrl: z.string(),
-  viewport: z.object({
+  viewport: Viewport.required(),
+  /** Frame size of `frames.webm` in pixels (viewport × DPR). */
+  frameSize: z.strictObject({
     width: z.number().int().positive(),
     height: z.number().int().positive(),
-    deviceScaleFactor: z.number().positive(),
   }),
-  /** Frame size of `frames.webm` in pixels (viewport × DPR). */
-  frameSize: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }),
   fps: z.number().positive(),
   durationMs: Ms,
   kiframeVersion: z.string(),
