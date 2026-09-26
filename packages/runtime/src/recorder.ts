@@ -106,6 +106,9 @@ export async function recordScenario(
     let stopped = false
     let sizeChanged = false
     let lastFrame: Buffer | undefined
+    const shotsAwaitingFrame: string[] = []
+    const writeShot = (stepId: string, data: Buffer) =>
+      pendingWrites.push(track(writeFile(join(outDir, "shots", `${stepId}.jpg`), data)))
     await page.screencast.start({
       // Without `size`, frames are scaled down to fit a small default box. Frames come out at CSS
       // resolution at most anyway (Phase 0 finding F1).
@@ -134,6 +137,7 @@ export async function recordScenario(
           frameSize ??= size
         }
         lastFrame = data
+        for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
       },
     })
 
@@ -160,10 +164,10 @@ export async function recordScenario(
         case "step_start":
           push({ ...base(e.step), kind: "step_start" })
           // Storyboard / guide shot: the frame at the start of each on-camera step.
-          if (e.step.phase === "steps" && e.step.stepId !== undefined && lastFrame !== undefined) {
-            pendingWrites.push(
-              track(writeFile(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame)),
-            )
+          // Before the first frame (first step, no setup) it's the first frame that arrives.
+          if (e.step.phase === "steps" && e.step.stepId !== undefined) {
+            if (lastFrame !== undefined) writeShot(e.step.stepId, lastFrame)
+            else shotsAwaitingFrame.push(e.step.stepId)
           }
           break
         case "step_end":
@@ -218,16 +222,14 @@ export async function recordScenario(
         }
         case "secret_field":
           // The blur follows the field: a new rect where it is now. A field that's gone (no box)
-          // shows nothing, so there's nothing to blur.
-          if (e.box !== undefined) {
-            push({
-              ...base(e.step),
-              kind: "sensitive",
-              id: e.id,
-              rect: rect(e.box),
-              why: "secret-field",
-            })
-          }
+          // shows nothing: an empty rect ends its blur.
+          push({
+            ...base(e.step),
+            kind: "sensitive",
+            id: e.id,
+            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box),
+            why: "secret-field",
+          })
           break
         case "key":
           push({ ...base(e.step), kind: "key", key: e.keys })
@@ -319,10 +321,19 @@ export async function recordScenario(
     if (meta !== undefined) {
       const dest = meta.outcome.status === "complete" ? finalDir : `${finalDir}.failed`
       try {
-        swapInto(outDir, dest)
+        const leftover = swapInto(outDir, dest)
         placed = true
+        // The take is in place: failing to clean up after it doesn't make it fail.
+        if (leftover !== undefined)
+          warnings.push(`couldn't remove the previous take at ${leftover}`)
         // A newer complete take makes an older failed one obsolete.
-        if (dest === finalDir) removeTake(`${finalDir}.failed`)
+        if (dest === finalDir) {
+          try {
+            removeTake(`${finalDir}.failed`)
+          } catch (error) {
+            warnings.push(`couldn't remove ${finalDir}.failed: ${firstLine(error)}`)
+          }
+        }
       } catch (error) {
         // Placing a FAILED take is best effort: the replay's own error is the one that matters.
         if (failure === undefined) throw error
@@ -347,7 +358,8 @@ export async function recordScenario(
  * in, then the old one deleted; if the rename fails, the old take is put back. `dest` is re-checked
  * (it must still be a take or absent).
  */
-function swapInto(src: string, dest: string) {
+/** Returns the previous take's path if it's in place but couldn't be removed afterwards. */
+function swapInto(src: string, dest: string): string | undefined {
   checkReplaceable(dest)
   const aside = existsSync(dest) ? `${dest}.old-${process.pid}-${Date.now()}` : undefined
   if (aside !== undefined) renameSync(dest, aside)
@@ -364,7 +376,13 @@ function swapInto(src: string, dest: string) {
     }
     throw error
   }
-  if (aside !== undefined) rmSync(aside, { recursive: true, force: true })
+  if (aside === undefined) return undefined
+  try {
+    rmSync(aside, { recursive: true, force: true })
+    return undefined
+  } catch {
+    return aside
+  }
 }
 
 /**

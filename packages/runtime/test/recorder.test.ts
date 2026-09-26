@@ -263,6 +263,12 @@ describe("scrubSecrets", () => {
     )
     expect(scrubbed).toBe("?pw=[secret]&t=[secret]")
   })
+
+  it("catches a secret in a URL path (WHATWG path encoding keeps | as is)", () => {
+    const secret = "Pässw|rd x"
+    const path = new URL(`http://x/${secret}`).pathname
+    expect(scrubSecrets(path, [secret])).toBe("/[secret]")
+  })
 })
 
 describe("take directories", { timeout: 60_000 }, () => {
@@ -435,6 +441,45 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     // Logged at type_start, then again after each step; after the scroll it's higher on screen.
     expect(rects.length).toBeGreaterThanOrEqual(3)
     expect(Math.min(...rects)).toBeLessThan(Math.max(...rects))
+  })
+
+  it("ends the blur once when the secret field is gone, and doesn't stall later steps", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const started = Date.now()
+    const take = await recordScenario(
+      page,
+      scenario(`  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: away, action: goto, url: /projects }
+  - { id: w1, action: scroll, by: { y: 10 } }
+  - { id: w2, action: scroll, by: { y: 10 } }
+  - { id: w3, action: scroll, by: { y: 10 } }
+`),
+      project(),
+      { outDir, resolveSecret: () => SECRET },
+    )
+    await context.close()
+    const sensitive = take.events.filter((e) => e.kind === "sensitive")
+    const gone = sensitive.filter((e) => e.rect.w === 0 && e.rect.h === 0)
+    expect(gone.length).toBe(1)
+    expect(sensitive.at(-1)).toBe(gone[0])
+    expect(Date.now() - started).toBeLessThan(15_000)
+  })
+
+  it("keeps a storyboard shot for a first step that starts before any frame", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    await recordScenario(
+      page,
+      parseScenarioYaml(`version: 1\nsteps:\n  - { id: first, action: goto, url: /projects }\n`),
+      project(),
+      { outDir },
+    )
+    await context.close()
+    expect(existsSync(join(outDir, "shots", "first.jpg"))).toBe(true)
   })
 
   it("records into the real location of a symlinked take folder", async () => {

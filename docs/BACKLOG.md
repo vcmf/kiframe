@@ -29,7 +29,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Round trips per click:** up to ~6–8 sequential page calls (probes, boxes, border read, viewport). `pointProbe` could return the box and borders in the same call.
 
 ## @kiframe/runtime recorder (P0-5)
-- **Sensitive rects follow the element:** a vault-filled field's rect is logged once at `type_start` (full frame if it has no box). The schema allows re-logging when it moves (scroll, re-layout); the recorder should track it (and the DOM-text scan for secret text shown elsewhere, APPROACHES §7.4) before v0.
+- **Sensitive rects follow the element within a step:** a vault-filled field is re-measured at each step end (a new `sensitive` rect when it moved, an empty rect when it's gone). During a step that moves it (smooth scroll, re-layout) the blur lags; sampling per frame would fix it. Also the DOM-text scan for secret text shown elsewhere (APPROACHES §7.4), before v0.
+- **Stale recording folders after a crash:** `.<name>.recording-*` and `<name>.old-*` are removed in-process only; after a kill they stay (unblurred frames). Sweep folders whose pid is dead at the next recording / app start.
+- **Frame size change mid-take:** only warned; `meta.frameSize` is the first frame's, and ffmpeg gets mixed sizes. Split the take or scale frames when a real app resizes during a take.
 - **Frames through a pipe:** frames are written as JPEG files then encoded by ffmpeg after the run; piping them into ffmpeg (image2pipe) would avoid the temporary files. Needs ffmpeg on PATH (Phase 0).
 - **Secrets encoded inside larger values:** the scrubber catches each secret and its common encodings, but not a secret embedded in a larger encoded value (e.g. `base64("user:hunter2")` in a URL). The vault's field binding (APPROACHES §7.4) and keeping URLs out of takes where possible are the real defences.
 - **Phantom click when the real click fails after the trial:** the click event is logged after the trial click succeeds; if the real `locator.click` then fails (element detached, navigation), the take still has that click.

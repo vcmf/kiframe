@@ -225,7 +225,7 @@ interface Ctx {
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
   /** Fields a secret was typed into (recording): re-measured after every step. */
-  secretFields: { id: string; locator: Locator; step: StepRef }[]
+  secretFields: { id: string; locator: Locator; step: StepRef; last?: string }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void
   clearListenerError: () => void
@@ -280,12 +280,19 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
 }
 
 /**
- * Re-measures every field a secret was typed into and reports where it is now (the blur follows
- * it), or that it's gone (navigated away, removed: nothing left to blur). Bounded, never fails a step.
+ * Re-measures every field a secret was typed into and reports when it moved (the blur follows it)
+ * or is gone (navigated away, removed: nothing left to blur). Only changes are reported. Bounded,
+ * never fails a step.
  */
 async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
   for (const field of ctx.secretFields) {
-    const box = await field.locator.boundingBox({ timeout: 300 }).catch(() => null)
+    // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
+    // boundingBox's attach timeout on every later step.
+    const present = (await field.locator.count().catch(() => 0)) > 0
+    const box = present ? await field.locator.boundingBox({ timeout: 300 }).catch(() => null) : null
+    const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
+    if (key === field.last) continue
+    field.last = key
     ctx.options.onEvent?.({ kind: "secret_field", step, id: field.id, box: box ?? undefined })
   }
 }
@@ -1049,6 +1056,15 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
   if (end !== undefined) ctx.cursor = { x: end.x, y: end.y }
 }
 
+/** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */
+function urlPath(value: string): string | undefined {
+  try {
+    return new URL(`http://x/${value}`).pathname.slice(1)
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Replaces every known secret value in `text` (as-is and in its common encodings: URL-encoded,
  * form-encoded, base64, JSON-escaped) with `[secret]`.
@@ -1077,6 +1093,8 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       component === undefined ? undefined : encode(encodeURIComponent, component),
       encode(encodeURIComponent, form),
       encode(encodeURI, value),
+      // WHATWG path encoding (what a URL's pathname holds): leaves |[]^ as they are, unlike encodeURI.
+      urlPath(value),
       base64,
       encode(encodeURIComponent, base64),
       base64url,
