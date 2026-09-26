@@ -66,9 +66,10 @@ type AnyAction = Action | Step
 const MIN_TIMEOUT_MS = 1
 
 /**
- * Runs a scenario. Throws a `StepError` naming the failing step. Teardown runs even when a step
- * fails (so the scene cleans up what it created); a teardown failure after a step failure is
- * reported as a `teardown_failed` event and the step's error is thrown.
+ * Runs a scenario. Throws a `StepError` naming the failing step. Teardown always runs, best effort:
+ * every teardown step is attempted even if some fail. The error thrown is the first step failure,
+ * else the first teardown failure; every other teardown failure is reported as a `teardown_failed`
+ * event.
  */
 export async function runScenario(
   page: Page,
@@ -156,8 +157,11 @@ export async function runScenario(
           error instanceof StepError
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
-        options.onEvent?.({ kind: "teardown_failed", error: stepError })
-        teardownFailure ??= stepError
+        ctx.clearListenerError()
+        // The first teardown failure is thrown when nothing failed before: it isn't also reported
+        // as an event. Every other one is (it would be lost otherwise).
+        if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
+        else options.onEvent?.({ kind: "teardown_failed", error: stepError })
       }
     }
     if (failure !== undefined) throw failure
@@ -778,20 +782,24 @@ async function clickAtCursor(
   step: StepRef,
   action: Extract<AnyAction, { action: "click" }>,
 ): Promise<void> {
-  const deadline = Date.now() + ctx.timeoutMs
-  const left = () => Math.max(MIN_TIMEOUT_MS, deadline - Date.now())
   const button = action.button ?? "left"
   const modifiers = (action.modifiers ?? []).map(toPlaywrightModifier)
   let point = await moveCursorTo(ctx, target, step)
+  // The time budget covers the click itself: not the cursor travel (presentation) and not the
+  // human approval wait (restarted after it).
+  let deadline = Date.now() + ctx.timeoutMs
+  const left = () => Math.max(MIN_TIMEOUT_MS, deadline - Date.now())
+  const approve = async (detail: string) => {
+    await requireApproval(ctx, step, detail)
+    deadline = Date.now() + ctx.timeoutMs
+  }
+  const probeAt = (p: Point) =>
+    target.evaluate(pointProbe, [p.x, p.y, true] as [number, number, boolean], { timeout: left() })
   await guard(step, async () => {
     if (point === undefined) {
       // No visible box to aim at (display: contents, zero-size…): Playwright decides where to click.
-      if (action.risky !== true && action.risky !== false) {
-        await requireApproval(
-          ctx,
-          step,
-          "can't see what this click would activate: approve it, or set `risky: false`",
-        )
+      if (action.risky === undefined) {
+        await approve("can't see what this click would activate: approve it, or set `risky: false`")
       }
       await target.click({
         timeout: left(),
@@ -801,15 +809,32 @@ async function clickAtCursor(
       })
       return
     }
-    await target.click({ trial: true, timeout: left(), button, modifiers })
-    let probe = await target.evaluate(pointProbe, [point.x, point.y] as [number, number], {
-      timeout: left(),
-    })
+    // Actionability at the point that will be pressed (not the middle of the element). A point
+    // outside the element's current box (it moved during the travel) needs a re-aim first.
+    const trialAt = async (p: Point): Promise<boolean> => {
+      const box = await target.boundingBox({ timeout: left() })
+      if (
+        box === null ||
+        p.x < box.x ||
+        p.y < box.y ||
+        p.x > box.x + box.width ||
+        p.y > box.y + box.height
+      ) {
+        return false
+      }
+      await target.click({
+        trial: true,
+        timeout: left(),
+        button,
+        modifiers,
+        position: { x: p.x - box.x, y: p.y - box.y },
+      })
+      return true
+    }
+    let probe = (await trialAt(point)) ? await probeAt(point) : { hits: false, label: "" }
     if (!probe.hits) {
       point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
-      probe = await target.evaluate(pointProbe, [point.x, point.y] as [number, number], {
-        timeout: left(),
-      })
+      probe = (await trialAt(point)) ? await probeAt(point) : { hits: false, label: "" }
       if (!probe.hits)
         throw new StepError(
           step,
@@ -820,23 +845,36 @@ async function clickAtCursor(
     if (action.risky === undefined) {
       const risky = RISKY_LABEL.exec(probe.label)
       if (risky !== null) {
-        await requireApproval(
-          ctx,
-          step,
+        await approve(
           `this click activates something that mentions "${risky[0]}": approve it, or set \`risky: false\` if it's safe`,
         )
+        // The page may have changed while waiting for the human: what's under the point now must
+        // still be the target, and be what was approved.
+        const again = await probeAt(point)
+        if (!again.hits || again.label !== probe.label) {
+          throw new StepError(
+            step,
+            "action-failed",
+            "the page changed while waiting for approval: nothing was clicked",
+          )
+        }
       }
     }
     // The trial may have moved the mouse: put it back where the cursor is.
     const at = point
     await ctx.page.mouse.move(at.x, at.y)
-    for (const m of modifiers) await ctx.page.keyboard.down(m)
+    const held: string[] = []
     try {
+      for (const m of modifiers) {
+        await ctx.page.keyboard.down(m)
+        held.push(m)
+      }
       for (let clickCount = 1; clickCount <= (action.count ?? 1); clickCount++) {
         await pressAndRelease(ctx, step, at, button, clickCount)
       }
     } finally {
-      for (const m of [...modifiers].reverse()) await ctx.page.keyboard.up(m)
+      // Never leave a key held into later steps (capitals, shift-selection…).
+      for (const m of held.reverse()) await ctx.page.keyboard.up(m).catch(() => undefined)
     }
   })
 }
@@ -853,7 +891,13 @@ async function pressAndRelease(
   try {
     ctx.options.onEvent?.({ kind: "cursor", step, ...point, pressed: true })
     await ctx.page.mouse.down({ button, clickCount })
-    await ctx.page.mouse.up({ button, clickCount })
+    try {
+      await ctx.page.mouse.up({ button, clickCount })
+    } catch (error) {
+      // Never leave the button held (the next click would become a drag): try once more.
+      await ctx.page.mouse.up({ button, clickCount }).catch(() => undefined)
+      throw error
+    }
   } catch (error) {
     clickError = error instanceof Error ? error : new Error(String(error))
   }

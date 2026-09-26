@@ -139,7 +139,7 @@ export async function isOnScreen(
   const y = box.y + box.height / 2
   if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return false
   return locator
-    .evaluate(pointProbe, [x, y] as [number, number], { timeout: timeoutMs })
+    .evaluate(pointProbe, [x, y, false] as [number, number, boolean], { timeout: timeoutMs })
     .then((probe) => probe.hits)
     .catch(() => false)
 }
@@ -167,7 +167,7 @@ export async function viewportOf(page: Page): Promise<{ width: number; height: n
  */
 export function pointProbe(
   el: Element,
-  [x, y]: [number, number],
+  [x, y, withLabel]: [number, number, boolean],
 ): { hits: boolean; label: string } {
   const CONTROLS =
     "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
@@ -188,11 +188,25 @@ export function pointProbe(
     return false
   }
   const hits = hit !== null && (within(hit, el) || within(hit, closest(el)))
+  if (!withLabel) return { hits, label: "" }
   // The label of what the press would actually activate: the control under the point (its text,
   // hidden text included, and every naming attribute in it), or the element itself if it's no control.
-  const control = closest(hit) ?? hit
+  const hitControl = closest(hit)
+  const control = hitControl ?? hit
   const texts: (string | null | undefined)[] = []
-  if (control !== null) {
+  if (hitControl === null && hit !== null) {
+    // Not a control (a card's background, a row's cell): the press activates the element itself,
+    // not the buttons inside it, so only its own text counts, without nested controls.
+    const own: string[] = []
+    const walk = (node: Node) => {
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) own.push(child.textContent ?? "")
+        else if (child instanceof Element && !child.matches(CONTROLS)) walk(child)
+      }
+    }
+    walk(hit)
+    texts.push(own.join(""), hit.getAttribute("aria-label"), hit.getAttribute("title"))
+  } else if (control !== null) {
     const root = control.getRootNode() as Document | ShadowRoot
     texts.push(control instanceof HTMLElement ? control.innerText : null, control.textContent)
     for (const e of [control, ...control.querySelectorAll("*")]) {
