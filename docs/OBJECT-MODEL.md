@@ -424,7 +424,9 @@ One replay of a scene produces a **take** in the take store (§0.6):
 type ViewportRect = { x: number; y: number; w: number; h: number };  // w, h >= 0, any x/y
 type NPoint = { x: number; y: number };                              // 0..1 (the pointer is on screen)
 
-type TakeEvent = { t: number; stepId: string } & (   // t = ms from the first frame (screencast timestamps)
+// t = ms from the first frame (screencast timestamps). `phase` = which part of the scenario produced
+// the event; on-camera events (`steps`) carry a stepId, off-camera work (setup, presets) may not.
+type TakeEvent = { t: number; phase: "setup" | "steps" | "teardown"; stepId?: string } & (
   | { kind: "step_start" | "step_end" }
   | { kind: "click"; point: NPoint; rect: ViewportRect; button: "left" | "right" }
   | { kind: "type_start" | "type_end"; rect: ViewportRect; secret?: string }  // secret NAME only

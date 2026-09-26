@@ -1,5 +1,6 @@
 import { isAlias, isScalar, parseDocument, visit, YAMLParseError } from "yaml"
 import * as z from "zod"
+import { FORBIDDEN_KEYS } from "./guards.ts"
 import { ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
 
@@ -13,9 +14,6 @@ export class SchemaError extends Error {
     this.issues = issues
   }
 }
-
-/** Keys that would change an object's prototype instead of creating a property. */
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"])
 
 function loadYaml(text: string, what: string): unknown {
   const doc = parseDocument(text)

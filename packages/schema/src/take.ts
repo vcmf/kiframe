@@ -1,5 +1,14 @@
 import * as z from "zod"
-import { Ms, NPoint, SecretName, StepId, ViewportRect } from "./common.ts"
+import {
+  hasUrlCredentials,
+  Ms,
+  noCredentials,
+  NPoint,
+  SecretName,
+  StepId,
+  ViewportRect,
+} from "./common.ts"
+import { guarded } from "./guards.ts"
 import { RuleName, Viewport } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
@@ -39,7 +48,11 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
     delta: z.strictObject({ x: z.number(), y: z.number() }),
   }),
   /** URL is passed through the secret scrubber before being logged. */
-  z.strictObject({ ...base, kind: z.literal("navigate"), url: z.string() }),
+  z.strictObject({
+    ...base,
+    kind: z.literal("navigate"),
+    url: z.string().refine((u) => !hasUrlCredentials(u), noCredentials),
+  }),
   z.strictObject({ ...base, kind: z.literal("settled") }),
   /** Rect of an element referenced by a `camera.frame` or `emphasis` locator. */
   z.strictObject({
@@ -59,7 +72,7 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
   z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Ms }),
 ])
-export const TakeEvent = TakeEventVariants.refine(
+const TakeEventBase = TakeEventVariants.refine(
   // Interrupts are handled between steps, so they may have no step even on camera.
   (e) => e.phase !== "steps" || e.kind === "interrupt" || e.stepId !== undefined,
   { message: "on-camera events (phase `steps`) need a stepId", path: ["stepId"] },
@@ -67,7 +80,9 @@ export const TakeEvent = TakeEventVariants.refine(
   message: "interrupt `until` must not be before `t`",
   path: ["until"],
 })
-export type TakeEvent = z.infer<typeof TakeEvent>
+/** A take event, with whole-document guards (forbidden keys, secret references). */
+export const TakeEvent = guarded(TakeEventBase)
+export type TakeEvent = z.infer<typeof TakeEventBase>
 
 export const CursorSample = z.strictObject({
   t: Ms,
@@ -78,12 +93,12 @@ export const CursorSample = z.strictObject({
 })
 export type CursorSample = z.infer<typeof CursorSample>
 
-export const TakeMeta = z.strictObject({
+const TakeMetaBase = z.strictObject({
   version: z.literal(1),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),
-  appUrl: z.string(),
+  appUrl: z.string().refine((u) => !hasUrlCredentials(u), noCredentials),
   viewport: Viewport.required(),
   /** Frame size of `frames.webm` in pixels (viewport × DPR). */
   frameSize: z.strictObject({
@@ -94,4 +109,15 @@ export const TakeMeta = z.strictObject({
   durationMs: Ms,
   kiframeVersion: z.string(),
 })
-export type TakeMeta = z.infer<typeof TakeMeta>
+/** Frame pixels must equal viewport × DPR (±1 for rounding): overlays are placed with it. */
+const frameMatchesViewport = (m: z.infer<typeof TakeMetaBase>) =>
+  Math.abs(m.frameSize.width - Math.round(m.viewport.width * m.viewport.deviceScaleFactor)) <= 1 &&
+  Math.abs(m.frameSize.height - Math.round(m.viewport.height * m.viewport.deviceScaleFactor)) <= 1
+
+export const TakeMeta = guarded(
+  TakeMetaBase.refine(frameMatchesViewport, {
+    message: "frameSize must equal viewport × deviceScaleFactor",
+    path: ["frameSize"],
+  }),
+)
+export type TakeMeta = z.infer<typeof TakeMetaBase>
