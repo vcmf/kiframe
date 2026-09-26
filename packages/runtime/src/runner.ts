@@ -41,6 +41,12 @@ export type RunnerEvent =
   | { kind: "navigate"; step: StepRef; url: string }
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
   | { kind: "type"; step: StepRef; secret?: string | undefined }
+  /** Typing into a field starts (the `type` event marks its end). */
+  | { kind: "type_start"; step: StepRef; secret?: string | undefined }
+  /** A key combination was pressed (`press` action). */
+  | { kind: "key"; step: StepRef; keys: string }
+  /** The element an action acts on, after scrolling it into view (CSS pixels of the viewport). */
+  | { kind: "target"; step: StepRef; box: { x: number; y: number; width: number; height: number } }
   /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
   | { kind: "cursor"; step: StepRef; x: number; y: number; pressed: boolean }
   /** A fallback locator was used: the primary one no longer matches (a signal for self-healing). */
@@ -345,6 +351,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
+      ctx.options.onEvent?.({ kind: "type_start", step, secret })
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -399,6 +406,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     }
     case "press":
+      ctx.options.onEvent?.({ kind: "key", step, keys: action.keys })
       await guard(step, () => page.keyboard.press(toPlaywrightKeys(action.keys)))
       return
     case "scroll":
@@ -440,6 +448,8 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
+  const box = await result.locator.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+  if (box !== null) ctx.options.onEvent?.({ kind: "target", step, box })
   return result.locator
 }
 
