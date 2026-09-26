@@ -188,16 +188,21 @@ export async function runScenario(
         if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
         else {
           try {
-            options.onEvent?.({ kind: "teardown_failed", error: stepError })
+            options.onEvent?.({
+              kind: "teardown_failed",
+              error: scrubError(stepError, secretValues) as StepError,
+            })
           } catch {
             // reporting must never stop the remaining cleanup
           }
         }
       }
     }
-    if (failure !== undefined) throw failure
-    if (teardownFailure !== undefined) throw teardownFailure
-    if (listenerError !== undefined) throw listenerError
+    // Errors leave the runner scrubbed of every secret value (a Playwright message can quote a URL
+    // or a value that carries one).
+    if (failure !== undefined) throw scrubError(failure, secretValues)
+    if (teardownFailure !== undefined) throw scrubError(teardownFailure, secretValues)
+    if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
   } finally {
     network.dispose()
     page.off("framenavigated", onNavigated)
@@ -371,10 +376,11 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
+      // Short timeout: the field was just scrolled into view (and only measured when recording).
       const fieldBox =
         ctx.options.onEvent === undefined
           ? null
-          : await target.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+          : await target.boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) }).catch(() => null)
       ctx.options.onEvent?.({ kind: "type_start", step, secret, box: fieldBox ?? undefined })
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
@@ -903,9 +909,7 @@ async function clickAtCursor(
       timeout: left(),
       ...(position !== undefined && { position }),
       ...(action.button !== undefined && { button: action.button }),
-      ...(action.modifiers !== undefined && {
-        modifiers: action.modifiers.map(toPlaywrightModifier),
-      }),
+      // No modifiers: Playwright presses them even for a trial, the page would see them twice.
     })
     if (ctx.options.onEvent !== undefined) {
       const clickBox = box ?? (await target.boundingBox({ timeout: left() }).catch(() => null))
@@ -1086,8 +1090,20 @@ function moveCaretToEnd(el: Element) {
   }
 }
 
+/** The same error with its message (and a StepError's detail) scrubbed of secret values; no cause kept. */
+function scrubError(error: Error, secrets: Set<string>): Error {
+  if (secrets.size === 0) return error
+  const message = scrubSecrets(error.message, secrets)
+  if (message === error.message) return error
+  if (error instanceof StepError) {
+    const detail = message.slice(message.indexOf(": ") + 2)
+    return new StepError(error.step, error.reason, detail)
+  }
+  return new Error(message)
+}
+
 /** First line of an error's message (Playwright errors carry long call logs after it). */
-function firstLine(cause: unknown): string {
+export function firstLine(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause)
   return message.split("\n")[0] || "action failed"
 }

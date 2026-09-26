@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import {
@@ -13,7 +13,7 @@ import {
 import type { Page } from "playwright"
 import type { StepRef } from "./errors.ts"
 import type { Box } from "./motion.ts"
-import { runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
+import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
 
 // The recorder (docs/OBJECT-MODEL.md §3): replays a scenario through the runner while capturing the
@@ -51,7 +51,10 @@ export async function recordScenario(
   project: ProjectConfig,
   options: RecordOptions,
 ): Promise<Take> {
-  const { outDir } = options
+  const finalDir = options.outDir
+  // Record into a fresh sibling folder; it replaces the previous take only once this one exists.
+  checkReplaceable(finalDir)
+  const outDir = `${finalDir}.recording-${process.pid}-${Date.now()}`
   prepareOutDir(outDir)
   const framesDir = join(outDir, "frames")
   mkdirSync(framesDir, { recursive: true })
@@ -71,6 +74,9 @@ export async function recordScenario(
     w: Math.max(0, b.width / viewport.width),
     h: Math.max(0, b.height / viewport.height),
   })
+
+  /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
+  const warnings: string[] = []
 
   // ── frames ──
   const frames: { file: string; t: number }[] = []
@@ -93,7 +99,18 @@ export async function recordScenario(
       // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
       pendingWrites.push(track(writeFile(join(framesDir, file), data)))
       frames.push({ file, t: Math.max(0, timestamp - t0) })
-      frameSize ??= jpegSize(data)
+      const size = jpegSize(data)
+      if (size !== undefined) {
+        if (
+          frameSize !== undefined &&
+          (size.width !== frameSize.width || size.height !== frameSize.height)
+        ) {
+          warnings.push(
+            `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
+          )
+        }
+        frameSize ??= size
+      }
       lastFrame = data
     },
   })
@@ -108,8 +125,6 @@ export async function recordScenario(
     phase: s.phase,
     ...(s.stepId !== undefined && { stepId: s.stepId }),
   })
-  /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
-  const warnings: string[] = []
   const push = (event: unknown) => {
     const parsed = TakeEvent.safeParse(event)
     if (parsed.success) events.push(parsed.data)
@@ -193,9 +208,7 @@ export async function recordScenario(
     try {
       handle(e)
     } catch (error) {
-      warnings.push(
-        `recorder: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
-      )
+      warnings.push(`recorder: ${firstLine(error)}`)
     }
     options.onEvent?.(e)
   }
@@ -216,16 +229,12 @@ export async function recordScenario(
   try {
     await Promise.all(pendingWrites)
     if (writeError !== undefined) throw writeError
-    writeFileSync(
-      join(outDir, "events.jsonl"),
-      events.map((e) => JSON.stringify(e)).join("\n") + "\n",
-    )
-    writeFileSync(
-      join(outDir, "cursor.jsonl"),
-      cursor.map((c) => JSON.stringify(c)).join("\n") + "\n",
-    )
+    writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
+    writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))
     if (frames.length === 0) throw new Error("no frames were captured (the page never painted?)")
     await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
+    if (frameSize === undefined)
+      warnings.push("couldn't read the frame size: assuming the CSS viewport")
     const size = frameSize ?? viewport
     const scenarioHash = sha256(JSON.stringify(scenario))
     meta = TakeMeta.parse({
@@ -252,7 +261,7 @@ export async function recordScenario(
       outcome:
         failure === undefined
           ? { status: "complete" }
-          : { status: "failed", error: failure.message.split("\n")[0] ?? "failed" },
+          : { status: "failed", error: firstLine(failure) },
     })
     writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
     if (warnings.length > 0)
@@ -260,13 +269,21 @@ export async function recordScenario(
   } catch (error) {
     fileError = error instanceof Error ? error : new Error(String(error))
   } finally {
-    // Raw frames are unblurred: they never stay on disk unless asked for (debugging).
+    // Individual JPEG frames are temporary (frames.webm has them). Like every take file they're
+    // unblurred: the take store is sensitive by design (encrypted at rest from M1-8).
     if (options.keepFrames !== true) rmSync(framesDir, { recursive: true, force: true })
+  }
+  // Swap in the new take (complete or failed, both are kept) as long as it has its metadata.
+  if (meta !== undefined) {
+    rmSync(finalDir, { recursive: true, force: true })
+    renameSync(outDir, finalDir)
+  } else {
+    rmSync(outDir, { recursive: true, force: true })
   }
   if (failure !== undefined) throw failure
   if (fileError !== undefined || meta === undefined)
     throw fileError ?? new Error("take metadata missing")
-  return { dir: outDir, meta, events, cursor, warnings }
+  return { dir: finalDir, meta, events, cursor, warnings }
 }
 
 /**
@@ -358,16 +375,21 @@ const TAKE_MARKER = ".kiframe-take"
  * holds the take marker (a previous take, complete or interrupted): never a project folder or a path
  * that resolved to something unexpected.
  */
-function prepareOutDir(outDir: string) {
-  if (existsSync(outDir)) {
-    const entries = readdirSync(outDir)
-    if (entries.length > 0 && !entries.includes(TAKE_MARKER)) {
-      throw new Error(
-        `refusing to overwrite ${outDir}: it isn't empty and isn't a take (no ${TAKE_MARKER})`,
-      )
-    }
-    rmSync(outDir, { recursive: true, force: true })
+function checkReplaceable(dir: string) {
+  if (!existsSync(dir)) return
+  const entries = readdirSync(dir)
+  if (entries.length > 0 && !entries.includes(TAKE_MARKER)) {
+    throw new Error(
+      `refusing to overwrite ${dir}: it isn't empty and isn't a take (no ${TAKE_MARKER})`,
+    )
   }
+}
+
+function prepareOutDir(outDir: string) {
+  rmSync(outDir, { recursive: true, force: true })
   mkdirSync(outDir, { recursive: true })
   writeFileSync(join(outDir, TAKE_MARKER), "kiframe take\n")
 }
+
+/** JSON Lines: one record per line, and an empty file (not a lone newline) when there are none. */
+const jsonl = (records: readonly unknown[]) => records.map((r) => `${JSON.stringify(r)}\n`).join("")
