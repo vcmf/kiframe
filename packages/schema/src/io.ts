@@ -1,4 +1,4 @@
-import { isScalar, parseDocument, visit, YAMLParseError } from "yaml"
+import { isAlias, isScalar, parseDocument, visit, YAMLParseError } from "yaml"
 import * as z from "zod"
 import { ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
@@ -24,12 +24,10 @@ function loadYaml(text: string, what: string): unknown {
   let forbidden: string | undefined
   visit(doc, {
     Pair(_, pair) {
-      if (
-        isScalar(pair.key) &&
-        typeof pair.key.value === "string" &&
-        FORBIDDEN_KEYS.has(pair.key.value)
-      ) {
-        forbidden = pair.key.value
+      // Resolve alias keys (`*k: …` where `k: &k __proto__`) before checking them.
+      const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
+      if (isScalar(key) && typeof key.value === "string" && FORBIDDEN_KEYS.has(key.value)) {
+        forbidden = key.value
         return visit.BREAK
       }
       return undefined

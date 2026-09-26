@@ -401,3 +401,117 @@ describe("round 3: scroll until has a target", () => {
     expect(parseScenarioYaml(yaml).steps).toHaveLength(1)
   })
 })
+
+// ─── Round 4 ─────────────────────────────────────────────────────────────────
+
+describe("round 4: goto URLs", () => {
+  const goto = (url: string) =>
+    `version: 1\nsteps:\n  - { id: g, action: goto, url: ${JSON.stringify(url)} }\n`
+
+  it.each(["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi"])(
+    "rejects %s",
+    (url) => {
+      expect(() => parseScenarioYaml(goto(url))).toThrow(/relative or http/)
+    },
+  )
+
+  it("rejects credentials in protocol-relative URLs", () => {
+    expect(() => parseScenarioYaml(goto("//user:pass@staging.acme.com/app"))).toThrow(/credentials/)
+  })
+
+  it("accepts relative and absolute http(s) URLs", () => {
+    for (const url of ["/projects", "projects?tab=1", "https://staging.acme.com/x"]) {
+      expect(parseScenarioYaml(goto(url)).steps).toHaveLength(1)
+    }
+  })
+})
+
+describe("round 4: camera defaults can't frame 'the target'", () => {
+  it("rejects target in project defaults and scene overrides", () => {
+    expect(() => parseProjectYaml(project("defaults: { camera: target }\n"))).toThrow(SchemaError)
+    expect(() =>
+      parseScenarioYaml(`version: 1\noverrides: { camera: { frame: target } }\n${steps}`),
+    ).toThrow(SchemaError)
+  })
+})
+
+describe("round 4: ids across presets", () => {
+  it("reports two used presets sharing a step id", () => {
+    const p = parseProjectYaml(
+      project(
+        "presets:\n  login-a:\n    steps: [{ id: open-login, action: goto, url: /a }]\n  login-b:\n    steps: [{ id: open-login, action: goto, url: /b }]\n",
+      ),
+    )
+    const s = parseScenarioYaml(
+      `version: 1\nsetup:\n  - preset: login-a\n  - preset: login-b\n${steps}`,
+    )
+    expect(checkScenarioAgainstProject(s, p)).toEqual([
+      'preset "login-b" step id "open-login" collides with preset "login-a"',
+    ])
+  })
+
+  it("says where the first duplicate is", () => {
+    expect(() =>
+      parseProjectYaml(
+        project(
+          "presets:\n  p:\n    steps:\n      - { id: x, action: goto, url: /x }\n      - { id: x, action: goto, url: /y }\n",
+        ),
+      ),
+    ).toThrow(/already used in 0\)/)
+  })
+})
+
+describe("round 4: spans that can be ordered without a take", () => {
+  const caption = (at: object, until: object) => ({
+    version: 1,
+    tracks: { captions: [{ id: "c", source: "manual", text: "Hi", at, until }] },
+  })
+
+  it("rejects inverted or empty scene and same-step spans", () => {
+    expect(Composition.safeParse(caption({ scene: "end" }, { scene: "start" })).success).toBe(false)
+    expect(
+      Composition.safeParse(caption({ step: "x", edge: "end" }, { step: "x", edge: "start" }))
+        .success,
+    ).toBe(false)
+    expect(
+      Composition.safeParse(caption({ step: "x", edge: "start" }, { step: "x", edge: "start" }))
+        .success,
+    ).toBe(false)
+  })
+
+  it("accepts spans it can't order without a take", () => {
+    expect(
+      Composition.safeParse(caption({ step: "a", edge: "end" }, { step: "b", edge: "start" }))
+        .success,
+    ).toBe(true)
+  })
+})
+
+describe("round 4: YAML alias keys", () => {
+  it("rejects an alias key that resolves to __proto__", () => {
+    expect(() => parseScenarioYaml("x: &k __proto__\n*k : { a: 1 }\n")).toThrow(/forbidden key/)
+  })
+})
+
+describe("round 4: secret references in the remaining author strings", () => {
+  it("rejects them in hide, redaction selectors and keystrokes", () => {
+    expect(() => parseProjectYaml(project('hide: ["{{secrets.x}}"]\n'))).toThrow(/only allowed/)
+    expect(() =>
+      parseProjectYaml(project('redaction: { selectors: ["{{secrets.x}}"] }\n')),
+    ).toThrow(/only allowed/)
+    const ks = { id: "k", source: "auto", keys: "{{secrets.x}}", at: { ms: 0 }, until: { ms: 10 } }
+    expect(Composition.safeParse({ version: 1, tracks: { keystrokes: [ks] } }).success).toBe(false)
+  })
+
+  it("validates interrupt rule names in take events", () => {
+    expect(
+      TakeEvent.safeParse({
+        t: 0,
+        phase: "steps",
+        kind: "interrupt",
+        rule: "Cookie Banner",
+        until: 1,
+      }).success,
+    ).toBe(false)
+  })
+})

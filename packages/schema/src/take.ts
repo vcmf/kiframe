@@ -1,6 +1,6 @@
 import * as z from "zod"
 import { Ms, NPoint, StepId, ViewportRect } from "./common.ts"
-import { Viewport } from "./settings.ts"
+import { RuleName, Viewport } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
 // `t` is milliseconds from the first frame, on the same clock as the screencast frames.
@@ -57,7 +57,7 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
     why: z.enum(["secret-field", "secret-text", "redaction"]),
   }),
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
-  z.strictObject({ ...base, kind: z.literal("interrupt"), rule: z.string().min(1), until: Ms }),
+  z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Ms }),
 ])
 export const TakeEvent = TakeEventVariants.refine(
   // Interrupts are handled between steps, so they may have no step even on camera.

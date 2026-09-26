@@ -40,7 +40,7 @@ const targetExtras = {
   /** Alternative locators tried in order if the primary one fails. */
   fallbacks: z.array(Locator).optional(),
   /** Path to a screenshot crop of the element, used as visual reference for self-healing. */
-  fingerprint: z.string().optional(),
+  fingerprint: PlainText.optional(),
   /** Pick the n-th match (0-based) when the locator matches several elements. */
   nth: z.number().int().nonnegative().optional(),
 }
@@ -84,10 +84,14 @@ const frameTarget = z.union([z.literal("target"), Locator, z.strictObject({ rect
 const scale = z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max).optional()
 
 /** Camera default for a project or a scene: no `until` (it only makes sense on a step). */
+/**
+ * Camera default for a project or a scene. No `until` (it only makes sense on a step), and no
+ * `target` (many steps have none: framing the target is a per-step choice, `auto` covers the rest).
+ */
 export const CameraDefault = z.union([
-  z.enum(["auto", "wide", "target"]),
+  z.enum(["auto", "wide"]),
   z.strictObject({ follow: z.literal("cursor") }),
-  z.strictObject({ frame: frameTarget, scale }),
+  z.strictObject({ frame: z.union([Locator, z.strictObject({ rect: RectTuple })]), scale }),
 ])
 export type CameraDefault = z.infer<typeof CameraDefault>
 
@@ -127,16 +131,26 @@ const presentation = {
 
 /** True if `url` is absolute and embeds credentials (`https://user:pass@host`). Relative URLs can't. */
 export function hasUrlCredentials(url: string): boolean {
-  if (!URL.canParse(url)) return false
-  const parsed = new URL(url)
+  // Resolve against a dummy base so protocol-relative URLs (`//user:pass@host`) are checked too.
+  if (!URL.canParse(url, "http://base.invalid")) return false
+  const parsed = new URL(url, "http://base.invalid")
   return parsed.username !== "" || parsed.password !== ""
+}
+
+/** A `goto` URL: relative to the environment, or absolute http(s). Never javascript:, file:, data:… */
+export function isNavigableUrl(url: string): boolean {
+  if (!URL.canParse(url, "http://base.invalid")) return false
+  const { protocol } = new URL(url, "http://base.invalid")
+  return protocol === "http:" || protocol === "https:"
 }
 
 const Goto = z.strictObject({
   action: z.literal("goto"),
-  url: PlainText.min(1).refine((u) => !hasUrlCredentials(u), {
-    message: "URL must not contain credentials: store them in the vault",
-  }),
+  url: PlainText.min(1)
+    .refine(isNavigableUrl, { message: "goto URL must be relative or http(s)" })
+    .refine((u) => !hasUrlCredentials(u), {
+      message: "URL must not contain credentials: store them in the vault",
+    }),
 })
 const Click = z.strictObject({
   action: z.literal("click"),

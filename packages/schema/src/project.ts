@@ -46,7 +46,7 @@ export type InterruptRule = z.infer<typeof InterruptRule>
 
 export const ProjectConfig = z.strictObject({
   version: z.literal(1),
-  environment: z.string().min(1).optional(),
+  environment: RuleName.optional(),
   target: TargetApp,
   defaults: z
     .strictObject({
@@ -60,10 +60,10 @@ export const ProjectConfig = z.strictObject({
     .default([])
     .superRefine((rules, ctx) => void claimIds(rules, [], ctx)),
   /** CSS selectors hidden from the frame (display: none). */
-  hide: z.array(z.string().min(1)).default([]),
+  hide: z.array(PlainText.min(1)).default([]),
   redaction: z
     .strictObject({
-      selectors: z.array(z.string().min(1)).default([]),
+      selectors: z.array(PlainText.min(1)).default([]),
       secrets: z.literal("auto").default("auto"),
     })
     .prefault({}),
@@ -79,6 +79,8 @@ export function checkScenarioAgainstProject(scenario: Scenario, project: Project
       return id === undefined ? [] : [id]
     }),
   )
+  // Ids of every used preset must be unique among themselves and against the scenario.
+  const presetIdOwner = new Map<string, string>()
   for (const name of new Set(presetRefs(scenario))) {
     if (!Object.hasOwn(project.presets, name)) {
       problems.push(`setup uses unknown preset "${name}"`)
@@ -86,8 +88,15 @@ export function checkScenarioAgainstProject(scenario: Scenario, project: Project
     }
     for (const step of project.presets[name]?.steps ?? []) {
       const id = idOf(step)
-      if (id !== undefined && scenarioIds.has(id)) {
+      if (id === undefined) continue
+      if (scenarioIds.has(id)) {
         problems.push(`preset "${name}" step id "${id}" collides with an id in the scenario`)
+      }
+      const owner = presetIdOwner.get(id)
+      if (owner !== undefined && owner !== name) {
+        problems.push(`preset "${name}" step id "${id}" collides with preset "${owner}"`)
+      } else {
+        presetIdOwner.set(id, name)
       }
     }
   }
