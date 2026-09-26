@@ -1,5 +1,5 @@
 import * as z from "zod"
-import { Ms, NPoint, StepId, ViewportRect } from "./common.ts"
+import { Ms, NPoint, SecretName, StepId, ViewportRect } from "./common.ts"
 import { RuleName, Viewport } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
@@ -30,7 +30,7 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
     kind: z.enum(["type_start", "type_end"]),
     rect: ViewportRect,
     /** Secret NAME only, never its value. */
-    secret: z.string().optional(),
+    secret: SecretName.optional(),
   }),
   z.strictObject({ ...base, kind: z.literal("key"), key: z.string().min(1) }),
   z.strictObject({

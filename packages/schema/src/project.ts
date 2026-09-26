@@ -40,7 +40,10 @@ export const InterruptRule = z.strictObject({
   /** Required: interrupt take events refer to the rule by this id. */
   id: RuleName,
   when: z.union([Locator, z.strictObject({ text: PlainText.min(1) })]),
-  do: Action,
+  /** No `id` on the action: interrupt events are identified by the rule id, not a step id. */
+  do: Action.refine((action) => idOf(action) === undefined, {
+    message: "interrupt actions can't have an id (the rule id identifies them)",
+  }),
 })
 export type InterruptRule = z.infer<typeof InterruptRule>
 
@@ -79,21 +82,30 @@ export function checkScenarioAgainstProject(scenario: Scenario, project: Project
       return id === undefined ? [] : [id]
     }),
   )
-  // Ids of every used preset must be unique among themselves and against the scenario.
+  // Ids of every used preset must be unique among themselves and against the scenario. A preset
+  // used twice would repeat its ids, so that's reported too (unless its steps have no ids).
   const presetIdOwner = new Map<string, string>()
-  for (const name of new Set(presetRefs(scenario))) {
+  const used = new Set<string>()
+  for (const name of presetRefs(scenario)) {
     if (!Object.hasOwn(project.presets, name)) {
       problems.push(`setup uses unknown preset "${name}"`)
       continue
     }
-    for (const step of project.presets[name]?.steps ?? []) {
+    const stepIds = (project.presets[name]?.steps ?? []).flatMap((step) => {
       const id = idOf(step)
-      if (id === undefined) continue
+      return id === undefined ? [] : [id]
+    })
+    if (used.has(name)) {
+      if (stepIds.length > 0) problems.push(`preset "${name}" is used twice and has step ids`)
+      continue
+    }
+    used.add(name)
+    for (const id of stepIds) {
       if (scenarioIds.has(id)) {
         problems.push(`preset "${name}" step id "${id}" collides with an id in the scenario`)
       }
       const owner = presetIdOwner.get(id)
-      if (owner !== undefined && owner !== name) {
+      if (owner !== undefined) {
         problems.push(`preset "${name}" step id "${id}" collides with preset "${owner}"`)
       } else {
         presetIdOwner.set(id, name)
