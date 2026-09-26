@@ -8,7 +8,7 @@ import type {
   Target,
 } from "@kiframe/schema"
 import { secretRefName } from "@kiframe/schema"
-import type { Frame, Locator, Page } from "playwright"
+import type { ElementHandle, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
 import { describeLocator, isOnScreen, resolveTarget, toPlaywright, visibleOnly } from "./targets.ts"
@@ -80,10 +80,12 @@ export async function runScenario(
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
+  // Static config errors (unknown preset, unsupported `ensure`) fail BEFORE anything runs, and
+  // don't trigger teardown: nothing was created, and teardown could delete pre-existing data.
+  const setup = expandSetup(scenario.setup ?? [], project)
   try {
     let failure: Error | undefined
     try {
-      const setup = expandSetup(scenario.setup ?? [], project)
       for (const [index, action] of setup.entries()) {
         await runOne(ctx, action, {
           phase: "setup",
@@ -109,18 +111,7 @@ export async function runScenario(
       }
     } catch (error) {
       if (failure === undefined) throw error
-      const reported =
-        error instanceof StepError
-          ? error
-          : new StepError(
-              { phase: "teardown", index: -1, action: "teardown" },
-              "action-failed",
-              String(error),
-              {
-                cause: error,
-              },
-            )
-      options.onEvent?.({ kind: "teardown_failed", error: reported })
+      if (error instanceof StepError) options.onEvent?.({ kind: "teardown_failed", error })
     }
     if (failure !== undefined) throw failure
   } finally {
@@ -168,13 +159,17 @@ function expandSetup(items: readonly SetupItem[], project: ProjectConfig): Actio
   return out
 }
 
+/** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
+  ctx.setCurrent(step)
   if (action.risky === true) {
-    const approved = (await ctx.options.approveRisky?.(step)) ?? false
+    const approved = await guard(
+      step,
+      async () => (await ctx.options.approveRisky?.(step)) ?? false,
+    )
     if (!approved) throw new StepError(step, "risky-not-approved", "risky step needs approval")
   }
   ctx.options.onEvent?.({ kind: "step_start", step })
-  ctx.setCurrent(step)
   await perform(ctx, action, step)
   if (action.action !== "pause") await settle(ctx)
   ctx.options.onEvent?.({ kind: "step_end", step })
@@ -189,7 +184,12 @@ const SETTLE_MAX_MS = 3000
  * bounded and never fails the step.
  */
 async function settle(ctx: Ctx): Promise<void> {
-  await ctx.network.waitForIdle(SETTLE_MAX_MS, 200)
+  // Network and DOM are independent: wait for both at once, so the worst case is one cap.
+  await Promise.all([ctx.network.waitForIdle(SETTLE_MAX_MS, 200), domQuiet(ctx)])
+  if (ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
+}
+
+async function domQuiet(ctx: Ctx): Promise<void> {
   await ctx.page
     .evaluate(
       ({ quiet, max }) =>
@@ -216,7 +216,6 @@ async function settle(ctx: Ctx): Promise<void> {
       { quiet: 150, max: SETTLE_MAX_MS },
     )
     .catch(() => undefined) // the page navigated meanwhile: nothing to observe
-  if (ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
 }
 
 async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
@@ -272,7 +271,25 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // unless `clear` empties the field first.
         if (action.clear === true) await target.fill("", { timeout })
         await target.focus({ timeout })
-        await page.keyboard.press("End")
+        // Not the End key: on macOS it scrolls instead of moving the caret, and in a textarea
+        // it only goes to the end of the current line.
+        await target.evaluate(
+          (el) => {
+            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+              const end = el.value.length
+              el.setSelectionRange(end, end)
+            } else if (el instanceof HTMLElement && el.isContentEditable) {
+              const range = document.createRange()
+              range.selectNodeContents(el)
+              range.collapse(false)
+              const selection = getSelection()
+              selection?.removeAllRanges()
+              selection?.addRange(range)
+            }
+          },
+          undefined,
+          { timeout },
+        )
         if (action.instant === true || secret !== undefined) {
           await page.keyboard.insertText(text)
         } else {
@@ -354,56 +371,28 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
  * Smooth, human-like scrolling comes with P0-4; here it's instant and deterministic.
  */
 async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>, step: StepRef) {
-  const container = action.within === undefined ? undefined : await find(ctx, action.within, step)
-  /** Scrolls by dy; returns whether anything moved and the scroller's visible height. */
-  const scrollBy = (dy: number) =>
-    guard(step, async (): Promise<{ moved: boolean; height: number }> => {
-      if (container !== undefined) {
-        return container.evaluate(
-          (el, y) => {
-            const before = el.scrollTop
-            el.scrollBy({ top: y, behavior: "instant" })
-            return { moved: el.scrollTop !== before, height: el.clientHeight }
-          },
-          dy,
-          { timeout: ctx.timeoutMs },
-        )
-      }
-      return ctx.page.evaluate((y) => {
-        const scrolls = (el: Element) => {
-          const { overflowY } = getComputedStyle(el)
-          return /(auto|scroll|overlay)/.test(overflowY) && el.scrollHeight > el.clientHeight + 1
-        }
-        const doc = document.scrollingElement ?? document.documentElement
-        const docScrolls =
-          doc.scrollHeight > innerHeight + 1 &&
-          getComputedStyle(document.documentElement).overflowY !== "hidden" &&
-          getComputedStyle(document.body).overflowY !== "hidden"
-        let scroller: Element = doc
-        if (!docScrolls) {
-          let best = 0
-          for (const el of document.querySelectorAll("*")) {
-            if (!scrolls(el)) continue
-            const r = el.getBoundingClientRect()
-            const area =
-              Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
-              Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0))
-            if (area > best) {
-              best = area
-              scroller = el
-            }
-          }
-        }
-        const before = scroller.scrollTop
-        scroller.scrollBy({ top: y, behavior: "instant" })
-        const height = scroller === doc ? innerHeight : scroller.clientHeight
-        return { moved: scroller.scrollTop !== before, height }
-      }, dy)
-    })
   if (action.to !== undefined) {
     await find(ctx, action.to, step)
     return
   }
+  // The scroller is detected once per action and reused (a full style scan per scroll is costly).
+  const scroller: Locator | ElementHandle<Element> =
+    action.within === undefined
+      ? await guard(step, async () => (await ctx.page.evaluateHandle(findMainScroller)).asElement())
+      : await find(ctx, action.within, step)
+  /** Scrolls by dy; returns whether anything moved and the scroller's visible height. */
+  const scrollInPage = (el: Element, y: number) => {
+    const isDocument = el === (document.scrollingElement ?? document.documentElement)
+    const before = el.scrollTop
+    el.scrollBy({ top: y, behavior: "instant" })
+    return { moved: el.scrollTop !== before, height: isDocument ? innerHeight : el.clientHeight }
+  }
+  const scrollBy = (dy: number) =>
+    guard(step, () =>
+      "boundingBox" in scroller && "filter" in scroller
+        ? scroller.evaluate(scrollInPage, dy, { timeout: ctx.timeoutMs })
+        : scroller.evaluate(scrollInPage, dy),
+    )
   if (action.by !== undefined) {
     await scrollBy(action.by.y)
     return
@@ -432,14 +421,53 @@ async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>
         if (box !== null && box.y < 0) direction = -1
       }
       const { moved } = await scrollBy(direction * step80)
-      if (!moved && !result.ok) break // at the end and the target never appeared
+      if (!moved) {
+        // Nothing left to scroll: the target is either absent, or present but not reachable here
+        // (covered by a sticky banner, off screen horizontally, in another scroller).
+        if (result.ok) {
+          throw new StepError(
+            step,
+            "target-not-found",
+            "target is in the page but stays off screen (covered, or in another scroller: use `within`)",
+          )
+        }
+        break
+      }
     }
     throw new StepError(
       step,
       "target-not-found",
-      "scrolled until timeout, target never appeared on screen",
+      "scrolled until the end, target never appeared on screen",
     )
   }
+}
+
+/**
+ * The page's main scroller: the document when it scrolls, otherwise the largest visible scrollable
+ * element (app-shell layouts, where `<body>` doesn't scroll and a `<main>` pane does). Runs in the page.
+ */
+function findMainScroller(): Element {
+  const doc = document.scrollingElement ?? document.documentElement
+  const docScrolls =
+    doc.scrollHeight > innerHeight + 1 &&
+    getComputedStyle(document.documentElement).overflowY !== "hidden" &&
+    getComputedStyle(document.body).overflowY !== "hidden"
+  if (docScrolls) return doc
+  let best: Element = doc
+  let bestArea = 0
+  for (const el of document.querySelectorAll("*")) {
+    const { overflowY } = getComputedStyle(el)
+    if (!/(auto|scroll|overlay)/.test(overflowY) || el.scrollHeight <= el.clientHeight + 1) continue
+    const r = el.getBoundingClientRect()
+    const area =
+      Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
+      Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0))
+    if (area > bestArea) {
+      bestArea = area
+      best = el
+    }
+  }
+  return best
 }
 
 /** Signals a condition that timed out without a Playwright TimeoutError (network idle). */
@@ -484,8 +512,7 @@ async function waitForCondition(
     ) {
       throw new StepError(step, reason, `${what} (after ${timeout} ms)`)
     }
-    const message = cause instanceof Error ? (cause.message.split("\n")[0] ?? "") : String(cause)
-    throw new StepError(step, "action-failed", message, { cause })
+    throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
 }
 
@@ -521,24 +548,31 @@ function pathMatches(actual: string, expected: string): boolean {
   return path === want || path.startsWith(`${want}/`)
 }
 
+/** First line of an error's message (Playwright errors carry long call logs after it). */
+function firstLine(cause: unknown): string {
+  const message = cause instanceof Error ? cause.message : String(cause)
+  return message.split("\n")[0] || "action failed"
+}
+
 /** Runs a Playwright call and turns its failure into a StepError on this step. */
 async function guard<T>(step: StepRef, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
   } catch (cause) {
-    const message = cause instanceof Error ? cause.message.split("\n")[0] : String(cause)
-    throw new StepError(step, "action-failed", message ?? "action failed", { cause })
+    if (cause instanceof StepError) throw cause
+    throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
 }
 
 /** `Mod` = ⌘ on Mac, Ctrl elsewhere (Playwright's ControlOrMeta). */
+function modKey(key: string): string {
+  return key === "Mod" ? "ControlOrMeta" : key
+}
+
 function toPlaywrightModifier(m: "Alt" | "Control" | "Meta" | "Shift" | "Mod") {
   return m === "Mod" ? "ControlOrMeta" : m
 }
 
 function toPlaywrightKeys(keys: string): string {
-  return keys
-    .split("+")
-    .map((k) => (k === "Mod" ? "ControlOrMeta" : k))
-    .join("+")
+  return keys.split("+").map(modKey).join("+")
 }

@@ -454,4 +454,66 @@ steps:
       `setup: [{ preset: open-projects }]\nsteps:\n  - { id: idle, action: waitFor, until: { networkIdle: true }, timeout: 300 }\n`,
     )
   })
+
+  // ─── Review round 4 (P0-3) ─────────────────────────────────────────────────
+
+  it("appends to pre-filled inputs and textareas without relying on the End key", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /prefilled }
+  - { id: company, action: type, target: { by: label, name: Company }, value: " Inc" }
+  - { id: notes, action: type, target: { by: label, name: Notes }, value: " end", instant: true }
+`)
+    expect(await page.getByLabel("Company").inputValue()).toBe("Acme Inc")
+    expect(await page.getByLabel("Notes").inputValue()).toBe("line1\nline2 end")
+  })
+
+  it("doesn't run teardown when setup is invalid (nothing ran, nothing to clean)", async () => {
+    const events: RunnerEvent[] = []
+    await expect(
+      runScenario(
+        page,
+        scenario(`setup: [{ preset: typo }]
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { id: cleanup, action: goto, url: / }
+`),
+        project,
+        { onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow(/unknown preset "typo"/)
+    expect(events).toEqual([])
+  })
+
+  it("keeps looking for a target across a client-side redirect", async () => {
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /late-redirect }
+  - { id: sign-in, action: click, target: { by: role, role: button, name: Sign in } }
+`,
+      { timeoutMs: 4000 },
+    )
+  })
+
+  it("names the step when the risky approval itself fails", async () => {
+    const error = await failure(
+      `setup: [{ preset: open-projects }]\nsteps:\n  - { id: del, action: click, target: { by: role, role: button, name: New project }, risky: true }\n`,
+      {
+        approveRisky: () => {
+          throw new Error("approval dialog closed")
+        },
+      },
+    )
+    expect(error.message).toMatch(/^steps\[0\] \(del, click\): approval dialog closed/)
+  })
+
+  it("says when a target stays covered instead of looping until the timeout", async () => {
+    const error = await failure(
+      `steps:
+  - { id: go, action: goto, url: /covered }
+  - { id: find, action: scroll, until: { by: text, text: Under the banner } }
+`,
+      { timeoutMs: 4000 },
+    )
+    expect(error.message).toMatch(/stays off screen/)
+  })
 })

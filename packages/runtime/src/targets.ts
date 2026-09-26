@@ -83,7 +83,11 @@ export async function resolveTarget(
     ambiguous = undefined
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator))
-      const count = await visible.count()
+      const count = await visible.count().catch((error: unknown) => {
+        // A navigation (client-side redirect…) replaced the page mid-poll: retry on the new one.
+        if (isNavigationError(error)) return 0
+        throw error
+      })
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         ambiguous ??= `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
@@ -145,4 +149,12 @@ export async function isOnScreen(
       { timeout: timeoutMs },
     )
     .catch(() => false)
+}
+
+/** Errors thrown when the page navigated while Playwright was querying it. */
+export function isNavigationError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    /Execution context was destroyed|frame was detached/.test(error.message)
+  )
 }
