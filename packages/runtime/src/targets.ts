@@ -139,7 +139,9 @@ export async function isOnScreen(
   const y = box.y + box.height / 2
   if (x < 0 || y < 0 || x > viewport.width || y > viewport.height) return false
   return locator
-    .evaluate(pointProbe, [x, y, false] as [number, number, boolean], { timeout: timeoutMs })
+    .evaluate(pointProbe, [x, y, false, true] as [number, number, boolean, boolean], {
+      timeout: timeoutMs,
+    })
     .then((probe) => probe.hits)
     .catch(() => false)
 }
@@ -160,14 +162,17 @@ export async function viewportOf(page: Page): Promise<{ width: number; height: n
 }
 
 /**
- * What's under a point, for hit tests (runs in the page, self-contained so it can be passed to
- * `evaluate`). Goes down through open shadow roots to the deepest element, then reports whether
- * it's `el` or inside it, or inside `el`'s enclosing control (Playwright accepts a hit anywhere in
- * the button a target sits in), plus everything the hit control is called (for the risky check).
+ * What's under a point (runs in the page, self-contained so it can be passed to `evaluate`). Goes
+ * down through open shadow roots to the deepest element, then walks up the composed tree (slots,
+ * shadow hosts) to tell whether the hit is `el` or inside it (`strict`), or also inside `el`'s
+ * enclosing control (Playwright accepts a hit anywhere in the button a target sits in). With
+ * `withLabel`, also returns everything the element under the point is called, for the risky check:
+ * the control it belongs to (its text, shadow text and every naming attribute inside), or for a
+ * non-control its own text and attributes without nested controls' text.
  */
 export function pointProbe(
   el: Element,
-  [x, y, withLabel]: [number, number, boolean],
+  [x, y, withLabel, strict = false]: [number, number, boolean, boolean?],
 ): { hits: boolean; label: string } {
   const CONTROLS =
     "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
@@ -177,7 +182,10 @@ export function pointProbe(
     if (inner === null || inner === hit) break
     hit = inner
   }
-  const up = (n: Node): Node | null => n.parentNode ?? (n instanceof ShadowRoot ? n.host : null)
+  const up = (n: Node): Node | null =>
+    (n instanceof Element ? n.assignedSlot : null) ??
+    n.parentNode ??
+    (n instanceof ShadowRoot ? n.host : null)
   const closest = (from: Element | null): Element | null => {
     for (let n: Node | null = from; n !== null; n = up(n))
       if (n instanceof Element && n.matches(CONTROLS)) return n
@@ -187,43 +195,51 @@ export function pointProbe(
     for (let n = node; n !== null; n = up(n)) if (n === ancestor) return true
     return false
   }
-  const hits = hit !== null && (within(hit, el) || within(hit, closest(el)))
-  if (!withLabel) return { hits, label: "" }
-  // The label of what the press would actually activate: the control under the point (its text,
-  // hidden text included, and every naming attribute in it), or the element itself if it's no control.
-  const hitControl = closest(hit)
-  const control = hitControl ?? hit
+  const hits = hit !== null && (within(hit, el) || (!strict && within(hit, closest(el))))
+  if (!withLabel || hit === null) return { hits, label: "" }
   const texts: (string | null | undefined)[] = []
-  if (hitControl === null && hit !== null) {
-    // Not a control (a card's background, a row's cell): the press activates the element itself,
-    // not the buttons inside it, so only its own text counts, without nested controls.
-    const own: string[] = []
-    const walk = (node: Node) => {
-      for (const child of node.childNodes) {
-        if (child.nodeType === Node.TEXT_NODE) own.push(child.textContent ?? "")
-        else if (child instanceof Element && !child.matches(CONTROLS)) walk(child)
-      }
-    }
-    walk(hit)
-    texts.push(own.join(""), hit.getAttribute("aria-label"), hit.getAttribute("title"))
-  } else if (control !== null) {
-    const root = control.getRootNode() as Document | ShadowRoot
-    texts.push(control instanceof HTMLElement ? control.innerText : null, control.textContent)
-    for (const e of [control, ...control.querySelectorAll("*")]) {
-      for (const attr of ["alt", "aria-label", "title"]) texts.push(e.getAttribute(attr))
-      for (const id of (e.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
-        if (id !== "")
-          texts.push(
-            root.getElementById(id)?.textContent ?? document.getElementById(id)?.textContent,
-          )
-      }
+  const attrs = (e: Element) => {
+    const root = e.getRootNode() as Document | ShadowRoot
+    for (const attr of ["alt", "aria-label", "title"]) texts.push(e.getAttribute(attr))
+    for (const id of (e.getAttribute("aria-labelledby") ?? "").split(/\s+/)) {
+      if (id !== "")
+        texts.push(root.getElementById(id)?.textContent ?? document.getElementById(id)?.textContent)
     }
     if (
-      control instanceof HTMLInputElement &&
-      ["submit", "button", "reset", "image"].includes(control.type.toLowerCase())
+      e instanceof HTMLInputElement &&
+      ["submit", "button", "reset", "image"].includes(e.type.toLowerCase())
     ) {
-      texts.push(control.value)
+      texts.push(e.value)
     }
+  }
+  // Composed walk: light DOM children and open shadow roots, skipping nested controls if asked.
+  const walk = (node: Node, skipControls: boolean) => {
+    // A <slot> shows what's assigned to it (light-DOM content), not its own children.
+    const own =
+      node instanceof HTMLSlotElement ? node.assignedNodes({ flatten: true }) : [...node.childNodes]
+    const children = [
+      ...own,
+      ...(node instanceof Element && node.shadowRoot ? [node.shadowRoot] : []),
+    ]
+    for (const child of children) {
+      if (child.nodeType === Node.TEXT_NODE) texts.push(child.textContent)
+      else if (child instanceof Element) {
+        if (skipControls && child.matches(CONTROLS)) continue
+        attrs(child)
+        walk(child, skipControls)
+      } else if (child instanceof ShadowRoot) walk(child, skipControls)
+    }
+  }
+  const control = closest(hit)
+  if (control !== null) {
+    // The press activates this control: fail closed on everything in it.
+    texts.push(control instanceof HTMLElement ? control.innerText : null)
+    attrs(control)
+    walk(control, false)
+  } else {
+    // Not a control (a card's background, a row's cell): the element itself, not the buttons in it.
+    attrs(hit)
+    walk(hit, true)
   }
   const label = texts
     .filter((s): s is string => typeof s === "string")
