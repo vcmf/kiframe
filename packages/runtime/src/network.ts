@@ -5,8 +5,12 @@ import type { Page, Request } from "playwright"
  * in flight for a quiet period NOW", not Playwright's `networkidle` load state (which is reached
  * once after a navigation and then returns immediately, even while an SPA is fetching).
  */
-/** Requests still pending after this long are treated as long-lived (SSE, long polling, beacons). */
-const LONG_LIVED_MS = 3000
+/**
+ * Requests still pending after this long are treated as long-lived (long polling, hung beacons).
+ * Generous on purpose: a slow API call (a report taking several seconds) must still count.
+ * EventSource / WebSocket streams are ignored from the start.
+ */
+const LONG_LIVED_MS = 15_000
 
 export class NetworkTracker {
   /** In-flight requests and when they started. EventSource / WebSocket streams are never tracked. */
@@ -38,13 +42,15 @@ export class NetworkTracker {
    * been reported yet, and would otherwise be missed. False if `timeoutMs` passes first.
    */
   async waitForIdle(timeoutMs: number, quietMs = 500): Promise<boolean> {
+    // The quiet period can't exceed the timeout, or an idle page could never pass.
+    const quiet = Math.min(quietMs, Math.floor(timeoutMs / 2))
     const start = Date.now()
     const deadline = start + timeoutMs
     for (;;) {
       const now = Date.now()
       const pending = [...this.inflight.values()].filter((since) => now - since < LONG_LIVED_MS)
       const quietSince = Math.max(this.lastChange, start)
-      if (pending.length === 0 && now - quietSince >= quietMs) return true
+      if (pending.length === 0 && now - quietSince >= quiet) return true
       if (now >= deadline) return false
       await new Promise((resolve) => setTimeout(resolve, 50))
     }

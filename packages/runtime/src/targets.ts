@@ -70,27 +70,38 @@ export async function resolveTarget(
     }
   }
   const { fallbacks = [], nth } = target
-  const candidates = [stripExtras(target), ...fallbacks]
+  // `nth` belongs to the primary locator only: each fallback is its own locator.
+  const candidates: { locator: SchemaLocator; nth: number | undefined }[] = [
+    { locator: stripExtras(target), nth },
+    ...fallbacks.map((locator) => ({ locator, nth: undefined })),
+  ]
   const deadline = Date.now() + timeoutMs
+  // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
+  // only report it if it's still the state at the deadline.
+  let ambiguous: string | undefined
   for (;;) {
+    ambiguous = undefined
     for (const [i, candidate] of candidates.entries()) {
-      const visible = visibleOnly(toPlaywright(page, candidate))
+      const visible = visibleOnly(toPlaywright(page, candidate.locator))
       const count = await visible.count()
-      if (count === 0 || (nth !== undefined && count <= nth)) continue
-      if (nth === undefined && count > 1) {
-        return {
-          ok: false,
-          reason: "target-ambiguous",
-          detail: `${describeLocator(candidate)} matches ${count} visible elements — add \`nth\` or a more precise locator`,
-        }
+      if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
+      if (candidate.nth === undefined && count > 1) {
+        ambiguous ??= `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
+        continue
       }
-      const locator = nth === undefined ? visible : visible.nth(nth)
-      return { ok: true, locator, used: candidate, fallbackIndex: i === 0 ? undefined : i - 1 }
+      const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
+      return {
+        ok: true,
+        locator,
+        used: candidate.locator,
+        fallbackIndex: i === 0 ? undefined : i - 1,
+      }
     }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  const tried = candidates.map(describeLocator).join(", then ")
+  if (ambiguous !== undefined) return { ok: false, reason: "target-ambiguous", detail: ambiguous }
+  const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
   return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
 }
 

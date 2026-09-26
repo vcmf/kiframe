@@ -3,6 +3,25 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  "/redirect": `<!doctype html><title>Redirect</title>
+    <script>addEventListener("load", () => location.replace("/projects"))</script>`,
+  "/shell": `<!doctype html><title>Shell</title>
+    <style>html, body { height: 100%; margin: 0; overflow: hidden }
+      aside { position: fixed; left: 0; top: 0; width: 200px; height: 100%; overflow: auto }
+      main { margin-left: 200px; height: 100%; overflow: auto }</style>
+    <aside><div style="height:900px"><button>Menu</button></div></aside>
+    <main><h1>Top of main</h1><div style="height:3000px"></div><p>Bottom of main</p></main>`,
+  "/report": `<!doctype html><title>Report</title>
+    <button id="gen">Generate report</button><p id="r"></p>
+    <button id="refresh">Refresh</button><p id="u"></p>
+    <script>
+      document.getElementById("gen").onclick = async () => {
+        await fetch("/api/slow5"); document.getElementById("r").textContent = "Report ready"
+      }
+      document.getElementById("refresh").onclick = async () => {
+        await fetch("/api/slow"); document.getElementById("u").textContent = "Updated"
+      }
+    </script>`,
   "/live": `<!doctype html><title>Live</title>
     <button id="save">Save</button><p id="s"></p>
     <script>
@@ -59,6 +78,13 @@ export async function startFixtureServer(): Promise<{ url: string; close: () => 
       // Server-sent events that never end (notifications): must not block "network idle".
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" })
       res.write("data: hello\n\n")
+      return
+    }
+    if (path === "/api/slow5") {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" })
+        res.end("{}")
+      }, 5000)
       return
     }
     if (path === "/api/slow") {

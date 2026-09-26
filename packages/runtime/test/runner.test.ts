@@ -373,4 +373,85 @@ steps:
     )
     expect(hashFails.reason).toBe("expectation-failed")
   })
+
+  // ─── Review round 3 (P0-3) ─────────────────────────────────────────────────
+
+  it("follows a page that redirects itself on load", async () => {
+    const events = await run(
+      `steps:\n  - { id: go, action: goto, url: /redirect }\n  - { id: at, action: expect, that: { url: /projects } }\n`,
+    )
+    const urls = events.flatMap((e) => (e.kind === "navigate" ? [e.url] : []))
+    expect(urls).toEqual([`${server.url}/redirect`, `${server.url}/projects`])
+  })
+
+  it("keeps waiting for a slow API call (5 s) before network idle", async () => {
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /report }
+  - { id: gen, action: click, target: { by: role, role: button, name: Generate report } }
+  - { id: idle, action: waitFor, until: { networkIdle: true } }
+  - { id: ready, action: expect, that: { text: Report ready }, timeout: 50 }
+`,
+      { timeoutMs: 8000 },
+    )
+  }, 20_000)
+
+  it("settles after an action: the next step sees the updated page without an explicit wait", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /report }
+  - { id: refresh, action: click, target: { by: role, role: button, name: Refresh } }
+  - { id: updated, action: expect, that: { text: Updated }, timeout: 50 }
+`)
+  })
+
+  it("scrolls the main pane of an app-shell layout", async () => {
+    await run(`steps:
+  - { id: go, action: goto, url: /shell }
+  - { id: menu, action: click, target: { by: role, role: button, name: Menu } }
+  - { id: down, action: scroll, by: { y: 800 } }
+`)
+    expect(await page.evaluate<number>("document.querySelector('main').scrollTop")).toBeGreaterThan(
+      0,
+    )
+    expect(await page.evaluate<number>("document.querySelector('aside').scrollTop")).toBe(0)
+    await run(
+      `steps:
+  - { id: go, action: goto, url: /shell }
+  - { id: bottom, action: scroll, until: { by: text, text: Bottom of main } }
+  - { id: top, action: scroll, until: { by: text, text: Top of main } }
+`,
+      { timeoutMs: 5000 },
+    )
+  })
+
+  it("applies nth to the primary locator only", async () => {
+    await run(`setup: [{ preset: open-projects }]
+steps:
+  - id: new
+    action: click
+    target: { by: role, role: button, name: Gone, nth: 1, fallbacks: [{ by: text, text: New project }] }
+`)
+  })
+
+  it("adds text at the end of the field, on or off camera", async () => {
+    const yaml = (
+      instant: boolean,
+    ) => `setup: [{ preset: open-projects }, { action: click, target: { by: role, role: button, name: New project } }]
+steps:
+  - { id: a, action: type, target: { by: label, name: Project name }, value: Acme, instant: true }
+  - { id: b, action: type, target: { by: label, name: Project name }, value: " Inc", instant: ${instant} }
+`
+    await run(yaml(true))
+    expect(await page.getByLabel("Project name").inputValue()).toBe("Acme Inc")
+    await page.close()
+    page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+    await run(yaml(false))
+    expect(await page.getByLabel("Project name").inputValue()).toBe("Acme Inc")
+  })
+
+  it("lets a short networkIdle timeout pass on an idle page", async () => {
+    await run(
+      `setup: [{ preset: open-projects }]\nsteps:\n  - { id: idle, action: waitFor, until: { networkIdle: true }, timeout: 300 }\n`,
+    )
+  })
 })
