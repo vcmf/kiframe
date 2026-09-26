@@ -117,7 +117,13 @@ export function guarded<T extends z.ZodType>(schema: T, slots: readonly SecretSl
     const w: Walk = { slots, issues: [], ancestors: new WeakSet(), structural: false, path: [] }
     walk(input, undefined, w)
     const result = w.structural ? undefined : schema.safeParse(input)
-    if (result && !result.success) w.issues.push(...result.error.issues)
+    if (result && !result.success) {
+      // A forbidden key is already reported by the guard, with its path: drop zod's duplicate
+      // "unrecognized key" issue when every key it lists is a forbidden one.
+      const duplicate = (i: z.core.$ZodIssue) =>
+        i.code === "unrecognized_keys" && i.keys.every((k) => FORBIDDEN_KEYS.has(k))
+      w.issues.push(...result.error.issues.filter((i) => !duplicate(i)))
+    }
     if (result === undefined || !result.success || w.issues.length > 0) {
       // Keep every issue as it is: zod's own (code, keys, union errors…) and the guard's, whose
       // `input` is the offending value only (never the whole document, which may contain secrets).
