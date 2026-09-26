@@ -8,7 +8,7 @@ import type {
   Target,
 } from "@kiframe/schema"
 import { secretRefName } from "@kiframe/schema"
-import type { Locator, Page } from "playwright"
+import type { Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
 import { describeLocator, isOnScreen, resolveTarget, toPlaywright, visibleOnly } from "./targets.ts"
@@ -61,12 +61,22 @@ export async function runScenario(
   const base = new URL(project.target.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
+  // Every main-frame navigation is reported (goto, redirects, links clicked…), attributed to the
+  // step running at that moment.
+  let current: StepRef | undefined
+  const onNavigated = (frame: Frame) => {
+    if (frame === page.mainFrame() && current !== undefined) {
+      options.onEvent?.({ kind: "navigate", step: current, url: frame.url() })
+    }
+  }
+  page.on("framenavigated", onNavigated)
   const ctx: Ctx = {
     page,
     base,
     settleMs,
     options,
     network,
+    setCurrent: (step) => (current = step),
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
@@ -115,6 +125,7 @@ export async function runScenario(
     if (failure !== undefined) throw failure
   } finally {
     network.dispose()
+    page.off("framenavigated", onNavigated)
   }
 }
 
@@ -125,6 +136,7 @@ interface Ctx {
   timeoutMs: number
   navigationTimeoutMs: number
   network: NetworkTracker
+  setCurrent: (step: StepRef | undefined) => void
   options: RunOptions
 }
 
@@ -162,9 +174,49 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
     if (!approved) throw new StepError(step, "risky-not-approved", "risky step needs approval")
   }
   ctx.options.onEvent?.({ kind: "step_start", step })
+  ctx.setCurrent(step)
   await perform(ctx, action, step)
-  if (ctx.settleMs > 0 && action.action !== "pause") await ctx.page.waitForTimeout(ctx.settleMs)
+  if (action.action !== "pause") await settle(ctx)
   ctx.options.onEvent?.({ kind: "step_end", step })
+}
+
+/** Upper bound of each settle wait: pages with constant activity (animations, polling) never block. */
+const SETTLE_MAX_MS = 3000
+
+/**
+ * After an action, wait for the app to settle (docs/OBJECT-MODEL.md §2b): no request in flight and
+ * no DOM mutation for a short quiet period, then the project's extra `settleMs`. Each wait is
+ * bounded and never fails the step.
+ */
+async function settle(ctx: Ctx): Promise<void> {
+  await ctx.network.waitForIdle(SETTLE_MAX_MS, 200)
+  await ctx.page
+    .evaluate(
+      ({ quiet, max }) =>
+        new Promise<void>((resolve) => {
+          let timer = setTimeout(done, quiet)
+          const observer = new MutationObserver(() => {
+            clearTimeout(timer)
+            timer = setTimeout(done, quiet)
+          })
+          const cap = setTimeout(done, max)
+          function done() {
+            observer.disconnect()
+            clearTimeout(timer)
+            clearTimeout(cap)
+            resolve()
+          }
+          observer.observe(document, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            characterData: true,
+          })
+        }),
+      { quiet: 150, max: SETTLE_MAX_MS },
+    )
+    .catch(() => undefined) // the page navigated meanwhile: nothing to observe
+  if (ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
 }
 
 async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
@@ -179,16 +231,21 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       await guard(step, async () => {
         await page.goto(url.href, { waitUntil: "load", timeout: ctx.navigationTimeoutMs })
         // Input sent before the first rendered frame (e.g. a wheel) is dropped by the browser.
-        // Bounded: rAF is paused in background windows (headed, CDP-connected, Electron).
-        await page.evaluate(
-          () =>
-            new Promise((resolve) => {
-              requestAnimationFrame(() => requestAnimationFrame(resolve))
-              setTimeout(resolve, 500)
-            }),
-        )
+        // Bounded: rAF is paused in background windows (headed, CDP-connected, Electron). If the
+        // page redirects itself on load (e.g. to /login), the context is replaced: wait for the
+        // new page instead of failing a valid navigation.
+        try {
+          await page.evaluate(
+            () =>
+              new Promise((resolve) => {
+                requestAnimationFrame(() => requestAnimationFrame(resolve))
+                setTimeout(resolve, 500)
+              }),
+          )
+        } catch {
+          await page.waitForLoadState("load", { timeout: ctx.navigationTimeoutMs })
+        }
       })
-      ctx.options.onEvent?.({ kind: "navigate", step, url: url.href })
       return
     }
     case "click": {
@@ -211,9 +268,14 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
+        // Same semantics on and off camera: the text is added at the end of the field's content,
+        // unless `clear` empties the field first.
         if (action.clear === true) await target.fill("", { timeout })
-        if (action.instant === true || secret !== undefined) await target.fill(text, { timeout })
-        else {
+        await target.focus({ timeout })
+        await page.keyboard.press("End")
+        if (action.instant === true || secret !== undefined) {
+          await page.keyboard.insertText(text)
+        } else {
           // Playwright's timeout covers the whole typing: give it the keystroke time on top.
           const typing = text.length * TYPING_DELAY_MS
           await target.pressSequentially(text, {
@@ -261,7 +323,7 @@ function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
 }
 
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
-  const result = await resolveTarget(ctx.page, target, ctx.timeoutMs)
+  const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
@@ -285,21 +347,58 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
 }
 
 /**
- * Scrolls the right scroller explicitly (the page, or the `within` container) instead of sending
- * wheel events wherever the mouse happens to be, which could scroll a sidebar clicked earlier.
+ * Scrolls a scroller explicitly instead of sending wheel events wherever the mouse happens to be
+ * (which could scroll a sidebar clicked earlier). The scroller is the `within` container, or else
+ * the page's main scroller: the document when it scrolls, otherwise the largest visible scrollable
+ * element (app-shell layouts, where `<body>` doesn't scroll and a `<main>` pane does).
  * Smooth, human-like scrolling comes with P0-4; here it's instant and deterministic.
  */
 async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>, step: StepRef) {
   const container = action.within === undefined ? undefined : await find(ctx, action.within, step)
+  /** Scrolls by dy; returns whether anything moved and the scroller's visible height. */
   const scrollBy = (dy: number) =>
-    guard(step, async () => {
-      if (container === undefined) {
-        await ctx.page.evaluate((y) => window.scrollBy({ top: y, behavior: "instant" }), dy)
-      } else {
-        await container.evaluate((el, y) => el.scrollBy({ top: y, behavior: "instant" }), dy, {
-          timeout: ctx.timeoutMs,
-        })
+    guard(step, async (): Promise<{ moved: boolean; height: number }> => {
+      if (container !== undefined) {
+        return container.evaluate(
+          (el, y) => {
+            const before = el.scrollTop
+            el.scrollBy({ top: y, behavior: "instant" })
+            return { moved: el.scrollTop !== before, height: el.clientHeight }
+          },
+          dy,
+          { timeout: ctx.timeoutMs },
+        )
       }
+      return ctx.page.evaluate((y) => {
+        const scrolls = (el: Element) => {
+          const { overflowY } = getComputedStyle(el)
+          return /(auto|scroll|overlay)/.test(overflowY) && el.scrollHeight > el.clientHeight + 1
+        }
+        const doc = document.scrollingElement ?? document.documentElement
+        const docScrolls =
+          doc.scrollHeight > innerHeight + 1 &&
+          getComputedStyle(document.documentElement).overflowY !== "hidden" &&
+          getComputedStyle(document.body).overflowY !== "hidden"
+        let scroller: Element = doc
+        if (!docScrolls) {
+          let best = 0
+          for (const el of document.querySelectorAll("*")) {
+            if (!scrolls(el)) continue
+            const r = el.getBoundingClientRect()
+            const area =
+              Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
+              Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0))
+            if (area > best) {
+              best = area
+              scroller = el
+            }
+          }
+        }
+        const before = scroller.scrollTop
+        scroller.scrollBy({ top: y, behavior: "instant" })
+        const height = scroller === doc ? innerHeight : scroller.clientHeight
+        return { moved: scroller.scrollTop !== before, height }
+      }, dy)
     })
   if (action.to !== undefined) {
     await find(ctx, action.to, step)
@@ -310,27 +409,30 @@ async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>
     return
   }
   if (action.until !== undefined) {
-    // Scroll a "page" (80% of the scroller's height) at a time until the target is on screen.
-    const pageHeight = await guard(step, async () =>
-      container === undefined
-        ? ctx.page.evaluate(() => innerHeight)
-        : ((await container.boundingBox({ timeout: ctx.timeoutMs }))?.height ?? 400),
-    )
+    // Scroll a "page" (80% of the scroller's height) at a time until the target is on screen:
+    // towards the target when it's in the DOM but off screen (up or down), else downwards.
+    const { height } = await scrollBy(0)
+    const step80 = Math.max(40, Math.round(height * 0.8))
     const deadline = Date.now() + ctx.timeoutMs
     for (;;) {
       const left = deadline - Date.now()
       if (left <= 0) break
-      const result = await resolveTarget(ctx.page, action.until, Math.min(250, left))
-      if (
-        result.ok &&
-        (await isOnScreen(ctx.page, result.locator, Math.max(MIN_TIMEOUT_MS, left)))
-      ) {
-        return
-      }
+      const result = await guard(step, () =>
+        resolveTarget(ctx.page, action.until!, Math.min(250, left)),
+      )
       if (!result.ok && result.reason !== "target-not-found") {
         throw new StepError(step, result.reason, result.detail)
       }
-      await scrollBy(Math.max(40, Math.round(pageHeight * 0.8)))
+      let direction = 1
+      if (result.ok) {
+        if (await isOnScreen(ctx.page, result.locator, Math.max(MIN_TIMEOUT_MS, left))) return
+        const box = await result.locator
+          .boundingBox({ timeout: Math.max(MIN_TIMEOUT_MS, left) })
+          .catch(() => null)
+        if (box !== null && box.y < 0) direction = -1
+      }
+      const { moved } = await scrollBy(direction * step80)
+      if (!moved && !result.ok) break // at the end and the target never appeared
     }
     throw new StepError(
       step,
