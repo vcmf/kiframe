@@ -1,17 +1,17 @@
 import type { Page, Request } from "playwright"
 
 /**
- * Tracks in-flight requests from the moment it's attached, so "network idle" means "no request
- * in flight for a quiet period NOW", not Playwright's `networkidle` load state (which is reached
- * once after a navigation and then returns immediately, even while an SPA is fetching).
- */
-/**
  * Requests still pending after this long are treated as long-lived (long polling, hung beacons).
  * Generous on purpose: a slow API call (a report taking several seconds) must still count.
  * EventSource / WebSocket streams are ignored from the start.
  */
 const LONG_LIVED_MS = 15_000
 
+/**
+ * Tracks in-flight requests from the moment it's attached, so "network idle" means "no request
+ * in flight for a quiet period NOW", not Playwright's `networkidle` load state (which is reached
+ * once after a navigation and then returns immediately, even while an SPA is fetching).
+ */
 export class NetworkTracker {
   /** In-flight requests and when they started. EventSource / WebSocket streams are never tracked. */
   private readonly inflight = new Map<Request, number>()
@@ -20,7 +20,11 @@ export class NetworkTracker {
     if (r.resourceType() === "eventsource" || r.resourceType() === "websocket") return
     this.change(() => this.inflight.set(r, Date.now()))
   }
-  private readonly onEnd = (r: Request) => this.change(() => this.inflight.delete(r))
+  private readonly onEnd = (r: Request) => {
+    // Only requests that were tracked count: an ignored stream ending must not reset the quiet period.
+    if (!this.inflight.has(r)) return
+    this.change(() => this.inflight.delete(r))
+  }
 
   private readonly page: Page
 

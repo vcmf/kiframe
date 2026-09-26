@@ -58,6 +58,10 @@ export async function runScenario(
   project: ProjectConfig,
   options: RunOptions = {},
 ): Promise<void> {
+  // Static config errors (unknown preset, unsupported `ensure`) fail BEFORE anything runs or is
+  // attached to the page, and don't trigger teardown: nothing was created, and teardown could delete
+  // pre-existing data.
+  const setup = expandSetup(scenario.setup ?? [], project)
   const base = new URL(project.target.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
@@ -80,9 +84,6 @@ export async function runScenario(
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
-  // Static config errors (unknown preset, unsupported `ensure`) fail BEFORE anything runs, and
-  // don't trigger teardown: nothing was created, and teardown could delete pre-existing data.
-  const setup = expandSetup(scenario.setup ?? [], project)
   try {
     let failure: Error | undefined
     try {
@@ -111,7 +112,18 @@ export async function runScenario(
       }
     } catch (error) {
       if (failure === undefined) throw error
-      if (error instanceof StepError) options.onEvent?.({ kind: "teardown_failed", error })
+      const reported =
+        error instanceof StepError
+          ? error
+          : new StepError(
+              { phase: "teardown", index: 0, action: "teardown" },
+              "action-failed",
+              firstLine(error),
+              {
+                cause: error,
+              },
+            )
+      options.onEvent?.({ kind: "teardown_failed", error: reported })
     }
     if (failure !== undefined) throw failure
   } finally {
@@ -171,7 +183,7 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   }
   ctx.options.onEvent?.({ kind: "step_start", step })
   await perform(ctx, action, step)
-  if (action.action !== "pause") await settle(ctx)
+  if (action.action !== "pause") await guard(step, () => settle(ctx))
   ctx.options.onEvent?.({ kind: "step_end", step })
 }
 
@@ -264,6 +276,15 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     case "type": {
       const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
+      // A secret is never typed outside the target app (a redirect may have left it, e.g. SSO).
+      // Per-secret origin binding comes with the vault (APPROACHES §7.4).
+      if (secret !== undefined && new URL(page.url()).origin !== ctx.base.origin) {
+        throw new StepError(
+          step,
+          "off-origin",
+          `refusing to type secret "${secret}" on ${new URL(page.url()).origin}`,
+        )
+      }
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
@@ -330,7 +351,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       )
       return
     case "pause":
-      await page.waitForTimeout(action.ms)
+      await guard(step, () => page.waitForTimeout(action.ms))
       return
   }
 }
@@ -375,70 +396,132 @@ async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>
     await find(ctx, action.to, step)
     return
   }
-  // The scroller is detected once per action and reused (a full style scan per scroll is costly).
-  const scroller: Locator | ElementHandle<Element> =
-    action.within === undefined
-      ? await guard(step, async () => (await ctx.page.evaluateHandle(findMainScroller)).asElement())
-      : await find(ctx, action.within, step)
-  /** Scrolls by dy; returns whether anything moved and the scroller's visible height. */
+  const within = action.within
+  // The scroller is detected once per action and reused (a full style scan per scroll is costly),
+  // and re-detected if the app re-mounts it.
+  let handle: ElementHandle<Element> | undefined
+  const scroller = async (): Promise<Locator | ElementHandle<Element>> => {
+    if (within !== undefined) return find(ctx, within, step)
+    if (
+      handle === undefined ||
+      !(await handle.evaluate((el) => el.isConnected).catch(() => false))
+    ) {
+      await handle?.dispose().catch(() => undefined)
+      handle = (await ctx.page.evaluateHandle(findMainScroller)).asElement() ?? undefined
+      if (handle === undefined) throw new Error("no scrollable element found")
+    }
+    return handle
+  }
   const scrollInPage = (el: Element, y: number) => {
     const isDocument = el === (document.scrollingElement ?? document.documentElement)
     const before = el.scrollTop
     el.scrollBy({ top: y, behavior: "instant" })
-    return { moved: el.scrollTop !== before, height: isDocument ? innerHeight : el.clientHeight }
-  }
-  const scrollBy = (dy: number) =>
-    guard(step, () =>
-      "boundingBox" in scroller && "filter" in scroller
-        ? scroller.evaluate(scrollInPage, dy, { timeout: ctx.timeoutMs })
-        : scroller.evaluate(scrollInPage, dy),
-    )
-  if (action.by !== undefined) {
-    await scrollBy(action.by.y)
-    return
-  }
-  if (action.until !== undefined) {
-    // Scroll a "page" (80% of the scroller's height) at a time until the target is on screen:
-    // towards the target when it's in the DOM but off screen (up or down), else downwards.
-    const { height } = await scrollBy(0)
-    const step80 = Math.max(40, Math.round(height * 0.8))
-    const deadline = Date.now() + ctx.timeoutMs
-    for (;;) {
-      const left = deadline - Date.now()
-      if (left <= 0) break
-      const result = await guard(step, () =>
-        resolveTarget(ctx.page, action.until!, Math.min(250, left)),
-      )
-      if (!result.ok && result.reason !== "target-not-found") {
-        throw new StepError(step, result.reason, result.detail)
-      }
-      let direction = 1
-      if (result.ok) {
-        if (await isOnScreen(ctx.page, result.locator, Math.max(MIN_TIMEOUT_MS, left))) return
-        const box = await result.locator
-          .boundingBox({ timeout: Math.max(MIN_TIMEOUT_MS, left) })
-          .catch(() => null)
-        if (box !== null && box.y < 0) direction = -1
-      }
-      const { moved } = await scrollBy(direction * step80)
-      if (!moved) {
-        // Nothing left to scroll: the target is either absent, or present but not reachable here
-        // (covered by a sticky banner, off screen horizontally, in another scroller).
-        if (result.ok) {
-          throw new StepError(
-            step,
-            "target-not-found",
-            "target is in the page but stays off screen (covered, or in another scroller: use `within`)",
-          )
-        }
-        break
-      }
+    const rect = isDocument ? { top: 0, bottom: innerHeight } : el.getBoundingClientRect()
+    return {
+      moved: el.scrollTop !== before,
+      height: isDocument ? innerHeight : el.clientHeight,
+      contentHeight: el.scrollHeight,
+      top: rect.top,
+      bottom: rect.bottom,
     }
-    throw new StepError(
-      step,
-      "target-not-found",
-      "scrolled until the end, target never appeared on screen",
-    )
+  }
+  /** Scrolls by dy; returns whether anything moved and the scroller's visible area. */
+  const scrollBy = (dy: number) =>
+    guard(step, async () => {
+      const s = await scroller()
+      return "filter" in s
+        ? s.evaluate(scrollInPage, dy, { timeout: ctx.timeoutMs })
+        : s.evaluate(scrollInPage, dy)
+    })
+  try {
+    if (action.by !== undefined) {
+      await scrollBy(action.by.y)
+      return
+    }
+    if (action.until !== undefined) await scrollUntil(ctx, action.until, step, scrollBy)
+  } finally {
+    await handle?.dispose().catch(() => undefined)
+  }
+}
+
+/** What a scroll reports: whether it moved, and the scroller's visible area and content height. */
+interface ScrollState {
+  moved: boolean
+  height: number
+  contentHeight: number
+  top: number
+  bottom: number
+}
+
+/**
+ * Scrolls a "page" (80% of the scroller's height) at a time until the target is on screen:
+ * towards the target when it's in the DOM (up if it's above the scroller's visible area), else
+ * downwards. At the end of the content, waits for lazily loaded content once before giving up.
+ */
+async function scrollUntil(
+  ctx: Ctx,
+  until: Target,
+  step: StepRef,
+  scrollBy: (dy: number) => Promise<ScrollState>,
+) {
+  const first = await scrollBy(0)
+  const step80 = Math.max(40, Math.round(first.height * 0.8))
+  const deadline = Date.now() + ctx.timeoutMs
+  let lazyRetry = true
+  for (;;) {
+    const left = deadline - Date.now()
+    if (left <= 0) {
+      throw new StepError(
+        step,
+        "target-not-found",
+        `target not on screen after scrolling for ${ctx.timeoutMs} ms`,
+      )
+    }
+    // One polling round per page (no waiting): the scroll itself is what makes the target appear.
+    const result = await guard(step, () => resolveTarget(ctx.page, until, 0))
+    if (!result.ok && result.reason !== "target-not-found")
+      throw new StepError(step, result.reason, result.detail)
+    let direction = 1
+    if (result.ok) {
+      if (
+        await guard(step, () =>
+          isOnScreen(ctx.page, result.locator, Math.max(MIN_TIMEOUT_MS, left)),
+        )
+      )
+        return
+      const area = await scrollBy(0)
+      const box = await result.locator
+        .boundingBox({ timeout: Math.max(MIN_TIMEOUT_MS, left) })
+        .catch(() => null)
+      if (box !== null && box.y + box.height / 2 < area.top) direction = -1
+    }
+    const { moved } = await scrollBy(direction * step80)
+    if (moved) {
+      lazyRetry = true
+      continue
+    }
+    if (result.ok) {
+      throw new StepError(
+        step,
+        "target-not-found",
+        "target is in the page but stays off screen (covered, or in another scroller: use `within`)",
+      )
+    }
+    // At the end of the content: infinite lists load the next page now. Let it settle once.
+    if (!lazyRetry) {
+      throw new StepError(
+        step,
+        "target-not-found",
+        "scrolled until the end, target never appeared on screen",
+      )
+    }
+    lazyRetry = false
+    // Wait (bounded) for the content to grow: the next page of an infinite list is being loaded.
+    const { contentHeight } = await scrollBy(0)
+    const growDeadline = Date.now() + Math.min(2000, Math.max(0, deadline - Date.now()))
+    while (Date.now() < growDeadline && (await scrollBy(0)).contentHeight <= contentHeight) {
+      await ctx.page.waitForTimeout(100)
+    }
   }
 }
 
@@ -570,7 +653,7 @@ function modKey(key: string): string {
 }
 
 function toPlaywrightModifier(m: "Alt" | "Control" | "Meta" | "Shift" | "Mod") {
-  return m === "Mod" ? "ControlOrMeta" : m
+  return m === "Mod" ? ("ControlOrMeta" as const) : m
 }
 
 function toPlaywrightKeys(keys: string): string {

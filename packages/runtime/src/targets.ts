@@ -90,8 +90,9 @@ export async function resolveTarget(
       })
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
-        ambiguous ??= `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
-        continue
+        // Stop here: falling through to a fallback could act on a different element.
+        ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
+        break
       }
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       return {
@@ -142,7 +143,11 @@ export async function isOnScreen(
   return locator
     .evaluate(
       (el, [px, py]) => {
-        const hit = document.elementFromPoint(px ?? 0, py ?? 0)
+        // Hit-test in the element's own root: in shadow DOM, document.elementFromPoint returns the
+        // shadow host, never the element inside it.
+        const root = el.getRootNode()
+        const scope = root instanceof ShadowRoot || root instanceof Document ? root : document
+        const hit = scope.elementFromPoint(px ?? 0, py ?? 0)
         return hit !== null && (hit === el || el.contains(hit))
       },
       [x, y],
@@ -155,6 +160,6 @@ export async function isOnScreen(
 export function isNavigationError(error: unknown): boolean {
   return (
     error instanceof Error &&
-    /Execution context was destroyed|frame was detached/.test(error.message)
+    /execution context was destroyed|frame was detached/i.test(error.message)
   )
 }
