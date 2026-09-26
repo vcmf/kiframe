@@ -223,36 +223,55 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
   if (!approved) throw new StepError(step, "risky-not-approved", detail)
 }
 
-/** The nearest control at or above the target: a click inside a button counts as clicking it. */
-const NEAREST_CONTROL =
-  "xpath=ancestor-or-self::*[self::button or self::a[@href] or self::input[@type='submit' or @type='button' or @type='reset' or @type='image'] or @role='button' or @role='link' or @role='menuitem' or @role='menuitemradio' or @role='menuitemcheckbox' or @role='tab' or @role='option'][1]"
-
 /**
- * The accessible name of the control a click acts on, as the W3C algorithm defines it (Playwright's
- * aria snapshot: alt text, aria-labelledby, input values, hidden content and display: contents are
- * all handled). "" when the click isn't on a control (a row, a card without a link…).
+ * Everything a click's target is called, from every source, for the risky check: the rendered
+ * text of the nearest control (or of the target itself when it's no control), its aria-label,
+ * aria-labelledby, title, image alt texts and submit-input value, plus every name and text in its
+ * accessibility snapshot (parsed leniently, whatever Playwright's quoting).
  *
- * The risky check built on it is a safety net that FAILS CLOSED: a name like a link card's "Acme
- * project Delete" asks for approval (safe, and `risky: false` opts out), while a real Delete never
- * runs unapproved.
+ * The risky check built on it is a safety net that FAILS CLOSED: if ANY source contains a risky
+ * word, the click needs approval. A harmless control that merely mentions one (a row or card with a
+ * "Delete" button inside) asks for approval too, and `risky: false` on the step opts out.
  */
 async function controlName(target: Locator, timeout: number): Promise<string> {
-  const control = target.locator(NEAREST_CONTROL)
-  if ((await control.count()) === 0) return ""
-  const snapshot = await control.first().ariaSnapshot({ timeout })
-  // The control's name plus the names and texts of what it contains: the name alone can glue words
-  // together (an icon's <title> + text gives "trashDelete"). camelCase joins are split again.
-  const parts = snapshot.split("\n").flatMap((line) => {
-    const named = /^\s*- [\w-]+ "((?:[^"\\]|\\.)*)"/.exec(line)?.[1]
-    const text = /^\s*- text: (.*)$/.exec(line)?.[1]
-    return [named, text].filter((s): s is string => s !== undefined)
-  })
-  return parts
+  // Waits for the element like any action (a re-render can't make the check silently pass).
+  const rendered = await target.evaluate(
+    (t) => {
+      const CONTROLS =
+        "button, a, input, [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]"
+      const control = t.closest(CONTROLS) ?? t
+      const texts: (string | null | undefined)[] = [
+        control instanceof HTMLElement ? control.innerText : control.textContent,
+        control.textContent,
+        control.getAttribute("aria-label"),
+        control.getAttribute("title"),
+        ...(control.getAttribute("aria-labelledby") ?? "")
+          .split(/\s+/)
+          .map((id) => (id === "" ? "" : document.getElementById(id)?.textContent)),
+        ...[...control.querySelectorAll("img[alt], [aria-label], [title]"), control].map(
+          (e) => e.getAttribute("alt") ?? e.getAttribute("aria-label") ?? e.getAttribute("title"),
+        ),
+      ]
+      if (
+        control instanceof HTMLInputElement &&
+        ["submit", "button", "reset", "image"].includes(control.type.toLowerCase())
+      ) {
+        texts.push(control.value, control.alt)
+      }
+      return texts.filter((s): s is string => typeof s === "string").join(" ")
+    },
+    undefined,
+    { timeout },
+  )
+  const snapshot = await target.ariaSnapshot({ timeout }).catch(() => "")
+  const fromSnapshot = [...snapshot.matchAll(/"((?:[^"\\]|\\.)*)"|text: (.*)$/gm)].map(
+    (m) => m[1] ?? m[2] ?? "",
+  )
+  return [rendered, ...fromSnapshot]
     .map((s) => s.replace(/\\(.)/g, "$1").replace(/([a-z])([A-Z])/g, "$1 $2"))
     .join(" ")
     .replace(/\s+/g, " ")
     .trim()
-    .slice(0, 200)
 }
 
 /**
@@ -348,11 +367,12 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       if (action.risky === undefined) {
         const label = await guard(step, () => controlName(target, ctx.timeoutMs))
-        if (RISKY_LABEL.test(label)) {
+        const risky = RISKY_LABEL.exec(label)
+        if (risky !== null) {
           await requireApproval(
             ctx,
             step,
-            `"${label}" looks risky: approve it, or set \`risky: false\` if it's safe`,
+            `clicking a control that mentions "${risky[0]}" looks risky: approve it, or set \`risky: false\` if it's safe`,
           )
         }
       }
@@ -381,8 +401,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           })
         } finally {
           // Always release, even if the click failed: the recorder must never see a held cursor.
-          if (aim !== undefined)
-            ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: false })
+          // A failing callback here must not hide the click's own error.
+          try {
+            if (aim !== undefined)
+              ctx.options.onEvent?.({ kind: "cursor", step, ...aim.point, pressed: false })
+          } catch {
+            // the error of the press (or of the click) is the one reported
+          }
         }
       })
       return
@@ -855,7 +880,7 @@ async function moveCursorTo(
 
 /**
  * The click `position` for a point on screen. Playwright measures it from the element's padding
- * box (it adds the border), so the border width is subtracted: the click lands exactly on `at`.
+ * box (it adds parseInt(border width)), so the same value is subtracted: the click lands on `at`.
  */
 async function clickOffset(
   target: Locator,

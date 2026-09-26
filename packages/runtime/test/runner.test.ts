@@ -674,10 +674,13 @@ teardown:
   - { id: rm, action: click, target: { by: role, role: button, name: Remove member } }
 `)
     expect(error.reason).toBe("risky-not-approved")
-    await run(`steps:
+    // Fail closed: a row that contains a Delete button asks for approval too (risky: false opts out).
+    const row = (risky: string) => `steps:
   - { id: go, action: goto, url: /wc-form }
-  - { id: open, action: click, target: { by: role, role: row, name: Acme project Delete } }
-`)
+  - { id: open, action: click, target: { by: role, role: row, name: Acme project Delete }${risky} }
+`
+    expect((await failure(row(""))).reason).toBe("risky-not-approved")
+    await run(row(", risky: false"))
   })
 
   it("matches hash routes that carry their own query", async () => {
@@ -862,9 +865,17 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
       )
       expect(error.reason).toBe("risky-not-approved")
     }
+    // Fail closed: hidden text that mentions Delete counts too.
+    expect(
+      (
+        await failure(
+          `steps:\n  - { id: go, action: goto, url: /labels }\n  - { id: save, action: click, target: { by: css, selector: "#save" } }\n`,
+        )
+      ).reason,
+    ).toBe("risky-not-approved")
     await run(`steps:
   - { id: go, action: goto, url: /labels }
-  - { id: save, action: click, target: { by: css, selector: "#save" } }
+  - { id: save, action: click, target: { by: css, selector: "#save" }, risky: false }
   - { id: ok, action: expect, that: { text: Saved it } }
 `)
   })
@@ -940,7 +951,7 @@ teardown:
     }
     await run(`steps:
   - { id: go, action: goto, url: /labels }
-  - { id: vis, action: click, target: { by: css, selector: "#vis" } }
+  - { id: vis, action: click, target: { by: css, selector: "#vis" }, risky: false }
   - { id: ok, action: expect, that: { text: Saved vis } }
 `)
   })
@@ -952,7 +963,7 @@ teardown:
   - { id: at, action: expect, that: { url: "/labels#thumb" } }
 `
     const error = await failure(card(""))
-    expect(error.message).toMatch(/Q4 plan Delete/)
+    expect(error.message).toMatch(/mentions "Delete"/)
     await run(card(", risky: false"))
   })
 
@@ -994,5 +1005,30 @@ teardown:
       )
       expect(error.reason, id).toBe("risky-not-approved")
     }
+  })
+
+  // ─── P0-4 review round 5: every label source, failing closed ───────────────
+
+  it("fails closed on quoted names, aria-hidden content, links without href and odd input types", async () => {
+    await page.setContent(`
+      <button id="hash">Delete item #42</button>
+      <button id="colon">Delete: permanently</button>
+      <div aria-hidden="true"><button id="hidden-toolbar">Delete</button></div>
+      <a id="nohref" onclick="void 0">Delete</a>
+      <input id="upper" type="Submit" value="Delete">`)
+    for (const id of ["hash", "colon", "hidden-toolbar", "nohref", "upper"]) {
+      const error = await failure(
+        `steps:\n  - { id: c, action: click, target: { by: css, selector: "#${id}" } }\n`,
+      )
+      expect(error.reason, id).toBe("risky-not-approved")
+    }
+  })
+
+  it("doesn't truncate before looking for risky words", async () => {
+    await page.setContent(`<button id="long">${"Very long description ".repeat(20)}Send</button>`)
+    const error = await failure(
+      `steps:\n  - { id: c, action: click, target: { by: css, selector: "#long" } }\n`,
+    )
+    expect(error.reason).toBe("risky-not-approved")
   })
 })

@@ -326,7 +326,7 @@ Principles:
 
 Setup/teardown-only directives: `preset`, `ensure` (§2).
 
-A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases from the clicked control's **standard accessible name** (Delete/Remove/Send/Pay/Invite…). This detection is a safety net that **fails closed**: a harmless control whose name contains such a word (a link card "Acme project Delete") asks for approval too, and `risky: false` on the step opts out.
+A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases (Delete/Remove/Send/Pay/Invite…) from **every name the click target has**: the nearest control's rendered text (or the target's own when it's no control), aria-label / labelledby / title / alt / submit value, and every name and text in its accessibility snapshot. This detection is a safety net that **fails closed**: if any source mentions such a word, the click needs approval. A harmless target that merely mentions one (a row or a card containing a "Delete" button, hidden text) asks for approval too, and `risky: false` on the step opts out (the grounding agent sets it after checking).
 
 **Implicit behaviors (runtime, not actions):**
 - the **interrupt check** before each step (see below)
