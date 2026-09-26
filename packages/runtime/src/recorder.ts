@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import {
   CursorSample,
@@ -38,6 +39,8 @@ export interface Take {
   meta: TakeMeta
   events: TakeEvent[]
   cursor: CursorSample[]
+  /** Records that couldn't be written (also saved as warnings.json). */
+  warnings: string[]
 }
 
 /** Records a scenario into a take directory. Rethrows the runner's error after writing what was captured. */
@@ -70,6 +73,7 @@ export async function recordScenario(
 
   // ── frames ──
   const frames: { file: string; t: number }[] = []
+  const pendingWrites: Promise<void>[] = []
   let frameSize: { width: number; height: number } | undefined
   let lastFrame: Buffer | undefined
   await page.screencast.start({
@@ -79,7 +83,8 @@ export async function recordScenario(
     quality: options.quality ?? 85,
     onFrame: ({ data, timestamp }) => {
       const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
-      writeFileSync(join(framesDir, file), data)
+      // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
+      pendingWrites.push(writeFile(join(framesDir, file), data))
       frames.push({ file, t: Math.max(0, timestamp - t0) })
       frameSize ??= jpegSize(data)
       lastFrame = data
@@ -96,14 +101,24 @@ export async function recordScenario(
     phase: s.phase,
     ...(s.stepId !== undefined && { stepId: s.stepId }),
   })
-  const push = (event: unknown) => events.push(TakeEvent.parse(event))
-  const onEvent = (e: RunnerEvent) => {
+  /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
+  const warnings: string[] = []
+  const push = (event: unknown) => {
+    const parsed = TakeEvent.safeParse(event)
+    if (parsed.success) events.push(parsed.data)
+    else
+      warnings.push(
+        `dropped a ${(event as { kind?: string }).kind ?? "?"} event: ${parsed.error.issues[0]?.message ?? "invalid"}`,
+      )
+  }
+  const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
+  const handle = (e: RunnerEvent) => {
     switch (e.kind) {
       case "step_start":
         push({ ...base(e.step), kind: "step_start" })
         // Storyboard / guide shot: the frame at the start of each on-camera step.
         if (e.step.phase === "steps" && e.step.stepId !== undefined && lastFrame !== undefined) {
-          writeFileSync(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame)
+          pendingWrites.push(writeFile(join(outDir, "shots", `${e.step.stepId}.jpg`), lastFrame))
         }
         break
       case "step_end":
@@ -112,47 +127,63 @@ export async function recordScenario(
       case "navigate":
         push({ ...base(e.step), kind: "navigate", url: e.url })
         break
-      case "target":
-        lastTarget.set(keyOf(e.step), e.box)
+      case "click":
+        push({
+          ...base(e.step),
+          kind: "click",
+          point: norm(e.x, e.y),
+          rect: rect(e.box),
+          button: e.button,
+        })
         break
       case "cursor": {
-        const sample = CursorSample.parse({ t: at(), p: norm(e.x, e.y), pressed: e.pressed })
-        cursor.push(sample)
-        const box = lastTarget.get(keyOf(e.step))
-        if (e.pressed && box !== undefined) {
-          push({ ...base(e.step), kind: "click", point: sample.p, rect: rect(box), button: "left" })
-        }
+        const sample = CursorSample.safeParse({ t: at(), p: norm(e.x, e.y), pressed: e.pressed })
+        if (sample.success) cursor.push(sample.data)
         break
       }
       case "type_start":
       case "type": {
-        const box = lastTarget.get(keyOf(e.step))
-        if (box === undefined) break
         const kind = e.kind === "type_start" ? "type_start" : "type_end"
-        push({
-          ...base(e.step),
-          kind,
-          rect: rect(box),
-          ...(e.secret !== undefined && { secret: e.secret }),
-        })
-        // A field filled from the vault is sensitive: the compositor blurs it.
+        const box = e.box ?? lastTarget.get(keyOf(e.step))
+        if (box !== undefined) {
+          push({
+            ...base(e.step),
+            kind,
+            rect: rect(box),
+            ...(e.secret !== undefined && { secret: e.secret }),
+          })
+        }
+        // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
+        // whole frame is marked (fails closed: better a blurred frame than a visible secret).
         if (e.secret !== undefined && e.kind === "type_start") {
           push({
             ...base(e.step),
             kind: "sensitive",
             id: `secret:${e.secret}:${keyOf(e.step)}`,
-            rect: rect(box),
+            rect: box === undefined ? fullFrame : rect(box),
             why: "secret-field",
           })
         }
         break
       }
+      case "target":
+        lastTarget.set(keyOf(e.step), e.box)
+        break
       case "key":
         push({ ...base(e.step), kind: "key", key: e.keys })
         break
       case "target_fallback":
       case "teardown_failed":
         break
+    }
+  }
+  const onEvent = (e: RunnerEvent) => {
+    try {
+      handle(e)
+    } catch (error) {
+      warnings.push(
+        `recorder: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`,
+      )
     }
     options.onEvent?.(e)
   }
@@ -165,48 +196,59 @@ export async function recordScenario(
   }
   await page.screencast.stop().catch(() => undefined)
 
-  // ── files ──
-  const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
-  writeFileSync(
-    join(outDir, "events.jsonl"),
-    events.map((e) => JSON.stringify(e)).join("\n") + "\n",
-  )
-  writeFileSync(
-    join(outDir, "cursor.jsonl"),
-    cursor.map((c) => JSON.stringify(c)).join("\n") + "\n",
-  )
-  writeFileSync(
-    join(framesDir, "frames.jsonl"),
-    frames.map((f) => JSON.stringify(f)).join("\n") + "\n",
-  )
-  if (frames.length > 0)
-    await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
-  if (options.keepFrames !== true) rmSync(framesDir, { recursive: true, force: true })
-
-  const size = frameSize ?? viewport
-  const scenarioHash = sha256(JSON.stringify(scenario))
-  const meta = TakeMeta.parse({
-    version: 1,
-    takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
-    scenarioHash,
-    recordedAt: recordedAt.toISOString(),
-    appUrl: project.target.url,
-    ...(project.environment !== undefined && { environment: project.environment }),
-    // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
-    viewport: {
-      width: viewport.width,
-      height: viewport.height,
-      deviceScaleFactor: size.width / viewport.width,
-    },
-    frameSize: size,
-    fps: frames.length > 1 ? Math.round((frames.length - 1) / (Math.max(1, durationMs) / 1000)) : 0,
-    durationMs,
-    kiframeVersion: options.kiframeVersion ?? "0.0.0",
-  })
-  writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
-
+  // ── files ── (the runner's failure, if any, is the error that's thrown; raw frames never stay)
+  let meta: TakeMeta | undefined
+  let fileError: Error | undefined
+  try {
+    await Promise.all(pendingWrites)
+    const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
+    writeFileSync(
+      join(outDir, "events.jsonl"),
+      events.map((e) => JSON.stringify(e)).join("\n") + "\n",
+    )
+    writeFileSync(
+      join(outDir, "cursor.jsonl"),
+      cursor.map((c) => JSON.stringify(c)).join("\n") + "\n",
+    )
+    if (frames.length > 0)
+      await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
+    const size = frameSize ?? viewport
+    const scenarioHash = sha256(JSON.stringify(scenario))
+    meta = TakeMeta.parse({
+      version: 1,
+      takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
+      scenarioHash,
+      recordedAt: recordedAt.toISOString(),
+      appUrl: project.target.url,
+      ...(project.environment !== undefined && { environment: project.environment }),
+      // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
+      viewport: {
+        width: viewport.width,
+        height: viewport.height,
+        deviceScaleFactor: size.width / viewport.width,
+      },
+      frameSize: size,
+      // Average capture rate; at least 1 (a static page sends few frames).
+      fps: Math.max(
+        1,
+        frames.length > 1 ? Math.round((frames.length - 1) / (Math.max(1, durationMs) / 1000)) : 1,
+      ),
+      durationMs,
+      kiframeVersion: options.kiframeVersion ?? "0.0.0",
+    })
+    writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
+    if (warnings.length > 0)
+      writeFileSync(join(outDir, "warnings.json"), JSON.stringify(warnings, null, 2) + "\n")
+  } catch (error) {
+    fileError = error instanceof Error ? error : new Error(String(error))
+  } finally {
+    // Raw frames are unblurred: they never stay on disk unless asked for (debugging).
+    if (options.keepFrames !== true) rmSync(framesDir, { recursive: true, force: true })
+  }
   if (failure !== undefined) throw failure
-  return { dir: outDir, meta, events, cursor }
+  if (fileError !== undefined || meta === undefined)
+    throw fileError ?? new Error("take metadata missing")
+  return { dir: outDir, meta, events, cursor, warnings }
 }
 
 /**
@@ -219,9 +261,12 @@ async function encodeFrames(
   durationMs: number,
   out: string,
 ): Promise<void> {
+  // Video time = take time: the first frame is shown from t = 0 (the capture starts slightly
+  // before the first frame arrives), so events and frames line up exactly.
   const lines = frames.flatMap((f, i) => {
+    const start = i === 0 ? 0 : f.t
     const next = frames[i + 1]?.t ?? Math.max(durationMs, f.t + 1000 / 60)
-    return [`file '${f.file}'`, `duration ${((next - f.t) / 1000).toFixed(6)}`]
+    return [`file '${f.file}'`, `duration ${((next - start) / 1000).toFixed(6)}`]
   })
   // The concat demuxer needs the last file repeated for its duration to apply.
   lines.push(`file '${frames.at(-1)!.file}'`)
