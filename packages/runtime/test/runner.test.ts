@@ -707,4 +707,14 @@ steps:
     )
     expect(error.message).toMatch(/^steps\[0\] \(a, pause\): listener broke/)
   })
+
+  // ─── Review round 8 (P0-3, cheap fixes before merge) ───────────────────────
+
+  it("treats a click on the text inside a Delete button as risky", async () => {
+    const error = await failure(`steps:
+  - { id: go, action: goto, url: /wc-form }
+  - { id: del, action: click, target: { by: css, selector: "button > span" } }
+`)
+    expect(error.reason).toBe("risky-not-approved")
+  })
 })

@@ -70,9 +70,17 @@ export async function runScenario(
   // Every main-frame navigation is reported (goto, redirects, links clicked…), attributed to the
   // step running at that moment.
   let current: StepRef | undefined
+  let listenerError: StepError | undefined
   const onNavigated = (frame: Frame) => {
     if (frame === page.mainFrame() && current !== undefined) {
-      options.onEvent?.({ kind: "navigate", step: current, url: frame.url() })
+      try {
+        options.onEvent?.({ kind: "navigate", step: current, url: frame.url() })
+      } catch (error) {
+        // Thrown inside Playwright's event dispatch: keep it and fail the step afterwards.
+        listenerError ??= new StepError(current, "action-failed", firstLine(error), {
+          cause: error,
+        })
+      }
     }
   }
   page.on("framenavigated", onNavigated)
@@ -121,6 +129,7 @@ export async function runScenario(
       }
     }
     if (failure !== undefined) throw failure
+    if (listenerError !== undefined) throw listenerError
   } finally {
     network.dispose()
     page.off("framenavigated", onNavigated)
@@ -190,7 +199,12 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
  * submit-like inputs count, so clicking a row or card that merely CONTAINS a "Delete" button isn't
  * mistaken for a delete. Empty string for anything else.
  */
-function controlLabel(el: Element): string {
+function controlLabel(target: Element): string {
+  // A click resolved to the text or icon INSIDE a button counts as clicking the button.
+  const el =
+    target.closest(
+      "button, a, input[type=submit], input[type=button], input[type=reset], input[type=image], [role=button], [role=link], [role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=tab], [role=option]",
+    ) ?? target
   const role = el.getAttribute("role")
   const isInput =
     el instanceof HTMLInputElement && ["submit", "button", "reset", "image"].includes(el.type)
@@ -369,12 +383,9 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         if (action.instant === true || secret !== undefined) {
           await page.keyboard.insertText(text)
         } else {
-          // Playwright's timeout covers the whole typing: give it the keystroke time on top.
-          const typing = text.length * TYPING_DELAY_MS
-          await target.pressSequentially(text, {
-            delay: TYPING_DELAY_MS,
-            timeout: timeout + typing,
-          })
+          // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
+          // caret to the start when the window doesn't have OS focus (headed, Electron).
+          await page.keyboard.type(text, { delay: TYPING_DELAY_MS })
         }
         if (action.submit === true) await target.press("Enter", { timeout })
       })
@@ -530,6 +541,7 @@ async function scrollUntil(
   let lazyRetry = true
   let lastDirection = 0
   let reversals = 0
+  let reportedFallback = false
   for (;;) {
     const left = deadline - Date.now()
     if (left <= 0) {
@@ -541,6 +553,10 @@ async function scrollUntil(
     }
     // One polling round per page (no waiting): the scroll itself is what makes the target appear.
     const result = await guard(step, () => resolveTarget(ctx.page, until, 0))
+    if (result.ok && result.fallbackIndex !== undefined && !reportedFallback) {
+      reportedFallback = true
+      ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
+    }
     if (!result.ok && result.reason !== "target-not-found")
       throw new StepError(step, result.reason, result.detail)
     let direction = 1

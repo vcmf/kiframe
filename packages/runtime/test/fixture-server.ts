@@ -8,6 +8,7 @@ const pages: Record<string, string> = {
     <form onsubmit="event.preventDefault(); document.getElementById('s').textContent='Removed'">
       <input type="submit" value="Remove member"></form>
     <table><tr role="row"><td>Acme project</td><td><button>Delete</button></td></tr></table>
+    <button onclick="document.getElementById('s').textContent='Archived'"><span>Delete</span> draft</button>
     <p id="s"></p>
     <script>
       customElements.define("my-field", class extends HTMLElement {
