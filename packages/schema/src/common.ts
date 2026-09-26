@@ -52,6 +52,12 @@ export const Ms = z.number().int().nonnegative()
 export type Ms = z.infer<typeof Ms>
 
 /** Reference to a vault secret by name, e.g. `{{secrets.acme_staging.password}}`. The value never appears in files. */
+/** A secret NAME, e.g. `acme_staging.password`: dotted segments of letters, digits, `_` and `-`. */
+export const SecretName = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/, "must be a secret name, never a secret value")
+export type SecretName = z.infer<typeof SecretName>
+
 export const SECRET_REF = /^\{\{secrets\.([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)\}\}$/
 
 /** Anything that looks like an attempt at a secret reference: `{{secret…`, any case, any spacing. */

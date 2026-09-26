@@ -1,5 +1,13 @@
 import * as z from "zod"
-import { claimIds, isMalformedSecretRef, Ms, PlainText, RectTuple, StepId } from "./common.ts"
+import {
+  claimIds,
+  isMalformedSecretRef,
+  Ms,
+  PlainText,
+  RectTuple,
+  secretRefName,
+  StepId,
+} from "./common.ts"
 import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from "./settings.ts"
 
 // ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
@@ -83,7 +91,6 @@ export type Condition = z.infer<typeof Condition>
 const frameTarget = z.union([z.literal("target"), Locator, z.strictObject({ rect: RectTuple })])
 const scale = z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max).optional()
 
-/** Camera default for a project or a scene: no `until` (it only makes sense on a step). */
 /**
  * Camera default for a project or a scene. No `until` (it only makes sense on a step), and no
  * `target` (many steps have none: framing the target is a per-step choice, `auto` covers the rest).
@@ -130,17 +137,20 @@ const presentation = {
 // ─── Actions (Phase 0 subset; full set in M1-1) ───────────────────────────────
 
 /** True if `url` is absolute and embeds credentials (`https://user:pass@host`). Relative URLs can't. */
+/** Parses `url` relative to a dummy base (so relative and protocol-relative URLs work), or null. */
+function parseUrl(url: string): URL | null {
+  return URL.parse(url, "http://base.invalid")
+}
+
+/** True if `url` embeds credentials (`https://user:pass@host`, also protocol-relative `//u:p@host`). */
 export function hasUrlCredentials(url: string): boolean {
-  // Resolve against a dummy base so protocol-relative URLs (`//user:pass@host`) are checked too.
-  if (!URL.canParse(url, "http://base.invalid")) return false
-  const parsed = new URL(url, "http://base.invalid")
-  return parsed.username !== "" || parsed.password !== ""
+  const parsed = parseUrl(url)
+  return parsed !== null && (parsed.username !== "" || parsed.password !== "")
 }
 
 /** A `goto` URL: relative to the environment, or absolute http(s). Never javascript:, file:, data:… */
 export function isNavigableUrl(url: string): boolean {
-  if (!URL.canParse(url, "http://base.invalid")) return false
-  const { protocol } = new URL(url, "http://base.invalid")
+  const protocol = parseUrl(url)?.protocol
   return protocol === "http:" || protocol === "https:"
 }
 
@@ -305,6 +315,21 @@ export const Scenario = z
           code: "custom",
           message: `"${step.action}" has no target to frame or emphasize: use a locator instead of "target"`,
           path: ["steps", i],
+        })
+      }
+    })
+
+    // A step that types a secret must never show its keys in the keystroke overlay.
+    s.steps.forEach((step, i) => {
+      if (
+        step.action === "type" &&
+        secretRefName(step.value) !== undefined &&
+        step.keystrokes === "show"
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: "a step typing a secret can't show keystrokes",
+          path: ["steps", i, "keystrokes"],
         })
       }
     })

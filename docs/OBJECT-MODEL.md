@@ -418,21 +418,23 @@ One replay of a scene produces a **take** in the take store (§0.6):
 ```
 
 ```ts
-// All coordinates normalized 0..1 relative to the viewport, so they're resolution independent.
-type NRect  = { x: number; y: number; w: number; h: number };
-type NPoint = { x: number; y: number };
+// Coordinates are normalized to the viewport (0..1 = on screen), so they're resolution independent.
+// Observed element rects are NOT clipped: an element can be partly off screen or zero-size, and a
+// half-hidden secret field must still be masked. The renderer clips to the frame.
+type ViewportRect = { x: number; y: number; w: number; h: number };  // w, h >= 0, any x/y
+type NPoint = { x: number; y: number };                              // 0..1 (the pointer is on screen)
 
 type TakeEvent = { t: number; stepId: string } & (   // t = ms from the first frame (screencast timestamps)
   | { kind: "step_start" | "step_end" }
-  | { kind: "click"; point: NPoint; rect: NRect; button: "left" | "right" }
-  | { kind: "type_start" | "type_end"; rect: NRect; secret?: string }  // secret NAME only
+  | { kind: "click"; point: NPoint; rect: ViewportRect; button: "left" | "right" }
+  | { kind: "type_start" | "type_end"; rect: ViewportRect; secret?: string }  // secret NAME only
   | { kind: "key"; key: string }                                       // for keystroke overlays
-  | { kind: "scroll"; delta: NPoint }
+  | { kind: "scroll"; delta: { x: number; y: number } }                // normalized, unbounded
   | { kind: "navigate"; url: string }                                  // URL passed through the secret scrubber
   | { kind: "settled" }                                                // network idle + DOM stable
-  | { kind: "frame_target"; ref: string; rect: NRect }                 // rects for `camera.frame` / `emphasis` locators
-  | { kind: "sensitive"; id: string; rect: NRect; why: "secret-field" | "secret-text" | "redaction" }  // re-logged when it moves
-  | { kind: "interrupt"; rule: string; until: number }                 // span to cut (§2b)
+  | { kind: "frame_target"; ref: string; rect: ViewportRect }                 // rects for `camera.frame` / `emphasis` locators
+  | { kind: "sensitive"; id: string; rect: ViewportRect; why: "secret-field" | "secret-text" | "redaction" }  // re-logged when it moves
+  | { kind: "interrupt"; rule: string; until: number }                 // span to cut (§2b); rule = InterruptRule.id
 );
 
 type CursorSample = { t: number; p: NPoint; pressed: boolean; css?: string };  // css = computed `cursor` style (I-beam, pointer…)

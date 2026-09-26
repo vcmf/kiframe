@@ -3,6 +3,7 @@ import {
   checkScenarioAgainstProject,
   Composition,
   NRect,
+  ProjectConfig,
   parseProjectYaml,
   parseScenarioYaml,
   RectTuple,
@@ -191,10 +192,10 @@ describe("round 2: overrides don't re-fill defaults", () => {
 })
 
 describe("round 2: preset names and ids", () => {
-  it("doesn't treat prototype keys as existing presets", () => {
-    const p = parseProjectYaml(project())
-    const s = parseScenarioYaml(`version: 1\nsetup:\n  - preset: constructor\n${steps}`)
-    expect(checkScenarioAgainstProject(s, p)).toEqual(['setup uses unknown preset "constructor"'])
+  it("rejects prototype keys as preset references", () => {
+    expect(() =>
+      parseScenarioYaml(`version: 1\nsetup:\n  - preset: constructor\n${steps}`),
+    ).toThrow(/reserved name/)
   })
 
   it("rejects __proto__ as a preset name and duplicate ids inside a preset", () => {
@@ -513,5 +514,83 @@ describe("round 4: secret references in the remaining author strings", () => {
         until: 1,
       }).success,
     ).toBe(false)
+  })
+})
+
+// ─── Round 5 ─────────────────────────────────────────────────────────────────
+
+describe("round 5: anchors with offsets on different edges need a take", () => {
+  const caption = (at: object, until: object) => ({
+    version: 1,
+    tracks: { captions: [{ id: "c", source: "manual", text: "Hi", at, until }] },
+  })
+
+  it("accepts spans whose order depends on the step duration", () => {
+    expect(
+      Composition.safeParse(
+        caption({ step: "s", edge: "end" }, { step: "s", edge: "start", offsetMs: 5000 }),
+      ).success,
+    ).toBe(true)
+    expect(
+      Composition.safeParse(caption({ scene: "end" }, { scene: "start", offsetMs: 5000 })).success,
+    ).toBe(true)
+  })
+
+  it("compares absolute times with the scene start", () => {
+    expect(Composition.safeParse(caption({ ms: 5000 }, { scene: "start" })).success).toBe(false)
+    expect(Composition.safeParse(caption({ scene: "start" }, { ms: 5000 })).success).toBe(true)
+  })
+})
+
+describe("round 5: ids from repeated presets and interrupt actions", () => {
+  it("reports a preset with step ids used twice", () => {
+    const p = parseProjectYaml(
+      project("presets:\n  login:\n    steps: [{ id: login-go, action: goto, url: /login }]\n"),
+    )
+    const s = parseScenarioYaml(
+      `version: 1\nsetup:\n  - preset: login\n  - preset: login\n${steps}`,
+    )
+    expect(checkScenarioAgainstProject(s, p)).toEqual([
+      'preset "login" is used twice and has step ids',
+    ])
+  })
+
+  it("rejects ids on interrupt actions", () => {
+    expect(() =>
+      parseProjectYaml(
+        project(
+          "interrupts:\n  - id: r\n    when: { text: Hi }\n    do: { id: s1, action: press, keys: Escape }\n",
+        ),
+      ),
+    ).toThrow(/can't have an id/)
+  })
+})
+
+describe("round 5: secrets", () => {
+  it("rejects keystrokes: show on a step typing a secret", () => {
+    const yaml = `version: 1\nsteps:\n  - id: pw\n    action: type\n    target: { intent: "password" }\n    value: "{{secrets.acme.password}}"\n    keystrokes: show\n`
+    expect(() => parseScenarioYaml(yaml)).toThrow(/can't show keystrokes/)
+  })
+
+  it("only accepts secret names (not values) in take events", () => {
+    const e = {
+      t: 0,
+      phase: "steps",
+      stepId: "pw",
+      kind: "type_start",
+      rect: { x: 0, y: 0, w: 0.1, h: 0.1 },
+    }
+    expect(TakeEvent.safeParse({ ...e, secret: "acme_staging.password" }).success).toBe(true)
+    expect(TakeEvent.safeParse({ ...e, secret: "hunter2 !" }).success).toBe(false)
+  })
+
+  it("rejects reserved names even outside the YAML loader", () => {
+    const config = parseProjectYaml(project())
+    expect(() =>
+      ProjectConfig.parse({
+        ...config,
+        presets: { constructor: { steps: [{ action: "goto", url: "/x" }] } },
+      }),
+    ).toThrow()
   })
 })

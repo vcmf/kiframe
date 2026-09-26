@@ -39,3 +39,6 @@ export const CAMERA_SCALE = { min: 1, max: 4 } as const
 export const RuleName = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]*$/, "names must start with a-z or 0-9 and use a-z, 0-9, - or _")
+  .refine((name) => !["constructor", "prototype"].includes(name), {
+    message: "reserved name (it clashes with JavaScript object keys)",
+  })

@@ -18,17 +18,34 @@ export const Anchor = z.union([
 export type Anchor = z.infer<typeof Anchor>
 
 /**
- * Orders two anchors when that's possible without a take: both absolute, both scene edges, or both
- * on the same step/event. Returns a negative number if `a` is before `b`, 0 if equal, positive if
- * after, and undefined when only a take can tell.
+ * Orders two anchors when that's possible without a take. Returns a negative number if `a` is
+ * before `b`, 0 if equal, positive if after, and undefined when only a take can tell.
+ *
+ * Two anchors on the same edge (same step edge, same scene edge, same event) differ only by their
+ * offsets. Anchors on different edges of the same step/scene can only be ordered without offsets
+ * (a step's start is never after its end); with offsets, the duration decides, which needs a take.
+ * `{ scene: "start" }` is source time 0, so it also compares with absolute `{ ms }` anchors.
  */
 export function compareStaticAnchors(a: Anchor, b: Anchor): number | undefined {
   const edge = (e: "start" | "end") => (e === "start" ? 0 : 1)
   const offset = (x: { offsetMs?: number | undefined }) => x.offsetMs ?? 0
-  if ("ms" in a && "ms" in b) return a.ms - b.ms
-  if ("scene" in a && "scene" in b) return edge(a.scene) - edge(b.scene) || offset(a) - offset(b)
+  const sameEdgeOrUnknown = (edgeA: number, edgeB: number, offA: number, offB: number) => {
+    if (edgeA === edgeB) return offA - offB
+    return offA === 0 && offB === 0 ? edgeA - edgeB : undefined
+  }
+  const absolute = (x: Anchor): number | undefined => {
+    if ("ms" in x) return x.ms
+    if ("scene" in x && x.scene === "start") return offset(x)
+    return undefined
+  }
+  const absA = absolute(a)
+  const absB = absolute(b)
+  if (absA !== undefined && absB !== undefined) return absA - absB
+  if ("scene" in a && "scene" in b) {
+    return sameEdgeOrUnknown(edge(a.scene), edge(b.scene), offset(a), offset(b))
+  }
   if ("step" in a && "step" in b && a.step === b.step) {
-    return edge(a.edge) - edge(b.edge) || offset(a) - offset(b)
+    return sameEdgeOrUnknown(edge(a.edge), edge(b.edge), offset(a), offset(b))
   }
   if ("event" in a && "event" in b && a.event === b.event) return offset(a) - offset(b)
   return undefined
