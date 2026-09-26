@@ -826,38 +826,104 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
   it("releases the cursor even when the click fails", async () => {
     const events: RunnerEvent[] = []
     await page.goto(`${server.url}/moving`)
+    // Cover the button before the step: the box exists (the cursor travels), the click can't land.
+    await page.evaluate(() =>
+      document.body.insertAdjacentHTML(
+        "beforeend",
+        "<div style='position:fixed; inset:0; z-index:9'></div>",
+      ),
+    )
+    await expect(
+      runScenario(
+        page,
+        scenario(
+          `steps:\n  - { id: hit, action: click, target: { by: role, role: button, name: Moving target } }\n`,
+        ),
+        humanProject(),
+        { timeoutMs: 1000, onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow()
+    const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
+    expect(pressed.filter(Boolean)).toHaveLength(1)
+    expect(pressed.at(-1)).toBe(false)
+  })
+
+  // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────
+
+  it("labels controls from their visible text, wrappers from what they wrap", async () => {
+    for (const target of [
+      "{ by: role, role: menuitem, name: Delete }",
+      "{ by: css, selector: '#trash' }",
+    ]) {
+      const error = await failure(
+        `steps:\n  - { id: go, action: goto, url: /labels }\n  - { id: c, action: click, target: ${target} }\n`,
+      )
+      expect(error.reason).toBe("risky-not-approved")
+    }
+    await run(`steps:
+  - { id: go, action: goto, url: /labels }
+  - { id: save, action: click, target: { by: css, selector: "#save" } }
+  - { id: ok, action: expect, that: { text: Saved it } }
+`)
+  })
+
+  it("clicks where the cursor pressed on a board scrolled past its top", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /tall }
+  - { id: down, action: scroll, by: { y: 900 } }
+  - { id: board, action: click, target: { by: role, role: region, name: Board } }
+`),
+      humanProject(),
+      { timeoutMs: 3000, onEvent: (e) => events.push(e) },
+    )
+    const press = events.find((e) => e.kind === "cursor" && e.pressed)
+    const clicked = Number((await page.getByText(/^Board \d+/).textContent())?.split(" ")[1])
+    expect(press?.kind === "cursor" && Math.abs(press.y - clicked) < 2).toBe(true)
+  })
+
+  it("reports one press/release pair per click of a double click", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
+      page,
+      scenario(`steps:
+  - { id: go, action: goto, url: /projects }
+  - { id: dbl, action: click, count: 2, target: { by: role, role: button, name: New project } }
+`),
+      humanProject(),
+      { onEvent: (e) => events.push(e) },
+    )
+    const pressed = events.flatMap((e) =>
+      e.kind === "cursor" && e.step.stepId === "dbl" ? [e.pressed] : [],
+    )
+    const transitions = pressed.filter((p, i) => i > 0 && p !== pressed[i - 1])
+    expect(transitions).toEqual([true, false, true, false])
+  })
+
+  it("finishes teardown after a step failed with a pending listener error", async () => {
+    const events: RunnerEvent[] = []
     await expect(
       runScenario(
         page,
         scenario(`steps:
-  - { id: hit, action: click, target: { by: role, role: button, name: Moving target } }
+  - { id: go, action: goto, url: /projects }
+  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }
+teardown:
+  - { id: t1, action: pause, ms: 1 }
+  - { id: t2, action: pause, ms: 1 }
 `),
-        humanProject(),
+        project,
         {
-          timeoutMs: 1500,
+          timeoutMs: 300,
           onEvent: (e) => {
             events.push(e)
-            // Make the click fail after the cursor arrived: cover the button.
-            if (e.kind === "cursor" && e.pressed) {
-              void page.evaluate(() =>
-                document.body.insertAdjacentHTML(
-                  "beforeend",
-                  "<div style='position:fixed; inset:0; z-index:9'></div>",
-                ),
-              )
-            }
+            if (e.kind === "navigate") throw new Error("recorder closed")
           },
         },
       ),
     ).rejects.toThrow()
-    const presses = events.filter((e) => e.kind === "cursor" && e.pressed).length
-    const releases = events.filter(
-      (e, i) =>
-        e.kind === "cursor" &&
-        !e.pressed &&
-        events.slice(0, i).some((p) => p.kind === "cursor" && p.pressed),
-    ).length
-    expect(presses).toBeGreaterThan(0)
-    expect(releases).toBeGreaterThanOrEqual(1)
+    expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "t2")).toBe(true)
   })
 })
