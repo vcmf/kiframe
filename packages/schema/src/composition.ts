@@ -133,7 +133,7 @@ export type CalloutSegment = z.infer<typeof CalloutSegment>
 export const KeystrokeSegment = z.strictObject({ ...segmentBase, keys: z.string().min(1) })
 export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 
-const CompositionBase = z
+export const CompositionBase = z
   .strictObject({
     version: z.literal(1),
     /** The take the auto segments were generated from. */

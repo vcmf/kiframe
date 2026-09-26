@@ -311,7 +311,7 @@ Principles:
 ### App actions (v0)
 | Action | Key params | Notes |
 |---|---|---|
-| `goto` | `url` | Relative to the environment's URL |
+| `goto` | `url` | **Relative** to the environment's URL (absolute and `//host` URLs are rejected, so a scene never leaves the target app) |
 | `click` | `target`, `button?`, `count?` (2 = double-click), `modifiers?` | Also covers checkboxes, custom menus and dropdowns |
 | `hover` | `target`, `hold?` | Shows tooltips and menus |
 | `type` | `target`, `value`, `clear?`, `submit?` (Enter at the end), `instant?` (off camera) | Human typing by default. `value` can be `{{secrets.x}}` |

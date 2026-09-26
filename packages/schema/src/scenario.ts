@@ -2,7 +2,7 @@ import * as z from "zod"
 import {
   claimIds,
   CssSelector,
-  isNavigableUrl,
+  isRelativeUrl,
   Ms,
   RectTuple,
   secretRefName,
@@ -140,11 +140,12 @@ const presentation = {
 
 const Goto = z.strictObject({
   action: z.literal("goto"),
-  url: z
-    .string()
-    .min(1)
-    .refine(isNavigableUrl, { message: "goto URL must be relative or http(s)" })
-    .pipe(withoutCredentials(z.string())),
+  /** Relative to the environment's URL: `goto` never leaves the target app. */
+  url: withoutCredentials(
+    z.string().min(1).refine(isRelativeUrl, {
+      message: "goto URL must be relative to the environment (e.g. `/projects`)",
+    }),
+  ),
 })
 const Click = z.strictObject({
   action: z.literal("click"),
@@ -275,7 +276,7 @@ function cameraUntil(step: Step): string | undefined {
   return typeof step.camera === "object" && "until" in step.camera ? step.camera.until : undefined
 }
 
-const ScenarioBase = z
+export const ScenarioBase = z
   .strictObject({
     version: z.literal(1),
     overrides: ScenarioOverrides.optional(),
@@ -332,7 +333,11 @@ const ScenarioBase = z
     })
   })
 /** A scene's scenario, with whole-document guards (forbidden keys, secret references). */
-export const Scenario = guarded(ScenarioBase)
+export const Scenario = guarded(ScenarioBase, [
+  ["setup", "#", "value"],
+  ["steps", "#", "value"],
+  ["teardown", "#", "value"],
+])
 export type Scenario = z.infer<typeof ScenarioBase>
 
 /** Names of the presets a scenario uses (checked against the project by `checkScenarioAgainstProject`). */

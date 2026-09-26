@@ -7,6 +7,7 @@ import {
   parseProjectYaml,
   parseScenarioYaml,
   RectTuple,
+  Scenario,
   SchemaError,
   TakeEvent,
   TakeMeta,
@@ -412,7 +413,7 @@ describe("round 4: goto URLs", () => {
   it.each(["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi"])(
     "rejects %s",
     (url) => {
-      expect(() => parseScenarioYaml(goto(url))).toThrow(/relative or http/)
+      expect(() => parseScenarioYaml(goto(url))).toThrow(/relative to the environment/)
     },
   )
 
@@ -420,8 +421,11 @@ describe("round 4: goto URLs", () => {
     expect(() => parseScenarioYaml(goto("//user:pass@staging.acme.com/app"))).toThrow(/credentials/)
   })
 
-  it("accepts relative and absolute http(s) URLs", () => {
-    for (const url of ["/projects", "projects?tab=1", "https://staging.acme.com/x"]) {
+  it("accepts relative URLs only", () => {
+    expect(() => parseScenarioYaml(goto("https://staging.acme.com/x"))).toThrow(
+      /relative to the environment/,
+    )
+    for (const url of ["/projects", "projects?tab=1", "?tab=2"]) {
       expect(parseScenarioYaml(goto(url)).steps).toHaveLength(1)
     }
   })
@@ -458,7 +462,7 @@ describe("round 4: ids across presets", () => {
           "presets:\n  p:\n    steps:\n      - { id: x, action: goto, url: /x }\n      - { id: x, action: goto, url: /y }\n",
         ),
       ),
-    ).toThrow(/already used in 0\)/)
+    ).toThrow(/already used in presets\.p\.steps\.0\)/)
   })
 })
 
@@ -749,5 +753,81 @@ describe("round 7: URLs and timestamps", () => {
     expect(
       TakeEvent.safeParse({ t: 1.5, phase: "steps", stepId: "a", kind: "settled" }).success,
     ).toBe(true)
+  })
+})
+
+// ─── Round 8 ─────────────────────────────────────────────────────────────────
+
+describe("round 8: malformed documents", () => {
+  it("reports a self-referencing YAML alias instead of overflowing the stack", () => {
+    expect(() =>
+      parseScenarioYaml("version: 1\nsteps: &s [{action: press, id: a, keys: a, x: *s}]\n"),
+    ).toThrow(/cycle/)
+  })
+
+  it("reports documents nested too deeply", () => {
+    const deep = "x: " + "[".repeat(100) + "]".repeat(100) + "\nversion: 1\n" + steps
+    expect(() => parseScenarioYaml(deep)).toThrow(/nested too deeply/)
+  })
+
+  it("keeps zod's own issue codes", () => {
+    const r = Scenario.safeParse({
+      version: 1,
+      steps: [{ id: "a", action: "pause", ms: 1, bogus: 1 }],
+    })
+    expect(r.success).toBe(false)
+    expect(r.error?.issues.some((i) => i.code === "unrecognized_keys")).toBe(true)
+  })
+})
+
+describe("round 8: URLs", () => {
+  it("catches credentials hidden behind a scheme without slashes", () => {
+    const yaml = `version: 1\nsteps:\n  - { id: w, action: waitFor, until: { url: "http:u:p@evil.com/x" } }\n`
+    expect(() => parseScenarioYaml(yaml)).toThrow(/credentials/)
+  })
+
+  it("keeps goto inside the target app", () => {
+    const yaml = (url: string) =>
+      `version: 1\nsteps:\n  - { id: g, action: goto, url: ${JSON.stringify(url)} }\n`
+    for (const url of ["//evil.com/login", "\\\\evil.com", "http:evil.com"]) {
+      expect(() => parseScenarioYaml(yaml(url))).toThrow(SchemaError)
+    }
+  })
+})
+
+describe("round 8: secret slots are matched from the root", () => {
+  it("rejects slot-shaped paths nested inside style", () => {
+    const style = {
+      steps: [{ action: "type", value: "{{secrets.x}}" }],
+      interrupts: [{ do: { action: "type", value: "{{secrets.x}}" } }],
+    }
+    expect(Composition.safeParse({ version: 1, tracks: {}, style }).success).toBe(false)
+  })
+})
+
+describe("round 8: CSS selectors can't escape their rule", () => {
+  it.each(["#x /*", "*/ body", "</style><script>alert(1)</script>", 'a[title="x]'])(
+    "rejects %j",
+    (sel) => {
+      expect(() => parseProjectYaml(project(`hide: [${JSON.stringify(sel)}]\n`))).toThrow(
+        /single CSS selector/,
+      )
+    },
+  )
+
+  it("accepts ordinary selectors with combinators and quoted attributes", () => {
+    const p = parseProjectYaml(
+      project(`hide: ["ul > li.item", 'a[title="Help"]', "#chat-widget"]\n`),
+    )
+    expect(p.hide).toHaveLength(3)
+  })
+})
+
+describe("round 8: duplicate interrupt ids say where", () => {
+  it("names the interrupts list", () => {
+    const rule = "  - id: r\n    when: { text: Hi }\n    do: { action: press, keys: Escape }\n"
+    expect(() => parseProjectYaml(project(`interrupts:\n${rule}${rule}`))).toThrow(
+      /already used in interrupts\.0/,
+    )
   })
 })

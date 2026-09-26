@@ -19,10 +19,7 @@ export type TargetApp = z.infer<typeof TargetApp>
 export const Preset = z.strictObject({
   /** Run once per recording batch, then reuse its browser session (login presets). */
   session: z.boolean().default(false),
-  steps: z
-    .array(z.union([Ensure, Action]))
-    .min(1)
-    .superRefine((steps, ctx) => void claimIds(steps, [], ctx)),
+  steps: z.array(z.union([Ensure, Action])).min(1),
 })
 export type Preset = z.infer<typeof Preset>
 
@@ -38,32 +35,41 @@ export const InterruptRule = z.strictObject({
 })
 export type InterruptRule = z.infer<typeof InterruptRule>
 
-const ProjectConfigBase = z.strictObject({
-  version: z.literal(1),
-  environment: RuleName.optional(),
-  target: TargetApp,
-  defaults: z
-    .strictObject({
-      pacing: Pacing.prefault({}),
-      camera: CameraDefault.default("auto"),
-    })
-    .prefault({}),
-  presets: z.record(RuleName, Preset).default({}),
-  interrupts: z
-    .array(InterruptRule)
-    .default([])
-    .superRefine((rules, ctx) => void claimIds(rules, [], ctx)),
-  /** CSS selectors hidden from the frame (display: none). */
-  hide: z.array(CssSelector).default([]),
-  redaction: z
-    .strictObject({
-      selectors: z.array(CssSelector).default([]),
-      secrets: z.literal("auto").default("auto"),
-    })
-    .prefault({}),
-})
+export const ProjectConfigBase = z
+  .strictObject({
+    version: z.literal(1),
+    environment: RuleName.optional(),
+    target: TargetApp,
+    defaults: z
+      .strictObject({
+        pacing: Pacing.prefault({}),
+        camera: CameraDefault.default("auto"),
+      })
+      .prefault({}),
+    presets: z.record(RuleName, Preset).default({}),
+    interrupts: z.array(InterruptRule).default([]),
+    /** CSS selectors hidden from the frame (display: none). */
+    hide: z.array(CssSelector).default([]),
+    redaction: z
+      .strictObject({
+        selectors: z.array(CssSelector).default([]),
+        secrets: z.literal("auto").default("auto"),
+      })
+      .prefault({}),
+  })
+  .superRefine((p, ctx) => {
+    // Ids are unique inside each preset and across interrupt rules (messages say where).
+    for (const [name, preset] of Object.entries(p.presets)) {
+      claimIds(preset.steps, ["presets", name, "steps"], ctx)
+    }
+    claimIds(p.interrupts, ["interrupts"], ctx)
+  })
+
 /** Project config, with whole-document guards (forbidden keys, secret references). */
-export const ProjectConfig = guarded(ProjectConfigBase)
+export const ProjectConfig = guarded(ProjectConfigBase, [
+  ["presets", "*", "steps", "#", "value"],
+  ["interrupts", "#", "do", "value"],
+])
 export type ProjectConfig = z.infer<typeof ProjectConfigBase>
 
 /** Cross-file checks a single schema can't do. Returns human-readable problems (empty = OK). */
