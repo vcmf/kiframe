@@ -84,14 +84,16 @@ const TakeEventBase = TakeEventVariants.refine(
 export const TakeEvent = guarded(TakeEventBase)
 export type TakeEvent = z.infer<typeof TakeEventBase>
 
-export const CursorSample = z.strictObject({
+const CursorSampleBase = z.strictObject({
   t: Timestamp,
   p: NPoint,
   pressed: z.boolean(),
   /** Computed CSS `cursor` of the element under the pointer (pointer, text, custom…). */
   css: z.string().optional(),
 })
-export type CursorSample = z.infer<typeof CursorSample>
+/** A cursor sample, with whole-document guards like every other take record. */
+export const CursorSample = guarded(CursorSampleBase)
+export type CursorSample = z.infer<typeof CursorSampleBase>
 
 /** Unguarded: internal only, use the guarded export. */
 const TakeMetaBase = z.strictObject({

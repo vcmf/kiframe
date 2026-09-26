@@ -162,14 +162,15 @@ function isSelfContainedSelector(selector: string): boolean {
   let quote: string | undefined
   for (let i = 0; i < selector.length; i++) {
     const c = selector[i] ?? ""
+    // `<` is rejected everywhere, even quoted or escaped: an HTML tokenizer ignores CSS quoting
+    // and escapes, so `</style>` would still close a <style> element the selector is injected into.
+    if (c === "<") return false
     if (c === "\\") {
       if (i === selector.length - 1) return false // a trailing backslash escapes the rule's `{`
       i++
       continue
     }
-    // `<` is rejected everywhere, quotes included: an HTML tokenizer ignores CSS quoting, so a
-    // quoted `</style>` would still close a <style> element the selector is injected into.
-    if (c === "<") return false
+
     if (quote !== undefined) {
       // An unescaped newline ends a CSS string early ("bad string"): what follows is real syntax.
       if (c === "\n" || c === "\r" || c === "\f") return false

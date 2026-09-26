@@ -38,8 +38,9 @@ export function isCertainlyNotAfter(a: Anchor, b: Anchor): boolean {
   }
   const absA = absolute(a)
   const absB = absolute(b)
-  // Time 0 (the scene start) is at or before any anchor: anchors are clamped to the scene.
+  // Anchors are clamped to the scene: time 0 is at or before anything, the scene end at or after.
   if (absA === 0) return true
+  if ("scene" in b && b.scene === "end" && offset(b) === 0) return true
   if (absA !== undefined && absB !== undefined) return absA <= absB
   if ("scene" in a && "scene" in b) {
     return edge(a.scene) <= edge(b.scene) && offset(a) <= offset(b)

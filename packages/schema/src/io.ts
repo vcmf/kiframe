@@ -1,4 +1,4 @@
-import { isAlias, isScalar, parseDocument, visit, YAMLParseError } from "yaml"
+import { parseDocument, YAMLParseError } from "yaml"
 import * as z from "zod"
 import { ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
@@ -15,42 +15,18 @@ export class SchemaError extends Error {
 }
 
 function loadYaml(text: string, what: string): unknown {
-  const doc = parseDocument(text)
+  // stringKeys: every key keeps its source text, so keys can't collide once converted (`1` vs "1",
+  // `.nan` vs `NaN`), and yaml itself reports duplicate, collection and alias keys as errors.
+  // prettyErrors: false keeps the offending source line (possibly a mistyped secret) out of errors.
+  const doc = parseDocument(text, { stringKeys: true, prettyErrors: false })
   const [firstError] = doc.errors
-  if (firstError) throw new SchemaError(what, firstError.message)
+  if (firstError) throw new SchemaError(what, `${firstError.code}: ${firstError.message}`)
   const [firstWarning] = doc.warnings
-  if (firstWarning) throw new SchemaError(what, firstWarning.message)
-  // toJS turns every key into a string: collection keys (`? [a]: 1`) would be stringified, and keys
-  // that only differ by YAML type (`1` vs "1", `true` vs "true", or via an alias) would overwrite
-  // each other. Reject both instead of silently losing data.
-  let problem: string | undefined
-  visit(doc, {
-    Map(_, map) {
-      const seen = new Set<string>()
-      for (const pair of map.items) {
-        const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
-        if (key !== null && key !== undefined && !isScalar(key)) {
-          problem = "keys must be plain values, not lists or maps"
-          return visit.BREAK
-        }
-        // Same key string as toJS produces: a null key (`~:`) becomes "".
-        const raw = isScalar(key) ? key.value : key
-        const name =
-          raw === null || raw === undefined
-            ? ""
-            : typeof raw === "string"
-              ? raw
-              : JSON.stringify(raw)
-        if (seen.has(name)) {
-          problem = `duplicate key "${name}"`
-          return visit.BREAK
-        }
-        seen.add(name)
-      }
-      return undefined
-    },
-  })
-  if (problem !== undefined) throw new SchemaError(what, problem)
+  if (firstWarning) throw new SchemaError(what, `${firstWarning.code}: ${firstWarning.message}`)
+  // A `%YAML 1.1` directive would switch to 1.1 rules (yes/no booleans, `<<` merge keys…).
+  if (doc.directives.yaml.version !== "1.2") {
+    throw new SchemaError(what, "only YAML 1.2 is supported (remove the %YAML directive)")
+  }
   try {
     // maxAliasCount guards against "billion laughs" alias expansion. Forbidden keys such as
     // `__proto__` stay own keys in the output and are rejected by the schema guards.
