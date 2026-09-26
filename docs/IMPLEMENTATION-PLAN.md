@@ -60,6 +60,10 @@ kiframe/
 - State: 5/5 clean takes on at least one app, using `ensure` + `teardown` + session reuse.
 - A `PHASE0-REPORT.md` with results, the failure catalogue so far, and re-estimates for v0.
 
+**Test apps:** app.dim0.net (web, ours: quality, grounding, state), smterm (Electron, ours: P0-10), and one third-party web app for grounding (P0-8).
+
+**Review policy (spike):** `/code-review medium`; a new round only if a finding blocks the exit criteria above on the test apps. Everything else goes to `docs/BACKLOG.md` (the failure catalogue) and is fixed when a real app hits it.
+
 **Code policy:** spike code goes in the real monorepo, but each module is marked **keep** (graduates to v0) or **throwaway**. Schema, runtime, recorder, generators and compositor should be *keep*.
 
 | PR | Objective | Scope | Cx | LOC |
