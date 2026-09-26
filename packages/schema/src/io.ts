@@ -20,19 +20,30 @@ function loadYaml(text: string, what: string): unknown {
   if (firstError) throw new SchemaError(what, firstError.message)
   const [firstWarning] = doc.warnings
   if (firstWarning) throw new SchemaError(what, firstWarning.message)
-  // Collection keys (`? [a]: 1`) would be silently stringified by toJS: reject them.
-  let collectionKey = false
+  // toJS turns every key into a string: collection keys (`? [a]: 1`) would be stringified, and keys
+  // that only differ by YAML type (`1` vs "1", `true` vs "true", or via an alias) would overwrite
+  // each other. Reject both instead of silently losing data.
+  let problem: string | undefined
   visit(doc, {
-    Pair(_, pair) {
-      const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
-      if (key !== null && key !== undefined && !isScalar(key)) {
-        collectionKey = true
-        return visit.BREAK
+    Map(_, map) {
+      const seen = new Set<string>()
+      for (const pair of map.items) {
+        const key = isAlias(pair.key) ? pair.key.resolve(doc) : pair.key
+        if (key !== null && key !== undefined && !isScalar(key)) {
+          problem = "keys must be plain values, not lists or maps"
+          return visit.BREAK
+        }
+        const name = String(isScalar(key) ? key.value : key)
+        if (seen.has(name)) {
+          problem = `duplicate key "${name}"`
+          return visit.BREAK
+        }
+        seen.add(name)
       }
       return undefined
     },
   })
-  if (collectionKey) throw new SchemaError(what, "keys must be plain values, not lists or maps")
+  if (problem !== undefined) throw new SchemaError(what, problem)
   try {
     // maxAliasCount guards against "billion laughs" alias expansion. Forbidden keys such as
     // `__proto__` stay own keys in the output and are rejected by the schema guards.

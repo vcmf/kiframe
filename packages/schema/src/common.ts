@@ -141,6 +141,19 @@ export function withoutCredentials<T extends z.ZodType<string>>(schema: T) {
 }
 
 /**
+ * A file path inside the scene folder (e.g. `fp/open-new.png`): relative, forward slashes, no `..`
+ * segment, no scheme. The runtime reads these files and may show them to the model, so a path must
+ * never reach outside the scene.
+ */
+export const SceneFilePath = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$/, {
+    message: "must be a relative path inside the scene (no leading `/`, `\\`, `:` or `..`)",
+  })
+  .refine((p) => !p.split("/").includes(".."), { message: "path can't contain `..`" })
+
+/**
  * Checks a selector can't escape the rule it's injected into: quotes closed, `()` and `[]` balanced
  * and properly nested, no trailing backslash, and outside strings none of `{ } ; @ <` or comments.
  */
