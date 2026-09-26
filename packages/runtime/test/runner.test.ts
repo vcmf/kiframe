@@ -1115,4 +1115,47 @@ teardown:
     ).rejects.toThrow(/t1/)
     expect(events.some((e) => e.kind === "step_end" && e.step.stepId === "t2")).toBe(true)
   })
+
+  // ─── P0-4 review round 8 ───────────────────────────────────────────────────
+
+  it("doesn't count the human approval wait against the click's time budget", async () => {
+    await page.setContent(`<button onclick="document.body.dataset.done='1'">Delete draft</button>`)
+    await run(
+      `steps:\n  - { id: del, action: click, target: { by: role, role: button, name: Delete draft } }\n`,
+      {
+        timeoutMs: 500,
+        approveRisky: () => new Promise((resolve) => setTimeout(() => resolve(true), 1200)),
+      },
+    )
+    expect(await page.evaluate<string | undefined>("document.body.dataset.done")).toBe("1")
+  })
+
+  it("doesn't press if the page changed during the approval", async () => {
+    await page.setContent(
+      `<button id="b" onclick="document.body.dataset.done='1'">Delete draft</button>`,
+    )
+    const error = await failure(
+      `steps:\n  - { id: del, action: click, target: { by: css, selector: "#b" } }\n`,
+      {
+        approveRisky: async () => {
+          await page.evaluate(() => {
+            document.getElementById("b")!.textContent = "Delete everything"
+          })
+          return true
+        },
+      },
+    )
+    expect(error.message).toMatch(/page changed while waiting for approval/)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.done")).toBeUndefined()
+  })
+
+  it("judges a press on a card's background by the card's own text only", async () => {
+    await page.setContent(`
+      <div id="card" style="width:600px; height:300px; padding:40px" onclick="document.body.dataset.opened='1'">
+        Acme project
+        <button onclick="event.stopPropagation()">Delete</button>
+      </div>`)
+    await run(`steps:\n  - { id: open, action: click, target: { by: css, selector: "#card" } }\n`)
+    expect(await page.evaluate<string | undefined>("document.body.dataset.opened")).toBe("1")
+  })
 })
