@@ -842,13 +842,13 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
         { timeoutMs: 800, onEvent: (e) => events.push(e) },
       ),
     ).rejects.toThrow(/Timeout/)
-    // Not recording (no trial click): the press is reported, the click fails, the release is
-    // reported anyway. Nothing is ever left held. (When recording, the trial fails before any press.)
+    // The press is reported, the click fails, the release is reported anyway: nothing left held.
     const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
     // Movement samples are pressed: false too, so count transitions: every press is released.
     const presses = pressed.filter((p, i) => p && pressed[i - 1] !== true).length
     const releases = pressed.filter((p, i) => !p && pressed[i - 1] === true).length
-    expect(releases).toBe(presses)
+    expect(presses).toBe(1)
+    expect(releases).toBe(1)
     expect(pressed.at(-1) ?? false).toBe(false)
   })
 

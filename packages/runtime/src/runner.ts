@@ -285,15 +285,31 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
  * never fails a step.
  */
 async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
-  for (const field of ctx.secretFields) {
-    // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
-    // boundingBox's attach timeout on every later step.
-    const present = (await field.locator.count().catch(() => 0)) > 0
-    const box = present ? await field.locator.boundingBox({ timeout: 300 }).catch(() => null) : null
+  // In parallel: every field costs a round trip or two after each step.
+  const measured = await Promise.all(ctx.secretFields.map((field) => measureField(field.locator)))
+  for (const [i, field] of ctx.secretFields.entries()) {
+    const box = measured[i]
+    // Unsure (a measurement failed): keep the last rect. Only a field known to be gone ends its blur.
+    if (box === undefined || box === "unknown") continue
     const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
     if (key === field.last) continue
     field.last = key
     ctx.options.onEvent?.({ kind: "secret_field", step, id: field.id, box: box ?? undefined })
+  }
+}
+
+/**
+ * Where a secret field is now: its box, null when it's known to be gone (detached or not rendered),
+ * "unknown" when measuring failed (timeout, several matches): the blur stays where it was.
+ */
+async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
+  try {
+    // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
+    // boundingBox's attach timeout on every later step.
+    if ((await locator.count()) === 0) return null
+    return await locator.boundingBox({ timeout: 300 })
+  } catch {
+    return "unknown"
   }
 }
 
@@ -934,18 +950,9 @@ async function clickAtCursor(
         )
       position = await clickOffset(target, box, point, left())
     }
-    // The click event the recorder logs, as close as possible to the real dispatch: after Playwright's
-    // actionability checks (a trial click), at our point or the box center when Playwright picks it.
-    // When recording: actionability at the point first (a trial click), so the click event is
-    // logged as close as possible to the real dispatch and never for a click that can't happen.
-    if (ctx.options.recording === true)
-      await target.click({
-        trial: true,
-        timeout: left(),
-        ...(position !== undefined && { position }),
-        ...(action.button !== undefined && { button: action.button }),
-        // No modifiers: Playwright presses them even for a trial, the page would see them twice.
-      })
+    // The click event the recorder logs, at our point or the box center when Playwright picks it.
+    // No trial click first: Playwright's trial really presses the mouse (the button would flash
+    // twice on camera). A click that then fails fails the step, and so the take: no phantom click.
     if (ctx.options.onEvent !== undefined && ctx.options.recording === true) {
       const clickBox = box ?? (await target.boundingBox({ timeout: left() }).catch(() => null))
       if (clickBox !== null) {
@@ -1058,8 +1065,10 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
 
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */
 function urlPath(value: string): string | undefined {
+  // Per character, never through the URL parser: it would cut the value at ? or # and resolve ".."
+  // (a secret "p#Kd93!x" must not become the pattern "p").
   try {
-    return new URL(`http://x/${value}`).pathname.slice(1)
+    return value.replace(/[^\x21-\x7e]|["#<>?`{}]/gu, (c) => encodeURIComponent(c))
   } catch {
     return undefined
   }

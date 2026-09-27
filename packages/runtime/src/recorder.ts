@@ -266,6 +266,7 @@ export async function recordScenario(
 
     // ── files ── (the runner's failure, if any, is the error that's thrown; raw frames never stay)
     let meta: TakeMeta | undefined
+    let warningsSaved = 0
     let fileError: Error | undefined
     try {
       await Promise.all(pendingWrites)
@@ -309,6 +310,7 @@ export async function recordScenario(
       writeFileSync(join(outDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n")
       if (warnings.length > 0)
         writeFileSync(join(outDir, "warnings.json"), JSON.stringify(warnings, null, 2) + "\n")
+      warningsSaved = warnings.length
     } catch (error) {
       fileError = error instanceof Error ? error : new Error(String(error))
     } finally {
@@ -334,6 +336,14 @@ export async function recordScenario(
             warnings.push(`couldn't remove ${finalDir}.failed: ${firstLine(error)}`)
           }
         }
+        // Cleanup warnings come after warnings.json was written: saved with the take too.
+        if (warnings.length > warningsSaved) {
+          try {
+            writeFileSync(join(dest, "warnings.json"), JSON.stringify(warnings, null, 2) + "\n")
+          } catch {
+            // Best effort: the take is in place, and the warnings are returned with it.
+          }
+        }
       } catch (error) {
         // Placing a FAILED take is best effort: the replay's own error is the one that matters.
         if (failure === undefined) throw error
@@ -356,9 +366,8 @@ export async function recordScenario(
 /**
  * Puts the take at `src` in place of `dest`: the old take is moved aside first, the new one renamed
  * in, then the old one deleted; if the rename fails, the old take is put back. `dest` is re-checked
- * (it must still be a take or absent).
+ * (it must still be a take or absent). Returns the old take's path if it couldn't be deleted.
  */
-/** Returns the previous take's path if it's in place but couldn't be removed afterwards. */
 function swapInto(src: string, dest: string): string | undefined {
   checkReplaceable(dest)
   const aside = existsSync(dest) ? `${dest}.old-${process.pid}-${Date.now()}` : undefined
@@ -482,9 +491,8 @@ function realTakePath(outDir: string): string {
 const TAKE_MARKER = ".kiframe-take"
 
 /**
- * Makes `outDir` an empty take directory. An existing directory is only replaced if it's empty or
- * holds the take marker (a previous take, complete or interrupted): never a project folder or a path
- * that resolved to something unexpected.
+ * Refuses to replace `dir` unless it's absent, empty or holds the take marker (a previous take,
+ * complete or interrupted): never a project folder or a path that resolved to something unexpected.
  */
 function checkReplaceable(dir: string) {
   if (!existsSync(dir)) return

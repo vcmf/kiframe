@@ -268,6 +268,11 @@ describe("scrubSecrets", () => {
     const secret = "Pässw|rd x"
     const path = new URL(`http://x/${secret}`).pathname
     expect(scrubSecrets(path, [secret])).toBe("/[secret]")
+    // Never a piece of the secret as a pattern (the URL parser would cut "p#Kd93!x" to "p").
+    expect(scrubSecrets("https://app.example.com/projects", ["p#Kd93!x", "a?b"])).toBe(
+      "https://app.example.com/projects",
+    )
+    expect(scrubSecrets("/p%23Kd93!x", ["p#Kd93!x"])).toBe("/[secret]")
   })
 })
 
