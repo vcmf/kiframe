@@ -476,6 +476,41 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(followed.frames).toBeGreaterThan(baseline.frames + 5)
   })
 
+  it("normalizes rects to a popup's own size, and re-blurs the opener's secret right on return", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: key, action: type, target: { by: label, name: API key }, value: "{{secrets.acme.key}}" }
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: code, action: type, target: { by: label, name: Code }, value: "{{secrets.acme.code}}" }
+  - { id: done, action: click, target: { by: role, role: button, name: Done } }
+  - { id: look, action: pause, ms: 300 }
+`),
+      project(),
+      { outDir, resolveSecret: (name) => (name === "acme.key" ? "k-123456" : "c-987654") },
+    )
+    await context.close()
+    const sensitive = take.events.filter(
+      (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive",
+    )
+    // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5).
+    const code = sensitive.find((e) => e.id.includes("acme.code") && e.rect.w > 0)
+    expect(code?.rect.x).toBeCloseTo(300 / 800, 2)
+    expect(code?.rect.y).toBeCloseTo(285 / 600, 2)
+    // Back on the opener (in the "done" step), the API key's blur is back before the next step.
+    const lookStart =
+      take.events.find((e) => e.kind === "step_start" && e.stepId === "look")?.t ?? 0
+    const keyEvents = sensitive.filter((e) => e.id.includes("acme.key"))
+    const goneAt = keyEvents.find((e) => e.rect.w === 0)?.t ?? Infinity
+    const backAt = keyEvents.find((e) => e.t > goneAt && e.rect.w > 0)?.t ?? Infinity
+    expect(backAt).toBeLessThanOrEqual(lookStart)
+  })
+
   it("follows a secret field with its blur when the page scrolls", async () => {
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })

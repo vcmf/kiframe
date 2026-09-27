@@ -324,6 +324,24 @@ steps: [{ id: avatar, action: upload, target: { by: role, role: button, name: Ch
 steps: [{ id: attach, action: upload, target: { by: label, name: Attachment }, file: ${asset} }]
 `)
     expect(noResolver.message).toMatch(/no asset resolver/)
+    // A hidden file input, targeted through its label.
+    await run(
+      `setup: [{ action: goto, url: /upload }]
+steps: [{ id: file, action: upload, target: { by: label, name: Avatar file }, file: ${asset} }]
+`,
+      { resolveAsset },
+    )
+    expect(await page.locator("#s").textContent()).toBe(`hid2: ${asset}`)
+  })
+
+  it("returns to the opener in the step that closed the popup (with the default settle)", async () => {
+    await run(`overrides: { pacing: { settleMs: 400 } }
+setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: done, action: click, target: { by: role, role: button, name: Done } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
   })
 
   it("follows a new tab opened by a click, and returns when a popup closes itself", async () => {
