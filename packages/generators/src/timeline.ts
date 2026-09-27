@@ -64,6 +64,8 @@ export function buildTimeline(
     }
     steps.push({ id: step.id, step, start, end: Math.max(start, ends.get(step.id) ?? duration) })
   }
+  // In recorded order: the scenario may have been reordered since the take (re-record to apply).
+  steps.sort((x, y) => x.start - y.start)
   return {
     timeline: {
       steps,

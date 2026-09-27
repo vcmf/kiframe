@@ -30,6 +30,7 @@ export function generateCursor(tl: Timeline): CursorSegment[] {
   const out: CursorSegment[] = []
   for (const s of tl.steps) {
     if (s.step.cursor === "hide") {
+      // No ripple where the author hid the cursor.
       out.push({
         id: `cursor:hidden:${s.id}`,
         source: "auto",
@@ -37,16 +38,16 @@ export function generateCursor(tl: Timeline): CursorSegment[] {
         at: { step: s.id, edge: "start" },
         until: { step: s.id, edge: "end" },
       })
+      continue
     }
-    // No ripple where the author hid the cursor.
-    if (s.step.cursor === "hide") continue
     const clicks = tl.events.filter(
-      (e) => e.kind === "click" && e.phase === "steps" && e.stepId === s.id,
+      (e): e is Extract<typeof e, { kind: "click" }> =>
+        e.kind === "click" && e.phase === "steps" && e.stepId === s.id,
     )
     clicks.forEach((click, n) => {
       const event = eventId(s.id, "click", n)
       // A double click shows two ripples, a little apart.
-      const count = click.kind === "click" ? (click.count ?? 1) : 1
+      const count = click.count ?? 1
       for (let k = 0; k < count; k++) {
         const offset = k * DOUBLE_CLICK_GAP_MS
         out.push({

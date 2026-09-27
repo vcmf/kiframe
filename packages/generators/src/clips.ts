@@ -1,4 +1,5 @@
 import { MAX_SPEED, type ClipSegment } from "@kiframe/schema"
+import { round2 } from "./camera.ts"
 import { anchorFor, type StepSpan, type Timeline } from "./timeline.ts"
 
 // The time model (docs/OBJECT-MODEL.md §4), rules applied in order:
@@ -78,7 +79,8 @@ export function generateClips(
   // Interrupts handled off camera (a dismissed popup) are cut too.
   const interruptSpans: Span[] = []
   for (const e of tl.events) {
-    if (e.kind !== "interrupt" || e.until <= e.t) continue
+    // Setup and teardown are cut whole already: only interrupts on camera need their own cut.
+    if (e.kind !== "interrupt" || e.phase !== "steps" || e.until <= e.t) continue
     interruptSpans.push({ a: e.t, b: e.until })
     clips.push({
       id: `clip:interrupt:${interruptSpans.length - 1}`,
@@ -139,7 +141,7 @@ export function generateClips(
       id: `clip:idle:${Math.round(a)}`,
       source: "auto",
       mode: "speed",
-      speed: Math.round(speed * 100) / 100,
+      speed: round2(speed),
       at,
       until,
       reason: network ? "network" : "idle",
