@@ -173,13 +173,13 @@ The milestones below can partly run in parallel. Recommended order: **M1 → M2 
 
 **Objective:** the Canvas view and desktop targets, plus the paid mode.
 
-**Exit criteria:** Canvas and Sequence views stay in sync on the same project. An Electron app (dev build, and a hardened one through the CDP fallback) is recorded end to end. Paid users can work without a BYOK key, with per-org metering.
+**Exit criteria:** Canvas and Sequence views stay in sync on the same project. An Electron app (dev build, and a hardened packaged one) is recorded end to end through `--remote-debugging-port` + `connectOverCDP` (PHASE0-FINDINGS F4). Paid users can work without a BYOK key, with per-org metering.
 
 | PR | Objective | Scope | Cx | LOC |
 |---|---|---|---|---|
 | V1-1 | Canvas view | Port the `@canvas-harness` board, scene cards, notes, side panel reorder (from `slides-panel`), shared `sequence` | L | 2000 |
 | V1-2 | Agent on canvas | Canvas tools (create/move scene cards, notes) | M | 500 |
-| V1-3 | Electron targets | `_electron.launch` + `connectOverCDP` fallback, fake window frame | M | 800 |
+| V1-3 | Electron targets | `--remote-debugging-port=0` + `connectOverCDP` (F4; `_electron.launch` only for dev builds), fake window frame | M | 800 |
 | V1-4 | `still` + `media` scenes | Captured stills (self-updating), uploaded images, imported media with trim | M | 800 |
 | V1-5 | Timeline editor | Tracks UI, drag/resize segments, manual vs auto, orphans | XL | 3000 |
 | V1-6 | LLM proxy + metering | `/llm/stream` proxy, per-org metering, `X-Run-Id`, plan limits, retention policy applied | L | 1500 |
