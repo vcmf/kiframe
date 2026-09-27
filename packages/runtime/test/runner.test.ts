@@ -344,6 +344,33 @@ steps:
 `)
   })
 
+  it("returns to the opener when a popup closes itself while the step settles", async () => {
+    await run(`overrides: { pacing: { settleMs: 400 } }
+setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: authorize, action: click, target: { by: role, role: button, name: Authorize } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
+  it("runs the teardown on the page the scene started on, not a followed tab", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: tab, action: click, target: { by: role, role: link, name: Open report } }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+teardown: [{ action: click, target: { by: role, role: button, name: Reset } }]
+`)
+    expect(await page.locator("#reset").textContent()).toBe("reset done")
+  })
+
+  it("refuses an offset drag that would leave the view (never a shorter drag)", async () => {
+    const error = await failure(`setup: [{ action: goto, url: /drag }]
+steps: [{ id: slide, action: drag, target: { by: role, role: slider, name: Volume }, to: { dx: 5000, dy: 0 } }]
+`)
+    expect(error.message).toMatch(/would leave the view/)
+  })
+
   it("stays on the opener when a popup closes itself at once (OAuth with a session)", async () => {
     await run(`setup: [{ action: goto, url: /opener }]
 steps:

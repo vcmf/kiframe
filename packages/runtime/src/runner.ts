@@ -64,7 +64,14 @@ export type RunnerEvent =
       count: number
     }
   /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
-  | { kind: "secret_field"; step: StepRef; id: string; box?: Box | undefined }
+  | {
+      kind: "secret_field"
+      step: StepRef
+      id: string
+      box?: Box | undefined
+      /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
+      viewport?: { width: number; height: number } | undefined
+    }
   /** A key combination was pressed (`press` action). */
   | { kind: "key"; step: StepRef; keys: string }
   /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
@@ -214,6 +221,18 @@ export async function runScenario(
     // reported, and the first one is thrown if nothing failed before. Not after an `ensure`
     // failure: no scene step ran, so what the teardown would delete wasn't created by this run.
     const ensureFailed = failure instanceof StepError && failure.step.action === "ensure"
+    // The teardown cleans the app where the scene started, not a tab or popup it followed.
+    const root = ctx.openers[0]
+    if (
+      !ensureFailed &&
+      root !== undefined &&
+      !root.isClosed() &&
+      (scenario.teardown ?? []).length > 0
+    ) {
+      const ref: StepRef = { phase: "teardown", index: 0, action: "teardown" }
+      ctx.openers.length = 0
+      await switchPage(ctx, root, ref).catch(() => undefined)
+    }
     let teardownFailure: StepError | undefined
     for (const [index, action] of (ensureFailed ? [] : (scenario.teardown ?? [])).entries()) {
       const ref: StepRef = { phase: "teardown", index, stepId: action.id, action: action.action }
@@ -225,6 +244,8 @@ export async function runScenario(
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
         ctx.clearListenerError()
+        // Pages a failed cleanup step opened aren't followed by the next ones.
+        ctx.opened.length = 0
         // The first teardown failure is thrown when nothing failed before: it isn't also reported
         // as an event. Every other one is (it would be lost otherwise).
         if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
@@ -473,6 +494,8 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
+  // It may also have closed while settling: back to the opener.
+  await returnFromClosedPage(ctx, step)
   // A tab or popup this step opened: the next steps drive it (OBJECT-MODEL §2b).
   await followOpenedPage(ctx, step)
   if (ctx.options.recording === true) await followSecretFields(ctx, step)
@@ -489,10 +512,11 @@ async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.attach(next)
   // The real mouse is per page: the next travel starts from the new page's centre.
   ctx.cursor = undefined
-  // Secret fields on this page are on screen again (or no longer): their blur rects are known
-  // BEFORE the capture moves here, so the first frame of this page is already covered.
-  if (ctx.options.recording === true) await followSecretFields(ctx, step)
+  // This page's secret fields are measured BEFORE the capture moves here (its first frame is
+  // already covered); the other pages' blurs end only AFTER the capture left them.
+  if (ctx.options.recording === true) await followSecretFields(ctx, step, "here")
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
+  if (ctx.options.recording === true) await followSecretFields(ctx, step, "elsewhere")
   ctx.options.onEvent?.({
     kind: "navigate",
     step,
@@ -538,23 +562,37 @@ async function returnFromClosedPage(ctx: Ctx, step: StepRef): Promise<void> {
  * or is gone (navigated away, removed: nothing left to blur). Only changes are reported. Bounded,
  * never fails a step.
  */
-async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
+async function followSecretFields(
+  ctx: Ctx,
+  step: StepRef,
+  which: "all" | "here" | "elsewhere" = "all",
+): Promise<void> {
+  const fields = ctx.secretFields.filter(
+    (f) => which === "all" || (which === "here") === (f.page === ctx.page),
+  )
   // In parallel: every field costs a round trip or two after each step.
   // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
   // and comes back if the run returns to that page.
   const measured = await Promise.all(
-    ctx.secretFields.map((field) =>
+    fields.map((field) =>
       field.page === ctx.page ? measureField(field.locator) : Promise.resolve(null),
     ),
   )
-  for (const [i, field] of ctx.secretFields.entries()) {
+  const viewport = await viewportOf(ctx.page).catch(() => undefined)
+  for (const [i, field] of fields.entries()) {
     const box = measured[i]
     // Unsure (a measurement failed): keep the last rect. Only a field known to be gone ends its blur.
     if (box === undefined || box === "unknown") continue
     const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
     if (key === field.last) continue
     field.last = key
-    ctx.options.onEvent?.({ kind: "secret_field", step, id: field.id, box: box ?? undefined })
+    ctx.options.onEvent?.({
+      kind: "secret_field",
+      step,
+      id: field.id,
+      box: box ?? undefined,
+      viewport,
+    })
   }
 }
 
@@ -636,9 +674,16 @@ const SETTLE_MAX_MS = 3000
  * bounded and never fails the step.
  */
 async function settle(ctx: Ctx, onCamera: boolean): Promise<void> {
-  // Network and DOM are independent: wait for both at once, so the worst case is one cap.
-  await Promise.all([ctx.network.waitForIdle(SETTLE_MAX_MS, 200), domQuiet(ctx)])
-  if (onCamera && ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
+  // A page that closed (a popup's "Authorize" closes it after a request) has nothing to settle.
+  if (ctx.page.isClosed()) return
+  try {
+    // Network and DOM are independent: wait for both at once, so the worst case is one cap.
+    await Promise.all([ctx.network.waitForIdle(SETTLE_MAX_MS, 200), domQuiet(ctx)])
+    if (onCamera && ctx.settleMs > 0) await ctx.page.waitForTimeout(ctx.settleMs)
+  } catch (error) {
+    if (ctx.page.isClosed()) return
+    throw error
+  }
 }
 
 async function domQuiet(ctx: Ctx): Promise<void> {
@@ -917,9 +962,14 @@ async function drag(
   let to: Point
   if (dest === undefined) {
     const offset = action.to as { dx: number; dy: number }
-    to = {
-      x: Math.min(viewport.width - 1, Math.max(0, start.x + offset.dx)),
-      y: Math.min(viewport.height - 1, Math.max(0, start.y + offset.dy)),
+    to = { x: start.x + offset.dx, y: start.y + offset.dy }
+    // Never a shorter drag than asked (a slider would stop at the wrong value): say so instead.
+    if (to.x < 0 || to.y < 0 || to.x > viewport.width - 1 || to.y > viewport.height - 1) {
+      throw new StepError(
+        step,
+        "action-failed",
+        `the drag by (${offset.dx}, ${offset.dy}) would leave the view: scroll first, or drag less`,
+      )
     }
   } else {
     const box = await guard(step, () => dest.boundingBox({ timeout: ctx.timeoutMs }))
@@ -1004,7 +1054,8 @@ async function upload(
     }),
   )
   if (isFileInput) {
-    await moveCursorTo(ctx, target, step)
+    const at = await moveCursorTo(ctx, target, step)
+    await reportPress(ctx, step, target, at)
     await guard(step, () => target.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return
   }
@@ -1022,7 +1073,15 @@ async function upload(
       target: action.target,
       ...(action.risky !== undefined && { risky: action.risky }),
     })
-    picked = await Promise.race([chosen, sleep(ctx.timeoutMs).then(() => undefined)])
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ctx.timeoutMs)
+    })
+    try {
+      picked = await Promise.race([chosen, timeout])
+    } finally {
+      clearTimeout(timer)
+    }
   } finally {
     if (onChooser !== undefined) ctx.page.off("filechooser", onChooser)
   }
