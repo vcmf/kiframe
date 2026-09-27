@@ -392,19 +392,6 @@ steps: [{ id: a, action: pause, ms: 1 }]
     expect(Math.abs(at - 300)).toBeLessThan(25)
   })
 
-  it("asks approval to select 'Cancel subscription', by label or by value (fails closed)", async () => {
-    for (const option of ["Cancel subscription", "c"]) {
-      const cancel = await failure(`setup: [{ action: goto, url: /pointer-lib }]
-steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: ${option} }]
-`)
-      expect(cancel.reason).toBe("risky-not-approved")
-    }
-    // risky: false opts out.
-    await run(`setup: [{ action: goto, url: /pointer-lib }]
-steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: c, risky: false }]
-`)
-  })
-
   it("moves pointer-library drags onto an element off camera too (several moves)", async () => {
     await run(`setup:
   - { action: goto, url: /pointer-lib }

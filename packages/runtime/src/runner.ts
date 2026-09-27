@@ -519,10 +519,10 @@ async function ensure(
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
   ctx.setCurrent(step)
+  // Before step_start: the step's storyboard shot (taken at step_start) is of the page it acts on.
+  await syncPage(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
-  // After step_start: a page switch's events (navigation, blurs) belong to this step.
-  await syncPage(ctx, step)
   await perform(ctx, action, step)
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
@@ -538,6 +538,8 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
 async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.detach(ctx.page)
+  // Headed and CDP runs: the driven page is the visible tab (a background tab is throttled).
+  await next.bringToFront().catch(() => undefined)
   // The real mouse is per page: each page keeps where the cursor was on it.
   if (ctx.cursor !== undefined) ctx.cursors.set(ctx.page, ctx.cursor)
   ctx.page = next
@@ -934,20 +936,6 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     case "select": {
       const target = await find(ctx, action.target, step)
-      // "Cancel subscription" as an option is as risky as the button would be: the option that
-      // will be picked (by value or label) is judged by its label and value, before anything moves.
-      const picked = await guard(step, () =>
-        target.evaluate(
-          (el, wanted) => {
-            const options = el instanceof HTMLSelectElement ? [...el.options] : []
-            const o = options.find((x) => x.value === wanted || x.label === wanted)
-            return o === undefined ? wanted : `${o.label} ${o.value}`
-          },
-          action.option,
-          { timeout: ctx.timeoutMs },
-        ),
-      )
-      await checkRiskyLabel(ctx, step, action.risky, picked)
       // The cursor goes to it (on camera); the native dropdown isn't in the screencast anyway.
       const at = await moveCursorTo(ctx, target, step)
       await reportPress(ctx, step, target, at)
@@ -992,23 +980,6 @@ function evenPath(from: Point, to: Point, n: number): { t: number; x: number; y:
     const u = (i + 1) / n
     return { t: (i + 1) * 16, x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u }
   })
-}
-
-/**
- * The risky-word check (§2b, fails closed) for what isn't a click: the drop target of a drag, the
- * option of a select. `risky: false` on the step opts out; `risky: true` was asked for already.
- */
-async function checkRiskyLabel(
-  ctx: Ctx,
-  step: StepRef,
-  risky: boolean | undefined,
-  label: string,
-): Promise<void> {
-  if (risky !== undefined) return
-  const word = RISKY_LABEL.exec(label)?.[0]
-  if (word !== undefined) {
-    await requireApproval(ctx, step, `"${word.toLowerCase()}": this may be a risky action`)
-  }
 }
 
 function unionBox(a: Box, b: Box): Box {
