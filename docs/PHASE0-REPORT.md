@@ -5,13 +5,15 @@
 > **state** (do replays stay clean?). Details of each result are in `PHASE0-FINDINGS.md` (F1–F6);
 > every failure seen is in `FAILURE-CATALOGUE.md`. Written 2026-09-27.
 
-## Verdict: go, with two things to fix before v0 relies on them
+## Verdict: go, with three things to close before v0 relies on them
 
 The pipeline works end to end on two real web apps: **an agent writes a scene from a one-line
 goal, grounds it on the live app, and the take is recorded and exported to a 1080p MP4 with no
 manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay clean with `ensure` +
-`teardown`. The two things that aren't "publish as is" yet are camera timing and loading frames
-(below): both are in code we own (generators, clips), not in the approach.
+`teardown`. Still open (below): **camera timing** and **loading frames** keep the videos just short
+of "publish as is" (code we own: generators, clips, loading detection), and **reusing one login
+across a batch** is still to prove on an app with accounts. And v0 is bigger than planned: ~53k
+LOC, not ~29k.
 
 ## Exit criteria
 
