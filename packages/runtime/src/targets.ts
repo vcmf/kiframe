@@ -61,14 +61,6 @@ export async function resolveTarget(
   page: Page,
   target: Target,
   timeoutMs: number,
-  /**
-   * For pointer actions (click, hover): when the element picked stays off screen even after
-   * scrolling (a collapsed sidebar or drawer) for a short grace, the error says so instead of the
-   * action timing out without a reason. Matching is unchanged: fallbacks are only for no match,
-   * `nth` and ambiguity count every visible match. Typing only needs focus: an input hidden off
-   * screen on purpose still works.
-   */
-  { reachable = false }: { reachable?: boolean } = {},
 ): Promise<ResolveResult> {
   if (!isGrounded(target)) {
     return {
@@ -84,16 +76,11 @@ export async function resolveTarget(
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
   const deadline = Date.now() + timeoutMs
-  // Short step timeouts still leave room for the fallbacks after the grace.
-  const grace = Math.min(OFF_SCREEN_GRACE_MS, timeoutMs / 2)
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
   let ambiguous: string | undefined
-  let offScreen: string | undefined
-  let offScreenSince: number | undefined
   for (;;) {
     ambiguous = undefined
-    offScreen = undefined
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator))
       const count = await visible.count().catch((error: unknown) => {
@@ -108,12 +95,6 @@ export async function resolveTarget(
         break
       }
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
-      if (reachable && !(await canBeOnScreen(page, locator))) {
-        // This is the element to act on (fallbacks are only for no match at all, as always): keep
-        // polling while it may still be sliding in, then say why it can't be clicked.
-        offScreen = `${describeLocator(candidate.locator)} is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`
-        break
-      }
       return {
         ok: true,
         locator,
@@ -121,50 +102,12 @@ export async function resolveTarget(
         fallbackIndex: i === 0 ? undefined : i - 1,
       }
     }
-    // Off screen since when it was first seen so (a late-mounting panel gets the full grace): an
-    // opening panel slides in quickly, so give it a moment, not the whole step timeout.
-    if (offScreen !== undefined) {
-      offScreenSince ??= Date.now()
-      if (Date.now() - offScreenSince >= grace) break
-    } else {
-      offScreenSince = undefined
-    }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   if (ambiguous !== undefined) return { ok: false, reason: "target-ambiguous", detail: ambiguous }
-  if (offScreen !== undefined) return { ok: false, reason: "target-not-found", detail: offScreen }
   const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
   return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
-}
-
-/** How long a target may stay off screen (a panel still opening) before that's the answer. */
-const OFF_SCREEN_GRACE_MS = 2000
-
-/**
- * Whether a pointer can reach the element: scrolled into view by Playwright (inner scroll
- * containers, RTL, nested scrolling), its box then overlaps the viewport. A collapsed sidebar or
- * drawer (translated away, fixed off screen) stays outside whatever the scroll. Unknown (no box,
- * detached mid-check) counts as reachable: the action itself will say what's wrong.
- */
-async function canBeOnScreen(page: Page, locator: Locator): Promise<boolean> {
-  const viewport = await viewportOf(page).catch(() => undefined)
-  if (viewport === undefined) return true
-  const overlaps = async () => {
-    const box = await locator.boundingBox({ timeout: 300 }).catch(() => null)
-    // Unknown: the action itself will say what's wrong.
-    if (box === null) return true
-    return (
-      box.x + box.width > 0 &&
-      box.y + box.height > 0 &&
-      box.x < viewport.width &&
-      box.y < viewport.height
-    )
-  }
-  // Already on screen: no scrolling (no side effect on the page).
-  if (await overlaps()) return true
-  await locator.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined)
-  return overlaps()
 }
 
 /** The locator part of a grounded target, without the healing metadata. */

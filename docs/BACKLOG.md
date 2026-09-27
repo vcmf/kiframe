@@ -74,7 +74,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Grounding (P0-8)
 - **Clipped or covered collapsed panels:** "off screen" means the element's box is still outside the viewport after Playwright scrolls it into view. A sidebar collapsed to `width: 0; overflow: hidden`, or behind an overlay, still has a box on screen and times out without a reason; and scrolling into view can pull an off-canvas drawer in on pages with `overflow-x: hidden`. Use the centre-point probe (`isOnScreen`) when a pointer action's target can't be hit.
-- **Off-screen primary → try fallbacks:** an off-screen target now only fails fast with a reason; trying its fallbacks instead needs a grace that follows the element (late mounts, slide-ins) without ever clicking a fallback that points elsewhere (three review rounds in P0-8 went there).
+- **Off-screen targets in resolution:** the runner only *explains* a failed click/hover on an off-screen target (after the normal timeout). Skipping such targets (fallbacks, `nth`) or failing faster needs a rule that follows late mounts and slide-ins without regressions: four P0-8 review rounds went there, so it was cut back to the diagnosis.
+- **Grounding replay pacing:** `finish` replays with instant cursor and typing; the recording uses the project's pacing. Every grounded scene also passed a paced recording, but the check should use real pacing (or at least real typing).
 - **Grounding context growth:** every snapshot stays in the conversation and is resent each turn; elide old tool results (cooldown's `tool-result-view.ts`) in M2-5.
 - **One overlap rule:** `canBeOnScreen` (targets.ts) and `visiblePart` (runner.ts) both test box vs viewport; share one.
 - **Grounding harness lock:** the stale-lock takeover can race when two runs start on the same dead lock at the same moment (throwaway script; use a real lock library if it graduates).

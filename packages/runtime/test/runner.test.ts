@@ -216,26 +216,19 @@ steps:
     expect(unknown.message).toMatch(/unknown preset "missing"/)
   })
 
-  it("fails fast and says why when the target is off screen (collapsed panel)", async () => {
+  it("says why a click failed when the target is off screen (collapsed panel)", async () => {
     const started = Date.now()
-    const error = await failure(`setup: [{ action: goto, url: /collapsed }]
+    const error = await failure(
+      `setup: [{ action: goto, url: /collapsed }]
 steps: [{ id: open, action: click, target: { by: role, role: button, name: New board, exact: true } }]
-`)
+`,
+      // With no on-screen point to probe, the risky check fails closed: approved here, like the
+      // grounding harness does, to reach the click itself.
+      { approveRisky: () => true },
+    )
     expect(error.reason).toBe("target-not-found")
     expect(error.message).toMatch(/off screen even after scrolling .*collapsed panel/)
     expect(Date.now() - started).toBeLessThan(2500)
-  })
-
-  it("answers 'off screen' after a short grace, not the whole step timeout", async () => {
-    const started = Date.now()
-    const error = await failure(
-      `setup: [{ action: goto, url: /shell-scroll }]
-steps: [{ id: d, action: click, target: { by: role, role: button, name: Drawer action } }]
-`,
-      { timeoutMs: 15_000 },
-    )
-    expect(error.message).toMatch(/off screen/)
-    expect(Date.now() - started).toBeLessThan(6000)
   })
 
   it("still clicks a button scrolled out of an inner scroll container (app shell)", async () => {
