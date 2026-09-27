@@ -19,8 +19,8 @@ manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay cle
 |---|---|---|
 | 1 exported MP4 per test app we would publish as is, 2.5× zoom acceptably sharp, captions readable (never sped up) | app.dim0.net (hand-written 2.5× scene, and an agent-written one) and Cal.com (agent-written), 1080p H.264 through Electron. 2.5× is **sharp when recorded headed at DPR 2** on a Retina Mac (1.32 output px per source px), soft headless (2.64): F1, F2. Captions are never sped up and get reading freezes | ⚠️ **Almost, for the two web apps.** Rough edges: the camera sometimes lags the caption (lead-in timing, BACKLOG P0-6/P0-7 camera items), and a page load shows as a white frame (Cal.com: needs loading detection from frame differences, BACKLOG "Loading frames"). **smterm has no MP4**: P0-10 only checked that a packaged Electron app can be driven (F4); recording Electron targets is v0.1 |
 | Grounding: ≥ 2 of 3 apps grounded with ≤ 5 questions; tokens, cost and time measured | **2 / 2 web apps grounded, 0 questions**, with two models each. $0.013–0.019 per scene (DeepSeek V4.1 Flash), $0.17–0.22 (GLM 5.3); 2.7–12 min; prompt caching 94–97% (F6). The third app (smterm, Electron) was checked for driveability, not grounded (F4) | ✅ |
-| State: 5/5 clean takes on at least one app with `ensure` + `teardown` + session reuse | **5/5 on app.dim0.net, twice**, with two deliberately interrupted runs cleaned up by `ensure` (F5). Session reuse via the carried profile (dim0 has no accounts). The Cal.com login preset ran in P0-8, but reusing a login session across runs is still untested | ✅ |
-| This report, the failure catalogue, v0 re-estimates | This file, `FAILURE-CATALOGUE.md` (11 classes), below | ✅ |
+| State: 5/5 clean takes on at least one app with `ensure` + `teardown` + session reuse | **5/5 on app.dim0.net, twice**, with two deliberately interrupted runs cleaned up by `ensure` (F5). Session reuse via the carried profile (dim0 has no accounts). The Cal.com login preset ran in P0-8, but reusing a login session across runs is still untested | ⚠️ **Met on app.dim0.net**; the login-session part of "session reuse" (one login per batch) is still to prove on an app with accounts |
+| This report, the failure catalogue, v0 re-estimates | This file, `FAILURE-CATALOGUE.md` (12 classes), below | ✅ |
 
 ## What we learned (and what changed in the plan)
 
@@ -58,7 +58,7 @@ manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay cle
 
 ## Failure catalogue (summary)
 
-11 classes so far (`FAILURE-CATALOGUE.md`), plus one unexplained Cal.com replay failure (it passed right after): duplicate names in hidden containers, hover-only
+12 classes so far (`FAILURE-CATALOGUE.md`), including one unexplained Cal.com replay failure (it passed right after): duplicate names in hidden containers, hover-only
 controls, destructive confirm dialogs, cold first runs, leftovers from interrupted runs,
 "absent" vs "not loaded yet", app data in the browser profile, slow hydration (Cal.com login > 6 s),
 UI state leaking from exploration into the scene, targets off screen in collapsed panels, and tool
@@ -67,25 +67,27 @@ arguments sent as strings. Each has its handling and status; they seed the M2-8 
 ## Re-estimates for v0
 
 Phase 0 measured **~11.2k LOC** (6.7k source + 4.5k tests; IMPLEMENTATION-PLAN counts LOC as
-production code + tests) against a **~6k** plan: **~1.85× over**, in 10 PRs. Most of the excess is
+production code + tests) against a **~6k** plan: **~1.85× over**, in 11 PRs (P0-1 to P0-10, plus a separate P0-4 fixes PR). Most of the excess is
 hardening that the review rounds asked for (secrets scrubbing, fail-closed checks, timing edge
 cases) and tests for it. The same factor is applied to v0, minus what Phase 0 already built. Code
-marked *keep* (schema, runtime, recorder, generators, compositor, `apps/exporter`) graduates; of
-the throwaway `scripts/`, **`scripts/p0-8/ground.ts` is kept as the reference implementation** for
-the agent's browser tools and grounding loop (M2-5, M2-7), not deleted with the rest.
+marked *keep* (schema, runtime, recorder, generators, compositor, `apps/exporter`) graduates. The
+throwaway `scripts/` stay until their v0 replacements ship (README): `record.ts` until M6-1/M4
+(it's the only headed DPR 2 recording path), `p0-8/ground.ts` (with `lib/secrets.ts`) until M2-5/M2-7,
+for which it's the reference.
 
-| Milestone | Plan | ×1.8 | Already built in Phase 0 | Re-estimate |
+| Milestone | Plan | ×1.85 | Already built in Phase 0 (keep modules) | Re-estimate |
 |---|---|---|---|---|
-| M1 Core engine | 7.4k | 13.3k | M1-4 state (`ensure`, session presets): ~1.2k; `hover` (M1-2) and risky detection | **~11.5k** |
-| M2 Agent | 6.2k | 11.2k | Grounding loop reference (`ground.ts`: snapshot, run_step, replay from scratch): ~0.8k | **~10.5k** |
-| M3 Rendering | 4.3k | 7.7k | (new work found) camera timing in output time, loading-frame detection, cursor shapes | **~8.5k** |
-| M4 Desktop app | 6.1k | 11k | (new work found) headed recording window: placement, high-DPI detection and fallback | **~11.5k** |
-| M5 Server | 3.8k | 6.8k | — | **~7k** |
-| M6 CLI | 1.5k | 2.7k | The Electron exporter CLI (`apps/exporter`): ~0.3k | **~2.4k** |
-| **Total** | **~29k** | **~53k** | | **~51k** |
+| M1 Core engine | 7.4k | 13.7k | M1-4 state (`ensure`, session presets): ~1.2k; `hover` and risky detection (M1-2) | **~12.5k** |
+| M2 Agent | 6.2k | 11.5k | Nothing that graduates: `scripts/p0-8/ground.ts` (~0.5k) is a throwaway reference for M2-5/M2-7, rewritten there | **~11.5k** |
+| M3 Rendering | 4.3k | 8k | (new work found) camera timing in output time, loading-frame detection, cursor shapes | **~8.5k** |
+| M4 Desktop app | 6.1k | 11.3k | (new work found) headed recording window: placement, high-DPI detection and fallback | **~11.5k** |
+| M5 Server | 3.8k | 7k | — | **~7k** |
+| M6 CLI | 1.5k | 2.8k | The Electron exporter CLI (`apps/exporter`): ~0.3k | **~2.5k** |
+| **Total** | **~29k** | **~54k** | | **~53k** |
 
-So v0 is **~50k LOC**, not ~29k: plan for it (IMPLEMENTATION-PLAN §3 now points here). The
-±50% band of the plan still applies; Phase 0 landed at the top of it.
+So v0 is **~53k LOC**, not ~29k: plan for it (IMPLEMENTATION-PLAN §3 now points here). Phase 0
+landed **outside** the plan's ±50% band (+85%): the band itself is too narrow for this kind of work,
+so treat ~53k as the middle of a range, not a ceiling.
 
 ## Open questions for v0
 
@@ -99,4 +101,4 @@ So v0 is **~50k LOC**, not ~29k: plan for it (IMPLEMENTATION-PLAN §3 now points
   pre-approval list before v0.
 - **Model choice:** DeepSeek V4.1 Flash is the default for now (F6: fewest failures, cheapest,
   fastest on both apps), GLM 5.3 the alternative. Keep measuring on more apps and on heal runs;
-  the default can change without code changes.
+  in the scripts the default is a CLI default (`--model`), in v0 it becomes a setting.
