@@ -8,7 +8,16 @@ import {
   type TimeMap,
   type Timeline,
 } from "@kiframe/generators"
-import type { Anchor, CameraSegment, Composition, NRect, Scenario } from "@kiframe/schema"
+import {
+  applyStyle,
+  DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE,
+  type Anchor,
+  type CameraSegment,
+  type Composition,
+  type NRect,
+  type Scenario,
+  type Style as SchemaStyle,
+} from "@kiframe/schema"
 
 // What the output shows at a given output time (docs/OBJECT-MODEL.md §5), as plain data: pure and
 // random-access (no state carried from frame to frame), so seeking gives the same frame as
@@ -31,18 +40,32 @@ export interface Style {
   cursorSize: number
   /** Caption font size in output pixels. */
   captionSize: number
+  /** Where captions go when a caption segment doesn't say. */
+  captionPosition: "bottom" | "top"
 }
 
-export const DEFAULT_STYLE: Style = {
+/** The product defaults (packages/schema), flattened, at the landscape output size. */
+export const DEFAULT_STYLE: Style = flatten(SCHEMA_DEFAULT_STYLE, {
   width: 1920,
   height: 1080,
   fps: 30,
-  background: ["#1e1b4b", "#0f172a"],
-  padding: 0.06,
-  radius: 18,
-  maxScale: 2.5,
-  cursorSize: 30,
-  captionSize: 36,
+})
+
+/** A resolved schema style (resolveStyle) plus an output size, as the compositor draws it. */
+export function flatten(
+  style: SchemaStyle,
+  format: { width: number; height: number; fps: number },
+): Style {
+  return {
+    ...format,
+    background: style.background,
+    padding: style.padding,
+    radius: style.radius,
+    maxScale: style.maxScale,
+    cursorSize: style.cursor.size,
+    captionSize: style.captions.size,
+    captionPosition: style.captions.position,
+  }
 }
 
 /** The part of the source frame on screen: its center and zoom (1 = the whole frame). */
@@ -94,14 +117,20 @@ interface Move {
   v0: Vec
 }
 
+/**
+ * `baseStyle` is the style resolved below the scene (product defaults, org, project: `resolveStyle`
+ * without scene and output); the composition's own style (the scene) goes on it; `style` (the
+ * output: size, format, its overrides) goes on top. Same order as `resolveStyle`.
+ */
 export function prepare(
   composition: Composition,
   scenario: Scenario,
   take: TakeInput,
   style: Partial<Style> = {},
+  baseStyle: SchemaStyle = SCHEMA_DEFAULT_STYLE,
 ): Prepared {
-  // The composition's own style (scene overrides), then the caller's (export presets) on top.
-  const s = { ...DEFAULT_STYLE, ...styleFrom(composition.style), ...style }
+  const size = { width: DEFAULT_STYLE.width, height: DEFAULT_STYLE.height, fps: DEFAULT_STYLE.fps }
+  const s = { ...flatten(applyStyle(baseStyle, composition.style), size), ...style }
   const { timeline } = buildTimeline(scenario, take)
   const map = timeMap(composition.tracks.clips, timeline)
   const base: Omit<Prepared, "moves" | "softness"> = {
@@ -121,30 +150,13 @@ export function prepare(
   return { ...base, moves, softness }
 }
 
-/** The known Style fields of a composition's `style` (kept verbatim by the schema until typed). */
-function styleFrom(raw: Record<string, unknown> | undefined): Partial<Style> {
-  if (raw === undefined) return {}
-  const out: Partial<Style> = {}
-  for (const key of Object.keys(DEFAULT_STYLE) as (keyof Style)[]) {
-    const value = raw[key]
-    const expected = DEFAULT_STYLE[key]
-    if (Array.isArray(expected)) {
-      if (Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === "string")) {
-        out.background = [value[0] as string, value[1] as string]
-      }
-    } else if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-      ;(out as Record<string, number>)[key] = value
-    }
-  }
-  return out
-}
-
 /** Where the take frame goes in the output (aspect kept, centered, inside the padding). */
 export function contentBox(
   style: Style,
   frame: { width: number; height: number },
 ): { x: number; y: number; w: number; h: number } {
-  const pad = style.padding * style.height
+  // A fraction of the shorter side: the same margin for landscape, vertical and square outputs.
+  const pad = style.padding * Math.min(style.width, style.height)
   const availW = style.width - 2 * pad
   const availH = style.height - 2 * pad
   const k = Math.min(availW / frame.width, availH / frame.height)
@@ -204,7 +216,7 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   })
   const captions = tracks.captions
     .filter((c) => active(p, c, sourceT, frozen))
-    .map((c) => ({ text: c.text, position: c.position ?? "bottom" }))
+    .map((c) => ({ text: c.text, position: c.position ?? p.style.captionPosition }))
 
   return {
     sourceT,

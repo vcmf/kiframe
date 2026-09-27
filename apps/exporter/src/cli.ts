@@ -10,7 +10,12 @@ import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
 import { bundleExportPage } from "@kiframe/compositor/browser/bundle.ts"
 import { buildTimeline, generate } from "@kiframe/generators"
-import { Composition, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import {
+  parseCompositionJson,
+  parseProjectYaml,
+  parseScenarioYaml,
+  type Composition,
+} from "@kiframe/schema"
 import { build } from "esbuild"
 import { readTake } from "./take.ts"
 import type { ExportJob } from "./main.ts"
@@ -55,7 +60,7 @@ if (values.composition === undefined) {
   for (const w of generated.warnings) console.error(`warning: ${w}`)
   composition = generated.composition
 } else {
-  composition = Composition.parse(JSON.parse(readFileSync(values.composition, "utf8")))
+  composition = parseCompositionJson(readFileSync(values.composition, "utf8"))
   // Anchors are relative to steps: on another take they land at other times (a mask could start
   // late). Say so; the user may have re-recorded on purpose.
   if (composition.take !== undefined && composition.take.key !== take.meta.takeKey) {
