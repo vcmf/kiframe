@@ -90,7 +90,7 @@ The agent asks follow-up questions: target audience, length, which environment a
 - It checks that each step works and records the expected state (`expect`).
 - It produces a **screenshot storyboard** so the user can approve the flow before recording.
 - It flags problems ("the Invite button is disabled for this role") and asks the user what to do (§7.3).
-- **Cost and latency: measured in Phase 0** (F6): **$0.01–0.02 per scene** with DeepSeek V4.1 Flash, $0.17–0.22 with GLM 5.3, 3–12 minutes, prompt caching at 94–97% (the earlier guess was $0.5–3). Wall time (one tool call per turn) is the constraint, not cost. Mitigations still apply: trim snapshots to the region around the target, prompt caching, and caching grounding results per locator.
+- **Cost and latency: measured in Phase 0** (F6): **$0.01–0.02 per scene** with DeepSeek V4.1 Flash, $0.17–0.22 with GLM 5.3, 2.7–12 minutes, prompt caching at 94–97% (the earlier guess was $0.5–3). Wall time (one tool call per turn) is the constraint, not cost. Mitigations still apply: trim snapshots to the region around the target, prompt caching, and caching grounding results per locator.
 
 ### 4.3 Record (replay)
 The runtime (no LLM) replays the grounded scenario and writes a **take**. Details: OBJECT-MODEL §3.
@@ -241,7 +241,7 @@ Captchas and SSO/OAuth redirects that ask for an email code, a push notification
 4. **Scope of targets.** Web first. Electron is less easy than it looks for hardened apps (§6b). Tauri is partial. Native mobile and desktop are out of scope.
 5. **Tasteful output.** "Technically correct" isn't the same as "nice to watch". Pacing and camera choices are where the product has to earn its keep. We need good defaults plus style presets.
 6. **Security.** The agent gets a browser logged into the user's app. Vault hardening (§7.4), sandbox environments, never production admin by default. Enterprise IT will scrutinize an app that drives logged-in browsers.
-7. **LLM cost and latency** of grounding and healing: grounding measured in Phase 0 ($0.01–0.22 and 3–12 min per scene, §4.2); healing still unmeasured.
+7. **LLM cost and latency** of grounding and healing: grounding measured in Phase 0 ($0.01–0.22 and 2.7–12 min per scene, §4.2); healing still unmeasured.
 8. **Desktop distribution costs:** Apple notarization, Windows code signing, an auto-updater, downloading Playwright's Chromium (~150 MB) on first run, and no server-side logs to debug field failures (we need opt-in crash and failure reporting).
 
 ## 8b. Taming the edge cases (strategy)
