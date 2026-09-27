@@ -8,8 +8,8 @@ import type {
   Step,
   Target,
 } from "@kiframe/schema"
-import { secretRefName } from "@kiframe/schema"
-import type { ElementHandle, Frame, Locator, Page } from "playwright"
+import { isGrounded, secretRefName } from "@kiframe/schema"
+import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import {
   clickPoint,
@@ -368,6 +368,7 @@ async function ensure(
 ): Promise<void> {
   const ref: StepRef = { phase: "setup", index, action: "ensure" }
   ctx.setCurrent(ref)
+  await returnFromClosedPage(ctx, ref)
   ctx.options.onEvent?.({ kind: "step_start", step: ref })
   const locator = "absent" in condition ? condition.absent : condition.present
   const what = describeLocator(locator)
@@ -454,11 +455,15 @@ async function ensure(
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
   ctx.setCurrent(step)
+  // Only pages this step opens are followed (not one opened by an earlier, failed step).
+  ctx.opened.length = 0
   // A popup that closed itself (an OAuth window, a print preview…): back to the page that opened it.
   await returnFromClosedPage(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
   await perform(ctx, action, step)
+  // This step closed the page it drove (a popup's "Done"): back to the opener before settling.
+  await returnFromClosedPage(ctx, step)
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only.
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
@@ -486,6 +491,9 @@ async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
     step,
     url: scrubSecrets(pathOnly(next.url()), ctx.secretValues),
   })
+  // Secret fields on this page are on screen again (or no longer): their blur follows now, not at
+  // the end of the step.
+  if (ctx.options.recording === true) await followSecretFields(ctx, step)
 }
 
 async function followOpenedPage(ctx: Ctx, step: StepRef): Promise<void> {
@@ -885,14 +893,16 @@ async function drag(
     await guard(step, () => source.dragTo(dest, { timeout: ctx.timeoutMs }))
     return
   }
-  const from = await moveCursorTo(ctx, source, step)
-  const start =
-    from ??
-    (await guard(step, async () => {
-      const box = await source.boundingBox({ timeout: ctx.timeoutMs })
-      if (box === null) throw new Error("the element to drag has no box")
-      return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-    }))
+  // Pressed where the cursor is, on the source: never elsewhere (scrolling to the drop target can
+  // push the source off screen: then the two don't fit together, and the step says so).
+  const start = await moveCursorTo(ctx, source, step)
+  if (start === undefined) {
+    throw new StepError(
+      step,
+      "target-not-found",
+      "the element to drag isn't on screen (with its drop target): make the view show both",
+    )
+  }
   const viewport = await guard(step, () => viewportOf(ctx.page))
   let to: Point
   if (dest === undefined) {
@@ -932,6 +942,17 @@ async function drag(
   }
 }
 
+/** The target, if it resolves to exactly one hidden `<input type=file>` (primary locator only). */
+async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
+  if (!isGrounded(target)) return undefined
+  const { intent: _i, fallbacks: _f, fingerprint: _p, nth: _n, ...locator } = target
+  const candidates = toPlaywright(ctx.page, locator).and(ctx.page.locator("input[type=file]"))
+  const count = await candidates.count().catch(() => 0)
+  if (count !== 1) return undefined
+  const visible = await candidates.isVisible().catch(() => true)
+  return visible ? undefined : candidates
+}
+
 /**
  * Upload a project asset: straight into the target if it's a file input, else through the file
  * chooser that clicking the target opens (a styled button or label). The OS dialog never shows.
@@ -950,6 +971,12 @@ async function upload(
     )
   }
   const file = await guard(step, async () => resolver(action.file))
+  // A file input is often hidden behind a styled button: `setInputFiles` works on it anyway.
+  const hidden = await hiddenFileInput(ctx, action.target)
+  if (hidden !== undefined) {
+    await guard(step, () => hidden.setInputFiles(file, { timeout: ctx.timeoutMs }))
+    return
+  }
   const target = await find(ctx, action.target, step)
   const isFileInput = await guard(step, () =>
     target.evaluate((el) => el instanceof HTMLInputElement && el.type === "file", undefined, {
@@ -961,12 +988,27 @@ async function upload(
     await guard(step, () => target.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return
   }
-  const chooser = ctx.page.waitForEvent("filechooser", { timeout: ctx.timeoutMs })
-  // A click that fails leaves the chooser wait pending: it's awaited (and its error dropped) below.
-  chooser.catch(() => undefined)
-  await clickAtCursor(ctx, target, step, { action: "click", target: action.target })
-  const opened = await guard(step, () => chooser)
-  await guard(step, () => opened.setFiles(file, { timeout: ctx.timeoutMs }))
+  // Listening before the click, with no deadline of its own: cursor travel and a risky approval
+  // (a human) come first; the wait for the chooser starts once the click is done.
+  let chooser: FileChooser | undefined
+  const onChooser = (c: FileChooser) => void (chooser ??= c)
+  ctx.page.on("filechooser", onChooser)
+  try {
+    await clickAtCursor(ctx, target, step, {
+      action: "click",
+      target: action.target,
+      ...(action.risky !== undefined && { risky: action.risky }),
+    })
+    const deadline = Date.now() + ctx.timeoutMs
+    while (chooser === undefined && Date.now() < deadline) await sleep(50)
+  } finally {
+    ctx.page.off("filechooser", onChooser)
+  }
+  const picked = chooser
+  if (picked === undefined) {
+    throw new StepError(step, "action-failed", "clicking the target didn't open a file chooser")
+  }
+  await guard(step, () => picked.setFiles(file, { timeout: ctx.timeoutMs }))
 }
 
 function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {

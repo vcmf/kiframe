@@ -26,18 +26,22 @@ const pages: Record<string, string> = {
   "/upload": `<!doctype html><title>Upload</title>
     <label>Attachment <input type="file" id="f"></label>
     <button id="b">Choose avatar</button><input type="file" id="hidden" style="display:none">
+    <label for="hid2">Avatar file</label><input type="file" id="hid2" style="display:none">
     <p id="s"></p>
     <script>
       const show = (e) => document.getElementById("s").textContent = e.target.id + ": " + [...e.target.files].map((f) => f.name).join(",")
       document.getElementById("f").onchange = show
       document.getElementById("hidden").onchange = show
+      document.getElementById("hid2").onchange = show
       document.getElementById("b").onclick = () => document.getElementById("hidden").click()
     </script>`,
   "/opener": `<!doctype html><title>Opener</title>
+    <label>API key <input id="key"></label>
     <a href="/popup-report" target="_blank">Open report</a>
     <button onclick="window.open('/popup-report', 'report', 'width=800,height=600')">Open popup</button>`,
   // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
   "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
+    <label>Code <input id="code" style="position:absolute; left:300px; top:285px; width:200px; height:30px; box-sizing:border-box"></label>
     <style>@keyframes spin { to { transform: rotate(360deg) } } #spin { width: 40px; height: 40px; background: #888; animation: spin 0.5s linear infinite }</style><div id="spin"></div>`,
   // A drawer that slides in (400 ms) after a click; another "Delete" exists elsewhere on the page.
   "/drawer": `<!doctype html><title>Drawer</title>

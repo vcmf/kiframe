@@ -77,18 +77,20 @@ export async function recordScenario(
     mkdirSync(join(outDir, "shots"), { recursive: true })
 
     const viewport = await viewportOf(page)
+    // The viewport rects are normalized against: the driven page's (a popup can have its own size).
+    let current = viewport
     const recordedAt = new Date()
     const t0 = Date.now()
     const at = () => Math.max(0, Date.now() - t0)
     const norm = (x: number, y: number) => ({
-      x: clamp01(x / viewport.width),
-      y: clamp01(y / viewport.height),
+      x: clamp01(x / current.width),
+      y: clamp01(y / current.height),
     })
     const rect = (b: Box) => ({
-      x: b.x / viewport.width,
-      y: b.y / viewport.height,
-      w: Math.max(0, b.width / viewport.width),
-      h: Math.max(0, b.height / viewport.height),
+      x: b.x / current.width,
+      y: b.y / current.height,
+      w: Math.max(0, b.width / current.width),
+      h: Math.max(0, b.height / current.height),
     })
 
     /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
@@ -150,7 +152,17 @@ export async function recordScenario(
     const onPageSwitch = async (next: Page) => {
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
-      await next.screencast.start(castOptions)
+      // A popup opened at its own size: rects and the capture size follow it (the take warns
+      // about the frame-size change).
+      current = await viewportOf(next).catch(() => current)
+      const scale = Math.min(3, await next.evaluate(() => window.devicePixelRatio).catch(() => 1))
+      await next.screencast.start({
+        ...castOptions,
+        size: {
+          width: Math.round(current.width * scale),
+          height: Math.round(current.height * scale),
+        },
+      })
     }
 
     // ── events ──
