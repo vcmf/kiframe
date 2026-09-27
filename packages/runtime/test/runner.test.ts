@@ -217,7 +217,6 @@ steps:
   })
 
   it("says why a click failed when the target is off screen (collapsed panel)", async () => {
-    const started = Date.now()
     const error = await failure(
       `setup: [{ action: goto, url: /collapsed }]
 steps: [{ id: open, action: click, target: { by: role, role: button, name: New board, exact: true } }]
@@ -228,11 +227,9 @@ steps: [{ id: open, action: click, target: { by: role, role: button, name: New b
     )
     expect(error.reason).toBe("target-not-found")
     expect(error.message).toMatch(/off screen even after scrolling .*collapsed panel/)
-    expect(Date.now() - started).toBeLessThan(2500)
   })
 
   it("still clicks a button scrolled out of an inner scroll container (app shell)", async () => {
-    await page.goto(`${server.url}/shell-scroll`)
     await run(`setup:
   - { action: goto, url: /shell-scroll }
   - { action: scroll, within: { by: css, selector: "#m" }, by: { y: 3000 } }

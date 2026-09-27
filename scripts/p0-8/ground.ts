@@ -202,10 +202,6 @@ const quickProject: ProjectConfig = {
   },
 }
 
-/**
- * One item on the live page, through the real runner: an on-camera step (with its id), or a
- * setup / teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`).
- */
 /** One zod issue as the model reads it. */
 const formatIssue = (issue: { message: string; path: PropertyKey[] } | undefined) =>
   `${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.map(String).join(".")}` : ""}`
@@ -224,6 +220,10 @@ function asObject(raw: unknown): unknown {
   }
 }
 
+/**
+ * One item on the live page, through the real runner: an on-camera step (with its id), or a
+ * setup / teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`).
+ */
 async function runStep(input: unknown): Promise<string> {
   const raw = asObject(input)
   if (typeof raw !== "object" || raw === null) {
@@ -257,8 +257,13 @@ async function runStep(input: unknown): Promise<string> {
     })
     return `ok. url: ${new URL(page.url()).pathname}`
   } catch (error) {
+    // An ensure run alone doesn't know the scene's teardown or setup: say so, not "no teardown".
+    const alone =
+      !step.success && "ensure" in (raw as Record<string, unknown>)
+        ? " (ensure checked alone: your teardown and setup aren't known here; the finish replay runs them)"
+        : ""
     return error instanceof StepError
-      ? `failed (${error.reason}): ${error.detail}`
+      ? `failed (${error.reason}): ${error.detail}${alone}`
       : `failed: ${String(error)}`
   }
 }
@@ -443,9 +448,10 @@ try {
       continue
     }
     for (const call of message.tool_calls) {
-      if (stopRequested) {
-        // Stopped: answer the remaining calls without running them (no replay, no deletes).
-        messages.push({ role: "tool", tool_call_id: call.id, content: "stopped by the user" })
+      if (stopRequested || finalYaml !== undefined) {
+        // Stopped, or already grounded: answer the remaining calls without running them.
+        const content = stopRequested ? "stopped by the user" : "already finished: not run"
+        messages.push({ role: "tool", tool_call_id: call.id, content })
         continue
       }
       if (call.type !== "function") {
@@ -461,7 +467,10 @@ try {
       let args: Record<string, unknown> = {}
       let badArgs = false
       try {
-        args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>
+        const parsed: unknown = JSON.parse(call.function.arguments || "{}")
+        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>
+        } else badArgs = true
       } catch {
         badArgs = true
       }

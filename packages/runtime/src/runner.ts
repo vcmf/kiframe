@@ -498,8 +498,15 @@ async function explainOffScreen(
   try {
     await action()
   } catch (error) {
-    // Only an action that failed on its own (a timeout…): approvals and other reasons stay as is.
-    if (!(error instanceof StepError) || error.reason !== "action-failed") throw error
+    // Only Playwright's own timeout on the action: approvals, "nothing was clicked" and every
+    // other reason stay as they are.
+    if (
+      !(error instanceof StepError) ||
+      error.reason !== "action-failed" ||
+      !/Timeout \d+ms exceeded/.test(error.detail)
+    ) {
+      throw error
+    }
     const box = await target.boundingBox({ timeout: 300 }).catch(() => null)
     const viewport = box === null ? undefined : await viewportOf(ctx.page).catch(() => undefined)
     const outside =
