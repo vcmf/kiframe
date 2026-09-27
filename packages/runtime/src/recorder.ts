@@ -86,11 +86,11 @@ export async function recordScenario(
       x: clamp01(x / current.width),
       y: clamp01(y / current.height),
     })
-    const rect = (b: Box) => ({
-      x: b.x / current.width,
-      y: b.y / current.height,
-      w: Math.max(0, b.width / current.width),
-      h: Math.max(0, b.height / current.height),
+    const rect = (b: Box, v: { width: number; height: number } = current) => ({
+      x: b.x / v.width,
+      y: b.y / v.height,
+      w: Math.max(0, b.width / v.width),
+      h: Math.max(0, b.height / v.height),
     })
 
     /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
@@ -155,6 +155,8 @@ export async function recordScenario(
     const onPageSwitch = async (next: Page) => {
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
+      // The next step's shot must be of this page, not the last frame of the previous one.
+      lastFrame = undefined
       // A popup opened at its own size: rects and the capture size follow it (the take warns
       // about the frame-size change).
       current = await viewportOf(next).catch(() => current)
@@ -255,7 +257,8 @@ export async function recordScenario(
             ...base(e.step),
             kind: "sensitive",
             id: e.id,
-            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box),
+            // Normalized in the viewport it was measured in (measured before the capture switched).
+            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
             why: "secret-field",
           })
           break

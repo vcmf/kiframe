@@ -507,8 +507,11 @@ steps:
       take.events.find((e) => e.kind === "step_start" && e.stepId === "look")?.t ?? 0
     const keyEvents = sensitive.filter((e) => e.id.includes("acme.key"))
     const goneAt = keyEvents.find((e) => e.rect.w === 0)?.t ?? Infinity
-    const backAt = keyEvents.find((e) => e.t > goneAt && e.rect.w > 0)?.t ?? Infinity
-    expect(backAt).toBeLessThanOrEqual(lookStart)
+    const back = keyEvents.find((e) => e.t > goneAt && e.rect.w > 0)
+    expect(back?.t ?? Infinity).toBeLessThanOrEqual(lookStart)
+    // Same field, same opener viewport: the same rect as before the popup (not scaled to 800×600).
+    const before = keyEvents.find((e) => e.rect.w > 0)
+    expect(back?.rect).toEqual(before?.rect)
   })
 
   it("follows a secret field with its blur when the page scrolls", async () => {
