@@ -145,11 +145,6 @@ export async function runScenario(
     watched.add(p)
     p.on("popup", onPopup)
   }
-  const onPopup = (popup: Page) => {
-    opened.push(popup)
-    if (!trackers.has(popup)) trackers.set(popup, new NetworkTracker(popup))
-    watch(popup)
-  }
   const trackerOf = (p: Page): NetworkTracker => {
     let tracker = trackers.get(p)
     if (tracker === undefined) {
@@ -157,6 +152,11 @@ export async function runScenario(
       trackers.set(p, tracker)
     }
     return tracker
+  }
+  const onPopup = (popup: Page) => {
+    opened.push(popup)
+    trackerOf(popup)
+    watch(popup)
   }
   // Every main-frame navigation is reported (goto, redirects, links clicked…), attributed to the
   // step running at that moment.
@@ -196,6 +196,7 @@ export async function runScenario(
     attach,
     detach,
     trackerOf,
+    cursors: new Map(),
     base,
     settleMs,
     options,
@@ -249,9 +250,25 @@ export async function runScenario(
       !root.isClosed() &&
       (scenario.teardown ?? []).length > 0
     ) {
-      const ref: StepRef = { phase: "teardown", index: 0, action: "teardown" }
+      const ref: StepRef = { phase: "teardown", index: 0, action: "return to the start page" }
       ctx.openers.length = 0
-      await switchPage(ctx, root, ref).catch(() => undefined)
+      try {
+        await switchPage(ctx, root, ref)
+      } catch (error) {
+        // Best effort like the teardown itself, but never silent (the capture may be off).
+        const stepError =
+          error instanceof StepError
+            ? error
+            : new StepError(ref, "action-failed", firstLine(error), { cause: error })
+        try {
+          options.onEvent?.({
+            kind: "teardown_failed",
+            error: scrubError(stepError, secretValues) as StepError,
+          })
+        } catch {
+          // reporting must never stop the cleanup
+        }
+      }
     }
     let teardownFailure: StepError | undefined
     for (const [index, action] of (ensureFailed ? [] : (scenario.teardown ?? [])).entries()) {
@@ -307,6 +324,8 @@ interface Ctx {
   detach: (page: Page) => void
   /** The network tracker of a page (kept for the whole run). */
   trackerOf: (page: Page) => NetworkTracker
+  /** Where the cursor was on each page the run left. */
+  cursors: Map<Page, Point>
   setCurrent: (step: StepRef | undefined) => void
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
@@ -500,9 +519,10 @@ async function ensure(
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
   ctx.setCurrent(step)
-  await syncPage(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
+  // After step_start: a page switch's events (navigation, blurs) belong to this step.
+  await syncPage(ctx, step)
   await perform(ctx, action, step)
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
@@ -518,11 +538,12 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
 async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.detach(ctx.page)
+  // The real mouse is per page: each page keeps where the cursor was on it.
+  if (ctx.cursor !== undefined) ctx.cursors.set(ctx.page, ctx.cursor)
   ctx.page = next
   ctx.network = ctx.trackerOf(next)
   ctx.attach(next)
-  // The real mouse is per page: the next travel starts from the new page's centre.
-  ctx.cursor = undefined
+  ctx.cursor = ctx.cursors.get(next)
   // This page's secret fields are measured BEFORE the capture moves here (its first frame is
   // already covered); the other pages' blurs end only AFTER the capture left them.
   if (ctx.options.recording === true) await followSecretFields(ctx, step, "here")
@@ -586,6 +607,7 @@ async function followSecretFields(
   const fields = ctx.secretFields.filter(
     (f) => which === "all" || (which === "here") === (f.page === ctx.page),
   )
+  if (fields.length === 0) return
   // In parallel: every field costs a round trip or two after each step.
   // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
   // and comes back if the run returns to that page.
@@ -594,7 +616,6 @@ async function followSecretFields(
       field.page === ctx.page ? measureField(field.locator) : Promise.resolve(null),
     ),
   )
-  if (fields.length === 0) return
   const viewport = await viewportOf(ctx.page).catch(() => undefined)
   for (const [i, field] of fields.entries()) {
     const box = measured[i]
@@ -913,11 +934,23 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     case "select": {
       const target = await find(ctx, action.target, step)
+      // "Cancel subscription" as an option is as risky as the button would be: the option that
+      // will be picked (by value or label) is judged by its label and value, before anything moves.
+      const picked = await guard(step, () =>
+        target.evaluate(
+          (el, wanted) => {
+            const options = el instanceof HTMLSelectElement ? [...el.options] : []
+            const o = options.find((x) => x.value === wanted || x.label === wanted)
+            return o === undefined ? wanted : `${o.label} ${o.value}`
+          },
+          action.option,
+          { timeout: ctx.timeoutMs },
+        ),
+      )
+      await checkRiskyLabel(ctx, step, action.risky, picked)
       // The cursor goes to it (on camera); the native dropdown isn't in the screencast anyway.
       const at = await moveCursorTo(ctx, target, step)
       await reportPress(ctx, step, target, at)
-      // "Cancel subscription" as an option is as risky as the button would be.
-      await checkRiskyLabel(ctx, step, action.risky, action.option)
       // Playwright's own: a string matches an option's value or its label.
       await guard(step, () => target.selectOption(action.option, { timeout: ctx.timeoutMs }))
       return
@@ -1000,25 +1033,11 @@ async function drag(
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
   const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
-  if (dest !== undefined) {
-    // Dropping onto "Trash" / "Delete" deletes like a click on it would.
-    const label = await dest
-      .evaluate(
-        (el) =>
-          [el.textContent, el.getAttribute("aria-label"), el.getAttribute("title")]
-            .filter(Boolean)
-            .join(" "),
-        undefined,
-        { timeout: ctx.timeoutMs },
-      )
-      // Unreadable: fails closed like the click check.
-      .catch(() => "delete")
-    await checkRiskyLabel(ctx, step, action.risky, label)
-  }
   // Filmed (even with instant pacing: the cursor and the press are still reported), or not.
   const onCamera = step.phase === "steps"
   if (!onCamera && dest !== undefined) {
-    await guard(step, () => source.dragTo(dest, { timeout: ctx.timeoutMs }))
+    // Several moves: pointer drag libraries ignore the move that starts a drag.
+    await guard(step, () => source.dragTo(dest, { timeout: ctx.timeoutMs, steps: 5 }))
     return
   }
   // Pressed where the cursor is, on the source: never elsewhere (scrolling to the drop target can

@@ -6,8 +6,8 @@ const pages: Record<string, string> = {
   // Like dnd-kit: the move that activates a drag doesn't move the element.
   "/pointer-lib": `<!doctype html><title>Pointer lib</title>
     <div id="k" role="slider" aria-label="Level" style="position:absolute; left:100px; top:100px; width:40px; height:40px; background:#888"></div>
-    <div id="trash" style="position:absolute; left:500px; top:100px; width:120px; height:80px; background:#fcc">Trash</div>
-    <label>Plan <select id="plan2"><option>Keep</option><option>Cancel subscription</option></select></label>
+    <div id="trash" style="position:absolute; left:500px; top:100px; width:120px; height:80px; background:#fcc">Drop files here</div>
+    <label>Plan <select id="plan2"><option>Keep</option><option value="c">Cancel subscription</option></select></label>
     <p id="s" style="position:absolute; top:400px"></p>
     <script>
       const k = document.getElementById("k"); let down, active = false
