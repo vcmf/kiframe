@@ -1,0 +1,16 @@
+{
+  "goal": "Show a new user how to create an event type in Cal.com: after signing in (setup, use the login preset), create a new event type titled '15 min intro call' with a 15 minute duration, save it, and show it in the event types list. 10-15 on-camera steps with short captions. The teardown must delete that event type.",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "turns": 41,
+  "toolCalls": 42,
+  "stepsRun": 29,
+  "stepFailures": 2,
+  "questions": [],
+  "replays": 1,
+  "promptTokens": 300802,
+  "completionTokens": 10016,
+  "cachedTokens": 283392,
+  "costUsd": 0.018514507,
+  "ms": 254150,
+  "result": "grounded"
+}

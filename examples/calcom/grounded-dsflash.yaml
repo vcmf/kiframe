@@ -1,0 +1,82 @@
+# Written and grounded by the P0-8 agent (scripts/p0-8/ground.ts), unedited.
+version: 1
+setup:
+  - { preset: login }
+  - { action: goto, url: /event-types }
+  - ensure: { absent: { by: role, role: link, name: "15 min intro call", exact: true } }
+steps:
+  - {
+      id: open-new,
+      action: click,
+      target: { by: role, role: button, name: "New", exact: true },
+      caption: "Create a new event type",
+    }
+  - {
+      id: name-event,
+      action: type,
+      target: { by: label, name: "Title" },
+      value: "15 min intro call",
+      clear: true,
+      caption: "Give it a name",
+    }
+  - {
+      id: set-duration,
+      action: type,
+      target: { by: role, role: textbox, name: "Duration", exact: true },
+      value: "15",
+      clear: true,
+      caption: "Set the meeting length",
+    }
+  - {
+      id: continue,
+      action: click,
+      target: { by: role, role: button, name: "Continue", exact: true },
+      caption: "Create the booking link",
+    }
+  - { id: created, action: waitFor, until: { text: "created successfully" } }
+  - { id: beat-created, action: pause, ms: 900 }
+  - {
+      id: save,
+      action: click,
+      target: { by: role, role: button, name: "Save", exact: true },
+      caption: "Save your event type",
+    }
+  - { id: saved, action: waitFor, until: { text: "updated successfully" } }
+  - { id: beat-saved, action: pause, ms: 900 }
+  - {
+      id: back,
+      action: click,
+      target: { by: role, role: link, name: "Back", exact: true },
+      caption: "Back to your links",
+    }
+  - {
+      id: see-in-list,
+      action: waitFor,
+      until: { visible: { by: role, role: link, name: "15 min intro call", exact: true } },
+      caption: "Your event type is live",
+    }
+  - {
+      id: confirm-list,
+      action: expect,
+      that: { visible: { by: role, role: heading, name: "15 min intro call", exact: true } },
+      caption: "Ready to be booked",
+    }
+  - { id: beat-done, action: pause, ms: 1200 }
+teardown:
+  - {
+      action: type,
+      target: { by: role, role: searchbox, name: "Search", exact: true },
+      value: "15 min intro call",
+      clear: true,
+    }
+  - { action: click, target: { by: role, role: button, name: "Options", exact: true }, risky: true }
+  - {
+      action: click,
+      target: { by: role, role: menuitem, name: "Delete", exact: true },
+      risky: true,
+    }
+  - {
+      action: click,
+      target: { by: role, role: button, name: "Delete link", exact: true },
+      risky: true,
+    }
