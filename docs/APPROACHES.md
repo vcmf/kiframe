@@ -150,7 +150,7 @@ Note: capture does involve encoding. Screencast frames (JPEG) are encoded into t
 |---|---|---|---|
 | Web app | Chromium | ✅ Full support | **v0** |
 | Electron (dev build or unhardened app) | Bundled Chromium | ✅ `_electron.launch()` | **v0.1** |
-| Electron (packaged + hardened) | Bundled Chromium | ⚠️ `_electron.launch()` fails if the app turned off the `EnableNodeCliInspectArguments` fuse (a common hardening step). **Fallback:** launch with `--remote-debugging-port` + `connectOverCDP` (if that isn't disabled too) | v0.1: test on a real hardened app |
+| Electron (packaged + hardened) | Bundled Chromium | ⚠️ `_electron.launch()` fails when the app turned off the `EnableNodeCliInspectArguments` fuse. **`--remote-debugging-port` + `connectOverCDP` works** (measured on smterm with hardened fuses, PHASE0-FINDINGS F4): the default for Electron targets, unless the app strips the switch | v0.1 |
 | Tauri on **Windows** | WebView2 (Chromium) | ✅ CDP attach (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`) | Later |
 | Tauri on **macOS** | WKWebView (WebKit) | ❌ No CDP, no Playwright, and **tauri-driver doesn't support macOS** either | Workaround 1 only |
 | Tauri on **Linux** | WebKitGTK | ⚠️ WebDriver only (`tauri-driver`), not Playwright | Later, second driver |
