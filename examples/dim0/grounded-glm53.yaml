@@ -1,0 +1,74 @@
+# Written and grounded by the P0-8 agent (scripts/p0-8/ground.ts), unedited.
+version: 1
+setup:
+  - preset: open-app
+  - action: goto
+    url: /
+  - ensure:
+      absent: { by: role, role: heading, name: "Q4 roadmap", exact: true }
+steps:
+  - id: open-new-board
+    action: click
+    target: { by: text, text: "New Board", exact: true }
+    caption: "Start instantly — no account needed"
+  - id: pause-open
+    action: pause
+    ms: 700
+  - id: open-name
+    action: click
+    target: { by: role, role: button, name: "Untitled board", nth: 1 }
+  - id: name-board
+    action: type
+    target: { by: role, role: textbox, name: "Board name" }
+    value: "Q4 roadmap"
+    clear: true
+    submit: false
+    caption: "Name it in one click"
+  - id: commit-name
+    action: press
+    keys: Enter
+  - id: pick-note-tool
+    action: click
+    target: { by: role, role: button, name: "Note", exact: true }
+    caption: "Grab the Note tool"
+  - id: pick-text-tool
+    action: click
+    target: { by: role, role: button, name: "Text", exact: true }
+    caption: "…or the Text tool"
+  - id: open-sidebar
+    action: click
+    target: { by: role, role: button, name: "Toggle Sidebar" }
+  - id: open-theme-menu
+    action: click
+    target: { by: role, role: button, name: "Toggle theme" }
+    caption: "Switch the theme anytime"
+  - id: choose-theme
+    action: click
+    target: { by: role, role: menuitem, name: "Matcha" }
+    caption: "Fresh look, instantly"
+  - id: go-home
+    action: click
+    target: { by: role, role: button, name: "Home", exact: true }
+    caption: "Back Home"
+  - id: wait-home
+    action: waitFor
+    until: { text: "On this device" }
+  - id: show-board
+    action: expect
+    that: { visible: { by: role, role: heading, name: "Q4 roadmap", exact: true } }
+    caption: "There's your Q4 roadmap"
+teardown:
+  - action: goto
+    url: /
+  - action: waitFor
+    until: { text: "On this device" }
+  - action: hover
+    target: { by: role, role: heading, name: "Q4 roadmap", exact: true }
+  - action: click
+    target: { by: role, role: button, name: "Delete board" }
+    risky: true
+  - action: waitFor
+    until: { visible: { by: role, role: alertdialog, name: "Delete this board?" } }
+  - action: click
+    target: { by: role, role: button, name: "Delete" }
+    risky: true

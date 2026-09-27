@@ -133,6 +133,9 @@ Rules:
 - As soon as every step and the teardown ran ok once, call finish. Don't start over by hand to re-check:
   finish itself replays the whole scene from scratch in a fresh browser and tells you what fails.
 - A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.
+- The replay starts in a FRESH browser (no cookies, no storage): panels, sidebars and menus are in their
+  default state there, whatever you left open on the live page. Steps must not rely on UI state from your
+  exploration: open what they need explicitly.
 Project presets available: ${Object.keys(project.presets).join(", ") || "none"}.
 App: ${project.target.url}`
 
@@ -186,7 +189,7 @@ async function runStep(input: unknown): Promise<string> {
     await runScenario(page, scenario, quickProject, {
       resolveSecret,
       approveRisky: () => true,
-      timeoutMs: 5000,
+      timeoutMs: STEP_TIMEOUT_MS,
     })
     return `ok. url: ${new URL(page.url()).pathname}`
   } catch (error) {
@@ -196,6 +199,8 @@ async function runStep(input: unknown): Promise<string> {
   }
 }
 
+// Real SaaS pages can take seconds to hydrate (Cal.com's login needs more than 6 s): FAILURE-CATALOGUE #8.
+const STEP_TIMEOUT_MS = 15_000
 const SNAPSHOT_MAX = 14_000
 async function snapshot(within?: unknown): Promise<string> {
   let root = page.locator("body")
@@ -233,7 +238,7 @@ async function replay(yaml: string): Promise<string> {
     await runScenario(fresh, scenario, quickProject, {
       resolveSecret,
       approveRisky: () => true,
-      timeoutMs: 6000,
+      timeoutMs: STEP_TIMEOUT_MS,
     })
     return "ok"
   } catch (error) {

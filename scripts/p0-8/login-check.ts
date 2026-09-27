@@ -13,7 +13,10 @@ const env = (name: string) => process.env[name.toUpperCase().replace(/[^A-Z0-9]/
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
 try {
-  await runScenario(page, scenario, project, { resolveSecret: env, timeoutMs: 15_000 })
+  await runScenario(page, scenario, project, {
+    resolveSecret: env,
+    timeoutMs: Number(process.env.KF_TIMEOUT ?? 15_000),
+  })
   console.log("login ok:", new URL(page.url()).pathname)
   if (process.argv[2] === "--list") {
     await page.waitForTimeout(2500)
