@@ -428,6 +428,54 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
   const scenario = (steps: string) =>
     parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: /projects }]\nsteps:\n${steps}`)
 
+  it("keeps filming when the run follows a new tab (one clock across pages)", async () => {
+    // Frames only come on repaint: the opener is static, the new tab is animated. The same
+    // scene without following the tab is the baseline.
+    const record = async (steps: string) => {
+      const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+      const page = await context.newPage()
+      const take = await recordScenario(
+        page,
+        parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: /opener }]\nsteps:\n${steps}`),
+        project(),
+        { outDir },
+      )
+      await context.close()
+      const probe = JSON.parse(
+        execFileSync(
+          "ffprobe",
+          [
+            "-v",
+            "error",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "json",
+            join(outDir, "frames.webm"),
+          ],
+          { encoding: "utf8" },
+        ),
+      ) as { streams: { nb_read_frames: string }[] }
+      return { take, frames: Number(probe.streams[0]?.nb_read_frames) }
+    }
+    const followed =
+      await record(`  - { id: tab, action: click, target: { by: role, role: link, name: Open report } }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+  - { id: look, action: pause, ms: 800 }
+`)
+    const baseline =
+      await record(`  - { id: stay, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+  - { id: look, action: pause, ms: 800 }
+`)
+    expect(followed.take.meta.outcome.status).toBe("complete")
+    expect(
+      followed.take.events.some((e) => e.kind === "navigate" && e.url.endsWith("/popup-report")),
+    ).toBe(true)
+    expect(followed.frames).toBeGreaterThan(baseline.frames + 5)
+  })
+
   it("follows a secret field with its blur when the page scrolls", async () => {
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })

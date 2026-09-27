@@ -98,3 +98,10 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Keep the `migrated` flag:** the parse functions drop it; the project store (M1-9) needs it to rewrite upgraded files.
 - **Social-cut presets:** `vertical` / `square` should also tighten the camera and enlarge captions (OBJECT-MODEL §0.5); only the size follows the preset today.
 
+## @kiframe/runtime actions (M1-2)
+- **Popup windows of another size:** tabs share the context viewport, but a `window.open` with its own width/height films at that size: the take then has a frame-size change (only warned, see P0-5). Film popups at the take's size, or letterbox them.
+- **Several pages opened in one step:** the last one opened is followed; the others stay open in the background, undriven.
+- **`hover.hold`:** OBJECT-MODEL lists a hover `hold?`; the common `hold` (a freeze after the step) covers the presentation beat, a hover that keeps the pointer for a duration isn't implemented.
+- **`select` on camera:** the native dropdown isn't in the screencast (the value just changes); a custom overlay could show the options.
+- **Drag of long lists:** a drag doesn't auto-scroll the page while held; a drop target off screen fails with "the drop target isn't on screen".
+
