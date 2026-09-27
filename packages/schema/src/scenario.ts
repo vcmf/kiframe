@@ -267,7 +267,6 @@ export type ScenarioOverrides = z.infer<typeof ScenarioOverrides>
 function hasTarget(step: Step): boolean {
   return (
     step.action === "click" ||
-    step.action === "hover" ||
     step.action === "type" ||
     (step.action === "scroll" &&
       (step.to !== undefined || step.until !== undefined || step.within !== undefined))
