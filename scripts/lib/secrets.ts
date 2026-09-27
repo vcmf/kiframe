@@ -16,3 +16,11 @@ export function envSecretResolver(names: readonly string[]): (name: string) => s
     return value
   }
 }
+
+/** The names that are actually provided, and their values (for scrubbing tool output). */
+export function providedSecrets(names: readonly string[]): { name: string; value: string }[] {
+  return names.flatMap((name) => {
+    const value = process.env[envName(name)]
+    return value === undefined || value === "" ? [] : [{ name, value }]
+  })
+}

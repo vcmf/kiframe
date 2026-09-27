@@ -74,6 +74,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Grounding (P0-8)
 - **Clipped or covered collapsed panels:** "off screen" is detected for elements translated off the left/top of the page only; a sidebar collapsed to `width: 0; overflow: hidden`, or behind an overlay, still times out without a reason. Use the centre-point probe (`isOnScreen`) when a pointer action's target can't be hit.
+- **Off-screen for conditions too:** `expect`/`waitFor` `visible` still count an element in a collapsed panel as visible (only click/hover check it can be brought on screen): a shared "reachable" filter next to `visibleOnly`.
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
 
