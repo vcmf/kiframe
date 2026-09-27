@@ -32,6 +32,10 @@ const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const runs = Number(values.runs)
 const dirty = new Set(values.dirty.split(",").filter(Boolean).map(Number))
+if (!Number.isInteger(runs) || runs < 1 || [...dirty].some((d) => !Number.isInteger(d) || d < 1)) {
+  console.error("--runs and --dirty take positive whole numbers")
+  process.exit(2)
+}
 // A dirty run has no teardown at all: after another dirty run, its `ensure` couldn't clean up.
 for (const d of dirty) {
   if (dirty.has(d + 1)) {
@@ -95,9 +99,12 @@ try {
     // Even from a failed run: its profile is carried over, with the session in it.
     for (const e of events) if (e.kind === "preset_done" && e.session) sessions.add(e.name)
     row.wallMs = Date.now() - started
-    // Carried to the next run: the "account" keeps its data (IndexedDB included).
-    storageState = await context.storageState({ indexedDB: true })
-    await context.close()
+    try {
+      // Carried to the next run: the "account" keeps its data (IndexedDB included).
+      storageState = await context.storageState({ indexedDB: true })
+    } finally {
+      await context.close()
+    }
     report.push(row)
     console.log(JSON.stringify(row))
   }
