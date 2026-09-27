@@ -123,6 +123,8 @@ card / media / still-asset: always ready
 
 Rule of thumb: **one scene = one idea, 5–30s**.
 
+**Implemented (M1-1, `packages/schema`):** `Project` (`project.json`), `Scene` (`scene.json`), `OrgSettings` (brand kit, style, environments, rule bank, LLM policy), `UserPreferences`, `Style` / `StyleOverride`, and `resolveProjectConfig` (org + project → the `ProjectConfig` the runtime reads: URL from the environment, org rules before the project's). Differences from the sketch above: a scene's scenario and composition are separate files (`scene.json` holds `source: { kind: "recording" }`), a guide output lists its `formats`, v0 has only the `recording` / `card` kinds and `video` / `guide` outputs, and every document has a `version` with migrations on read (a newer version is refused).
+
 **Project on disk.** The folder contains **objects only**, so it can live anywhere, including the user's app repo:
 ```
 q4-release.kiframe/

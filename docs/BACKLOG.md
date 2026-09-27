@@ -89,3 +89,10 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Phase 0 harnesses
 - **Harness output:** Phase 0 scripts print errors to stdout/stderr; runs launched with output discarded lose them (one Cal.com replay failure went undiagnosed that way). Write each run's error into its report file too.
+
+## @kiframe/schema model (M1-1)
+- **Account types** (`User`, `Org`, `Membership`, `Invitation`, APPROACHES §10c) come with the server (M5-3); M1-1 has only what the desktop reads (org settings, user preferences).
+- **Later kinds:** `still` / `media` scenes (v0.1), `gif-per-scene` / `html-presentation` outputs (later), `capture: dom`.
+- **Two Style shapes:** the schema's nested `Style` (and overrides) vs the compositor's flat `Style` (with the output size); `styleFrom` maps one to the other. Unify when the compositor is completed (M3-2).
+- **Social-cut presets:** `vertical` / `square` should also tighten the camera and enlarge captions (OBJECT-MODEL §0.5); only the size follows the preset today.
+
