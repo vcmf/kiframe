@@ -36,7 +36,7 @@ export const Format = z.strictObject({
     .number()
     .int()
     .min(240)
-    .max(4320)
+    .max(7680)
     .refine((n) => n % 2 === 0, "even sizes only"),
   fps: z
     .union([z.literal(24), z.literal(25), z.literal(30), z.literal(50), z.literal(60)])
@@ -58,7 +58,7 @@ const CaptionStyle = z.strictObject({
 export const Style = z.strictObject({
   /** Background gradient behind the window (from, to). */
   background: z.tuple([Color, Color]),
-  /** Space around the window, as a fraction of the output height. */
+  /** Space around the window, as a fraction of the output's shorter side (≤ 0.3: content keeps ≥ 40%). */
   padding: z.number().min(0).max(0.3),
   /** Window corner radius, in output pixels. */
   radius: z.number().int().min(0).max(200),
@@ -91,11 +91,17 @@ export const DEFAULT_STYLE: Style = {
 
 /** Applies overrides in order (later wins), field by field; nested objects merge. */
 export function applyStyle(base: Style, ...overrides: (StyleOverride | undefined)[]): Style {
-  let style: Style = { ...base, cursor: { ...base.cursor }, captions: { ...base.captions } }
+  // Fresh objects all the way down: a caller editing its result never changes a lower layer.
+  let style: Style = {
+    ...base,
+    background: [...base.background],
+    cursor: { ...base.cursor },
+    captions: { ...base.captions },
+  }
   for (const o of overrides) {
     if (o === undefined) continue
     style = {
-      background: o.background ?? style.background,
+      background: o.background !== undefined ? [...o.background] : style.background,
       padding: o.padding ?? style.padding,
       radius: o.radius ?? style.radius,
       cursor: { size: o.cursor?.size ?? style.cursor.size },

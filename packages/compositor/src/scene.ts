@@ -9,6 +9,7 @@ import {
   type Timeline,
 } from "@kiframe/generators"
 import {
+  applyStyle,
   DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE,
   type Anchor,
   type CameraSegment,
@@ -16,7 +17,6 @@ import {
   type NRect,
   type Scenario,
   type Style as SchemaStyle,
-  type StyleOverride,
 } from "@kiframe/schema"
 
 // What the output shows at a given output time (docs/OBJECT-MODEL.md §5), as plain data: pure and
@@ -117,14 +117,20 @@ interface Move {
   v0: Vec
 }
 
+/**
+ * `baseStyle` is the style resolved below the scene (product defaults, org, project: `resolveStyle`
+ * without scene and output); the composition's own style (the scene) goes on it; `style` (the
+ * output: size, format, its overrides) goes on top. Same order as `resolveStyle`.
+ */
 export function prepare(
   composition: Composition,
   scenario: Scenario,
   take: TakeInput,
   style: Partial<Style> = {},
+  baseStyle: SchemaStyle = SCHEMA_DEFAULT_STYLE,
 ): Prepared {
-  // The composition's own style (scene overrides), then the caller's (export presets) on top.
-  const s = { ...DEFAULT_STYLE, ...styleFrom(composition.style), ...style }
+  const size = { width: DEFAULT_STYLE.width, height: DEFAULT_STYLE.height, fps: DEFAULT_STYLE.fps }
+  const s = { ...flatten(applyStyle(baseStyle, composition.style), size), ...style }
   const { timeline } = buildTimeline(scenario, take)
   const map = timeMap(composition.tracks.clips, timeline)
   const base: Omit<Prepared, "moves" | "softness"> = {
@@ -144,26 +150,13 @@ export function prepare(
   return { ...base, moves, softness }
 }
 
-/** A composition's style override, in the compositor's flat Style (the size is the output's). */
-function styleFrom(o: StyleOverride | undefined): Partial<Style> {
-  if (o === undefined) return {}
-  return {
-    ...(o.background !== undefined && { background: o.background }),
-    ...(o.padding !== undefined && { padding: o.padding }),
-    ...(o.radius !== undefined && { radius: o.radius }),
-    ...(o.maxScale !== undefined && { maxScale: o.maxScale }),
-    ...(o.cursor?.size !== undefined && { cursorSize: o.cursor.size }),
-    ...(o.captions?.size !== undefined && { captionSize: o.captions.size }),
-    ...(o.captions?.position !== undefined && { captionPosition: o.captions.position }),
-  }
-}
-
 /** Where the take frame goes in the output (aspect kept, centered, inside the padding). */
 export function contentBox(
   style: Style,
   frame: { width: number; height: number },
 ): { x: number; y: number; w: number; h: number } {
-  const pad = style.padding * style.height
+  // A fraction of the shorter side: the same margin for landscape, vertical and square outputs.
+  const pad = style.padding * Math.min(style.width, style.height)
   const availW = style.width - 2 * pad
   const availH = style.height - 2 * pad
   const k = Math.min(availW / frame.width, availH / frame.height)

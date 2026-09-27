@@ -2,6 +2,7 @@
 // incompatibly, its version goes up and a migration from the previous version is registered here:
 // older documents are upgraded on read, one version at a time, before validation. A document from
 // a newer Kiframe is refused with a clear message (never guessed at, never rewritten).
+// Versions count from the first release: pre-release changes (no user has files yet) stay at 1.
 
 export type DocumentKind =
   | "project"
@@ -37,6 +38,16 @@ export const MIGRATIONS: MigrationRegistry = {
   migrations: {},
 }
 
+const LABELS: Record<DocumentKind, string> = {
+  project: "project",
+  "project-config": "project config",
+  scene: "scene",
+  scenario: "scenario",
+  composition: "composition",
+  "org-settings": "org settings",
+  "user-preferences": "user preferences",
+}
+
 export class VersionError extends Error {
   constructor(message: string) {
     super(message)
@@ -62,7 +73,7 @@ export function migrate(
   const current = registry.current[kind]
   if (version > current) {
     throw new VersionError(
-      `this ${kind} was made by a newer version of Kiframe (version ${version}; this one reads up to ${current}): update Kiframe to open it`,
+      `made by a newer version of Kiframe (${LABELS[kind]} version ${version}; this one reads up to ${current}): update Kiframe to open it`,
     )
   }
   let out = doc as Record<string, unknown>
