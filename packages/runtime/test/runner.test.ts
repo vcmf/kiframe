@@ -392,18 +392,33 @@ steps: [{ id: a, action: pause, ms: 1 }]
     expect(Math.abs(at - 300)).toBeLessThan(25)
   })
 
-  it("asks approval to drop onto Trash or select 'Cancel subscription' (fails closed like a click)", async () => {
-    const drop = await failure(`setup: [{ action: goto, url: /pointer-lib }]
-steps: [{ id: bin, action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Trash } }]
+  it("asks approval to select 'Cancel subscription', by label or by value (fails closed)", async () => {
+    for (const option of ["Cancel subscription", "c"]) {
+      const cancel = await failure(`setup: [{ action: goto, url: /pointer-lib }]
+steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: ${option} }]
 `)
-    expect(drop.reason).toBe("risky-not-approved")
-    const cancel = await failure(`setup: [{ action: goto, url: /pointer-lib }]
-steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: Cancel subscription }]
-`)
-    expect(cancel.reason).toBe("risky-not-approved")
+      expect(cancel.reason).toBe("risky-not-approved")
+    }
     // risky: false opts out.
     await run(`setup: [{ action: goto, url: /pointer-lib }]
-steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: Cancel subscription, risky: false }]
+steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: c, risky: false }]
+`)
+  })
+
+  it("moves pointer-library drags onto an element off camera too (several moves)", async () => {
+    await run(`setup:
+  - { action: goto, url: /pointer-lib }
+  - { action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Drop files here } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+    // The knob started at 100; the zone's centre is around x = 540.
+    const at = Number((await page.locator("#s").textContent())?.replace("at ", ""))
+    expect(at).toBeGreaterThan(400)
+  })
+
+  it("doesn't judge a drag by its drop zone's text ('Drop files here' is no risky action)", async () => {
+    await run(`setup: [{ action: goto, url: /pointer-lib }]
+steps: [{ id: put, action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Drop files here } }]
 `)
   })
 
