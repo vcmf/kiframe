@@ -234,5 +234,10 @@ export function claimIds(
 }
 
 /** Server-issued ids (orgs, projects). */
-export const OrgId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, "an id is 1-64 of A-Z a-z 0-9 _ -")
+export const ServerId = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,64}$/, "an id is 1-64 of A-Z a-z 0-9 _ -")
+export const OrgId = ServerId
 export type OrgId = z.infer<typeof OrgId>
+export const ProjectId = ServerId
+export type ProjectId = z.infer<typeof ProjectId>

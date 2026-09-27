@@ -5,7 +5,7 @@ import { OrgSettings, UserPreferences } from "./org.ts"
 import { Project, ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
 import { Scene } from "./scene.ts"
-import { migrate, type DocumentKind } from "./versioning.ts"
+import { migrate, VersionError, type DocumentKind } from "./versioning.ts"
 
 /** Thrown when a file isn't valid YAML or doesn't match its schema. `issues` lists schema problems. */
 export class SchemaError extends Error {
@@ -51,7 +51,15 @@ function validate<T extends z.ZodType>(
   what: string,
   data: unknown,
 ): z.output<T> {
-  const result = schema.safeParse(migrate(kind, data).doc)
+  let doc: unknown
+  try {
+    doc = migrate(kind, data).doc
+  } catch (error) {
+    // A file-level problem like any other: callers handle SchemaError (the message says to update).
+    if (error instanceof VersionError) throw new SchemaError(what, error.message)
+    throw error
+  }
+  const result = schema.safeParse(doc)
   if (!result.success) {
     throw new SchemaError(what, z.prettifyError(result.error), result.error.issues)
   }

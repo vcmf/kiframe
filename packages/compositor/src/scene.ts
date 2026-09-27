@@ -8,13 +8,15 @@ import {
   type TimeMap,
   type Timeline,
 } from "@kiframe/generators"
-import type {
-  Anchor,
-  CameraSegment,
-  Composition,
-  NRect,
-  Scenario,
-  StyleOverride,
+import {
+  DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE,
+  type Anchor,
+  type CameraSegment,
+  type Composition,
+  type NRect,
+  type Scenario,
+  type Style as SchemaStyle,
+  type StyleOverride,
 } from "@kiframe/schema"
 
 // What the output shows at a given output time (docs/OBJECT-MODEL.md §5), as plain data: pure and
@@ -38,18 +40,32 @@ export interface Style {
   cursorSize: number
   /** Caption font size in output pixels. */
   captionSize: number
+  /** Where captions go when a caption segment doesn't say. */
+  captionPosition: "bottom" | "top"
 }
 
-export const DEFAULT_STYLE: Style = {
+/** The product defaults (packages/schema), flattened, at the landscape output size. */
+export const DEFAULT_STYLE: Style = flatten(SCHEMA_DEFAULT_STYLE, {
   width: 1920,
   height: 1080,
   fps: 30,
-  background: ["#1e1b4b", "#0f172a"],
-  padding: 0.06,
-  radius: 18,
-  maxScale: 2.5,
-  cursorSize: 30,
-  captionSize: 36,
+})
+
+/** A resolved schema style (resolveStyle) plus an output size, as the compositor draws it. */
+export function flatten(
+  style: SchemaStyle,
+  format: { width: number; height: number; fps: number },
+): Style {
+  return {
+    ...format,
+    background: style.background,
+    padding: style.padding,
+    radius: style.radius,
+    maxScale: style.maxScale,
+    cursorSize: style.cursor.size,
+    captionSize: style.captions.size,
+    captionPosition: style.captions.position,
+  }
 }
 
 /** The part of the source frame on screen: its center and zoom (1 = the whole frame). */
@@ -138,6 +154,7 @@ function styleFrom(o: StyleOverride | undefined): Partial<Style> {
     ...(o.maxScale !== undefined && { maxScale: o.maxScale }),
     ...(o.cursor?.size !== undefined && { cursorSize: o.cursor.size }),
     ...(o.captions?.size !== undefined && { captionSize: o.captions.size }),
+    ...(o.captions?.position !== undefined && { captionPosition: o.captions.position }),
   }
 }
 
@@ -206,7 +223,7 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   })
   const captions = tracks.captions
     .filter((c) => active(p, c, sourceT, frozen))
-    .map((c) => ({ text: c.text, position: c.position ?? "bottom" }))
+    .map((c) => ({ text: c.text, position: c.position ?? p.style.captionPosition }))
 
   return {
     sourceT,

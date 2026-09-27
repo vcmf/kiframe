@@ -1,5 +1,5 @@
 import * as z from "zod"
-import { claimIds, CssSelector, idsOf, OrgId, withoutCredentials } from "./common.ts"
+import { claimIds, CssSelector, idsOf, OrgId, ProjectId, withoutCredentials } from "./common.ts"
 import { SceneId } from "./scene.ts"
 import { Format, OutputPreset, StyleOverride } from "./style.ts"
 import { guarded } from "./guards.ts"
@@ -40,6 +40,17 @@ export const InterruptRule = z.strictObject({
 })
 export type InterruptRule = z.infer<typeof InterruptRule>
 
+/** Ids are unique inside each preset and across interrupt rules (messages say where). */
+function checkIds(
+  p: { presets: Record<string, Preset>; interrupts: InterruptRule[] },
+  ctx: z.RefinementCtx,
+): void {
+  for (const [name, preset] of Object.entries(p.presets)) {
+    claimIds(preset.steps, ["presets", name, "steps"], ctx)
+  }
+  claimIds(p.interrupts, ["interrupts"], ctx)
+}
+
 /** Unguarded: internal only, use the guarded export. */
 const ProjectConfigBase = z
   .strictObject({
@@ -63,13 +74,7 @@ const ProjectConfigBase = z
       })
       .prefault({}),
   })
-  .superRefine((p, ctx) => {
-    // Ids are unique inside each preset and across interrupt rules (messages say where).
-    for (const [name, preset] of Object.entries(p.presets)) {
-      claimIds(preset.steps, ["presets", name, "steps"], ctx)
-    }
-    claimIds(p.interrupts, ["interrupts"], ctx)
-  })
+  .superRefine(checkIds)
 
 /** Project config, with whole-document guards (forbidden keys, secret references). */
 export const ProjectConfig = guarded(ProjectConfigBase, [
@@ -153,17 +158,13 @@ export type Output = z.infer<typeof Output>
 const ProjectBase = z
   .strictObject({
     version: z.literal(1),
-    id: OrgId,
+    id: ProjectId,
     orgId: OrgId,
     name: z.string().min(1).max(200),
     /** An environment of the org (its URL and safety flags). */
     environment: RuleName.optional(),
-    target: z.strictObject({
-      kind: z.literal("web"),
-      /** Only without an environment (a local app, no org settings). */
-      url: withoutCredentials(z.url({ protocol: /^https?$/ })).optional(),
-      viewport: Viewport,
-    }),
+    /** `url` only without an environment (a local app, no org settings). */
+    target: TargetApp.extend({ url: TargetApp.shape.url.optional() }),
     defaults: ProjectConfigBase.shape.defaults,
     presets: ProjectConfigBase.shape.presets,
     interrupts: ProjectConfigBase.shape.interrupts,
@@ -175,17 +176,19 @@ const ProjectBase = z
     style: StyleOverride.optional(),
   })
   .superRefine((p, ctx) => {
-    if (p.environment === undefined && p.target.url === undefined) {
+    // One source for the URL: an environment (org settings) or the project's own, never both
+    // (the project would silently drive the environment's app instead of the URL it shows).
+    if ((p.environment === undefined) === (p.target.url === undefined)) {
       ctx.addIssue({
         code: "custom",
-        message: "a project needs an environment, or a target url",
+        message:
+          p.environment === undefined
+            ? "a project needs an environment, or a target url"
+            : "a project has an environment or a target url, not both",
         path: ["target", "url"],
       })
     }
-    for (const [name, preset] of Object.entries(p.presets)) {
-      claimIds(preset.steps, ["presets", name, "steps"], ctx)
-    }
-    claimIds(p.interrupts, ["interrupts"], ctx)
+    checkIds(p, ctx)
     const inSequence = new Set<string>()
     p.sequence.forEach((id, i) => {
       if (inSequence.has(id)) {
@@ -233,3 +236,8 @@ export const Project = guarded(ProjectBase, [
   ["interrupts", "#", "do", "value"],
 ])
 export type Project = z.infer<typeof ProjectBase>
+
+/** The files a guide output writes: its `formats`, Markdown by default. */
+export function guideFormats(output: Output): ("markdown" | "html" | "pdf")[] {
+  return output.formats ?? ["markdown"]
+}
