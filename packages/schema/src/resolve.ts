@@ -1,5 +1,7 @@
 import type { Environment, OrgSettings } from "./org.ts"
 import { ProjectConfig, type Output, type Project } from "./project.ts"
+import { secretRefName } from "./common.ts"
+import type { Scenario } from "./scenario.ts"
 import type { SceneId } from "./scene.ts"
 import {
   applyStyle,
@@ -31,10 +33,10 @@ export class ResolveError extends Error {
 }
 
 /**
- * The runtime config of a project: the target URL from its environment (the environment wins over
- * the project's own URL), and the org's rule bank before the project's rules (a project rule with
- * the same id replaces the org's). A named environment the org doesn't declare is an error, never a
- * silent fallback: the project could then drive the wrong app.
+ * The runtime config of a project: the target URL from its environment, or its own URL (a project
+ * has exactly one of them), and the org's rule bank before the project's rules (a project rule with
+ * the same id replaces the org's, in its place). A named environment the org doesn't declare is an
+ * error, never a silent fallback: the project could then drive the wrong app.
  */
 export function resolveProjectConfig(
   project: Project,
@@ -49,12 +51,16 @@ export function resolveProjectConfig(
       )
     }
   }
-  const url = env?.url ?? project.target.url
+  const url = env !== undefined ? env.url : project.target.url
+  // The schema guarantees one of them; kept as a guard for configs built without it.
   if (url === undefined) throw new ResolveError("the project has no environment and no target url")
-  const own = new Set(project.interrupts.map((r) => r.id))
+  const own = new Map(project.interrupts.map((r) => [r.id, r]))
+  const orgRules = org?.rules.interrupts ?? []
+  const orgIds = new Set(orgRules.map((r) => r.id))
   const interrupts = [
-    ...(org?.rules.interrupts ?? []).filter((r) => !own.has(r.id)),
-    ...project.interrupts,
+    // Rules are tried in order: an overridden org rule keeps its place.
+    ...orgRules.map((r) => own.get(r.id) ?? r),
+    ...project.interrupts.filter((r) => !orgIds.has(r.id)),
   ]
   const hide = [...new Set([...(org?.rules.hide ?? []), ...project.hide])]
   const config = ProjectConfig.parse({
@@ -105,11 +111,30 @@ export function scenesOf(project: Project, output: Output): SceneId[] {
   return project.sequence.filter((id) => included.has(id))
 }
 
-/** The environment's required secrets the user hasn't filled in yet (names only). */
-export function missingSecrets(
+/**
+ * Every secret a project needs: the environment's declared ones, plus every `{{secrets.x}}` its
+ * presets, interrupt rules (org and project) and the given scenes' scenarios actually type.
+ */
+export function requiredSecrets(
+  config: ProjectConfig,
   environment: ResolvedEnvironment,
-  provided: Iterable<string>,
+  scenarios: readonly Scenario[] = [],
 ): string[] {
+  const names = new Set(environment.requiredSecrets)
+  const typed = (item: object) => {
+    const value = (item as { action?: unknown; value?: unknown }).value
+    if ((item as { action?: unknown }).action !== "type" || typeof value !== "string") return
+    const name = secretRefName(value)
+    if (name !== undefined) names.add(name)
+  }
+  for (const preset of Object.values(config.presets)) preset.steps.forEach(typed)
+  for (const rule of config.interrupts) typed(rule.do)
+  for (const s of scenarios) [...(s.setup ?? []), ...s.steps, ...(s.teardown ?? [])].forEach(typed)
+  return [...names]
+}
+
+/** The required secrets (see `requiredSecrets`) the user hasn't filled in yet: names only. */
+export function missingSecrets(required: readonly string[], provided: Iterable<string>): string[] {
   const have = new Set(provided)
-  return environment.requiredSecrets.filter((name) => !have.has(name))
+  return required.filter((name) => !have.has(name))
 }

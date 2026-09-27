@@ -7,7 +7,8 @@ import {
   type TakeMeta,
 } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
-import { cursorAt, prepare, sceneAt } from "../src/scene.ts"
+import { DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kiframe/schema"
+import { contentBox, cursorAt, prepare, sceneAt } from "../src/scene.ts"
 
 const project = parseProjectYaml(`version: 1
 target: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } }
@@ -159,6 +160,27 @@ describe("camera", () => {
     let max = 1
     for (let t = 0; t <= p.duration; t += 20) max = Math.max(max, sceneAt(p, t).view.scale)
     expect(max).toBeGreaterThan(1.8)
+  })
+
+  it("layers styles like resolveStyle: base (org + project), then the scene, then the output", () => {
+    const { scenario, take, composition } = fixture()
+    const styled: Composition = { ...composition, style: { radius: 4 } }
+    const base = { ...SCHEMA_DEFAULT_STYLE, radius: 30, padding: 0.1 }
+    const s = prepare(styled, scenario, take, { captionSize: 50 }, base).style
+    expect(s).toMatchObject({ radius: 4, padding: 0.1, captionSize: 50 })
+  })
+
+  it("keeps the content box valid on vertical outputs, even at the maximum padding", () => {
+    const { scenario, take, composition } = fixture()
+    const s = prepare(composition, scenario, take, {
+      width: 1080,
+      height: 1920,
+      padding: 0.3,
+    }).style
+    const box = contentBox(s, { width: 1440, height: 900 })
+    expect(box.w).toBeGreaterThan(0)
+    expect(box.x).toBeGreaterThanOrEqual(0)
+    expect(box.x + box.w).toBeLessThanOrEqual(1080)
   })
 
   it("uses the composition's own style, the caller's on top", () => {

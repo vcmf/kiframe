@@ -5,10 +5,12 @@ import {
   DEFAULT_STYLE,
   migrate,
   missingSecrets,
+  requiredSecrets,
   OrgSettings,
   parseCompositionJson,
   parseOrgSettingsJson,
   parseProjectJson,
+  parseScenarioYaml,
   parseSceneJson,
   parseUserPreferencesJson,
   Project,
@@ -225,7 +227,86 @@ describe("settings layers", () => {
     expect(config.interrupts.map((r) => r.do.action)).toEqual(["press"])
     expect(config.hide).toEqual([".intercom-launcher", ".beta-banner"])
     expect(environment).toMatchObject({ sandbox: true, preApproveTeardown: true })
-    expect(missingSecrets(environment, ["acme.email"])).toEqual(["acme.password"])
+    expect(missingSecrets(requiredSecrets(config, environment), ["acme.email"])).toEqual([
+      "acme.password",
+    ])
+  })
+
+  it("keeps an overridden org rule in its place (rules are tried in order)", () => {
+    const o = org({
+      rules: {
+        interrupts: [
+          { id: "cookies", when: { text: "Cookies" }, do: { action: "press", keys: "Escape" } },
+          { id: "promo", when: { text: "Promo" }, do: { action: "press", keys: "Escape" } },
+        ],
+      },
+    })
+    const p = Project.parse(
+      project({
+        interrupts: [
+          { id: "extra", when: { text: "Extra" }, do: { action: "press", keys: "Escape" } },
+          { id: "cookies", when: { text: "Cookie wall" }, do: { action: "press", keys: "Enter" } },
+        ],
+      }),
+    )
+    const ids = resolveProjectConfig(p, o).config.interrupts.map((r) => [
+      r.id,
+      r.do.action === "press" && r.do.keys,
+    ])
+    expect(ids).toEqual([
+      ["cookies", "Enter"],
+      ["promo", "Escape"],
+      ["extra", "Escape"],
+    ])
+  })
+
+  it("counts every secret the project types, not only the environment's list", () => {
+    const o = org({
+      rules: {
+        interrupts: [
+          {
+            id: "relogin",
+            when: { text: "Session expired" },
+            do: {
+              action: "type",
+              target: { by: "label", name: "Password" },
+              value: "{{secrets.acme.password}}",
+            },
+          },
+        ],
+      },
+      environments: [
+        { name: "staging", url: "https://staging.example.com", requiredSecrets: ["acme.email"] },
+      ],
+    })
+    const p = Project.parse(
+      project({
+        environment: "staging",
+        target: noUrl,
+        presets: {
+          login: {
+            session: true,
+            steps: [
+              {
+                action: "type",
+                target: { by: "label", name: "Token" },
+                value: "{{secrets.acme.token}}",
+              },
+            ],
+          },
+        },
+      }),
+    )
+    const scene = parseScenarioYaml(
+      'version: 1\nsteps:\n  - { id: key, action: type, target: { by: label, name: Key }, value: "{{secrets.acme.api_key}}" }\n',
+    )
+    const { config, environment } = resolveProjectConfig(p, o)
+    expect(requiredSecrets(config, environment, [scene]).sort()).toEqual([
+      "acme.api_key",
+      "acme.email",
+      "acme.password",
+      "acme.token",
+    ])
   })
 
   it("fails on an environment the org doesn't declare (never falls back to another URL)", () => {
@@ -285,6 +366,12 @@ describe("settings layers", () => {
     expect(scenesOf(p, social!)).toEqual(["intro", "outro"])
     expect(scenesOf(p, hd!)).toEqual(["intro", "create-project", "outro"])
     expect(guideFormats({ id: "docs", kind: "guide" })).toEqual(["markdown"])
+    // Portrait sizes go as far as landscape ones.
+    expect(
+      Project.safeParse(
+        project({ outputs: [{ id: "p8k", kind: "video", format: { width: 4320, height: 7680 } }] }),
+      ).success,
+    ).toBe(true)
   })
 })
 
