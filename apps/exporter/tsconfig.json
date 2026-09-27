@@ -1,6 +1,6 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src", "test", "browser"],
+  "include": ["src"],
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   }

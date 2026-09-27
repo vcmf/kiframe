@@ -49,3 +49,17 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Events grouped by step once:** camera and cursor generators scan all events per step (O(steps × events)); a `Map<stepId, events>` on the timeline would do it once.
 - **Camera hold and lead-in in output time:** cluster gaps and the bridge are judged in output time, but the minimum hold (1.3 s), the lead-in and the cap on a wait's extension (`start + gap`) are still source time: inside a sped-up stretch a hold is shorter on screen, and a framing can end partway through a sped-up wait.
 - **Camera tuning:** padding (element ≤ ~60% of the frame), lead-in (400–1000 ms by distance), cluster gap (2.5 s), bridge (800 ms) and the 1.2× minimum are first guesses, to tune on the test apps in P0-7.
+
+## @kiframe/compositor + exporter (P0-7)
+- **Cursor shape:** always an arrow; the samples' CSS `cursor` (pointer, text) isn't used yet.
+- **Desktop window style:** no fake title bar for Electron targets; one style (padding, radius, shadow, gradient) for all.
+- **Masks:** `pixelate` draws like `blur`; `highlight` / `spotlight` aren't drawn (none generated yet); `near-target` captions fall back to the bottom.
+- **Follow-cursor spring:** the camera blends toward the moving cursor without its entry velocity (a small velocity kink when a follow segment starts).
+- **Lead-in during a reading freeze:** the next framing's lead-in can start inside the previous step's reading freeze, so its caption is read while the view already moved on. Start lead-ins after the freeze (output time).
+- **Precompute per-frame lookups:** `sceneAt` resolves every segment's anchors and scans events per frame (O(frames × segments × events)); resolve spans, ripple starts and sensitive rects once in `prepare` for long takes.
+- **Opening zoom:** when the first framing's lead-in falls in the setup cut, the video starts already zoomed (no zoom-in from wide).
+- **Softness warning in the editor:** `prepare().softness` is computed but only reported by the exporter's summary.
+- **Big exports through base64:** the exporter returns the file from the page as base64 through `executeJavaScript`; long 4K exports should stream to disk (IPC chunks or a `StreamTarget`).
+- **Electron export in CI:** only the browser export (WebM/VP9) is tested; the Electron MP4 path is run by hand (`apps/exporter/src/cli.ts`). Linux CI needs a display (xvfb) for Electron.
+- **Headed recording window:** takes for export need a headed high-DPI window (PHASE0-FINDINGS F2); where it lives on screen during recording is open.
+

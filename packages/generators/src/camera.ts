@@ -249,11 +249,11 @@ function targetRect(span: StepSpan, tl: Timeline): NRect | undefined {
       (e.kind === "click" || e.kind === "type_start"),
   )
   if (event === undefined || !("rect" in event)) return undefined
-  return clip(event.rect)
+  return clipRect(event.rect)
 }
 
 /** A take rect clipped to the frame; undefined when nothing of it is on screen. */
-function clip(r: ViewportRect): NRect | undefined {
+export function clipRect(r: ViewportRect): NRect | undefined {
   const x = Math.max(0, r.x)
   const y = Math.max(0, r.y)
   const w = Math.min(1, r.x + r.w) - x

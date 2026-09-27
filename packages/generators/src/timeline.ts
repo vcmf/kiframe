@@ -124,22 +124,24 @@ export function anchorFor(
     : { step: span.id, edge: "start", offsetMs }
 }
 
-/**
- * Source → output time for a set of clips. Cut spans take no output time, speed spans take
- * 1/speed of it, and a freeze at `t` adds its `ms` right after `t`. Overlapping spans: the first
- * one listed wins (generators never emit overlaps).
- */
-export function timeMap(
-  clips: ClipSegment[],
-  tl: Timeline,
-): {
+/** Source → output (and back) for a set of clips. */
+export interface TimeMap {
   /**
    * Output time of source time `t`. With `inclusive`, a freeze at `t` itself counts: that's where
    * a segment whose `until` is `t` ends (segments covering a freeze stay shown during it).
    */
   toOutput: (t: number, options?: { inclusive?: boolean }) => number
+  /** Source time shown at output time `t`, and whether it's a freeze (the frame is held). */
+  toSource: (t: number) => { t: number; frozen: boolean }
   outputDuration: number
-} {
+}
+
+/**
+ * Source → output time for a set of clips. Cut spans take no output time, speed spans take
+ * 1/speed of it, and a freeze at `t` adds its `ms` right after `t`. Overlapping spans: the first
+ * one listed wins (generators never emit overlaps).
+ */
+export function timeMap(clips: ClipSegment[], tl: Timeline): TimeMap {
   const spans: { a: number; b: number; rate: number }[] = []
   const freezes: { t: number; ms: number }[] = []
   for (const c of clips) {
@@ -177,5 +179,40 @@ export function timeMap(
   }
   // A freeze at the very end still plays.
   const tail = freezes.filter((f) => f.t >= tl.duration).reduce((sum, f) => sum + f.ms, 0)
-  return { toOutput, outputDuration: toOutput(tl.duration) + tail }
+  const outputDuration = toOutput(tl.duration) + tail
+
+  // The inverse, as ordered pieces: [source a, b) played at `rate`, or a freeze held for `ms`.
+  const edges = new Set<number>([0, tl.duration])
+  for (const s of spans) edges.add(s.a).add(s.b)
+  for (const f of freezes) edges.add(Math.min(tl.duration, f.t))
+  const points = [...edges].filter((e) => e >= 0 && e <= tl.duration).sort((x, y) => x - y)
+  type Piece = { outA: number; outB: number; srcA: number; srcB: number; frozen: boolean }
+  const pieces: Piece[] = []
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]!
+    // Freezes at this point come first: they hold the frame at `a`.
+    const held = freezes
+      .filter((f) => Math.min(tl.duration, f.t) === a)
+      .reduce((s, f) => s + f.ms, 0)
+    if (held > 0) {
+      const outA = toOutput(a)
+      pieces.push({ outA, outB: outA + held, srcA: a, srcB: a, frozen: true })
+    }
+    const b = points[i + 1]
+    if (b === undefined || b <= a) continue
+    const outA = toOutput(a, { inclusive: true })
+    const outB = toOutput(b)
+    if (outB > outA) pieces.push({ outA, outB, srcA: a, srcB: b, frozen: false })
+  }
+  const toSource = (t: number) => {
+    const clamped = Math.min(outputDuration, Math.max(0, t))
+    // The piece holding `t` (the last one that starts at or before it).
+    let piece = pieces[0]
+    for (const p of pieces) if (p.outA <= clamped) piece = p
+    if (piece === undefined) return { t: 0, frozen: false }
+    if (piece.frozen) return { t: piece.srcA, frozen: true }
+    const u = Math.min(1, (clamped - piece.outA) / (piece.outB - piece.outA))
+    return { t: piece.srcA + u * (piece.srcB - piece.srcA), frozen: false }
+  }
+  return { toOutput, toSource, outputDuration }
 }
