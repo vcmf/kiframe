@@ -1,4 +1,5 @@
 import {
+  RIPPLE_MS,
   buildTimeline,
   resolveAnchor,
   timeMap,
@@ -80,8 +81,6 @@ export interface Prepared {
 
 /** Spring stiffness (rad/s): critically damped, settles in ~0.6 s. */
 const OMEGA = 9
-/** A ripple's duration in output time, whatever the playback speed around it. */
-const RIPPLE_OUT_MS = 500
 /** Follow-cursor: the camera aims at the cursor's average position over this much source time. */
 const FOLLOW_WINDOW_MS = 400
 
@@ -144,7 +143,9 @@ function active(
   const a = resolveAnchor(seg.at, p.timeline)
   const b = resolveAnchor(seg.until, p.timeline)
   if (a === undefined || b === undefined) return false
-  return a <= s && (s < b || (frozen && s === b))
+  // A freeze holds the end of a step: what ends there stays, what starts there (the next step,
+  // whose step_start has the same time) waits until the freeze is over.
+  return frozen ? a < s && s <= b : a <= s && s < b
 }
 
 export function sceneAt(p: Prepared, tOut: number): Scene {
@@ -159,8 +160,10 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
     const a = resolveAnchor(m.at, tl)
     const b = resolveAnchor(m.until, tl)
     if (a === undefined || b === undefined || sourceT < a || sourceT > b) continue
-    const rect = "rect" in m.target ? m.target.rect : maskRect(tl, m.target, sourceT)
-    if (rect !== undefined) blurs.push(rect)
+    if ("rect" in m.target) blurs.push(m.target.rect)
+    // Framed-element rects aren't recorded yet (P0-6 backlog): a privacy mask fails closed.
+    else if (!("sensitiveId" in m.target)) blurs.push({ x: 0, y: 0, w: 1, h: 1 })
+    else blurs.push(...maskRects(tl, m.target.sensitiveId, sourceT))
   }
 
   const hidden = tracks.cursor.some((c) => c.kind === "hidden" && active(p, c, sourceT, frozen))
@@ -169,7 +172,10 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
     if (c.kind !== "click-ripple") return []
     const a = resolveAnchor(c.at, tl)
     if (a === undefined) return []
-    const progress = (tOut - p.map.toOutput(a)) / RIPPLE_OUT_MS
+    // The segment's own length, in output time whatever the playback speed around it.
+    const b = resolveAnchor(c.until, tl)
+    const length = b === undefined || b <= a ? RIPPLE_MS : b - a
+    const progress = (tOut - p.map.toOutput(a)) / length
     if (progress < 0 || progress > 1) return []
     const at = cursorAt(tl, a)
     return at === undefined ? [] : [{ x: at.x, y: at.y, progress }]
@@ -188,21 +194,34 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   }
 }
 
-/** The latest rect of a sensitive region at source time `t` (it follows the element). */
-function maskRect(
-  tl: Timeline,
-  target: { sensitiveId: string } | { frameRef: string },
-  t: number,
-): NRect | undefined {
-  // frame_target rects aren't recorded yet (P0-6 backlog).
-  if (!("sensitiveId" in target)) return undefined
-  let rect: NRect | undefined
+/**
+ * Around a move, the frame on screen can still show the region where it was (capture lags the
+ * DOM): both the previous and the new rect are blurred for MOVE_OVERLAP_MS on each side.
+ */
+const MOVE_OVERLAP_MS = 250
+
+/** The rects of a sensitive region at source time `t` (it follows the element). */
+function maskRects(tl: Timeline, id: string, t: number): NRect[] {
+  let current: NRect | undefined
+  let previous: NRect | undefined
+  let changedAt = -Infinity
+  let next: { t: number; rect: NRect | undefined } | undefined
   for (const e of tl.events) {
-    if (e.t > t) break
-    if (e.kind !== "sensitive" || e.id !== target.sensitiveId) continue
-    rect = clipRect(e.rect)
+    if (e.kind !== "sensitive" || e.id !== id) continue
+    if (e.t > t) {
+      next = { t: e.t, rect: clipRect(e.rect) }
+      break
+    }
+    previous = current
+    current = clipRect(e.rect)
+    changedAt = e.t
   }
-  return rect
+  const out: NRect[] = []
+  if (current !== undefined) out.push(current)
+  if (previous !== undefined && t - changedAt < MOVE_OVERLAP_MS) out.push(previous)
+  // A move coming up: the new position is covered a little early too.
+  if (next?.rect !== undefined && next.t - t < MOVE_OVERLAP_MS) out.push(next.rect)
+  return out
 }
 
 function clipRect(r: { x: number; y: number; w: number; h: number }): NRect | undefined {

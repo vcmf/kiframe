@@ -2,23 +2,26 @@
 // Chromium has the platform's H.264 encoder), runs the export there and writes the file.
 import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import type { PageExportArgs } from "@kiframe/compositor/browser/export-page.ts"
 import { app, BrowserWindow, protocol } from "electron"
 
-/** What the CLI passes (as JSON in KIFRAME_EXPORT). */
+/** What the CLI passes (a JSON file whose path is in KIFRAME_EXPORT_JOB). */
 export interface ExportJob {
   /** Folder with export.html and export.js. */
   pageDir: string
   takeDir: string
   out: string
   /** Everything the page's `kiframeExport` needs, except the video URL. */
-  args: Record<string, unknown>
+  args: Omit<PageExportArgs, "videoUrl">
 }
 
-const job = JSON.parse(process.env.KIFRAME_EXPORT ?? "null") as ExportJob | null
-if (job === null) {
-  console.error("KIFRAME_EXPORT is not set: run the exporter through its CLI")
+const jobFile = process.env.KIFRAME_EXPORT_JOB
+if (jobFile === undefined) {
+  console.error("KIFRAME_EXPORT_JOB is not set: run the exporter through its CLI")
   process.exit(2)
 }
+// A file, not an environment variable: a take's events and cursor samples can be megabytes.
+const job = JSON.parse(readFileSync(jobFile, "utf8")) as ExportJob
 
 // A privileged scheme: the page is a secure context (WebCodecs needs one) and can fetch the take.
 protocol.registerSchemesAsPrivileged([
@@ -48,11 +51,14 @@ async function run(job: ExportJob): Promise<void> {
     return new Response(readFileSync(file), { headers: { "content-type": types[ext] ?? "" } })
   })
   const win = new BrowserWindow({ show: false, webPreferences: { backgroundThrottling: false } })
+  // Module scripts run before the load event loadURL waits for: the function exists now, or the
+  // page failed to load (no endless wait).
   await win.loadURL("kiframe://app/export.html")
-  await win.webContents.executeJavaScript(
-    "new Promise((r) => { const w = () => (window.kiframeExport ? r() : setTimeout(w, 20)); w() })",
-  )
-  const args = { ...job.args, videoUrl: "kiframe://app/take/frames.webm" }
+  const ready = (await win.webContents.executeJavaScript(
+    'typeof window.kiframeExport === "function"',
+  )) as boolean
+  if (!ready) throw new Error("the export page didn't load (see the page's console)")
+  const args: PageExportArgs = { ...job.args, videoUrl: "kiframe://app/take/frames.webm" }
   const result = (await win.webContents.executeJavaScript(
     `window.kiframeExport(${JSON.stringify(args)})`,
   )) as { data: string; codec: string; frames: number; durationMs: number; softness: number }
