@@ -1,0 +1,16 @@
+{
+  "goal": "Show how to start with Dim0 without an account: create a new local board, name it 'Q4 roadmap', pick the Note tool and the Text tool from the toolbar, switch the theme, then go back Home and show the new board in the list. 10-15 on-camera steps with short captions. The setup must make sure no board named 'Q4 roadmap' exists (ensure absent); the teardown deletes the board from Home (its Delete button shows on hover, then confirm).",
+  "model": "z-ai/glm-5.3",
+  "turns": 69,
+  "toolCalls": 62,
+  "stepsRun": 40,
+  "stepFailures": 7,
+  "questions": [],
+  "replays": 2,
+  "promptTokens": 522067,
+  "completionTokens": 37734,
+  "cachedTokens": 506880,
+  "costUsd": 0.16623768749999993,
+  "ms": 342464,
+  "result": "grounded"
+}

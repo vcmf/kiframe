@@ -1,10 +1,12 @@
 // Phase 0 (throwaway): record a scenario into a take folder.
 // Usage: node scripts/record.ts --project p.yaml --scenario s.yaml --out <take dir> [--headed] [--dpr 2]
+//          [--secrets calcom.username,calcom.password] [--approve-risky]
 import { readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
+import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
 
 const { values } = parseArgs({
   options: {
@@ -13,10 +15,25 @@ const { values } = parseArgs({
     out: { type: "string" },
     headed: { type: "boolean", default: false },
     dpr: { type: "string" },
+    /** Secret names the scene may use (`a.b` is read from env `A_B`, e.g. from a git-ignored .env). */
+    secrets: { type: "string", default: "" },
+    /** Pre-approve risky steps (a sandbox account's teardown deletes). */
+    "approve-risky": { type: "boolean", default: false },
+    /** Step timeout (ms): real SaaS pages can take seconds to hydrate (FAILURE-CATALOGUE #8). */
+    timeout: { type: "string", default: "15000" },
   },
 })
 if (!values.project || !values.scenario || !values.out) {
-  console.error("usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2]")
+  console.error(
+    "usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2] [--secrets a.b,c.d] [--approve-risky] [--timeout 15000]",
+  )
+  process.exit(2)
+}
+loadDotEnv()
+const resolveSecret = envSecretResolver(values.secrets.split(",").filter(Boolean))
+const timeoutMs = Number(values.timeout)
+if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+  console.error(`--timeout takes milliseconds, got ${values.timeout}`)
   process.exit(2)
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
@@ -35,7 +52,12 @@ try {
     viewport: project.target.viewport,
     deviceScaleFactor: dpr,
   })
-  const take = await recordScenario(page, scenario, project, { outDir: values.out })
+  const take = await recordScenario(page, scenario, project, {
+    outDir: values.out,
+    resolveSecret,
+    ...(values["approve-risky"] && { approveRisky: () => true }),
+    timeoutMs,
+  })
   console.log(
     `take ${take.meta.takeKey}: ${Math.round(take.meta.durationMs)} ms, ${take.warnings.length} warnings`,
   )

@@ -127,3 +127,43 @@ consistent: each step within ~100 ms from run to run.
 **Limits:** dim0 has no accounts, so the session preset only opens the app; session reuse was
 exercised through the carried profile. A login preset is checked on the P0-8 app. Failure classes
 seen are in `docs/FAILURE-CATALOGUE.md`.
+
+## F6. Grounding: 2/2 apps grounded with 0 questions, for $0.01–0.22 per scene (2026-09-27)
+
+**Test (P0-8):** `scripts/p0-8/ground.ts`, a minimal agent (the `openai` SDK against OpenRouter,
+not the full loop yet). Tools: `snapshot` (aria snapshot, 14k chars max), `run_step` (one step or
+setup item through the real runner, on the live page), `list_secrets` (names only), `ask_user`
+(counted, never answered in this run: the model must decide), `finish` (validates, then replays the
+whole scene from scratch in a fresh browser; failures go back to the model). Every tool result is
+scrubbed of secret values. One goal per app, 10–15 on-camera steps, with setup (`ensure`) and a
+teardown. Reports in `docs/phase0/p0-8-*.report.json`; the scenes, unedited, in
+`examples/*/grounded-*.yaml`.
+
+| App | Model | Result | Replays | Questions | Turns | Step failures | Prompt tokens (cached) | Cost | Time |
+|---|---|---|---|---|---|---|---|---|---|
+| app.dim0.net | GLM 5.3 | ✅ 13 steps | 2 | 0 | 69 | 7 | 522k (97%) | $0.17 | 5.7 min |
+| app.dim0.net | DeepSeek V4.1 Flash | ✅ | 1 | 0 | 53 | 3 | 448k (95%) | **$0.013** | **2.7 min** |
+| Cal.com | GLM 5.3 | ✅ | 1 | 0 | 67 | 11 | 887k (97%) | $0.22 | 12 min |
+| Cal.com | DeepSeek V4.1 Flash | ✅ 13 steps | 1 | 0 | 41 | 2 | 301k (94%) | **$0.019** | **4.2 min** |
+
+Both grounded scenes were then **recorded (headed, DPR 2) and exported to 1080p MP4** with no edit:
+app.dim0.net 18.6 s ([frames](phase0/p0-8-dim0-video.png)), Cal.com 24.1 s with the login in the
+(cut) setup ([frames](phase0/p0-8-calcom-video.png)).
+
+**What it took (runs before these, kept in `.kiframe-local/p0-8/baseline/`):** the first GLM 5.3
+runs ran out of turns without a scene. Causes, all fixed in the harness or runtime, none in the
+model: `run_step` accepted only on-camera steps (the model couldn't run the login preset); steps
+sent as YAML strings were rejected; a click on the collapsed sidebar's off-screen button timed out
+with no reason, so the model retried it ~15 times (now the failure says "off screen … inside a
+collapsed panel?"); the model re-grounded everything instead of calling `finish`; the scene relied
+on a panel it had opened while exploring; Cal.com's login needs more than a 6 s step timeout
+(FAILURE-CATALOGUE #8–11).
+
+**Estimates vs measured:** APPROACHES §4 guessed $0.5–3 and "a few minutes" per scene. Measured:
+**$0.01–0.02 with DeepSeek V4.1 Flash, $0.17–0.22 with GLM 5.3**, 3–12 min, prompt caching at
+94–97%. Cost is not the constraint; wall time (one tool call per turn, ~5 s each) is.
+
+**Decision for now:** DeepSeek V4.1 Flash as the default grounding model (cheapest, fastest, fewest
+failures on both apps), GLM 5.3 as the alternative; keep measuring on more apps. The `ask_user`
+path wasn't exercised (0 questions): the goals were clear and the secrets were there. Missing
+secrets and ambiguous goals need their own test in v0.

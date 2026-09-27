@@ -1,0 +1,92 @@
+# Written and grounded by the P0-8 agent (scripts/p0-8/ground.ts), unedited.
+version: 1
+setup:
+  - { preset: open-app }
+  - ensure: { absent: { by: text, text: "Q4 roadmap", exact: true } }
+steps:
+  - {
+      id: open-new,
+      action: click,
+      target: { by: text, text: "New Board", exact: true },
+      caption: "Start a local board — no account needed",
+    }
+  - {
+      id: rename,
+      action: click,
+      target: { by: role, role: button, name: "Untitled board", exact: true },
+    }
+  - {
+      id: name,
+      action: type,
+      target: { by: role, role: textbox, name: "Board name" },
+      value: "Q4 roadmap",
+      clear: true,
+    }
+  - { id: save-name, action: press, keys: Enter }
+  - { id: named, action: waitFor, until: { text: "Q4 roadmap" } }
+  - {
+      id: note-tool,
+      action: click,
+      target: { by: role, role: button, name: "Note", exact: true },
+      caption: "Pick the Note tool",
+    }
+  - { id: beat-note, action: pause, ms: 700 }
+  - {
+      id: text-tool,
+      action: click,
+      target: { by: role, role: button, name: "Text", exact: true },
+      caption: "…and the Text tool",
+    }
+  - {
+      id: toggle-sidebar,
+      action: click,
+      target: { by: role, role: button, name: "Toggle Sidebar" },
+    }
+  - {
+      id: theme-menu,
+      action: click,
+      target: { by: css, selector: "button[aria-label='Toggle theme']" },
+      caption: "Make it yours — switch the theme",
+    }
+  - {
+      id: pick-theme,
+      action: click,
+      target: { by: role, role: menuitem, name: "Noir", exact: true },
+    }
+  - { id: theme-applied, action: pause, ms: 900 }
+  - {
+      id: home,
+      action: click,
+      target: { by: role, role: button, name: "Home", exact: true },
+      caption: "Back home — it is saved on this device",
+    }
+  - {
+      id: board-listed,
+      action: waitFor,
+      until: { visible: { by: role, role: heading, name: "Q4 roadmap", exact: true } },
+    }
+  - {
+      id: check-listed,
+      action: expect,
+      that: { visible: { by: role, role: heading, name: "Q4 roadmap", exact: true } },
+    }
+  - {
+      id: hover-card,
+      action: hover,
+      target: { by: role, role: heading, name: "Q4 roadmap", exact: true },
+    }
+teardown:
+  - { action: hover, target: { by: role, role: heading, name: "Q4 roadmap", exact: true } }
+  - {
+      action: click,
+      target: { by: role, role: button, name: "Delete board", exact: true },
+      risky: true,
+    }
+  - { action: click, target: { by: role, role: button, name: "Delete", exact: true }, risky: true }
+  - {
+      action: expect,
+      that: { visible: { by: text, text: "No local boards yet — create one above.", exact: true } },
+    }
+  - { action: click, target: { by: css, selector: "button[aria-label='Toggle theme']" } }
+  - { action: click, target: { by: role, role: menuitem, name: "Parchment", exact: true } }
+  - { action: click, target: { by: role, role: button, name: "Toggle Sidebar" } }

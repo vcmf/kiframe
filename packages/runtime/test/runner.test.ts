@@ -216,6 +216,48 @@ steps:
     expect(unknown.message).toMatch(/unknown preset "missing"/)
   })
 
+  it("says why a click failed when the target is off screen (collapsed panel)", async () => {
+    const error = await failure(
+      `setup: [{ action: goto, url: /collapsed }]
+steps: [{ id: open, action: click, target: { by: role, role: button, name: New board, exact: true } }]
+`,
+      // With no on-screen point to probe, the risky check fails closed: approved here, like the
+      // grounding harness does, to reach the click itself.
+      { approveRisky: () => true },
+    )
+    expect(error.reason).toBe("target-not-found")
+    expect(error.message).toMatch(/off screen even after scrolling .*collapsed panel/)
+  })
+
+  it("still clicks a button scrolled out of an inner scroll container (app shell)", async () => {
+    await run(`setup:
+  - { action: goto, url: /shell-scroll }
+  - { action: scroll, within: { by: css, selector: "#m" }, by: { y: 3000 } }
+steps: [{ id: top, action: click, target: { by: role, role: button, name: Top action } }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("Top clicked")
+  })
+
+  it("waits for a primary target that is sliding in, rather than jumping to a fallback", async () => {
+    const events = await run(`setup: [{ action: goto, url: /drawer }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open drawer } }
+  - id: del
+    action: click
+    risky: false
+    target: { by: role, role: button, name: Delete, exact: true, fallbacks: [{ by: role, role: button, name: Delete elsewhere }] }
+`)
+    expect(await page.locator("#s").textContent()).toBe("drawer")
+    expect(events.some((e) => e.kind === "target_fallback")).toBe(false)
+  })
+
+  it("still types into an input hidden off screen on purpose", async () => {
+    await run(`setup: [{ action: goto, url: /collapsed }]
+steps: [{ id: t, action: type, target: { by: label, name: Hidden field }, value: abc }]
+`)
+    expect(await page.locator("#v").textContent()).toBe("abc")
+  })
+
   // ─── P0-9: state (ensure, teardown, session presets, hover) ────────────────
 
   const boardScene = (teardown = true) => `setup:
