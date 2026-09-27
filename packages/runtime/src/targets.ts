@@ -111,7 +111,7 @@ export async function resolveTarget(
 }
 
 /** The locator part of a grounded target, without the healing metadata. */
-function stripExtras(target: GroundedTarget): SchemaLocator {
+export function stripExtras(target: GroundedTarget): SchemaLocator {
   const {
     intent: _intent,
     fallbacks: _fallbacks,

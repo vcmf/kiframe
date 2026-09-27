@@ -115,10 +115,13 @@ export async function recordScenario(
     // Device pixels: a headed window on a high-DPI screen gives frames at viewport × DPR (sharp
     // zooms); headless gives CSS resolution whatever is asked (Phase 0 findings F1, F2).
     // Capped at 3, the most a take records (TakeMeta): a 350% display or browser zoom goes above.
-    const dpr = Math.min(3, await page.evaluate(() => window.devicePixelRatio).catch(() => 1))
+    // Without `size`, frames are scaled down to fit a small default box.
+    const castSize = async (p: Page, v: { width: number; height: number }) => {
+      const dpr = Math.min(3, await p.evaluate(() => window.devicePixelRatio).catch(() => 1))
+      return { width: Math.round(v.width * dpr), height: Math.round(v.height * dpr) }
+    }
     const castOptions: Parameters<Page["screencast"]["start"]>[0] = {
-      // Without `size`, frames are scaled down to fit a small default box.
-      size: { width: Math.round(viewport.width * dpr), height: Math.round(viewport.height * dpr) },
+      size: await castSize(page, viewport),
       quality: options.quality ?? 85,
       onFrame: ({ data, timestamp }) => {
         // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
@@ -155,14 +158,7 @@ export async function recordScenario(
       // A popup opened at its own size: rects and the capture size follow it (the take warns
       // about the frame-size change).
       current = await viewportOf(next).catch(() => current)
-      const scale = Math.min(3, await next.evaluate(() => window.devicePixelRatio).catch(() => 1))
-      await next.screencast.start({
-        ...castOptions,
-        size: {
-          width: Math.round(current.width * scale),
-          height: Math.round(current.height * scale),
-        },
-      })
+      await next.screencast.start({ ...castOptions, size: await castSize(next, current) })
     }
 
     // ── events ──
