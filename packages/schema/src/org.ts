@@ -73,10 +73,13 @@ export type OrgSettings = z.infer<typeof OrgSettingsBase>
 /** Unguarded: internal only, use the guarded export. */
 const UserPreferencesBase = z.strictObject({
   version: z.literal(1),
-  /** UI language, BCP 47 (`en`, `fr`, `pt-BR`). */
+  /** UI language, a BCP 47 tag (`en`, `fr`, `pt-BR`, `zh-Hant`, `es-419`, `fil`). */
   language: z
     .string()
-    .regex(/^[a-z]{2}(-[A-Z]{2})?$/, "a language is like en, fr or pt-BR")
+    .regex(
+      /^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/,
+      "a language is a BCP 47 tag like en, pt-BR or zh-Hant",
+    )
     .default("en"),
   theme: z.enum(["system", "light", "dark"]).default("system"),
   /** The org Kiframe opens by default. */

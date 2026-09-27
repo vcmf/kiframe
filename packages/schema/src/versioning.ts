@@ -12,7 +12,10 @@ export type DocumentKind =
   | "org-settings"
   | "user-preferences"
 
-/** Upgrades a document from version `n` (the key) to `n + 1`. Must not mutate its input. */
+/**
+ * Upgrades a document from version `n` (the key) to `n + 1`. Must not mutate its input, and must
+ * not walk it recursively: it runs on raw input, before the schema's guards (depth, forbidden keys).
+ */
 export type Migration = (doc: Readonly<Record<string, unknown>>) => Record<string, unknown>
 
 export interface MigrationRegistry {

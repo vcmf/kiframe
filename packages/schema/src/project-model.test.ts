@@ -17,6 +17,8 @@ import {
   resolveStyle,
   ResolveError,
   scenesOf,
+  guideFormats,
+  SchemaError,
   VersionError,
   type MigrationRegistry,
 } from "./index.ts"
@@ -24,6 +26,7 @@ import {
 // M1-1: the v0 project model (project.json, scene.json, org settings, user preferences), the
 // settings layers and document versioning.
 
+const noUrl = { kind: "web", viewport: { width: 1440, height: 900 } }
 const project = (extra: object = {}) => ({
   version: 1,
   id: "p1",
@@ -68,9 +71,13 @@ describe("project.json", () => {
   })
 
   it("needs an environment or a target url", () => {
-    const noUrl = project({ target: { kind: "web", viewport: { width: 1440, height: 900 } } })
-    expect(Project.safeParse(noUrl).success).toBe(false)
-    expect(Project.safeParse({ ...noUrl, environment: "staging" }).success).toBe(true)
+    const bare = project({ target: noUrl })
+    expect(Project.safeParse(bare).success).toBe(false)
+    expect(Project.safeParse({ ...bare, environment: "staging" }).success).toBe(true)
+    // Both: the environment's app would be driven instead of the URL the file shows.
+    const both = Project.safeParse(project({ environment: "staging" }))
+    expect(both.success).toBe(false)
+    expect(JSON.stringify(both.error?.issues)).toMatch(/not both/)
   })
 
   it("rejects duplicates in the sequence and outputs that include unknown scenes", () => {
@@ -191,6 +198,11 @@ describe("org settings and user preferences", () => {
       language: "en",
       theme: "system",
     })
+    for (const language of ["zh-Hant", "es-419", "fil", "pt-BR"]) {
+      expect(parseUserPreferencesJson(JSON.stringify({ version: 1, language })).language).toBe(
+        language,
+      )
+    }
   })
 })
 
@@ -199,6 +211,7 @@ describe("settings layers", () => {
     const p = Project.parse(
       project({
         environment: "staging",
+        target: noUrl,
         interrupts: [
           // Same id as the org's rule: the project's replaces it.
           { id: "cookies", when: { text: "Cookies?" }, do: { action: "press", keys: "Escape" } },
@@ -216,7 +229,7 @@ describe("settings layers", () => {
   })
 
   it("fails on an environment the org doesn't declare (never falls back to another URL)", () => {
-    const p = Project.parse(project({ environment: "prod" }))
+    const p = Project.parse(project({ environment: "prod", target: noUrl }))
     expect(() => resolveProjectConfig(p, org())).toThrow(ResolveError)
     expect(() => resolveProjectConfig(p, undefined)).toThrow(/isn't declared/)
   })
@@ -241,12 +254,18 @@ describe("settings layers", () => {
         ],
       }),
     )
-    const style = resolveStyle(org({ style: { padding: 0.1 } }), p, p.outputs[0])
+    // The scene (its composition's style) sits between the project and the output.
+    const style = resolveStyle(
+      org({ style: { padding: 0.1 } }),
+      p,
+      { radius: 8, captions: { size: 40 } },
+      p.outputs[0],
+    )
     expect(style).toEqual({
       ...DEFAULT_STYLE,
       padding: 0.1,
-      radius: 0,
-      captions: { size: 44, position: "top" },
+      radius: 8,
+      captions: { size: 40, position: "top" },
     })
     expect(applyStyle(DEFAULT_STYLE)).toEqual(DEFAULT_STYLE)
   })
@@ -265,15 +284,18 @@ describe("settings layers", () => {
     expect(resolveFormat(hd!)).toEqual({ width: 1280, height: 720, fps: 60 })
     expect(scenesOf(p, social!)).toEqual(["intro", "outro"])
     expect(scenesOf(p, hd!)).toEqual(["intro", "create-project", "outro"])
+    expect(guideFormats({ id: "docs", kind: "guide" })).toEqual(["markdown"])
   })
 })
 
 describe("versioning", () => {
   it("refuses a document from a newer Kiframe, with a message saying so", () => {
-    expect(() => parseProjectJson(JSON.stringify(project({ version: 2 })))).toThrow(VersionError)
+    // A file-level problem like any other: a SchemaError, with the reason.
+    expect(() => parseProjectJson(JSON.stringify(project({ version: 2 })))).toThrow(SchemaError)
     expect(() => parseCompositionJson('{"version": 7, "tracks": {}}')).toThrow(
       /newer version of Kiframe/,
     )
+    expect(() => migrate("project", { version: 2 })).toThrow(VersionError)
   })
 
   it("upgrades older documents one version at a time, without mutating the input", () => {

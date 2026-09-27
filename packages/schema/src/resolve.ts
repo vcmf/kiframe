@@ -1,7 +1,14 @@
 import type { Environment, OrgSettings } from "./org.ts"
 import { ProjectConfig, type Output, type Project } from "./project.ts"
 import type { SceneId } from "./scene.ts"
-import { applyStyle, DEFAULT_STYLE, OUTPUT_PRESETS, type Format, type Style } from "./style.ts"
+import {
+  applyStyle,
+  DEFAULT_STYLE,
+  OUTPUT_PRESETS,
+  type Format,
+  type Style,
+  type StyleOverride,
+} from "./style.ts"
 
 // Layered settings (APPROACHES §10c): product defaults → org → project → scene → step. Scene and
 // step overrides live in the scenario and are applied by the runtime; this resolves the rest.
@@ -72,13 +79,17 @@ export function resolveProjectConfig(
   }
 }
 
-/** The style of an output: product defaults, then org, project and output overrides. */
+/**
+ * The style of a scene in an output: product defaults, then the org, the project, the scene (its
+ * composition's `style`) and the output, each overriding the one before, field by field.
+ */
 export function resolveStyle(
   org: OrgSettings | undefined,
   project: Project,
+  scene?: StyleOverride,
   output?: Output,
 ): Style {
-  return applyStyle(DEFAULT_STYLE, org?.style, project.style, output?.style)
+  return applyStyle(DEFAULT_STYLE, org?.style, project.style, scene, output?.style)
 }
 
 /** The size of a video output: its explicit format, else its preset (landscape by default). */
