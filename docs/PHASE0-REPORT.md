@@ -17,7 +17,7 @@ manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay cle
 
 | Criterion | Result | Status |
 |---|---|---|
-| 1 exported MP4 per test app we would publish as is, 2.5× zoom acceptably sharp, captions readable (never sped up) | app.dim0.net (hand-written 2.5× scene, and an agent-written one) and Cal.com (agent-written), 1080p H.264 through Electron. 2.5× is **sharp when recorded headed at DPR 2** on a Retina Mac (1.32 output px per source px), soft headless (2.64): F1, F2. Captions are never sped up and get reading freezes | ⚠️ **Almost.** Rough edges: the camera sometimes lags the caption (lead-in timing), and a page load shows as a white frame (Cal.com). Both are generator tuning (BACKLOG P0-6/P0-7) |
+| 1 exported MP4 per test app we would publish as is, 2.5× zoom acceptably sharp, captions readable (never sped up) | app.dim0.net (hand-written 2.5× scene, and an agent-written one) and Cal.com (agent-written), 1080p H.264 through Electron. 2.5× is **sharp when recorded headed at DPR 2** on a Retina Mac (1.32 output px per source px), soft headless (2.64): F1, F2. Captions are never sped up and get reading freezes | ⚠️ **Almost, for the two web apps.** Rough edges: the camera sometimes lags the caption (lead-in timing, BACKLOG P0-6/P0-7 camera items), and a page load shows as a white frame (Cal.com: needs loading detection from frame differences, BACKLOG "Loading frames"). **smterm has no MP4**: P0-10 only checked that a packaged Electron app can be driven (F4); recording Electron targets is v0.1 |
 | Grounding: ≥ 2 of 3 apps grounded with ≤ 5 questions; tokens, cost and time measured | **2 / 2 web apps grounded, 0 questions**, with two models each. $0.013–0.019 per scene (DeepSeek V4.1 Flash), $0.17–0.22 (GLM 5.3); 2.7–12 min; prompt caching 94–97% (F6). The third app (smterm, Electron) was checked for driveability, not grounded (F4) | ✅ |
 | State: 5/5 clean takes on at least one app with `ensure` + `teardown` + session reuse | **5/5 on app.dim0.net, twice**, with two deliberately interrupted runs cleaned up by `ensure` (F5). Session reuse via the carried profile (dim0 has no accounts). The Cal.com login preset ran in P0-8, but reusing a login session across runs is still untested | ✅ |
 | This report, the failure catalogue, v0 re-estimates | This file, `FAILURE-CATALOGUE.md` (11 classes), below | ✅ |
@@ -26,8 +26,8 @@ manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay cle
 
 1. **Capture resolution (F1, F2).** Headless Chromium screencasts at CSS resolution whatever you ask.
    Sharp zooms need a **headed window on a high-DPI screen** (2880×1800 at ~59 fps for a 1440×900
-   viewport). Changes APPROACHES §6 "DPR 2 capture": v0 records in a (possibly hidden or
-   background) headed window; where that window lives is open (it's visible today).
+   viewport). APPROACHES §0 (Capture) and §6 are updated: v0 records in a headed window on a
+   high-DPI screen; where that window lives is open (it's visible today).
 2. **Renderer (F3).** Canvas 2D instead of PixiJS: enough for one video layer, a spring camera and
    overlays; preview = export holds. Export: Mediabunny + WebCodecs in Electron (H.264), 9 s of
    1080p30 in ~5 s. WebCodecs needs a secure context (custom `kiframe://` scheme).
@@ -39,14 +39,16 @@ manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay cle
    must never pass as a harmless teardown failure; a failed `ensure` must not run the teardown
    (it would delete data the scene didn't create).
 5. **Grounding (F6).** Cost is not the constraint: **$0.01–0.02 per scene** with a cheap model,
-   vs the $0.5–3 guessed in APPROACHES §4. Wall time is (one tool call per turn). What made the
-   difference was the harness, not the model: every failed run was caused by our tools (a step
-   runner that couldn't run the login preset, a silent timeout on an off-screen button, a replay
-   whose UI state differed from the live session). **Replaying the scene from scratch before
-   accepting it** caught the one real grounding mistake the agent made. Agent stack changed to
+   vs the $0.5–3 guessed in APPROACHES §4. Wall time is (one tool call per turn). Most failed runs
+   were caused by our tools (a step runner that couldn't run the login preset, steps sent as YAML
+   strings rejected, a silent timeout on an off-screen button, a step timeout too short for
+   Cal.com). The model made two kinds of mistakes: it re-grounded everything by hand instead of
+   calling `finish`, and it relied on a panel it had opened while exploring (FAILURE-CATALOGUE #9).
+   **Replaying the scene from scratch before accepting it** caught the second; a prompt rule
+   fixed the first. Agent stack changed to
    cooldown's OpenAI-compatible client via OpenRouter (user preference, APPROACHES §0).
-6. **Process.** Review rounds dropped from 10–12 per PR (P0-2, P0-4, P0-5) to 1–3 (P0-6, P0-7,
-   P0-9, P0-10) once "severe" was defined strictly (blocks the exit criteria, or a regression) and
+6. **Process.** Review rounds dropped from 8–13 per PR (P0-2: 13, P0-3: 8, P0-4: 10, P0-5: 10)
+   to 1–3 (P0-6, P0-7, P0-9, P0-10) once "severe" was defined strictly (blocks the exit criteria, or a regression) and
    everything else went to `BACKLOG.md`. **P0-8 took 6**, all driven by one change: to give the
    agent a clear reason for clicks on off-screen buttons, I changed how targets are *resolved*
    (skipping off-screen matches, grace periods, fallbacks), and each fix caused the next
@@ -64,19 +66,26 @@ arguments sent as strings. Each has its handling and status; they seed the M2-8 
 
 ## Re-estimates for v0
 
-Phase 0 came in close to plan: **~6.5k LOC of source** (plan ~6k) plus ~4.3k of tests, in 10 PRs.
-The code is marked *keep* (schema, runtime, recorder, generators, compositor) or *throwaway*
-(`scripts/`). Changes to the v0 plan (IMPLEMENTATION-PLAN §3):
+Phase 0 measured **~11.2k LOC** (6.7k source + 4.5k tests; IMPLEMENTATION-PLAN counts LOC as
+production code + tests) against a **~6k** plan: **~1.85× over**, in 10 PRs. Most of the excess is
+hardening that the review rounds asked for (secrets scrubbing, fail-closed checks, timing edge
+cases) and tests for it. The same factor is applied to v0, minus what Phase 0 already built. Code
+marked *keep* (schema, runtime, recorder, generators, compositor, `apps/exporter`) graduates; of
+the throwaway `scripts/`, **`scripts/p0-8/ground.ts` is kept as the reference implementation** for
+the agent's browser tools and grounding loop (M2-5, M2-7), not deleted with the rest.
 
-| Milestone | Plan | Re-estimate | Why |
-|---|---|---|---|
-| M1 Core engine | ~7.4k | **~6.5k** | M1-4 (state: `ensure`, session presets, `hover`) is largely done in P0-9; M1-2 shrinks (hover done, `risky` detection done in P0-3/4). Add: per-environment step timeouts (FAILURE-CATALOGUE #8), off-screen duplicates as hidden (with `nth` migration) |
-| M2 Agent | ~6.2k | **~5.5k** | M2-3 is a port of cooldown's client (no Anthropic-native client). M2-5/M2-7 start from `scripts/p0-8/ground.ts` (snapshot, run_step, replay-from-scratch). Add: an eval set from the failure catalogue, and tests for `ask_user` (missing secret, ambiguous goal), which Phase 0 never exercised |
-| M3 Rendering | ~4.3k | **~4.8k** | Camera tuning in output time (hold, lead-in, lead-in after freezes), loading-frame detection (frame difference, not just events), cursor shapes from CSS. These are what stand between "almost" and "publish as is" |
-| M4 Desktop app | ~6.1k | **~6.5k** | Headed recording window management (F2): hidden/background placement, high-DPI detection and fallback |
-| M5 Server | ~3.8k | ~3.8k | Not touched by Phase 0 |
-| M6 CLI | ~1.5k | ~1.3k | The Electron exporter CLI exists (`apps/exporter`) |
-| **Total** | **~29k** | **~28k** | |
+| Milestone | Plan | ×1.8 | Already built in Phase 0 | Re-estimate |
+|---|---|---|---|---|
+| M1 Core engine | 7.4k | 13.3k | M1-4 state (`ensure`, session presets): ~1.2k; `hover` (M1-2) and risky detection | **~11.5k** |
+| M2 Agent | 6.2k | 11.2k | Grounding loop reference (`ground.ts`: snapshot, run_step, replay from scratch): ~0.8k | **~10.5k** |
+| M3 Rendering | 4.3k | 7.7k | (new work found) camera timing in output time, loading-frame detection, cursor shapes | **~8.5k** |
+| M4 Desktop app | 6.1k | 11k | (new work found) headed recording window: placement, high-DPI detection and fallback | **~11.5k** |
+| M5 Server | 3.8k | 6.8k | — | **~7k** |
+| M6 CLI | 1.5k | 2.7k | The Electron exporter CLI (`apps/exporter`): ~0.3k | **~2.4k** |
+| **Total** | **~29k** | **~53k** | | **~51k** |
+
+So v0 is **~50k LOC**, not ~29k: plan for it (IMPLEMENTATION-PLAN §3 now points here). The
+±50% band of the plan still applies; Phase 0 landed at the top of it.
 
 ## Open questions for v0
 
@@ -88,5 +97,6 @@ The code is marked *keep* (schema, runtime, recorder, generators, compositor) or
 - **Human in the loop:** 0 questions were needed on these goals. Missing secrets, ambiguous goals
   and risky actions on real (non-sandbox) data need their own tests and the per-environment
   pre-approval list before v0.
-- **Model choice:** DeepSeek V4.1 Flash was the best on both apps (fewest failures, cheapest,
-  fastest); measure on more apps (and a heal run) before fixing a default.
+- **Model choice:** DeepSeek V4.1 Flash is the default for now (F6: fewest failures, cheapest,
+  fastest on both apps), GLM 5.3 the alternative. Keep measuring on more apps and on heal runs;
+  the default can change without code changes.

@@ -22,7 +22,7 @@
 | LLM access | **BYOK** (user's own API key) *or* **Kiframe account** (our server proxies LLM calls = the paid product) | 2026-09-25 |
 | Agent stack | **cooldown's agent loop** (moved to the Node main process) + its **OpenAI-compatible `LlmClient`** (the `openai` SDK), pointed at **OpenRouter** by default (many models, one key) or OpenAI directly. Replaces the Anthropic-native client planned on 2026-09-26 (user preference). Not the Claude Agent SDK (§10b) | 2026-09-27 |
 | Automation | **Playwright library** in the Node main process. The agent's browser tools are **our own tools built on it, not Playwright MCP**, so every action and output passes through the vault's resolver/scrubber and the event logger. Fallback: computer use for canvas-heavy UIs | 2026-09-26 |
-| Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2** (⚠️ Phase 0 finding F1: screencast frames come out at CSS resolution; see docs/PHASE0-FINDINGS.md). **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-26 |
+| Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2**, in a **headed window on a high-DPI screen**: headless screencasts come out at CSS resolution (Phase 0 F1), headed ones at device pixels (F2). Headless stays for tests and CI. **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-27 |
 | Rendering | Own **compositor (Canvas 2D; PixiJS if the preview needs it) + WebCodecs + Mediabunny in the frontend**. Preview = export | 2026-09-27 (PHASE0-FINDINGS F3) |
 | Source vs artifacts | **Scenes are objects, video is a build artifact.** Takes are **pinned** (referenced by an export, a named version or the active composition, never evicted) or **scratch** (evictable). See OBJECT-MODEL §0.7 | 2026-09-26 |
 | Credentials | **Vault**: the agent can see which secrets exist but can never read their values. Hardened leak paths (§7.4) | 2026-09-26 |
@@ -134,7 +134,7 @@ The user gives feedback in chat and the agent edits the objects:
 | Option | Quality | Notes |
 |---|---|---|
 | Playwright `recordVideo` | Medium (fixed-bitrate VP8, looks soft once zoomed) | Easiest. **Not used**, since the zoom makes its softness visible |
-| **`page.screencast` / CDP screencast** at deviceScaleFactor 2 | **Good**, and sharp under zoom | `onFrame` gives each frame with a timestamp. Headless, OS-independent, no permission prompts. **The v0 choice** |
+| **`page.screencast` / CDP screencast** at deviceScaleFactor 2 | **Good**, and sharp under zoom **when headed on a high-DPI screen** (headless gives CSS resolution: Phase 0 F1, F2) | `onFrame` gives each frame with a timestamp. No permission prompts. **The v0 choice**, in a headed window (where it lives on screen is open) |
 | Virtual-time frame stepping (`HeadlessExperimental.beginFrame`) | Perfect frames | Slow. Chrome support in the new headless mode is unverified. A possible "max quality" mode |
 | Native OS window capture (ScreenCaptureKit, Windows Graphics Capture) | Good | **Rejected:** screen-recording permission, a monthly re-consent prompt on macOS Sequoia, a visible window the user can disturb |
 | Headed Chrome in Xvfb + ffmpeg | Best | Linux only. Relevant only for a future cloud/CI render worker |

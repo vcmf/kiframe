@@ -22,4 +22,4 @@ pnpm check      # lint + format check + typecheck + tests (same gate as CI)
 | `@kiframe/generators` | Take + scenario → auto composition segments                | keep           |
 | `@kiframe/compositor` | Frame rendering + video export                             | keep           |
 
-"keep" modules graduate to v0; "throwaway" modules (Phase 0 experiments) are deleted after the Phase 0 report.
+"keep" modules graduate to v0; "throwaway" modules (Phase 0 experiments in `scripts/`) are deleted after the Phase 0 report, except `scripts/p0-8/ground.ts`, kept as the reference for the agent's browser tools and grounding loop (M2-5, M2-7).
