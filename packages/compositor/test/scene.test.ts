@@ -132,6 +132,34 @@ describe("camera", () => {
     expect(sceneAt(p, t)).toEqual(direct)
   })
 
+  it("applies a framing that starts right where a reading freeze ends", () => {
+    const { scenario, take, composition } = fixture()
+    const edited: Composition = {
+      ...composition,
+      tracks: {
+        ...composition.tracks,
+        camera: [
+          {
+            id: "manual",
+            source: "manual",
+            at: { step: "b", edge: "start" },
+            until: { step: "b", edge: "end" },
+            scale: 2,
+            focus: { mode: "point", p: { x: 0.8, y: 0.8 } },
+          },
+        ],
+      },
+    }
+    // Make b start exactly at a's end, where a's reading freeze is.
+    const events = take.events.map((e) =>
+      e.kind === "step_start" && e.stepId === "b" ? { ...e, t: 1500 } : e,
+    )
+    const p = prepare(edited, scenario, { ...take, events })
+    let max = 1
+    for (let t = 0; t <= p.duration; t += 20) max = Math.max(max, sceneAt(p, t).view.scale)
+    expect(max).toBeGreaterThan(1.8)
+  })
+
   it("caps the zoom and reports the softness", () => {
     const { scenario, take, composition } = fixture()
     const forced: Composition = {
@@ -197,6 +225,26 @@ describe("overlays", () => {
     expect(ys(2900)).toEqual([0.3, 0.5])
     expect(ys(3100)).toEqual([0.3, 0.5])
     expect(ys(3400)).toEqual([0.5])
+  })
+
+  it("keeps blurring the last rect just after the region is gone (capture lag)", () => {
+    const { scenario, take } = fixture()
+    const gone = {
+      t: 4300,
+      phase: "steps",
+      stepId: "b",
+      kind: "sensitive",
+      id: "s1",
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      why: "secret-field",
+    } as TakeEvent
+    const events = [...take.events, gone].sort((x, y) => x.t - y.t)
+    const withGone = { ...take, events }
+    const { composition: c } = generate(project, scenario, withGone)
+    const p = prepare(c, scenario, withGone)
+    const at = (source: number) => sceneAt(p, p.map.toOutput(source)).blurs.length
+    expect(at(4400)).toBe(1)
+    expect(at(4700)).toBe(0)
   })
 
   it("blurs the sensitive region at its latest rect", () => {

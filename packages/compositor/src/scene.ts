@@ -159,7 +159,8 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
     if (m.kind !== "blur" && m.kind !== "pixelate") continue
     const a = resolveAnchor(m.at, tl)
     const b = resolveAnchor(m.until, tl)
-    if (a === undefined || b === undefined || sourceT < a || sourceT > b) continue
+    // Past its end too, for the capture lag: frames just after "gone" can still show the region.
+    if (a === undefined || b === undefined || sourceT < a || sourceT > b + MOVE_OVERLAP_MS) continue
     if ("rect" in m.target) blurs.push(m.target.rect)
     // Framed-element rects aren't recorded yet (P0-6 backlog): a privacy mask fails closed.
     else if (!("sensitiveId" in m.target)) blurs.push({ x: 0, y: 0, w: 1, h: 1 })
@@ -169,7 +170,8 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   const hidden = tracks.cursor.some((c) => c.kind === "hidden" && active(p, c, sourceT, frozen))
   const cursor = hidden ? undefined : cursorAt(tl, sourceT)
   const ripples = tracks.cursor.flatMap((c) => {
-    if (c.kind !== "click-ripple") return []
+    // A hidden cursor shows no clicks either.
+    if (c.kind !== "click-ripple" || hidden) return []
     const a = resolveAnchor(c.at, tl)
     if (a === undefined) return []
     // The segment's own length, in output time whatever the playback speed around it.
@@ -313,7 +315,8 @@ function cameraMoves(p: Omit<Prepared, "moves" | "softness">): Move[] {
   for (const c of p.composition.tracks.camera) {
     const a = resolveAnchor(c.at, p.timeline)
     const b = resolveAnchor(c.until, p.timeline)
-    if (a !== undefined) times.add(p.map.toOutput(a))
+    // A start on a freeze takes effect when the freeze ends (inclusive): both times are candidates.
+    if (a !== undefined) times.add(p.map.toOutput(a)).add(p.map.toOutput(a, { inclusive: true }))
     if (b !== undefined) times.add(p.map.toOutput(b, { inclusive: true }))
   }
   const sorted = [...times].filter((t) => t >= 0 && t <= p.duration).sort((x, y) => x - y)
