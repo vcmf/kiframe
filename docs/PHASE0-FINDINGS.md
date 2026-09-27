@@ -151,8 +151,8 @@ app.dim0.net 18.6 s ([frames](phase0/p0-8-dim0-video.png)), Cal.com 24.1 s with 
 (cut) setup ([frames](phase0/p0-8-calcom-video.png)).
 
 **What it took (runs before these, kept in `.kiframe-local/p0-8/baseline/`):** the first GLM 5.3
-runs ran out of turns without a scene. Causes, all fixed in the harness or runtime, none in the
-model: `run_step` accepted only on-camera steps (the model couldn't run the login preset); steps
+runs ran out of turns without a scene. Causes (most in the harness or runtime, two in the model, all
+fixed): `run_step` accepted only on-camera steps (the model couldn't run the login preset); steps
 sent as YAML strings were rejected; a click on the collapsed sidebar's off-screen button timed out
 with no reason, so the model retried it ~15 times (now the failure says "off screen … inside a
 collapsed panel?"); the model re-grounded everything instead of calling `finish`; the scene relied
@@ -160,7 +160,7 @@ on a panel it had opened while exploring; Cal.com's login needs more than a 6 s 
 (FAILURE-CATALOGUE #8–11).
 
 **Estimates vs measured:** APPROACHES §4 guessed $0.5–3 and "a few minutes" per scene. Measured:
-**$0.01–0.02 with DeepSeek V4.1 Flash, $0.17–0.22 with GLM 5.3**, 3–12 min, prompt caching at
+**$0.01–0.02 with DeepSeek V4.1 Flash, $0.17–0.22 with GLM 5.3**, 2.7–12 min, prompt caching at
 94–97%. Cost is not the constraint; wall time (one tool call per turn, ~5 s each) is.
 
 **Decision for now:** DeepSeek V4.1 Flash as the default grounding model (cheapest, fastest, fewest

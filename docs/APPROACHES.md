@@ -22,7 +22,7 @@
 | LLM access | **BYOK** (user's own API key) *or* **Kiframe account** (our server proxies LLM calls = the paid product) | 2026-09-25 |
 | Agent stack | **cooldown's agent loop** (moved to the Node main process) + its **OpenAI-compatible `LlmClient`** (the `openai` SDK), pointed at **OpenRouter** by default (many models, one key) or OpenAI directly. Replaces the Anthropic-native client planned on 2026-09-26 (user preference). Not the Claude Agent SDK (§10b) | 2026-09-27 |
 | Automation | **Playwright library** in the Node main process. The agent's browser tools are **our own tools built on it, not Playwright MCP**, so every action and output passes through the vault's resolver/scrubber and the event logger. Fallback: computer use for canvas-heavy UIs | 2026-09-26 |
-| Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2** (⚠️ Phase 0 finding F1: screencast frames come out at CSS resolution; see docs/PHASE0-FINDINGS.md). **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-26 |
+| Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2**, in a **headed window on a high-DPI screen**: headless screencasts come out at CSS resolution (Phase 0 F1), headed ones at device pixels (F2). Headless stays for tests and CI. **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-27 |
 | Rendering | Own **compositor (Canvas 2D; PixiJS if the preview needs it) + WebCodecs + Mediabunny in the frontend**. Preview = export | 2026-09-27 (PHASE0-FINDINGS F3) |
 | Source vs artifacts | **Scenes are objects, video is a build artifact.** Takes are **pinned** (referenced by an export, a named version or the active composition, never evicted) or **scratch** (evictable). See OBJECT-MODEL §0.7 | 2026-09-26 |
 | Credentials | **Vault**: the agent can see which secrets exist but can never read their values. Hardened leak paths (§7.4) | 2026-09-26 |
@@ -90,7 +90,7 @@ The agent asks follow-up questions: target audience, length, which environment a
 - It checks that each step works and records the expected state (`expect`).
 - It produces a **screenshot storyboard** so the user can approve the flow before recording.
 - It flags problems ("the Invite button is disabled for this role") and asks the user what to do (§7.3).
-- **Cost and latency must be measured** (unknown so far). A rough estimate is 5–30k tokens per page snapshot and a few turns per step, so maybe $0.5–3 and a few minutes per scene (unverified). Mitigations: trim snapshots to the region around the target, prompt caching, and caching grounding results per locator.
+- **Cost and latency: measured in Phase 0** (F6): **$0.01–0.02 per scene** with DeepSeek V4.1 Flash, $0.17–0.22 with GLM 5.3, 2.7–12 minutes, prompt caching at 94–97% (the earlier guess was $0.5–3). Wall time (one tool call per turn) is the constraint, not cost. Mitigations still apply: trim snapshots to the region around the target, prompt caching, and caching grounding results per locator.
 
 ### 4.3 Record (replay)
 The runtime (no LLM) replays the grounded scenario and writes a **take**. Details: OBJECT-MODEL §3.
@@ -134,7 +134,7 @@ The user gives feedback in chat and the agent edits the objects:
 | Option | Quality | Notes |
 |---|---|---|
 | Playwright `recordVideo` | Medium (fixed-bitrate VP8, looks soft once zoomed) | Easiest. **Not used**, since the zoom makes its softness visible |
-| **`page.screencast` / CDP screencast** at deviceScaleFactor 2 | **Good**, and sharp under zoom | `onFrame` gives each frame with a timestamp. Headless, OS-independent, no permission prompts. **The v0 choice** |
+| **`page.screencast` / CDP screencast** at deviceScaleFactor 2 | **Good**, and sharp under zoom **when headed on a high-DPI screen** (headless gives CSS resolution: Phase 0 F1, F2) | `onFrame` gives each frame with a timestamp. No permission prompts. **The v0 choice**, in a headed window (where it lives on screen is open) |
 | Virtual-time frame stepping (`HeadlessExperimental.beginFrame`) | Perfect frames | Slow. Chrome support in the new headless mode is unverified. A possible "max quality" mode |
 | Native OS window capture (ScreenCaptureKit, Windows Graphics Capture) | Good | **Rejected:** screen-recording permission, a monthly re-consent prompt on macOS Sequoia, a visible window the user can disturb |
 | Headed Chrome in Xvfb + ffmpeg | Best | Linux only. Relevant only for a future cloud/CI render worker |
@@ -241,7 +241,7 @@ Captchas and SSO/OAuth redirects that ask for an email code, a push notification
 4. **Scope of targets.** Web first. Electron is less easy than it looks for hardened apps (§6b). Tauri is partial. Native mobile and desktop are out of scope.
 5. **Tasteful output.** "Technically correct" isn't the same as "nice to watch". Pacing and camera choices are where the product has to earn its keep. We need good defaults plus style presets.
 6. **Security.** The agent gets a browser logged into the user's app. Vault hardening (§7.4), sandbox environments, never production admin by default. Enterprise IT will scrutinize an app that drives logged-in browsers.
-7. **LLM cost and latency** of grounding and healing: unmeasured (§4.2).
+7. **LLM cost and latency** of grounding and healing: grounding measured in Phase 0 ($0.01–0.22 and 2.7–12 min per scene, §4.2); healing still unmeasured.
 8. **Desktop distribution costs:** Apple notarization, Windows code signing, an auto-updater, downloading Playwright's Chromium (~150 MB) on first run, and no server-side logs to debug field failures (we need opt-in crash and failure reporting).
 
 ## 8b. Taming the edge cases (strategy)
