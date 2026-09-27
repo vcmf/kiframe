@@ -6,7 +6,9 @@ const pages: Record<string, string> = {
   // A collapsed sidebar: translated off screen, still "visible" to Playwright.
   "/collapsed": `<!doctype html><title>Collapsed</title>
     <nav style="position:fixed; left:0; top:0; width:200px; transform:translateX(-100%)"><button>New board</button></nav>
-    <main style="margin-left:40px"><div role="button" tabindex="0">New Board card</div></main>`,
+    <main style="margin-left:40px"><div role="button" tabindex="0">New Board card</div>
+      <label>Hidden field <input id="sr" style="position:absolute; left:-9999px"></label><p id="v"></p>
+      <script>document.getElementById("sr").oninput = (e) => document.getElementById("v").textContent = e.target.value</script></main>`,
   // Boards kept in localStorage (they survive a reload, like app data); Delete shows on hover only.
   "/boards": `<!doctype html><title>Boards</title>
     <style>.card button { display: none } .card:hover button { display: inline }</style>

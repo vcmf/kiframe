@@ -567,12 +567,12 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     }
     case "click": {
-      const target = await find(ctx, action.target, step)
+      const target = await find(ctx, action.target, step, { pointer: true })
       await clickAtCursor(ctx, target, step, action)
       return
     }
     case "hover": {
-      const target = await find(ctx, action.target, step)
+      const target = await find(ctx, action.target, step, { pointer: true })
       // The cursor's own (real) mouse move ends over the target; without a box, Playwright hovers.
       const at = await moveCursorTo(ctx, target, step)
       // Something on top (a sticky header, a toast) can take the hover: then Playwright hovers,
@@ -711,32 +711,21 @@ function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
   return Math.max(MIN_TIMEOUT_MS, stepTimeout ?? ctx.timeoutMs)
 }
 
-async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
-  const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
+async function find(
+  ctx: Ctx,
+  target: Target,
+  step: StepRef,
+  { pointer = false }: { pointer?: boolean } = {},
+): Promise<Locator> {
+  const result = await guard(step, () =>
+    resolveTarget(ctx.page, target, ctx.timeoutMs, { reachable: pointer }),
+  )
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
   if (result.fallbackIndex !== undefined) {
     ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
-  // Still entirely outside the viewport (a collapsed sidebar or drawer translated away): say so
-  // now, instead of letting the action time out on an element nobody can see.
-  const box = await result.locator.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
-  if (box !== null) {
-    const viewport = await viewportOf(ctx.page)
-    const outside =
-      box.x + box.width <= 0 ||
-      box.y + box.height <= 0 ||
-      box.x >= viewport.width ||
-      box.y >= viewport.height
-    if (outside) {
-      throw new StepError(
-        step,
-        "target-not-found",
-        `the target is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`,
-      )
-    }
-  }
   return result.locator
 }
 
