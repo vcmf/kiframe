@@ -5,15 +5,16 @@
 > **state** (do replays stay clean?). Details of each result are in `PHASE0-FINDINGS.md` (F1–F6);
 > every failure seen is in `FAILURE-CATALOGUE.md`. Written 2026-09-27.
 
-## Verdict: go, with three things to close before v0 relies on them
+## Verdict: go, with four things to close before v0 relies on them
 
 The pipeline works end to end on two real web apps: **an agent writes a scene from a one-line
 goal, grounds it on the live app, and the take is recorded and exported to a 1080p MP4 with no
-manual edit**, for about **$0.02 and 3–4 minutes** per scene. Replays stay clean with `ensure` +
-`teardown`. Still open (below): **camera timing** and **loading frames** keep the videos just short
-of "publish as is" (code we own: generators, clips, loading detection), and **reusing one login
-across a batch** is still to prove on an app with accounts. And v0 is bigger than planned: ~53k
-LOC, not ~29k.
+manual edit**, for about **$0.02 and 3–4 minutes** per scene with DeepSeek V4.1 Flash ($0.17–0.22
+and 6–12 minutes with GLM 5.3). Replays stay clean with `ensure` + `teardown`. Still open (below):
+**camera timing** and **loading frames** keep the videos just short of "publish as is" (code we
+own: generators, clips, loading detection); **reusing one login across a batch** is still to prove
+on an app with accounts; and **smterm has no video** (only its driveability was checked, F4;
+Electron recording is v0.1). And v0 is bigger than planned: ~54k LOC, not ~29k.
 
 ## Exit criteria
 
@@ -73,23 +74,24 @@ production code + tests) against a **~6k** plan: **~1.85× over**, in 11 PRs (P0
 hardening that the review rounds asked for (secrets scrubbing, fail-closed checks, timing edge
 cases) and tests for it. The same factor is applied to v0, minus what Phase 0 already built. Code
 marked *keep* (schema, runtime, recorder, generators, compositor, `apps/exporter`) graduates. The
-throwaway `scripts/` stay until their v0 replacements ship (README): `record.ts` until M6-1/M4
-(it's the only headed DPR 2 recording path), `p0-8/ground.ts` (with `lib/secrets.ts`) until M2-5/M2-7,
-for which it's the reference.
+throwaway `scripts/` stay until their v0 replacements ship (README has the schedule): the
+recording and replay scripts until M6-1/M4, the grounding scripts until M2-5/M2-7 (for which
+`p0-8/ground.ts` is the reference), the Electron check until V1-3, and `scripts/lib/` with the
+last of them.
 
-| Milestone | Plan | ×1.85 | Already built in Phase 0 (keep modules) | Re-estimate |
-|---|---|---|---|---|
-| M1 Core engine | 7.4k | 13.7k | M1-4 state (`ensure`, session presets): ~1.2k; `hover` and risky detection (M1-2) | **~12.5k** |
-| M2 Agent | 6.2k | 11.5k | Nothing that graduates: `scripts/p0-8/ground.ts` (~0.5k) is a throwaway reference for M2-5/M2-7, rewritten there | **~11.5k** |
-| M3 Rendering | 4.3k | 8k | (new work found) camera timing in output time, loading-frame detection, cursor shapes | **~8.5k** |
-| M4 Desktop app | 6.1k | 11.3k | (new work found) headed recording window: placement, high-DPI detection and fallback | **~11.5k** |
-| M5 Server | 3.8k | 7k | — | **~7k** |
-| M6 CLI | 1.5k | 2.8k | The Electron exporter CLI (`apps/exporter`): ~0.3k | **~2.5k** |
-| **Total** | **~29k** | **~54k** | | **~53k** |
+| Milestone | Plan | ×1.85 | Built in Phase 0 (keep code, −) | New work found (+) | Re-estimate |
+|---|---|---|---|---|---|
+| M1 Core engine | 7.4k | 13.7k | M1-4 state (`ensure`, session presets, `hover`): −0.4k; part of M1-6 (secret scrubbing, blur following fields, from P0-5): −0.5k | per-environment step timeouts, off-screen duplicates as hidden: +0.2k | **~13k** |
+| M2 Agent | 6.2k | 11.5k | none (`scripts/p0-8/ground.ts` is a throwaway reference, rewritten in M2-5/M2-7) | — | **~11.5k** |
+| M3 Rendering | 4.3k | 8k | — | camera timing in output time, loading-frame detection, cursor shapes: +0.5k | **~8.5k** |
+| M4 Desktop app | 6.1k | 11.3k | — | headed recording window (placement, high-DPI detection, fallback): +0.2k | **~11.5k** |
+| M5 Server | 3.8k | 7k | — | — | **~7k** |
+| M6 CLI | 1.5k | 2.8k | Electron exporter CLI (`apps/exporter`): −0.3k | — | **~2.5k** |
+| **Total** | **~29k** | **~54k** | −1.2k | +0.9k | **~54k** |
 
-So v0 is **~53k LOC**, not ~29k: plan for it (IMPLEMENTATION-PLAN §3 now points here). Phase 0
+So v0 is **~54k LOC**, not ~29k: plan for it (IMPLEMENTATION-PLAN §3 now points here). Phase 0
 landed **outside** the plan's ±50% band (+85%): the band itself is too narrow for this kind of work,
-so treat ~53k as the middle of a range, not a ceiling.
+so treat ~54k as the middle of a range, not a ceiling.
 
 ## Open questions for v0
 

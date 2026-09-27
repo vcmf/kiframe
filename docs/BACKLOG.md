@@ -86,5 +86,6 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Loading frames (Phase 0 report)
 - **White loading frames:** a navigation shows the blank page while the next one loads (Cal.com after "Continue"). Events can't tell loading from idle: detect near-blank or unchanged frames by frame difference, then cut or speed them (clips generator), and keep the camera wide over them.
-- **Harness output:** Phase 0 scripts print errors to stdout/stderr; runs launched with output discarded lose them (one Cal.com replay failure went undiagnosed that way). Write each run's error into its report file too.
 
+## Phase 0 harnesses
+- **Harness output:** Phase 0 scripts print errors to stdout/stderr; runs launched with output discarded lose them (one Cal.com replay failure went undiagnosed that way). Write each run's error into its report file too.
