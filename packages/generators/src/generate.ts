@@ -9,7 +9,7 @@ import {
 import { effectiveCamera, generateCamera, type CameraOptions } from "./camera.ts"
 import { generateClips, type ClipOptions } from "./clips.ts"
 import { generateCaptions, generateCursor, generateMasks } from "./overlays.ts"
-import { buildTimeline, type TakeInput } from "./timeline.ts"
+import { buildTimeline, timeMap, type TakeInput } from "./timeline.ts"
 
 // generate(scenario, take) → auto segments (docs/OBJECT-MODEL.md §4.1). Pure: no LLM, no I/O.
 
@@ -40,7 +40,9 @@ export function generate(
     ]),
   )
   const clips = generateClips(tl, options.clips)
-  const camera = generateCamera(tl, directives, options.camera)
+  // Camera timing is judged in output time: after the clips' cuts and speed-ups.
+  const { toOutput } = timeMap(clips.clips, tl)
+  const camera = generateCamera(tl, directives, options.camera, toOutput)
   warnings.push(...clips.warnings, ...camera.warnings)
 
   // A span that ended up empty after rounding (sub-millisecond) is dropped, never emitted inverted.

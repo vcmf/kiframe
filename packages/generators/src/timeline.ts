@@ -106,12 +106,17 @@ export function resolveAnchor(anchor: Anchor, tl: Timeline): number | undefined 
  * An anchor for source time `t`, relative to the start of the step running at `t` (or the first
  * step, before it): segments keep their meaning when a re-record shifts the timing.
  */
-export function anchorFor(t: number, tl: Timeline): Anchor {
+export function anchorFor(
+  t: number,
+  tl: Timeline,
+  rounding: "nearest" | "down" | "up" = "nearest",
+): Anchor {
+  const round = rounding === "down" ? Math.floor : rounding === "up" ? Math.ceil : Math.round
   const first = tl.steps[0]
-  if (first === undefined) return { ms: Math.max(0, Math.round(t)) }
+  if (first === undefined) return { ms: Math.max(0, round(t)) }
   let span = first
   for (const s of tl.steps) if (s.start <= t) span = s
-  const offsetMs = Math.round(t - span.start)
+  const offsetMs = round(t - span.start)
   return offsetMs === 0
     ? { step: span.id, edge: "start" }
     : { step: span.id, edge: "start", offsetMs }
@@ -125,7 +130,14 @@ export function anchorFor(t: number, tl: Timeline): Anchor {
 export function timeMap(
   clips: ClipSegment[],
   tl: Timeline,
-): { toOutput: (t: number) => number; outputDuration: number } {
+): {
+  /**
+   * Output time of source time `t`. With `inclusive`, a freeze at `t` itself counts: that's where
+   * a segment whose `until` is `t` ends (segments covering a freeze stay shown during it).
+   */
+  toOutput: (t: number, options?: { inclusive?: boolean }) => number
+  outputDuration: number
+} {
   const spans: { a: number; b: number; rate: number }[] = []
   const freezes: { t: number; ms: number }[] = []
   for (const c of clips) {
@@ -152,13 +164,13 @@ export function timeMap(
     }
     for (const p of pieces) spans.push({ ...p, rate })
   }
-  const toOutput = (t: number) => {
+  const toOutput = (t: number, options: { inclusive?: boolean } = {}) => {
     let out = t
     for (const s of spans) {
       const covered = Math.max(0, Math.min(t, s.b) - s.a)
       out -= covered * (1 - s.rate)
     }
-    for (const f of freezes) if (f.t < t) out += f.ms
+    for (const f of freezes) if (f.t < t || (options.inclusive === true && f.t === t)) out += f.ms
     return out
   }
   // A freeze at the very end still plays.
