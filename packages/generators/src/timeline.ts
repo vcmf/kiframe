@@ -1,0 +1,167 @@
+import type {
+  Anchor,
+  ClipSegment,
+  CursorSample,
+  Scenario,
+  Step,
+  TakeEvent,
+  TakeMeta,
+} from "@kiframe/schema"
+
+// A take seen as a timeline: where each on-camera step starts and ends, and how anchors
+// (docs/OBJECT-MODEL.md §4) resolve to source time.
+
+/** What the generators read from a take (the recorder's result, or a take folder loaded from disk). */
+export interface TakeInput {
+  meta: TakeMeta
+  events: TakeEvent[]
+  cursor: CursorSample[]
+}
+
+export interface StepSpan {
+  id: string
+  step: Step
+  /** Source time (ms) of `step_start` / `step_end`. */
+  start: number
+  end: number
+}
+
+export interface Timeline {
+  /** On-camera steps found in the take, in scenario order. */
+  steps: StepSpan[]
+  byId: Map<string, StepSpan>
+  duration: number
+  events: TakeEvent[]
+  cursor: CursorSample[]
+}
+
+/**
+ * Builds the timeline of a complete take. Steps of the scenario that the take doesn't have (the
+ * scenario changed since) are reported in `missing`: their segments can't be placed.
+ */
+export function buildTimeline(
+  scenario: Scenario,
+  take: TakeInput,
+): { timeline: Timeline; missing: string[] } {
+  if (take.meta.outcome.status !== "complete") {
+    throw new Error("a failed take can't be edited: re-record it")
+  }
+  const duration = take.meta.durationMs
+  const starts = new Map<string, number>()
+  const ends = new Map<string, number>()
+  for (const e of take.events) {
+    if (e.phase !== "steps" || e.stepId === undefined) continue
+    if (e.kind === "step_start" && !starts.has(e.stepId)) starts.set(e.stepId, e.t)
+    if (e.kind === "step_end") ends.set(e.stepId, e.t)
+  }
+  const steps: StepSpan[] = []
+  const missing: string[] = []
+  for (const step of scenario.steps) {
+    const start = starts.get(step.id)
+    if (start === undefined) {
+      missing.push(step.id)
+      continue
+    }
+    steps.push({ id: step.id, step, start, end: Math.max(start, ends.get(step.id) ?? duration) })
+  }
+  return {
+    timeline: {
+      steps,
+      byId: new Map(steps.map((s) => [s.id, s])),
+      duration,
+      events: take.events,
+      cursor: take.cursor,
+    },
+    missing,
+  }
+}
+
+/**
+ * Event anchors name an event of a step: `<stepId>:<kind>`, or `<stepId>:<kind>:<n>` for its n-th
+ * event of that kind (0-based). Example: `save:click`.
+ */
+export function eventId(stepId: string, kind: TakeEvent["kind"], n = 0): string {
+  return n === 0 ? `${stepId}:${kind}` : `${stepId}:${kind}:${n}`
+}
+
+/** Source time of an anchor in this take, clamped to the take; undefined if it doesn't exist here. */
+export function resolveAnchor(anchor: Anchor, tl: Timeline): number | undefined {
+  const clamp = (t: number) => Math.min(tl.duration, Math.max(0, t))
+  if ("ms" in anchor) return clamp(anchor.ms)
+  const offset = anchor.offsetMs ?? 0
+  if ("scene" in anchor) return clamp(anchor.scene === "start" ? offset : tl.duration + offset)
+  if ("step" in anchor) {
+    const span = tl.byId.get(anchor.step)
+    if (span === undefined) return undefined
+    return clamp((anchor.edge === "start" ? span.start : span.end) + offset)
+  }
+  const match = /^(.+):([a-z_]+)(?::(\d+))?$/.exec(anchor.event)
+  if (match === null) return undefined
+  const [, stepId, kind, n] = match
+  const found = tl.events.filter((e) => e.stepId === stepId && e.kind === kind)[Number(n ?? 0)]
+  return found === undefined ? undefined : clamp(found.t + offset)
+}
+
+/**
+ * An anchor for source time `t`, relative to the start of the step running at `t` (or the first
+ * step, before it): segments keep their meaning when a re-record shifts the timing.
+ */
+export function anchorFor(t: number, tl: Timeline): Anchor {
+  const first = tl.steps[0]
+  if (first === undefined) return { ms: Math.max(0, Math.round(t)) }
+  let span = first
+  for (const s of tl.steps) if (s.start <= t) span = s
+  const offsetMs = Math.round(t - span.start)
+  return offsetMs === 0
+    ? { step: span.id, edge: "start" }
+    : { step: span.id, edge: "start", offsetMs }
+}
+
+/**
+ * Source → output time for a set of clips. Cut spans take no output time, speed spans take
+ * 1/speed of it, and a freeze at `t` adds its `ms` right after `t`. Overlapping spans: the first
+ * one listed wins (generators never emit overlaps).
+ */
+export function timeMap(
+  clips: ClipSegment[],
+  tl: Timeline,
+): { toOutput: (t: number) => number; outputDuration: number } {
+  const spans: { a: number; b: number; rate: number }[] = []
+  const freezes: { t: number; ms: number }[] = []
+  for (const c of clips) {
+    const a = resolveAnchor(c.at, tl)
+    if (a === undefined) continue
+    if (c.mode === "freeze") {
+      freezes.push({ t: a, ms: c.ms })
+      continue
+    }
+    const b = resolveAnchor(c.until, tl)
+    if (b === undefined || b <= a) continue
+    const rate = c.mode === "cut" ? 0 : 1 / c.speed
+    // Keep only the parts not already covered by an earlier span.
+    let pieces = [{ a, b }]
+    for (const s of spans) {
+      pieces = pieces.flatMap((p) =>
+        s.b <= p.a || s.a >= p.b
+          ? [p]
+          : [
+              ...(p.a < s.a ? [{ a: p.a, b: s.a }] : []),
+              ...(s.b < p.b ? [{ a: s.b, b: p.b }] : []),
+            ],
+      )
+    }
+    for (const p of pieces) spans.push({ ...p, rate })
+  }
+  const toOutput = (t: number) => {
+    let out = t
+    for (const s of spans) {
+      const covered = Math.max(0, Math.min(t, s.b) - s.a)
+      out -= covered * (1 - s.rate)
+    }
+    for (const f of freezes) if (f.t < t) out += f.ms
+    return out
+  }
+  // A freeze at the very end still plays.
+  const tail = freezes.filter((f) => f.t >= tl.duration).reduce((sum, f) => sum + f.ms, 0)
+  return { toOutput, outputDuration: toOutput(tl.duration) + tail }
+}

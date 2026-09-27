@@ -44,7 +44,11 @@ importers:
 
   packages/compositor: {}
 
-  packages/generators: {}
+  packages/generators:
+    dependencies:
+      '@kiframe/schema':
+        specifier: workspace:*
+        version: link:../schema
 
   packages/runtime:
     dependencies:
@@ -54,6 +58,10 @@ importers:
       playwright:
         specifier: 1.63.0
         version: 1.63.0
+    devDependencies:
+      '@kiframe/generators':
+        specifier: workspace:*
+        version: link:../generators
 
   packages/schema:
     dependencies:
