@@ -276,7 +276,8 @@ describe("camera", () => {
     )
     const { composition } = generate(project(), s, t)
     const { timeline } = buildTimeline(s, t)
-    expect(resolveAnchor(composition.tracks.camera[0]!.until, timeline)).toBeLessThan(2000)
+    // No tail or minimum hold into the new page.
+    expect(resolveAnchor(composition.tracks.camera[0]!.until, timeline)).toBe(600)
   })
 
   it("never drops a framing because the next one's lead-in reaches back over it", () => {
@@ -426,6 +427,21 @@ describe("captions, cursor and masks", () => {
       [100, 1000],
       [1500, t.meta.durationMs],
     ])
+  })
+
+  it("uses the recorded order when the scenario was reordered since the take", () => {
+    const s = scenario(btn("b") + btn("a"))
+    const t = take(
+      [
+        ["a", 1000, 2000],
+        ["b", 2000, 3000],
+      ],
+      [click("a", 1500, 0.1, 0.1), click("b", 2500, 0.1, 0.1)],
+    )
+    const { composition } = generate(project(), s, t)
+    const { timeline } = buildTimeline(s, t)
+    expect(timeline.steps.map((x) => x.id)).toEqual(["a", "b"])
+    expect(timeMap(composition.tracks.clips, timeline).outputDuration).toBe(2800)
   })
 
   it("refuses a failed take and reports steps missing from the take", () => {

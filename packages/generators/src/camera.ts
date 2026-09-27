@@ -33,6 +33,8 @@ interface Framing {
   b: number
   scale: number
   focus: CameraSegment["focus"]
+  /** Ended by a navigation: no tail, no minimum-hold stretch (the framed element is gone). */
+  hardEnd?: boolean
 }
 
 /** The directive in effect for a step: its own, else the scene's, else the project's. */
@@ -64,25 +66,49 @@ export function generateCamera(
   const warnings: string[] = []
   const framings: Framing[] = []
 
-  // Lead-in grows with the distance the view travels (a far jump needs more time to read).
-  let lastCenter = { x: 0.5, y: 0.5 }
+  // Lead-in: at least ~600 ms to settle in (§4.1), more when the view travels far.
+  const center = { x: 0.5, y: 0.5 }
+  let lastCenter = center
   const leadIn = (rect: NRect) => {
     const c = { x: rect.x + rect.w / 2, y: rect.y + rect.h / 2 }
-    const ms = 400 + 600 * Math.min(1, Math.hypot(c.x - lastCenter.x, c.y - lastCenter.y))
+    const ms = 600 + 400 * Math.min(1, Math.hypot(c.x - lastCenter.x, c.y - lastCenter.y))
     lastCenter = c
     return ms
   }
-  const frameRect = (first: StepSpan, a: number, b: number, rect: NRect, scale: number) => {
-    framings.push({ first, a: a - leadIn(rect), b: b + 400, scale, focus: { mode: "rect", rect } })
+  const frameRect = (
+    first: StepSpan,
+    a: number,
+    b: number,
+    rect: NRect,
+    scale: number,
+    hardEnd = false,
+  ) => {
+    framings.push({
+      first,
+      a: a - leadIn(rect),
+      b: hardEnd ? b : b + 400,
+      scale,
+      focus: { mode: "rect", rect },
+      hardEnd,
+    })
   }
 
   let cluster: { first: StepSpan; rect: NRect; a: number; b: number } | undefined
-  const flush = () => {
+  const flush = (hardEnd = false) => {
     if (cluster === undefined) return
     const scale = Math.min(maxAuto, fitScale(cluster.rect))
-    if (scale >= minScale) frameRect(cluster.first, cluster.a, cluster.b, cluster.rect, scale)
+    if (scale >= minScale) {
+      frameRect(cluster.first, cluster.a, cluster.b, cluster.rect, scale, hardEnd)
+    }
     cluster = undefined
   }
+  /** The view goes back to the whole frame: the next lead-in travels from its center. */
+  const goWide = (hardEnd = false) => {
+    flush(hardEnd)
+    lastCenter = center
+  }
+  // A default `frame: <locator>` would warn on every step: once is enough.
+  let warnedDefaultFrame = false
 
   let coveredUntil = -1
   tl.steps.forEach((span, i) => {
@@ -98,7 +124,7 @@ export function generateCamera(
     const nav = tl.events.find((e) => e.stepId === span.id && e.kind === "navigate")
     if (directive === "auto") {
       // A navigation or a scroll changes the whole view: wide from there.
-      if (span.step.action === "goto" || span.step.action === "scroll") return flush()
+      if (span.step.action === "goto" || span.step.action === "scroll") return goWide()
       // Whether this step is part of the current framing (a navigation in it then ends it there).
       let joined = false
       if (rect !== undefined) {
@@ -126,12 +152,12 @@ export function generateCamera(
         if (joined && cluster !== undefined) {
           cluster.b = Math.max(cluster.a + 1, nav.t)
         }
-        flush()
+        goWide(joined)
       }
       return
     }
     flush()
-    if (directive === "wide") return
+    if (directive === "wide") return goWide()
     const untilId = typeof directive === "object" ? directive.until : undefined
     const untilIndex = untilId === undefined ? -1 : tl.steps.findIndex((s) => s.id === untilId)
     const endSpan = untilIndex > i ? tl.steps[untilIndex] : span
@@ -153,7 +179,14 @@ export function generateCamera(
         const [x, y, w, h] = frame.rect
         r = { x, y, w, h }
       } else {
-        warnings.push(`step ${span.id}: framing another element isn't recorded yet: kept wide`)
+        if (span.step.camera !== undefined || !warnedDefaultFrame) {
+          warnings.push(
+            span.step.camera !== undefined
+              ? `step ${span.id}: framing another element isn't recorded yet: kept wide`
+              : "the default camera frames another element, which isn't recorded yet: kept wide",
+          )
+          if (span.step.camera === undefined) warnedDefaultFrame = true
+        }
         return
       }
       if (r === undefined) {
@@ -161,8 +194,10 @@ export function generateCamera(
         return
       }
       const scale = forced ?? Math.min(maxAuto, fitScale(r))
+      const hardEnd = untilIndex <= i && nav !== undefined
       if (forced !== undefined || scale >= minScale)
-        frameRect(span, span.start, b, r, clampScale(scale))
+        frameRect(span, span.start, b, r, clampScale(scale), hardEnd)
+      if (hardEnd) lastCenter = center
       return
     }
     // { follow: cursor }
@@ -170,7 +205,7 @@ export function generateCamera(
       first: span,
       a: span.start - 300,
       b: b + 400,
-      scale: followScale,
+      scale: clampScale(followScale),
       focus: { mode: "follow-cursor" },
     })
   })
@@ -184,7 +219,8 @@ export function generateCamera(
     const prev = sorted.at(-1)
     let a = Math.max(0, f.a)
     if (prev !== undefined) a = Math.max(a, Math.min(f.first.start, prev.a + minHold))
-    sorted.push({ ...f, a, b: Math.min(tl.duration, Math.max(f.b, a + minHold)) })
+    const b = f.hardEnd === true ? Math.max(f.b, a + 1) : Math.max(f.b, a + minHold)
+    sorted.push({ ...f, a, b: Math.min(tl.duration, b) })
   }
   sorted.forEach((f, i) => {
     const next = sorted[i + 1]
@@ -245,4 +281,4 @@ function clampScale(s: number): number {
   return Math.min(CAMERA_SCALE.max, Math.max(CAMERA_SCALE.min, s))
 }
 
-const round2 = (n: number) => Math.round(n * 100) / 100
+export const round2 = (n: number) => Math.round(n * 100) / 100
