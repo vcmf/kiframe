@@ -74,6 +74,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Grounding (P0-8)
 - **Clipped or covered collapsed panels:** "off screen" means the element's box is still outside the viewport after Playwright scrolls it into view. A sidebar collapsed to `width: 0; overflow: hidden`, or behind an overlay, still has a box on screen and times out without a reason; and scrolling into view can pull an off-canvas drawer in on pages with `overflow-x: hidden`. Use the centre-point probe (`isOnScreen`) when a pointer action's target can't be hit.
+- **Off-screen primary → try fallbacks:** an off-screen target now only fails fast with a reason; trying its fallbacks instead needs a grace that follows the element (late mounts, slide-ins) without ever clicking a fallback that points elsewhere (three review rounds in P0-8 went there).
+- **Grounding context growth:** every snapshot stays in the conversation and is resent each turn; elide old tool results (cooldown's `tool-result-view.ts`) in M2-5.
+- **One overlap rule:** `canBeOnScreen` (targets.ts) and `visiblePart` (runner.ts) both test box vs viewport; share one.
 - **Grounding harness lock:** the stale-lock takeover can race when two runs start on the same dead lock at the same moment (throwaway script; use a real lock library if it graduates).
 - **Off-screen for conditions too:** `expect`/`waitFor` `visible` still count an element in a collapsed panel as visible (only click/hover check it can be brought on screen): a shared "reachable" filter next to `visibleOnly`.
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.

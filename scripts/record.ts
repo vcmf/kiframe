@@ -19,10 +19,14 @@ const { values } = parseArgs({
     secrets: { type: "string", default: "" },
     /** Pre-approve risky steps (a sandbox account's teardown deletes). */
     "approve-risky": { type: "boolean", default: false },
+    /** Step timeout (ms): real SaaS pages can take seconds to hydrate (FAILURE-CATALOGUE #8). */
+    timeout: { type: "string", default: "15000" },
   },
 })
 if (!values.project || !values.scenario || !values.out) {
-  console.error("usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2]")
+  console.error(
+    "usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2] [--secrets a.b,c.d] [--approve-risky] [--timeout 15000]",
+  )
   process.exit(2)
 }
 loadDotEnv()
@@ -47,7 +51,7 @@ try {
     outDir: values.out,
     resolveSecret,
     ...(values["approve-risky"] && { approveRisky: () => true }),
-    timeoutMs: 15_000,
+    timeoutMs: Number(values.timeout),
   })
   console.log(
     `take ${take.meta.takeKey}: ${Math.round(take.meta.durationMs)} ms, ${take.warnings.length} warnings`,
