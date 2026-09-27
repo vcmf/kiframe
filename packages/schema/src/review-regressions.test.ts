@@ -909,7 +909,8 @@ describe("on-camera and off-camera actions stay in sync", () => {
     const kinds = (u: { options: readonly { shape: { action: { value: string } } }[] }) =>
       u.options.map((o) => o.shape.action.value).sort()
     expect(kinds(Step)).toEqual(kinds(Action))
-    expect(kinds(Step)).toHaveLength(8)
+    // hover (P0-9) makes 9.
+    expect(kinds(Step)).toHaveLength(9)
   })
 })
 

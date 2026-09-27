@@ -18,6 +18,9 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 presets:
   open-projects:
     steps: [{ action: goto, url: /projects }]
+  sign-in:
+    session: true
+    steps: [{ action: goto, url: /login }]
 `)
 })
 
@@ -205,16 +208,152 @@ steps:
     expect(error.message).toMatch(/^steps\[0\] \(never, waitFor\): .*Never shown/)
   })
 
-  it("rejects presets it doesn't know and `ensure` (P0-9) with a StepError", async () => {
+  it("rejects presets it doesn't know with a StepError", async () => {
     const unknown = await failure(
       `setup: [{ preset: missing }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
     )
     expect(unknown.reason).toBe("invalid-setup")
     expect(unknown.message).toMatch(/unknown preset "missing"/)
-    const ensure = await failure(
-      `setup: [{ ensure: { absent: { by: text, text: X } } }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
-    )
-    expect(ensure.message).toMatch(/P0-9/)
+  })
+
+  // ─── P0-9: state (ensure, teardown, session presets, hover) ────────────────
+
+  const boardScene = (teardown = true) => `setup:
+  - { action: goto, url: /boards }
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap } }
+steps:
+  - { id: new, action: click, target: { by: role, role: button, name: New board } }
+  - { id: shown, action: expect, that: { visible: { by: role, role: heading, name: Q4 roadmap } } }
+${
+  teardown
+    ? `teardown:
+  - { action: hover, target: { by: role, role: heading, name: Q4 roadmap } }
+  - { action: click, target: { by: role, role: button, name: Delete board }, risky: false }
+`
+    : ""
+}`
+  const seedBoard = async () => {
+    await page.goto(`${server.url}/boards`)
+    await page.evaluate(() => localStorage.setItem("boards", JSON.stringify(["Q4 roadmap"])))
+  }
+  const phases = (events: RunnerEvent[]) =>
+    events.flatMap((e) => (e.kind === "step_start" ? [`${e.step.phase}:${e.step.action}`] : []))
+
+  it("ensure absent: runs the teardown on leftovers, replays the setup, then films", async () => {
+    await seedBoard()
+    const events = await run(boardScene())
+    expect(phases(events)).toEqual([
+      "setup:goto",
+      "setup:ensure",
+      // leftovers from an earlier run: the teardown (hover reveals Delete), then setup again,
+      // all inside the ensure step
+      "setup:ensure: hover",
+      "setup:ensure: click",
+      "setup:ensure: goto",
+      "steps:click",
+      "steps:expect",
+      // the scene's own cleanup
+      "teardown:hover",
+      "teardown:click",
+    ])
+    expect(await page.evaluate(() => localStorage.getItem("boards"))).toBe("[]")
+  })
+
+  it("ensure absent: nothing to do when it's already absent", async () => {
+    const events = await run(boardScene())
+    expect(phases(events).slice(0, 3)).toEqual(["setup:goto", "setup:ensure", "steps:click"])
+  })
+
+  it("ensure fails clearly when it can't be made true", async () => {
+    await seedBoard()
+    const noTeardown = await failure(boardScene(false))
+    expect(noTeardown.reason).toBe("ensure-failed")
+    expect(noTeardown.message).toMatch(/has no teardown/)
+    const stubborn = await failure(`setup:
+  - { action: goto, url: /boards }
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown: [{ action: pause, ms: 1 }]
+`)
+    expect(stubborn.message).toMatch(/still present after the teardown/)
+    // A cleanup step that fails is the ensure's failure (setup), never a teardown failure: a take
+    // with no step filmed must not pass as complete.
+    await seedBoard()
+    const cleanup = await failure(`setup:
+  - { action: goto, url: /boards }
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown: [{ action: click, target: { by: role, role: button, name: Nowhere } }]
+`)
+    // ...keeping its own reason, and saying which cleanup step failed.
+    expect(cleanup.reason).toBe("target-not-found")
+    expect(cleanup.step).toMatchObject({ phase: "setup", action: "ensure" })
+    expect(cleanup.message).toMatch(/removing .*Q4 roadmap.* \(teardown\), step 1 \(click\)/)
+    const present = await failure(`setup:
+  - { action: goto, url: /boards }
+  - ensure: { present: { by: role, role: heading, name: Launch plan } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+    expect(present.reason).toBe("ensure-failed")
+    expect(present.message).toMatch(/must be present/)
+  })
+
+  it("after an ensure failure, doesn't run the teardown on data the scene didn't create", async () => {
+    await seedBoard()
+    const events: RunnerEvent[] = []
+    await expect(
+      runScenario(
+        page,
+        scenario(`setup:
+  - { action: goto, url: /boards }
+  - ensure: { present: { by: role, role: heading, name: Launch plan } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { action: hover, target: { by: role, role: heading, name: Q4 roadmap } }
+  - { action: click, target: { by: role, role: button, name: Delete board }, risky: false }
+`),
+        project,
+        { timeoutMs: 800, onEvent: (e) => events.push(e) },
+      ),
+    ).rejects.toThrow(/must be present/)
+    expect(events.some((e) => e.kind === "step_start" && e.step.phase === "teardown")).toBe(false)
+    // The pre-existing board is still there.
+    expect(await page.evaluate(() => localStorage.getItem("boards"))).toBe('["Q4 roadmap"]')
+  })
+
+  it("keeps risky-not-approved when the ensure cleanup needs an approval", async () => {
+    await seedBoard()
+    const error = await failure(`setup:
+  - { action: goto, url: /boards }
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { action: hover, target: { by: role, role: heading, name: Q4 roadmap } }
+  - { action: click, target: { by: role, role: button, name: Delete board }, risky: true }
+`)
+    expect(error.reason).toBe("risky-not-approved")
+  })
+
+  it("an ensure on a blank page fails clearly (nothing loaded is not 'absent')", async () => {
+    const error = await failure(`setup:
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown: [{ action: pause, ms: 1 }]
+`)
+    expect(error.message).toMatch(/needs a page/)
+  })
+
+  it("runs a session preset once and reports it; skips it when the page already has it", async () => {
+    const yaml = `setup: [{ preset: sign-in }, { action: goto, url: /boards }]
+steps: [{ id: a, action: pause, ms: 1 }]
+`
+    const first = await run(yaml)
+    expect(first.filter((e) => e.kind === "preset_done")).toEqual([
+      { kind: "preset_done", name: "sign-in", session: true },
+    ])
+    const again = await run(yaml, { skipSessionPresets: ["sign-in"] })
+    expect(again.some((e) => e.kind === "preset_done")).toBe(false)
+    expect(phases(again)).toEqual(["setup:goto", "steps:pause"])
   })
 
   // ─── Review round 1 (P0-3) ─────────────────────────────────────────────────
