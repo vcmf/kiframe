@@ -31,7 +31,7 @@ kiframe/
     runtime/       Playwright automation: actions, targets, cursor planner, typing, interrupts, ensure/teardown, recorder
     vault/         keychain access, secret resolver (origin + field binding), output scrubber, DOM-text scanner
     generators/    pure functions: take + scenario → auto segments (camera, clips, captions, masks, cursor)
-    compositor/    PixiJS renderFrame (analytic springs, cursor, masks, captions, cards) + WebCodecs/Mediabunny export
+    compositor/    Canvas 2D renderFrame (analytic springs, cursor, masks, captions, cards) + WebCodecs/Mediabunny export
     guide/         guide output: Markdown / HTML / PDF
     store/         project folder IO, take store (pinned/scratch, encrypted), hidden git history, status computation
     agent/         agent loop (ported from cooldown), Anthropic LlmClient, tools, grounding and healing prompts

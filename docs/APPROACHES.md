@@ -22,7 +22,7 @@
 | Agent stack | **cooldown's agent loop** (moved to the Node main process) + an **Anthropic-native `LlmClient`**. Not the Claude Agent SDK (§10b) | 2026-09-26 |
 | Automation | **Playwright library** in the Node main process. The agent's browser tools are **our own tools built on it, not Playwright MCP**, so every action and output passes through the vault's resolver/scrubber and the event logger. Fallback: computer use for canvas-heavy UIs | 2026-09-26 |
 | Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2** (⚠️ Phase 0 finding F1: screencast frames come out at CSS resolution; see docs/PHASE0-FINDINGS.md). **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-26 |
-| Rendering | Own **PixiJS compositor + WebCodecs + Mediabunny in the frontend**. Preview = export | 2026-09-26 |
+| Rendering | Own **compositor (Canvas 2D; PixiJS if the preview needs it) + WebCodecs + Mediabunny in the frontend**. Preview = export | 2026-09-27 (PHASE0-FINDINGS F3) |
 | Source vs artifacts | **Scenes are objects, video is a build artifact.** Takes are **pinned** (referenced by an export, a named version or the active composition, never evicted) or **scratch** (evictable). See OBJECT-MODEL §0.7 | 2026-09-26 |
 | Credentials | **Vault**: the agent can see which secrets exist but can never read their values. Hardened leak paths (§7.4) | 2026-09-26 |
 | Accounts | **User + Org** model: each user has a **personal org** and a `defaultOrgId`, and can be invited to other orgs. Billing and shared settings at org level. Vault values stay **per user, per machine**, never synced (§10c) | 2026-09-26 |
@@ -138,7 +138,7 @@ The user gives feedback in chat and the agent edits the objects:
 | Native OS window capture (ScreenCaptureKit, Windows Graphics Capture) | Good | **Rejected:** screen-recording permission, a monthly re-consent prompt on macOS Sequoia, a visible window the user can disturb |
 | Headed Chrome in Xvfb + ffmpeg | Best | Linux only. Relevant only for a future cloud/CI render worker |
 
-**The camera zoom is capped by the source resolution.** At DPR 2 on a 1440×900 viewport, the source is 2880×1800, so a 2× zoom into a 1080p output stays sharp.
+**The camera zoom is capped by the source resolution.** At DPR 2 on a 1440×900 viewport, the source is 2880×1800, so a 2× zoom into a 1080p output stays sharp. Device-pixel frames need a **headed** window on a high-DPI screen: headless screencast frames are CSS resolution (PHASE0-FINDINGS F1, F2).
 
 Note: capture does involve encoding. Screencast frames (JPEG) are encoded into the take's video, through WebCodecs in the frontend or an ffmpeg step in Node. Which one is decided in Phase 0.
 

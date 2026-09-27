@@ -4,9 +4,21 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./browser/bundle.ts": "./browser/bundle.ts",
+    "./browser/export-page.ts": "./browser/export-page.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.src.json"
+  },
+  "dependencies": {
+    "@kiframe/generators": "workspace:*",
+    "@kiframe/schema": "workspace:*",
+    "mediabunny": "1.60.0"
+  },
+  "devDependencies": {
+    "@kiframe/runtime": "workspace:*",
+    "playwright": "1.63.0",
+    "esbuild": "0.28.2"
   }
 }

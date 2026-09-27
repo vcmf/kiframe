@@ -110,10 +110,13 @@ export async function recordScenario(
     const shotsAwaitingFrame: string[] = []
     const writeShot = (stepId: string, data: Buffer) =>
       pendingWrites.push(track(writeFile(join(outDir, "shots", `${stepId}.jpg`), data)))
+    // Device pixels: a headed window on a high-DPI screen gives frames at viewport × DPR (sharp
+    // zooms); headless gives CSS resolution whatever is asked (Phase 0 findings F1, F2).
+    // Capped at 3, the most a take records (TakeMeta): a 350% display or browser zoom goes above.
+    const dpr = Math.min(3, await page.evaluate(() => window.devicePixelRatio).catch(() => 1))
     await page.screencast.start({
-      // Without `size`, frames are scaled down to fit a small default box. Frames come out at CSS
-      // resolution at most anyway (Phase 0 finding F1).
-      size: { width: viewport.width, height: viewport.height },
+      // Without `size`, frames are scaled down to fit a small default box.
+      size: { width: Math.round(viewport.width * dpr), height: Math.round(viewport.height * dpr) },
       quality: options.quality ?? 85,
       onFrame: ({ data, timestamp }) => {
         // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
