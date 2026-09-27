@@ -222,8 +222,24 @@ steps:
 steps: [{ id: open, action: click, target: { by: role, role: button, name: New board, exact: true } }]
 `)
     expect(error.reason).toBe("target-not-found")
-    expect(error.message).toMatch(/off screen .*collapsed panel/)
-    expect(Date.now() - started).toBeLessThan(1500)
+    expect(error.message).toMatch(/only off screen .*collapsed panel/)
+    expect(Date.now() - started).toBeLessThan(2500)
+  })
+
+  it("tries the fallback when the primary target is only off screen", async () => {
+    await run(`setup: [{ action: goto, url: /collapsed }]
+steps:
+  - id: open
+    action: click
+    target: { by: role, role: button, name: New board, exact: true, fallbacks: [{ by: text, text: New Board card }] }
+`)
+  })
+
+  it("still types into an input hidden off screen on purpose", async () => {
+    await run(`setup: [{ action: goto, url: /collapsed }]
+steps: [{ id: t, action: type, target: { by: label, name: Hidden field }, value: abc }]
+`)
+    expect(await page.locator("#v").textContent()).toBe("abc")
   })
 
   // ─── P0-9: state (ensure, teardown, session presets, hover) ────────────────

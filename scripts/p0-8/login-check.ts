@@ -3,13 +3,14 @@ import { readFileSync } from "node:fs"
 import { runScenario, StepError } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
+import { envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
 
-process.loadEnvFile(".env")
+loadDotEnv()
 const project = parseProjectYaml(readFileSync("examples/calcom/project.yaml", "utf8"))
 const scenario = parseScenarioYaml(
   "version: 1\nsetup: [{ preset: login }]\nsteps: [{ id: wait, action: pause, ms: 500 }]\n",
 )
-const env = (name: string) => process.env[name.toUpperCase().replace(/[^A-Z0-9]/g, "_")] ?? ""
+const env = envSecretResolver(["calcom.username", "calcom.password"])
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
 try {

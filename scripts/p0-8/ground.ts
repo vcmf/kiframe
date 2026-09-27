@@ -3,10 +3,13 @@
 // every step on the live app, then the scene is replayed from scratch to check it. Logs tokens,
 // cost, time, turns and questions (APPROACHES §12, IMPLEMENTATION-PLAN P0-8).
 //
-// Usage: OPENROUTER_API_KEY=… node scripts/p0-8/ground.ts --project p.yaml --goal "…" --out scene.yaml
-//          [--model z-ai/glm-5.3] [--secrets calcom.email,calcom.password] [--headed]
-// Secret `a.b` is read from the env var `A_B` (CALCOM_EMAIL…). The model only ever sees names.
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+// Usage: node scripts/p0-8/ground.ts --project p.yaml --goal "…" --out scene.yaml
+//          [--model deepseek/deepseek-v4.1-flash] [--secrets calcom.username,calcom.password] [--headed]
+// Keys and secrets come from the environment or a git-ignored `.env` (see .env.example): secret
+// `a.b` is read from `A_B`. The model only ever sees names.
+// Risky steps are approved automatically: run it on sandbox / throwaway accounts only (each
+// approval is printed).
+import { readFileSync, rmSync, writeFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { runScenario, scrubSecrets, StepError, visibleOnly, toPlaywright } from "@kiframe/runtime"
 import {
@@ -18,6 +21,7 @@ import {
   type ProjectConfig,
 } from "@kiframe/schema"
 import OpenAI from "openai"
+import { envName, envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
 import { parse as parseYaml } from "yaml"
 import type {
   ChatCompletionMessageParam,
@@ -30,7 +34,7 @@ const { values } = parseArgs({
     project: { type: "string" },
     goal: { type: "string" },
     out: { type: "string" },
-    model: { type: "string", default: "z-ai/glm-5.3" },
+    model: { type: "string", default: "deepseek/deepseek-v4.1-flash" },
     secrets: { type: "string", default: "" },
     "max-turns": { type: "string", default: "80" },
     headed: { type: "boolean", default: false },
@@ -44,30 +48,41 @@ if (!values.project || !values.goal || !values.out) {
   )
   process.exit(2)
 }
-// Keys and credentials can live in a git-ignored `.env` at the repo root (see .env.example).
-if (existsSync(".env")) process.loadEnvFile(".env")
+loadDotEnv()
 const apiKey = process.env.OPENROUTER_API_KEY
 if (apiKey === undefined || apiKey === "") {
   console.error("OPENROUTER_API_KEY is not set")
   process.exit(2)
 }
 // One run per output: a second run would write the same log and report (and fight over the app).
+// Taken atomically (`wx`); a lock whose pid is gone (or unreadable) is stale.
 const lock = `${values.out}.lock`
-if (existsSync(lock)) {
-  const pid = Number(readFileSync(lock, "utf8"))
-  let alive = false
+const takeLock = (): boolean => {
   try {
-    process.kill(pid, 0)
-    alive = true
+    writeFileSync(lock, String(process.pid), { flag: "wx" })
+    return true
   } catch {
-    // stale lock
-  }
-  if (alive) {
-    console.error(`another run (pid ${pid}) writes ${values.out}`)
-    process.exit(2)
+    const pid = Number(readFileSync(lock, "utf8"))
+    let alive = false
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0)
+        alive = true
+      } catch (error) {
+        // EPERM: alive, but someone else's
+        alive = (error as NodeJS.ErrnoException).code === "EPERM"
+      }
+    }
+    if (alive) return false
+    rmSync(lock, { force: true })
+    writeFileSync(lock, String(process.pid), { flag: "wx" })
+    return true
   }
 }
-writeFileSync(lock, String(process.pid))
+if (!takeLock()) {
+  console.error(`another run writes ${values.out} (${lock})`)
+  process.exit(2)
+}
 process.on("exit", () => rmSync(lock, { force: true }))
 for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130))
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
@@ -76,16 +91,11 @@ const maxTurns = Number(values["max-turns"])
 
 // ─── Secrets: names for the model, values only for the runner ────────────────
 const secretNames = values.secrets.split(",").filter(Boolean)
-const envOf = (name: string) => name.toUpperCase().replace(/[^A-Z0-9]/g, "_")
+const resolveSecret = envSecretResolver(secretNames)
 const secretValues = secretNames.flatMap((n) => {
-  const v = process.env[envOf(n)]
+  const v = process.env[envName(n)]
   return v === undefined || v === "" ? [] : [v]
 })
-const resolveSecret = (name: string) => {
-  const v = process.env[envOf(name)]
-  if (!secretNames.includes(name) || v === undefined || v === "") throw new Error("unavailable")
-  return v
-}
 /** Every string the model sees goes through this. */
 const scrub = (text: string) => scrubSecrets(text, secretValues)
 
@@ -188,7 +198,7 @@ async function runStep(input: unknown): Promise<string> {
   try {
     await runScenario(page, scenario, quickProject, {
       resolveSecret,
-      approveRisky: () => true,
+      approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,
     })
     return `ok. url: ${new URL(page.url()).pathname}`
@@ -202,6 +212,11 @@ async function runStep(input: unknown): Promise<string> {
 // Real SaaS pages can take seconds to hydrate (Cal.com's login needs more than 6 s): FAILURE-CATALOGUE #8.
 const STEP_TIMEOUT_MS = 15_000
 const SNAPSHOT_MAX = 14_000
+/** Sandbox accounts only: every risky step the model marks is approved, and printed. */
+const logApproval = (step: { phase: string; index: number; action: string }) => {
+  console.log(`[approved risky] ${step.phase}[${step.index}] ${step.action}`)
+  return true
+}
 async function snapshot(within?: unknown): Promise<string> {
   let root = page.locator("body")
   if (within !== undefined) {
@@ -373,10 +388,23 @@ try {
       if (call.type !== "function") continue
       stats.toolCalls++
       let args: Record<string, unknown> = {}
+      let badArgs = false
       try {
         args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>
       } catch {
-        // answered below
+        badArgs = true
+      }
+      if (badArgs) {
+        // Cut off by max_tokens (a long finish YAML), or not JSON: say so, don't run a tool on {}.
+        const cut = response.choices[0]?.finish_reason === "length"
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: cut
+            ? "Your arguments were cut off (output token limit): send them again, shorter (e.g. finish with a compact YAML)."
+            : "Your arguments aren't valid JSON: send them again.",
+        })
+        continue
       }
       let result: string
       switch (call.function.name) {

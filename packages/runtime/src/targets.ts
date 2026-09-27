@@ -61,6 +61,14 @@ export async function resolveTarget(
   page: Page,
   target: Target,
   timeoutMs: number,
+  /**
+   * For pointer actions (click, hover): when every visible match is one that can't be brought on
+   * screen (translated off the left or top of the page, like a collapsed sidebar), the candidate
+   * doesn't match: the next fallback is tried, else the error says "off screen". `nth` and
+   * ambiguity still count every visible match (scenes grounded with them keep working). Typing only
+   * needs focus: an input hidden off screen on purpose still works.
+   */
+  { reachable = false }: { reachable?: boolean } = {},
 ): Promise<ResolveResult> {
   if (!isGrounded(target)) {
     return {
@@ -79,15 +87,34 @@ export async function resolveTarget(
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
   let ambiguous: string | undefined
+  let offScreen: string | undefined
   for (;;) {
     ambiguous = undefined
+    offScreen = undefined
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator))
-      const count = await visible.count().catch((error: unknown) => {
+      const all = await visible.count().catch((error: unknown) => {
         // A navigation (client-side redirect…) replaced the page mid-poll: retry on the new one.
         if (isNavigationError(error)) return 0
         throw error
       })
+      const indexes = Array.from({ length: all }, (_, k) => k)
+      if (reachable && all > 0) {
+        const flags = await visible
+          .evaluateAll((els) =>
+            els.map((el) => {
+              const r = el.getBoundingClientRect()
+              // Left of or above the page's origin: no scrolling brings it back.
+              return r.right + window.scrollX > 0 && r.bottom + window.scrollY > 0
+            }),
+          )
+          .catch(() => indexes.map(() => true))
+        if (!flags.some(Boolean)) {
+          offScreen ??= `${describeLocator(candidate.locator)} is only off screen (inside a collapsed panel or drawer?): open it first, or use another element`
+          continue
+        }
+      }
+      const count = all
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
@@ -106,6 +133,7 @@ export async function resolveTarget(
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
   if (ambiguous !== undefined) return { ok: false, reason: "target-ambiguous", detail: ambiguous }
+  if (offScreen !== undefined) return { ok: false, reason: "target-not-found", detail: offScreen }
   const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
   return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
 }

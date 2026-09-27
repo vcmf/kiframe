@@ -1,11 +1,12 @@
 // Phase 0 (throwaway): record a scenario into a take folder.
 // Usage: node scripts/record.ts --project p.yaml --scenario s.yaml --out <take dir> [--headed] [--dpr 2]
 //          [--secrets calcom.username,calcom.password] [--approve-risky]
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
+import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
 
 const { values } = parseArgs({
   options: {
@@ -24,14 +25,8 @@ if (!values.project || !values.scenario || !values.out) {
   console.error("usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2]")
   process.exit(2)
 }
-if (existsSync(".env")) process.loadEnvFile(".env")
-const secretNames = values.secrets.split(",").filter(Boolean)
-const resolveSecret = (name: string) => {
-  const value = process.env[name.toUpperCase().replace(/[^A-Z0-9]/g, "_")]
-  if (!secretNames.includes(name) || value === undefined || value === "")
-    throw new Error("unavailable")
-  return value
-}
+loadDotEnv()
+const resolveSecret = envSecretResolver(values.secrets.split(",").filter(Boolean))
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 // A high DPR only helps headed (headless frames stay at CSS resolution, F1): the project's DPR
 // headed, 1 headless, unless --dpr says otherwise.
