@@ -26,6 +26,8 @@ export function readingTimeMs(text: string): number {
 
 type Span = { a: number; b: number }
 
+const NAVIGATE_BUSY_MS = 300
+
 export function generateClips(
   tl: Timeline,
   options: ClipOptions = {},
@@ -71,6 +73,21 @@ export function generateClips(
     })
   }
 
+  // Interrupts handled off camera (a dismissed popup) are cut too.
+  const interruptSpans: Span[] = []
+  for (const e of tl.events) {
+    if (e.kind !== "interrupt" || e.until <= e.t) continue
+    interruptSpans.push({ a: e.t, b: e.until })
+    clips.push({
+      id: `clip:interrupt:${Math.round(e.t)}`,
+      source: "auto",
+      mode: "cut",
+      at: anchorFor(e.t, tl),
+      until: anchorFor(e.until, tl),
+      reason: "interrupt",
+    })
+  }
+
   // A step's own `speed` (the author's choice), except where rule 1 protects it.
   const speedSpans: Span[] = []
   for (const s of tl.steps) {
@@ -93,13 +110,16 @@ export function generateClips(
 
   // Rule 3: idle stretches, between the first step and the end beat, outside what's protected or
   // already sped up by the author.
-  const busy = mergeSpans([...activity(tl), ...protectedSpans, ...speedSpans])
+  const busy = mergeSpans([...activity(tl), ...protectedSpans, ...speedSpans, ...interruptSpans])
   for (const gap of complement(busy, first.start, end)) {
     const a = gap.a + margin
     const b = gap.b - margin
     if (gap.b - gap.a <= threshold || b <= a) continue
     const speed = Math.min(MAX_SPEED, Math.max(idleSpeed, (b - a) / threshold))
-    const network = tl.events.some((e) => e.kind === "navigate" && e.t >= gap.a && e.t <= gap.b)
+    // A navigation is itself a short busy span: one right before the gap is the page loading.
+    const network = tl.events.some(
+      (e) => e.kind === "navigate" && e.t >= gap.a - NAVIGATE_BUSY_MS - 1 && e.t <= gap.b,
+    )
     const at = anchorFor(a, tl)
     const until = anchorFor(b, tl)
     clips.push({
@@ -142,9 +162,14 @@ function activity(tl: Timeline): Span[] {
     const p = samples[i - 1]
     const q = samples[i]
     if (p === undefined || q === undefined) continue
+    // Samples are only logged while the cursor travels (~60/s): two far apart in time are the end
+    // of one move and the start of the next, and the rest between them is idle.
+    if (q.t - p.t > 100) continue
     if (p.p.x !== q.p.x || p.p.y !== q.p.y || p.pressed !== q.pressed)
       spans.push({ a: p.t, b: q.t })
   }
+  // A scroll moves the page (smooth scrolling) without cursor samples: its step is activity.
+  for (const s of tl.steps) if (s.step.action === "scroll") spans.push({ a: s.start, b: s.end })
   const typing = new Map<string, number>()
   for (const e of tl.events) {
     if (e.phase !== "steps") continue
@@ -156,7 +181,7 @@ function activity(tl: Timeline): Span[] {
         spans.push({ a: e.t - 100, b: e.t + 400 })
         break
       case "navigate":
-        spans.push({ a: e.t, b: e.t + 300 })
+        spans.push({ a: e.t, b: e.t + NAVIGATE_BUSY_MS })
         break
       case "type_start":
         typing.set(e.stepId ?? "", e.t)

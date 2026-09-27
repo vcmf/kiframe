@@ -63,6 +63,14 @@ const click = (stepId: string, t: number, x: number, y: number, w = 0.1, h = 0.0
   button: "left",
 })
 
+/** Cursor samples of a move (60/s) ending at `end`, like the recorder logs them. */
+const move = (end: number, ms = 300) =>
+  Array.from({ length: Math.round(ms / 16) }, (_, i) => ({
+    t: end - ms + (i + 1) * 16,
+    p: { x: 0.1 + i * 0.01, y: 0.1 },
+    pressed: false,
+  }))
+
 const btn = (id: string, extra = "") =>
   `  - { id: ${id}, action: click, target: { by: role, role: button, name: ${id} }${extra} }\n`
 
@@ -109,6 +117,43 @@ describe("clips (time model)", () => {
     expect(out("b", "end") - out("b", "start")).toBeLessThan(4000)
   })
 
+  it("speeds up the rest between two cursor moves (real takes have samples)", () => {
+    const s = scenario(
+      btn("a") + `  - { id: wait, action: waitFor, until: { text: Done } }\n` + btn("b"),
+    )
+    const t = take(
+      [
+        ["a", 0, 600],
+        ["wait", 600, 10_600],
+        ["b", 10_600, 11_600],
+      ],
+      [click("a", 500, 0.1, 0.1), click("b", 11_500, 0.5, 0.5)],
+      { cursor: [...move(500), ...move(11_500)] },
+    )
+    const speeds = generate(project(), s, t).composition.tracks.clips.filter(
+      (c) => c.mode === "speed",
+    )
+    expect(speeds).toHaveLength(1)
+  })
+
+  it("labels the page load after a navigation as network, and cuts interrupts", () => {
+    const s = scenario(`  - { id: go, action: goto, url: /reports }\n` + btn("b"))
+    const t = take(
+      [
+        ["go", 0, 5000],
+        ["b", 5000, 6000],
+      ],
+      [
+        { stepId: "go", t: 100, kind: "navigate", url: "https://app.example.com/reports" },
+        { stepId: "b", t: 5100, kind: "interrupt", rule: "cookie-banner", until: 5400 },
+        click("b", 5800, 0.1, 0.1),
+      ],
+    )
+    const clips = generate(project(), s, t).composition.tracks.clips
+    expect(clips.find((c) => c.mode === "speed")?.reason).toBe("network")
+    expect(clips.some((c) => c.mode === "cut" && c.reason === "interrupt")).toBe(true)
+  })
+
   it("freezes at the end of a short caption step for its reading time, plus its hold", () => {
     const caption = "Name the project and press Enter to create it"
     const s = scenario(btn("a", `, caption: "${caption}", hold: 700`))
@@ -148,6 +193,46 @@ describe("camera", () => {
     // The first framing ends before the goto step is over (zoom out for the new page).
     expect(resolveAnchor(cam[0]!.until, timeline)).toBeLessThanOrEqual(3000)
     for (const c of cam) expect(c.scale).toBeGreaterThan(1.2)
+  })
+
+  it("zooms out during a long wait, and a far-off navigation doesn't stretch the zoom", () => {
+    const s = scenario(
+      btn("a") +
+        `  - { id: wait, action: waitFor, until: { text: Done } }\n` +
+        btn("c") +
+        `  - { id: enter, action: press, keys: Enter }\n`,
+    )
+    const t = take(
+      [
+        ["a", 0, 1000],
+        ["wait", 1000, 11_000],
+        ["c", 11_000, 12_000],
+        ["enter", 20_000, 21_000],
+      ],
+      [
+        click("a", 500, 0.1, 0.1),
+        click("c", 11_500, 0.1, 0.1),
+        { stepId: "enter", t: 20_200, kind: "navigate", url: "https://app.example.com/x" },
+      ],
+    )
+    const { composition } = generate(project(), s, t)
+    const { timeline } = buildTimeline(s, t)
+    const ends = composition.tracks.camera.map((c) => resolveAnchor(c.until, timeline)!)
+    expect(ends[0]).toBeLessThanOrEqual(1000 + 2500 + 400)
+    expect(ends.at(-1)).toBeLessThan(15_000)
+  })
+
+  it("never drops a framing because the next one's lead-in reaches back over it", () => {
+    const s = scenario(btn("a", ", camera: target") + btn("b", ", camera: target"))
+    const t = take(
+      [
+        ["a", 300, 600],
+        ["b", 600, 900],
+      ],
+      [click("a", 500, 0.05, 0.05), click("b", 800, 0.85, 0.85)],
+    )
+    const ids = generate(project(), s, t).composition.tracks.camera.map((c) => c.id)
+    expect(ids).toEqual(["camera:a", "camera:b"])
   })
 
   it("keeps a framing at least ~1.3 s and bridges short zoom-outs", () => {
@@ -222,6 +307,13 @@ describe("captions, cursor and masks", () => {
     expect(ripple.kind).toBe("click-ripple")
     expect(resolveAnchor(ripple.at, timeline)).toBe(640)
     expect(composition.tracks.captions[0]).toMatchObject({ id: "caption:a", text: "Open it" })
+  })
+
+  it("shows two ripples for a double click", () => {
+    const s = scenario(btn("a", ", count: 2"))
+    const t = take([["a", 0, 1000]], [{ ...click("a", 500, 0.1, 0.1), count: 2 }])
+    const ids = generate(project(), s, t).composition.tracks.cursor.map((c) => c.id)
+    expect(ids).toEqual(["cursor:ripple:a:click", "cursor:ripple:a:click#1"])
   })
 
   it("blurs a sensitive region until it's gone, and again if it comes back", () => {

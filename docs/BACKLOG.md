@@ -46,4 +46,5 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Keystroke overlay:** `keystrokes: show` produces no `KeystrokeSegment` yet.
 - **Regenerate with manual segments:** `generate` returns auto segments only; merging with manual ones and flagging orphaned anchors (OBJECT-MODEL §4.1) comes with the editor.
 - **Idle detection is event-based:** a page that animates or loads content without cursor/keyboard activity is seen as idle and sped up (reason `network` only when a navigation is inside the gap). Frame-difference detection would tell real idleness apart.
+- **Events grouped by step once:** camera and cursor generators scan all events per step (O(steps × events)); a `Map<stepId, events>` on the timeline would do it once.
 - **Camera tuning:** padding (element ≤ ~60% of the frame), lead-in (400–1000 ms by distance), cluster gap (2.5 s), bridge (800 ms) and the 1.2× minimum are first guesses, to tune on the test apps in P0-7.
