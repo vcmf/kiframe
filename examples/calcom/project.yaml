@@ -1,6 +1,6 @@
 # Phase 0 third-party app for grounding (P0-8): Cal.com, a throwaway free account.
 # Credentials come from the vault in the app; in the Phase 0 scripts from env vars
-# CALCOM_EMAIL / CALCOM_PASSWORD (secret names calcom.email / calcom.password).
+# CALCOM_USERNAME (the account email) / CALCOM_PASSWORD (secret names calcom.username / calcom.password).
 version: 1
 target: { kind: web, url: "https://app.cal.com", viewport: { width: 1440, height: 900 } }
 presets:
@@ -12,7 +12,7 @@ presets:
       - {
           action: type,
           target: { by: role, role: textbox, name: Email },
-          value: "{{secrets.calcom.email}}",
+          value: "{{secrets.calcom.username}}",
         }
       - {
           action: type,

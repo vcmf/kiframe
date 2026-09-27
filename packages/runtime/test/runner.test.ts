@@ -216,6 +216,16 @@ steps:
     expect(unknown.message).toMatch(/unknown preset "missing"/)
   })
 
+  it("fails fast and says why when the target is off screen (collapsed panel)", async () => {
+    const started = Date.now()
+    const error = await failure(`setup: [{ action: goto, url: /collapsed }]
+steps: [{ id: open, action: click, target: { by: role, role: button, name: New board, exact: true } }]
+`)
+    expect(error.reason).toBe("target-not-found")
+    expect(error.message).toMatch(/off screen .*collapsed panel/)
+    expect(Date.now() - started).toBeLessThan(1500)
+  })
+
   // ─── P0-9: state (ensure, teardown, session presets, hover) ────────────────
 
   const boardScene = (teardown = true) => `setup:

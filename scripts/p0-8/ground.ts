@@ -6,17 +6,19 @@
 // Usage: OPENROUTER_API_KEY=… node scripts/p0-8/ground.ts --project p.yaml --goal "…" --out scene.yaml
 //          [--model z-ai/glm-5.3] [--secrets calcom.email,calcom.password] [--headed]
 // Secret `a.b` is read from the env var `A_B` (CALCOM_EMAIL…). The model only ever sees names.
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { runScenario, scrubSecrets, StepError, visibleOnly, toPlaywright } from "@kiframe/runtime"
 import {
   checkScenarioAgainstProject,
   parseProjectYaml,
   parseScenarioYaml,
+  SetupItem,
   Step,
   type ProjectConfig,
 } from "@kiframe/schema"
 import OpenAI from "openai"
+import { parse as parseYaml } from "yaml"
 import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
@@ -49,6 +51,25 @@ if (apiKey === undefined || apiKey === "") {
   console.error("OPENROUTER_API_KEY is not set")
   process.exit(2)
 }
+// One run per output: a second run would write the same log and report (and fight over the app).
+const lock = `${values.out}.lock`
+if (existsSync(lock)) {
+  const pid = Number(readFileSync(lock, "utf8"))
+  let alive = false
+  try {
+    process.kill(pid, 0)
+    alive = true
+  } catch {
+    // stale lock
+  }
+  if (alive) {
+    console.error(`another run (pid ${pid}) writes ${values.out}`)
+    process.exit(2)
+  }
+}
+writeFileSync(lock, String(process.pid))
+process.on("exit", () => rmSync(lock, { force: true }))
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130))
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const model = values.model
 const maxTurns = Number(values["max-turns"])
@@ -109,6 +130,9 @@ Rules:
 - Ask the user (\`ask_user\`) only for real blockers (a missing secret, an ambiguous goal). Questions are counted.
 - run_step runs steps on the live page in order: after the steps, clean up with the teardown actions too
   (run them with run_step as well) so the app is back to its initial state before you call finish.
+- As soon as every step and the teardown ran ok once, call finish. Don't start over by hand to re-check:
+  finish itself replays the whole scene from scratch in a fresh browser and tells you what fails.
+- A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.
 Project presets available: ${Object.keys(project.presets).join(", ") || "none"}.
 App: ${project.target.url}`
 
@@ -126,12 +150,40 @@ const quickProject: ProjectConfig = {
   },
 }
 
-/** One step (or setup/teardown action) on the live page, through the real runner. */
-async function runStep(raw: unknown): Promise<string> {
-  const step = Step.safeParse(raw)
-  if (!step.success) return `invalid step: ${step.error.issues[0]?.message ?? "?"}`
+/**
+ * One item on the live page, through the real runner: an on-camera step (with its id), or a
+ * setup / teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`).
+ */
+/** Models sometimes send an object as a JSON or YAML string: accept both. */
+function asObject(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw
   try {
-    await runScenario(page, { version: 1, steps: [step.data] }, quickProject, {
+    return JSON.parse(raw) as unknown
+  } catch {
+    try {
+      return parseYaml(raw) as unknown
+    } catch {
+      return raw
+    }
+  }
+}
+
+async function runStep(input: unknown): Promise<string> {
+  const raw = asObject(input)
+  if (typeof raw !== "object" || raw === null) {
+    return "invalid step: expected an object like {id: open-new, action: click, target: {...}}"
+  }
+  const step = Step.safeParse(raw)
+  const setupItem = step.success ? undefined : SetupItem.safeParse(raw)
+  if (!step.success && setupItem?.success !== true) {
+    const issue = (setupItem?.error ?? step.error).issues[0]
+    return `invalid step: ${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}`
+  }
+  const scenario = step.success
+    ? { version: 1 as const, steps: [step.data] }
+    : { version: 1 as const, setup: [setupItem!.data!], steps: [] }
+  try {
+    await runScenario(page, scenario, quickProject, {
       resolveSecret,
       approveRisky: () => true,
       timeoutMs: 5000,
@@ -324,7 +376,7 @@ try {
       let result: string
       switch (call.function.name) {
         case "snapshot":
-          result = await snapshot(args.within)
+          result = await snapshot(asObject(args.within))
           break
         case "run_step":
           stats.stepsRun++
