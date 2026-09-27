@@ -163,9 +163,16 @@ describe("camera", () => {
 
   it("uses the composition's own style, the caller's on top", () => {
     const { scenario, take, composition } = fixture()
-    const styled: Composition = { ...composition, style: { width: 1080, height: 1920, bogus: 1 } }
-    expect(prepare(styled, scenario, take).style).toMatchObject({ width: 1080, height: 1920 })
-    expect(prepare(styled, scenario, take, { width: 720 }).style.width).toBe(720)
+    const styled: Composition = {
+      ...composition,
+      style: { radius: 4, captions: { size: 48 }, cursor: { size: 40 } },
+    }
+    expect(prepare(styled, scenario, take).style).toMatchObject({
+      radius: 4,
+      captionSize: 48,
+      cursorSize: 40,
+    })
+    expect(prepare(styled, scenario, take, { radius: 9 }).style.radius).toBe(9)
   })
 
   it("caps the zoom and reports the softness", () => {

@@ -2,6 +2,7 @@ import * as z from "zod"
 import { claimIds, Ms, NPoint, NRect, StepId } from "./common.ts"
 import { guarded } from "./guards.ts"
 import { CAMERA_SCALE, MAX_SPEED } from "./settings.ts"
+import { StyleOverride } from "./style.ts"
 
 // The edit: parallel typed tracks of segments (docs/OBJECT-MODEL.md §4).
 // Segments are anchored to steps/events in SOURCE time. `clips` maps source → output time.
@@ -165,8 +166,8 @@ const CompositionBase = z
     version: z.literal(1),
     /** The take the auto segments were generated from. */
     take: z.strictObject({ key: z.string().min(1) }).optional(),
-    /** Scene-level style overrides. Typed with the compositor (P0-7); kept verbatim until then. */
-    style: z.record(z.string(), z.unknown()).optional(),
+    /** Scene-level style overrides (between the project's and the output's; never the size). */
+    style: StyleOverride.optional(),
     tracks: z.strictObject({
       clips: z.array(ClipSegment).default([]),
       camera: z.array(CameraSegment).default([]),

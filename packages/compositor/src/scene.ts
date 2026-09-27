@@ -8,7 +8,14 @@ import {
   type TimeMap,
   type Timeline,
 } from "@kiframe/generators"
-import type { Anchor, CameraSegment, Composition, NRect, Scenario } from "@kiframe/schema"
+import type {
+  Anchor,
+  CameraSegment,
+  Composition,
+  NRect,
+  Scenario,
+  StyleOverride,
+} from "@kiframe/schema"
 
 // What the output shows at a given output time (docs/OBJECT-MODEL.md §5), as plain data: pure and
 // random-access (no state carried from frame to frame), so seeking gives the same frame as
@@ -121,22 +128,17 @@ export function prepare(
   return { ...base, moves, softness }
 }
 
-/** The known Style fields of a composition's `style` (kept verbatim by the schema until typed). */
-function styleFrom(raw: Record<string, unknown> | undefined): Partial<Style> {
-  if (raw === undefined) return {}
-  const out: Partial<Style> = {}
-  for (const key of Object.keys(DEFAULT_STYLE) as (keyof Style)[]) {
-    const value = raw[key]
-    const expected = DEFAULT_STYLE[key]
-    if (Array.isArray(expected)) {
-      if (Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === "string")) {
-        out.background = [value[0] as string, value[1] as string]
-      }
-    } else if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-      ;(out as Record<string, number>)[key] = value
-    }
+/** A composition's style override, in the compositor's flat Style (the size is the output's). */
+function styleFrom(o: StyleOverride | undefined): Partial<Style> {
+  if (o === undefined) return {}
+  return {
+    ...(o.background !== undefined && { background: o.background }),
+    ...(o.padding !== undefined && { padding: o.padding }),
+    ...(o.radius !== undefined && { radius: o.radius }),
+    ...(o.maxScale !== undefined && { maxScale: o.maxScale }),
+    ...(o.cursor?.size !== undefined && { cursorSize: o.cursor.size }),
+    ...(o.captions?.size !== undefined && { captionSize: o.captions.size }),
   }
-  return out
 }
 
 /** Where the take frame goes in the output (aspect kept, centered, inside the padding). */
