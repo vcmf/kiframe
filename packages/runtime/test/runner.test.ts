@@ -382,6 +382,31 @@ steps:
 `)
   })
 
+  it("moves pointer-library drags even with instant pacing (the activating move isn't the only one)", async () => {
+    await run(`setup:
+  - { action: goto, url: /pointer-lib }
+  - { action: drag, target: { by: role, role: slider, name: Level }, to: { dx: 200, dy: 0 } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+    const at = Number((await page.locator("#s").textContent())?.replace("at ", ""))
+    expect(Math.abs(at - 300)).toBeLessThan(25)
+  })
+
+  it("asks approval to drop onto Trash or select 'Cancel subscription' (fails closed like a click)", async () => {
+    const drop = await failure(`setup: [{ action: goto, url: /pointer-lib }]
+steps: [{ id: bin, action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Trash } }]
+`)
+    expect(drop.reason).toBe("risky-not-approved")
+    const cancel = await failure(`setup: [{ action: goto, url: /pointer-lib }]
+steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: Cancel subscription }]
+`)
+    expect(cancel.reason).toBe("risky-not-approved")
+    // risky: false opts out.
+    await run(`setup: [{ action: goto, url: /pointer-lib }]
+steps: [{ id: plan, action: select, target: { by: label, name: Plan }, option: Cancel subscription, risky: false }]
+`)
+  })
+
   it("refuses an offset drag that would leave the view (never a shorter drag)", async () => {
     const error = await failure(`setup: [{ action: goto, url: /drag }]
 steps: [{ id: slide, action: drag, target: { by: role, role: slider, name: Volume }, to: { dx: 5000, dy: 0 } }]
