@@ -3,6 +3,26 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // Boards kept in localStorage (they survive a reload, like app data); Delete shows on hover only.
+  "/boards": `<!doctype html><title>Boards</title>
+    <style>.card button { display: none } .card:hover button { display: inline }</style>
+    <button id="new">New board</button><div id="list"></div>
+    <script>
+      const load = () => JSON.parse(localStorage.getItem("boards") || "[]")
+      const save = (b) => { localStorage.setItem("boards", JSON.stringify(b)); render() }
+      function render() {
+        const list = document.getElementById("list"); list.innerHTML = ""
+        for (const name of load()) {
+          const card = document.createElement("div"); card.className = "card"
+          card.innerHTML = "<h4></h4><button>Delete board</button>"
+          card.querySelector("h4").textContent = name
+          card.querySelector("button").onclick = () => save(load().filter((n) => n !== name))
+          list.append(card)
+        }
+      }
+      document.getElementById("new").onclick = () => save([...load(), "Q4 roadmap"])
+      render()
+    </script>`,
   "/get-login": `<!doctype html><title>GET login</title>
     <form method="get" action="/get-login"><label>Password <input name="pw" type="password"></label></form>
     <button oncontextmenu="event.preventDefault(); document.body.dataset.menu='1'">Options</button>`,

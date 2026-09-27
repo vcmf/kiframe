@@ -1,3 +1,11 @@
 # Phase 0 test app: app.dim0.net (local boards, no account needed).
 version: 1
 target: { kind: web, url: "https://app.dim0.net", viewport: { width: 1440, height: 900 } }
+presets:
+  # dim0 has no login: this session preset only opens the app once per batch (P0-9 checks the
+  # mechanism; a login preset needs an app with accounts).
+  open-app:
+    session: true
+    steps:
+      - { action: goto, url: / }
+      - { action: waitFor, until: { text: Note Boards } }

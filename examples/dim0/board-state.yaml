@@ -1,0 +1,30 @@
+# P0-9: replayable on a persistent profile. The board this scene creates is removed by its
+# teardown; if an earlier run left it behind, `ensure` runs the teardown first.
+version: 1
+setup:
+  - preset: open-app
+  - { action: goto, url: / }
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap, exact: true } }
+steps:
+  - id: new-board
+    action: click
+    target: { by: text, text: New Board, exact: true }
+    caption: "Create a board: no account needed"
+  - id: rename
+    action: click
+    # The collapsed sidebar has the same name first.
+    target: { by: text, text: Untitled board, exact: true, nth: 1 }
+  - id: name
+    action: type
+    target: { by: placeholder, text: Board name }
+    value: Q4 roadmap
+    clear: true
+    submit: true
+    caption: "Give it a name"
+  - { id: look, action: pause, ms: 800 }
+teardown:
+  - { action: goto, url: / }
+  # Delete only shows on hover.
+  - { action: hover, target: { by: role, role: heading, name: Q4 roadmap, exact: true } }
+  - { action: click, target: { by: role, role: button, name: Delete board }, risky: true }
+  - { action: click, target: { by: role, role: button, name: Delete, exact: true }, risky: true }

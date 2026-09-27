@@ -102,3 +102,26 @@ increasingly turn off. `_electron.launch` stays a convenience for dev builds.
 - A separate `--user-data-dir` means a fresh profile: the app's own login state isn't there.
   Recording an app with its real data needs the user's profile, which conflicts with the running
   instance (the user must quit the app first, or the app supports a second profile).
+
+## F5. State: 5/5 clean takes on app.dim0.net with ensure + teardown + session reuse (2026-09-27)
+
+**Test (P0-9):** `examples/dim0/board-state.yaml` (create a board, name it "Q4 roadmap"; the
+teardown deletes it: hover the card, Delete, confirm), replayed 5 times by
+`scripts/p0-9/replay.ts` on one persistent profile (cookies, localStorage and IndexedDB carried
+from run to run, like an account whose data persists). Runs 2 and 4 skip their final teardown on
+purpose (an interrupted run). Report: [p0-9-dim0-report.json](phase0/p0-9-dim0-report.json).
+
+| Run | Interrupted | Session preset | `ensure` found leftovers | Clean | On camera |
+|---|---|---|---|---|---|
+| 1 | | ran | no | ✅ | 10.8 s (cold, see catalogue #4) |
+| 2 | yes | skipped | no | ✅ | 5.4 s |
+| 3 | | skipped | **yes → teardown, setup again** | ✅ | 5.4 s |
+| 4 | yes | skipped | no | ✅ | 5.3 s |
+| 5 | | skipped | **yes → teardown, setup again** | ✅ | 5.4 s |
+
+Clean = the take is complete, no warnings, no teardown error, every step ran. Warm runs are
+consistent: each step within ~100 ms from run to run.
+
+**Limits:** dim0 has no accounts, so the session preset only opens the app; session reuse was
+exercised through the carried profile. A login preset is checked on the P0-8 app. Failure classes
+seen are in `docs/FAILURE-CATALOGUE.md`.
