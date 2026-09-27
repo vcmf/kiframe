@@ -165,7 +165,7 @@ The milestones below can partly run in parallel. Recommended order: **M1 → M2 
 | M6-3 | Failure reports | Opt-in, scrubbed failure reports (scene, step, cause) feeding the failure catalogue | S | 400 |
 | | **Subtotal** | | | **~1.5k** |
 
-**v0 total: ~29k LOC**, in about 38 PRs.
+**v0 total: ~29k LOC**, in about 38 PRs. **Re-estimated after Phase 0: ~54k LOC** (Phase 0 came in at ~1.85× its plan, outside the ±50% band; see PHASE0-REPORT.md, "Re-estimates for v0").
 
 ---
 

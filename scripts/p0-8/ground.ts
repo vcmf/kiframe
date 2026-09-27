@@ -1,4 +1,5 @@
-// P0-8 (throwaway): the grounding experiment. A minimal agent (the `openai` SDK against OpenRouter,
+// P0-8 (throwaway): the grounding experiment.
+// Kept as the reference for M2-5/M2-7 until they ship. A minimal agent (the `openai` SDK against OpenRouter,
 // like cooldown's byok-client; not the full agent loop yet) writes a scene for a goal and grounds
 // every step on the live app, then the scene is replayed from scratch to check it. Logs tokens,
 // cost, time, turns and questions (APPROACHES §12, IMPLEMENTATION-PLAN P0-8).
