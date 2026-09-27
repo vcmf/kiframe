@@ -1,6 +1,7 @@
 import type {
   Action,
   Condition,
+  Ensure,
   ProjectConfig,
   Scenario,
   SetupItem,
@@ -71,6 +72,8 @@ export type RunnerEvent =
   | { kind: "target_fallback"; step: StepRef; fallbackIndex: number }
   /** Teardown failed after a step had already failed: the step's error is the one thrown. */
   | { kind: "teardown_failed"; error: StepError }
+  /** A preset's steps all ran: for a session preset, the moment to save the context's state. */
+  | { kind: "preset_done"; name: string; session: boolean }
 
 export interface RunOptions {
   /** Resolves a secret NAME to its value, at the moment of the fill. Throw if unavailable. */
@@ -85,6 +88,11 @@ export interface RunOptions {
   navigationTimeoutMs?: number
   /** Set by the recorder: measure targets and fields for the take (extra page round trips). */
   recording?: boolean
+  /**
+   * Session presets whose state the page already has (its context was created from the storage
+   * state saved after they ran, once per batch): they're skipped. See the `preset_done` event.
+   */
+  skipSessionPresets?: readonly string[]
 }
 
 type AnyAction = Action | Step
@@ -104,10 +112,10 @@ export async function runScenario(
   project: ProjectConfig,
   options: RunOptions = {},
 ): Promise<void> {
-  // Static config errors (unknown preset, unsupported `ensure`) fail BEFORE anything runs or is
+  // Static config errors (unknown preset) fail BEFORE anything runs or is
   // attached to the page, and don't trigger teardown: nothing was created, and teardown could delete
   // pre-existing data.
-  const setup = expandSetup(scenario.setup ?? [], project)
+  const setup = expandSetup(scenario.setup ?? [], project, options.skipSessionPresets ?? [])
   const base = new URL(project.target.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
@@ -162,13 +170,8 @@ export async function runScenario(
   try {
     let failure: Error | undefined
     try {
-      for (const [index, action] of setup.entries()) {
-        await runOne(ctx, action, {
-          phase: "setup",
-          index,
-          stepId: action.id,
-          action: action.action,
-        })
+      for (const [index, entry] of setup.entries()) {
+        await runSetupEntry(ctx, scenario, setup, index, entry)
       }
       for (const [index, step] of scenario.steps.entries()) {
         await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
@@ -242,12 +245,22 @@ interface Ctx {
   options: RunOptions
 }
 
+/** A setup item once presets are inlined: an action, an `ensure`, or the end of a preset. */
+type SetupEntry =
+  | { kind: "action"; action: Action; preset?: { name: string; session: boolean } }
+  | { kind: "ensure"; ensure: Ensure["ensure"]; preset?: { name: string; session: boolean } }
+  | { kind: "preset_done"; name: string; session: boolean }
+
 /**
- * Inlines presets into setup. `ensure` items are handled in P0-9: rejected clearly for now. Error
- * indexes are post-expansion, like the `setup[i]` of runtime errors.
+ * Inlines presets into setup, and drops session presets the page already has (`skipSessionPresets`).
+ * Error indexes are post-expansion, like the `setup[i]` of runtime errors.
  */
-function expandSetup(items: readonly SetupItem[], project: ProjectConfig): Action[] {
-  const out: Action[] = []
+function expandSetup(
+  items: readonly SetupItem[],
+  project: ProjectConfig,
+  skip: readonly string[],
+): SetupEntry[] {
+  const out: SetupEntry[] = []
   const invalid = (detail: string) =>
     new StepError({ phase: "setup", index: out.length, action: "setup" }, "invalid-setup", detail)
   for (const item of items) {
@@ -256,18 +269,109 @@ function expandSetup(items: readonly SetupItem[], project: ProjectConfig): Actio
         ? project.presets[item.preset]
         : undefined
       if (preset === undefined) throw invalid(`unknown preset "${item.preset}"`)
+      if (preset.session && skip.includes(item.preset)) continue
+      const from = { name: item.preset, session: preset.session }
       for (const s of preset.steps) {
-        if ("ensure" in s)
-          throw invalid("`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
-        out.push(s)
+        out.push(
+          "ensure" in s
+            ? { kind: "ensure", ensure: s.ensure, preset: from }
+            : { kind: "action", action: s, preset: from },
+        )
       }
+      out.push({ kind: "preset_done", ...from })
     } else if ("ensure" in item) {
-      throw invalid("`ensure` isn't supported by the Phase 0 runner yet (P0-9)")
+      out.push({ kind: "ensure", ensure: item.ensure })
     } else {
-      out.push(item)
+      out.push({ kind: "action", action: item })
     }
   }
   return out
+}
+
+async function runSetupEntry(
+  ctx: Ctx,
+  scenario: Scenario,
+  setup: readonly SetupEntry[],
+  index: number,
+  entry: SetupEntry,
+): Promise<void> {
+  if (entry.kind === "preset_done") {
+    ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
+    return
+  }
+  if (entry.kind === "action") {
+    const { action } = entry
+    await runOne(ctx, action, { phase: "setup", index, stepId: action.id, action: action.action })
+    return
+  }
+  await ensure(ctx, scenario, setup, index, entry.ensure)
+}
+
+/**
+ * `ensure` (docs/OBJECT-MODEL.md §2): the one declarative idempotency primitive.
+ * - `absent`: if the element is there, run this scene's teardown, replay the setup that led here
+ *   (actions only: no session preset, no other `ensure`), and check again.
+ * - `present`: nothing can create it declaratively: fail with a message saying so.
+ * "There" = a visible match once the page has settled.
+ */
+async function ensure(
+  ctx: Ctx,
+  scenario: Scenario,
+  setup: readonly SetupEntry[],
+  index: number,
+  condition: Ensure["ensure"],
+): Promise<void> {
+  const ref: StepRef = { phase: "setup", index, action: "ensure" }
+  ctx.setCurrent(ref)
+  ctx.options.onEvent?.({ kind: "step_start", step: ref })
+  const locator = "absent" in condition ? condition.absent : condition.present
+  const what = describeLocator(locator)
+  const isThere = async () => {
+    await guard(ref, () => settle(ctx, false))
+    return guard(ref, async () => (await visibleOnly(toPlaywright(ctx.page, locator)).count()) > 0)
+  }
+  if ("present" in condition) {
+    if (!(await isThere())) {
+      throw new StepError(
+        ref,
+        "ensure-failed",
+        `${what} must be present before filming: create it earlier in the setup or in a preset`,
+      )
+    }
+  } else if (await isThere()) {
+    // Leftovers from an earlier run: the scene's own teardown removes what the scene creates.
+    const teardown = scenario.teardown ?? []
+    if (teardown.length === 0) {
+      throw new StepError(
+        ref,
+        "ensure-failed",
+        `${what} must be absent before filming, and the scene has no teardown to remove it`,
+      )
+    }
+    for (const [i, action] of teardown.entries()) {
+      await runOne(ctx, action, {
+        phase: "teardown",
+        index: i,
+        stepId: action.id,
+        action: action.action,
+      })
+    }
+    for (const [i, entry] of setup.slice(0, index).entries()) {
+      if (entry.kind !== "action" || entry.preset?.session === true) continue
+      await runOne(ctx, entry.action, {
+        phase: "setup",
+        index: i,
+        stepId: entry.action.id,
+        action: entry.action.action,
+      })
+    }
+    ctx.setCurrent(ref)
+    if (await isThere()) {
+      throw new StepError(ref, "ensure-failed", `${what} is still present after the teardown ran`)
+    }
+  }
+  ctx.throwListenerError()
+  ctx.options.onEvent?.({ kind: "step_end", step: ref })
 }
 
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
@@ -417,6 +521,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     case "click": {
       const target = await find(ctx, action.target, step)
       await clickAtCursor(ctx, target, step, action)
+      return
+    }
+    case "hover": {
+      const target = await find(ctx, action.target, step)
+      // The cursor's own (real) mouse move ends over the target; without a box, Playwright hovers.
+      const at = await moveCursorTo(ctx, target, step)
+      if (at === undefined) await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
       return
     }
     case "type": {
