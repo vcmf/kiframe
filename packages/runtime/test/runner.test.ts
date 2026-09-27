@@ -364,6 +364,24 @@ teardown: [{ action: click, target: { by: role, role: button, name: Reset } }]
     expect(await page.locator("#reset").textContent()).toBe("reset done")
   })
 
+  it("never follows a popup the last step opened late into the teardown", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps: [{ id: later, action: click, target: { by: role, role: button, name: Open later } }]
+teardown:
+  - { action: pause, ms: 1200 }
+  - { action: click, target: { by: role, role: button, name: Reset } }
+`)
+    expect(await page.locator("#reset").textContent()).toBe("reset done")
+  })
+
+  it("stays put when the last page opened closed at once (never an earlier tab instead)", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: two, action: click, target: { by: role, role: button, name: Open two } }
+  - { id: still, action: expect, that: { visible: { by: role, role: button, name: Open two } } }
+`)
+  })
+
   it("refuses an offset drag that would leave the view (never a shorter drag)", async () => {
     const error = await failure(`setup: [{ action: goto, url: /drag }]
 steps: [{ id: slide, action: drag, target: { by: role, role: slider, name: Volume }, to: { dx: 5000, dy: 0 } }]
