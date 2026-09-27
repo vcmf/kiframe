@@ -9,7 +9,8 @@
 // `a.b` is read from `A_B`. The model only ever sees names.
 // Risky steps are approved automatically: run it on sandbox / throwaway accounts only (each
 // approval is printed).
-import { readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { parseArgs } from "node:util"
 import { runScenario, scrubSecrets, StepError, visibleOnly, toPlaywright } from "@kiframe/runtime"
 import {
@@ -21,7 +22,7 @@ import {
   type ProjectConfig,
 } from "@kiframe/schema"
 import OpenAI from "openai"
-import { envName, envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
+import { envSecretResolver, loadDotEnv, providedSecrets } from "../lib/secrets.ts"
 import { parse as parseYaml } from "yaml"
 import type {
   ChatCompletionMessageParam,
@@ -58,11 +59,20 @@ if (apiKey === undefined || apiKey === "") {
 // Taken atomically (`wx`); a lock whose pid is gone (or unreadable) is stale.
 const lock = `${values.out}.lock`
 const takeLock = (): boolean => {
+  if (!existsSync(dirname(lock))) {
+    console.error(`the output folder ${dirname(lock)} doesn't exist`)
+    process.exit(2)
+  }
   try {
     writeFileSync(lock, String(process.pid), { flag: "wx" })
     return true
   } catch {
-    const pid = Number(readFileSync(lock, "utf8"))
+    let pid = NaN
+    try {
+      pid = Number(readFileSync(lock, "utf8"))
+    } catch {
+      // gone in between: try once more below
+    }
     let alive = false
     if (Number.isInteger(pid) && pid > 0) {
       try {
@@ -74,9 +84,19 @@ const takeLock = (): boolean => {
       }
     }
     if (alive) return false
-    rmSync(lock, { force: true })
-    writeFileSync(lock, String(process.pid), { flag: "wx" })
-    return true
+    // Stale: moved aside atomically (only one run wins the rename), then taken with `wx` again.
+    try {
+      renameSync(lock, `${lock}.stale-${process.pid}`)
+      rmSync(`${lock}.stale-${process.pid}`, { force: true })
+    } catch {
+      // someone else moved it first
+    }
+    try {
+      writeFileSync(lock, String(process.pid), { flag: "wx" })
+      return true
+    } catch {
+      return false
+    }
   }
 }
 if (!takeLock()) {
@@ -92,10 +112,8 @@ const maxTurns = Number(values["max-turns"])
 // ─── Secrets: names for the model, values only for the runner ────────────────
 const secretNames = values.secrets.split(",").filter(Boolean)
 const resolveSecret = envSecretResolver(secretNames)
-const secretValues = secretNames.flatMap((n) => {
-  const v = process.env[envName(n)]
-  return v === undefined || v === "" ? [] : [v]
-})
+const provided = providedSecrets(secretNames)
+const secretValues = provided.map((s) => s.value)
 /** Every string the model sees goes through this. */
 const scrub = (text: string) => scrubSecrets(text, secretValues)
 
@@ -246,7 +264,9 @@ async function replay(yaml: string): Promise<string> {
   }
   const issues = checkScenarioAgainstProject(scenario, project)
   if (issues.length > 0) return `invalid scenario: ${issues.join("; ")}`
-  if (scenario.steps.length < 5) return "a scene has 5-15 steps"
+  if (scenario.steps.length < 5 || scenario.steps.length > 15) {
+    return `a scene has 5-15 on-camera steps (this one has ${scenario.steps.length})`
+  }
   const context = await browser.newContext({ viewport })
   const fresh = await context.newPage()
   try {
@@ -421,7 +441,9 @@ try {
           result =
             secretNames.length === 0
               ? "none"
-              : secretNames.map((n) => `${n}${resolveSecretSafe(n) ? "" : " (missing)"}`).join(", ")
+              : secretNames
+                  .map((n) => `${n}${provided.some((s) => s.name === n) ? "" : " (missing)"}`)
+                  .join(", ")
           break
         case "ask_user":
           stats.questions.push(String(args.question))
@@ -449,15 +471,6 @@ try {
 } finally {
   stats.ms = Date.now() - started
   await browser.close()
-}
-
-function resolveSecretSafe(name: string): boolean {
-  try {
-    resolveSecret(name)
-    return true
-  } catch {
-    return false
-  }
 }
 
 if (finalYaml !== undefined) writeFileSync(values.out, scrub(finalYaml))

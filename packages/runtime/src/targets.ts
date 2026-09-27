@@ -62,11 +62,11 @@ export async function resolveTarget(
   target: Target,
   timeoutMs: number,
   /**
-   * For pointer actions (click, hover): when every visible match is one that can't be brought on
-   * screen (translated off the left or top of the page, like a collapsed sidebar), the candidate
-   * doesn't match: the next fallback is tried, else the error says "off screen". `nth` and
-   * ambiguity still count every visible match (scenes grounded with them keep working). Typing only
-   * needs focus: an input hidden off screen on purpose still works.
+   * For pointer actions (click, hover): when the element picked can't be brought on screen even
+   * after scrolling (a collapsed sidebar or drawer), the candidate doesn't match: the next fallback
+   * is tried, else the error says "off screen" (after a short grace, not the whole timeout). `nth`
+   * and ambiguity still count every visible match (scenes grounded with them keep working). Typing
+   * only needs focus: an input hidden off screen on purpose still works.
    */
   { reachable = false }: { reachable?: boolean } = {},
 ): Promise<ResolveResult> {
@@ -88,33 +88,17 @@ export async function resolveTarget(
   // only report it if it's still the state at the deadline.
   let ambiguous: string | undefined
   let offScreen: string | undefined
+  let offScreenSince: number | undefined
   for (;;) {
     ambiguous = undefined
     offScreen = undefined
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator))
-      const all = await visible.count().catch((error: unknown) => {
+      const count = await visible.count().catch((error: unknown) => {
         // A navigation (client-side redirect…) replaced the page mid-poll: retry on the new one.
         if (isNavigationError(error)) return 0
         throw error
       })
-      const indexes = Array.from({ length: all }, (_, k) => k)
-      if (reachable && all > 0) {
-        const flags = await visible
-          .evaluateAll((els) =>
-            els.map((el) => {
-              const r = el.getBoundingClientRect()
-              // Left of or above the page's origin: no scrolling brings it back.
-              return r.right + window.scrollX > 0 && r.bottom + window.scrollY > 0
-            }),
-          )
-          .catch(() => indexes.map(() => true))
-        if (!flags.some(Boolean)) {
-          offScreen ??= `${describeLocator(candidate.locator)} is only off screen (inside a collapsed panel or drawer?): open it first, or use another element`
-          continue
-        }
-      }
-      const count = all
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
@@ -122,12 +106,24 @@ export async function resolveTarget(
         break
       }
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
+      if (reachable && !(await canBeOnScreen(page, locator))) {
+        offScreen ??= `${describeLocator(candidate.locator)} is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`
+        continue
+      }
       return {
         ok: true,
         locator,
         used: candidate.locator,
         fallbackIndex: i === 0 ? undefined : i - 1,
       }
+    }
+    // Only off-screen matches: a panel that is opening slides in quickly, so give it a moment,
+    // not the whole step timeout (the agent needs a fast, clear answer).
+    if (offScreen !== undefined && ambiguous === undefined) {
+      offScreenSince ??= Date.now()
+      if (Date.now() - offScreenSince >= OFF_SCREEN_GRACE_MS) break
+    } else {
+      offScreenSince = undefined
     }
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -136,6 +132,29 @@ export async function resolveTarget(
   if (offScreen !== undefined) return { ok: false, reason: "target-not-found", detail: offScreen }
   const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
   return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
+}
+
+/** How long a target may stay off screen (a panel still opening) before that's the answer. */
+const OFF_SCREEN_GRACE_MS = 2000
+
+/**
+ * Whether a pointer can reach the element: scrolled into view by Playwright (inner scroll
+ * containers, RTL, nested scrolling), its box then overlaps the viewport. A collapsed sidebar or
+ * drawer (translated away, fixed off screen) stays outside whatever the scroll. Unknown (no box,
+ * detached mid-check) counts as reachable: the action itself will say what's wrong.
+ */
+async function canBeOnScreen(page: Page, locator: Locator): Promise<boolean> {
+  await locator.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined)
+  const box = await locator.boundingBox({ timeout: 300 }).catch(() => null)
+  if (box === null) return true
+  const viewport = await viewportOf(page).catch(() => undefined)
+  if (viewport === undefined) return true
+  return (
+    box.x + box.width > 0 &&
+    box.y + box.height > 0 &&
+    box.x < viewport.width &&
+    box.y < viewport.height
+  )
 }
 
 /** The locator part of a grounded target, without the healing metadata. */

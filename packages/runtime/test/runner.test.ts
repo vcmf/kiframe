@@ -222,8 +222,30 @@ steps:
 steps: [{ id: open, action: click, target: { by: role, role: button, name: New board, exact: true } }]
 `)
     expect(error.reason).toBe("target-not-found")
-    expect(error.message).toMatch(/only off screen .*collapsed panel/)
+    expect(error.message).toMatch(/off screen even after scrolling .*collapsed panel/)
     expect(Date.now() - started).toBeLessThan(2500)
+  })
+
+  it("answers 'off screen' after a short grace, not the whole step timeout", async () => {
+    const started = Date.now()
+    const error = await failure(
+      `setup: [{ action: goto, url: /shell-scroll }]
+steps: [{ id: d, action: click, target: { by: role, role: button, name: Drawer action } }]
+`,
+      { timeoutMs: 15_000 },
+    )
+    expect(error.message).toMatch(/off screen/)
+    expect(Date.now() - started).toBeLessThan(6000)
+  })
+
+  it("still clicks a button scrolled out of an inner scroll container (app shell)", async () => {
+    await page.goto(`${server.url}/shell-scroll`)
+    await run(`setup:
+  - { action: goto, url: /shell-scroll }
+  - { action: scroll, within: { by: css, selector: "#m" }, by: { y: 3000 } }
+steps: [{ id: top, action: click, target: { by: role, role: button, name: Top action } }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("Top clicked")
   })
 
   it("tries the fallback when the primary target is only off screen", async () => {

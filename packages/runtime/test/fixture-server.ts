@@ -3,6 +3,12 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // App shell: the body doesn't scroll, <main> does; a fixed drawer collapsed above the viewport.
+  "/shell-scroll": `<!doctype html><title>Shell scroll</title>
+    <style>html, body { margin: 0; height: 100%; overflow: hidden } main { height: 100%; overflow: auto }</style>
+    <div style="position:fixed; top:0; left:0; right:0; transform:translateY(-100%)"><button>Drawer action</button></div>
+    <main id="m"><button id="top">Top action</button><div style="height:4000px"></div><p id="s"></p></main>
+    <script>document.getElementById("top").onclick = () => document.getElementById("s").textContent = "Top clicked"</script>`,
   // A collapsed sidebar: translated off screen, still "visible" to Playwright.
   "/collapsed": `<!doctype html><title>Collapsed</title>
     <nav style="position:fixed; left:0; top:0; width:200px; transform:translateX(-100%)"><button>New board</button></nav>
