@@ -34,7 +34,7 @@ kiframe/
     compositor/    Canvas 2D renderFrame (analytic springs, cursor, masks, captions, cards) + WebCodecs/Mediabunny export
     guide/         guide output: Markdown / HTML / PDF
     store/         project folder IO, take store (pinned/scratch, encrypted), hidden git history, status computation
-    agent/         agent loop (ported from cooldown), Anthropic LlmClient, tools, grounding and healing prompts
+    agent/         agent loop (ported from cooldown), OpenAI-compatible LlmClient (OpenRouter), tools, grounding and healing prompts
     cli/           headless `kiframe record | export | heal`
   apps/
     desktop/       Electron: main (agent, runtime, store) + renderer (React UI, compositor)
@@ -75,7 +75,7 @@ kiframe/
 | P0-5 | Recorder | `page.screencast` at DPR 2, shared clock for events/cursor/frames, `step_start` shots, take writer (frames encoded to WebM: test WebCodecs vs ffmpeg and pick one) | L | 800 |
 | P0-6 | Generators (minimal) | Camera (`target`, `auto` clusters), clips time-model rules (cut/speed/freeze, captions never sped up), captions, cursor ripples | M | 700 |
 | P0-7 | Compositor + export (minimal) | PixiJS `renderFrame` (random-access, analytic spring), cursor drawing, captions, window style. WebCodecs + Mediabunny export in a minimal Electron window. Zoom cap vs source resolution | L | 1200 |
-| P0-8 | Grounding experiment | A minimal agent script (Anthropic SDK directly, not the full loop yet): snapshot trimming, writes and grounds a scene YAML, logs tokens/cost/time | M | 600 |
+| P0-8 | Grounding experiment | A minimal agent script (`openai` SDK against OpenRouter, not the full loop yet): snapshot trimming, writes and grounds a scene YAML, logs tokens/cost/time | M | 600 |
 | P0-9 | State experiment | `ensure` + `teardown` + session reuse (`storageState`), 5-replay harness, failure catalogue file | S | 400 |
 | P0-10 | Electron target check | Script: `_electron.launch` vs `--remote-debugging-port` + `connectOverCDP` on one hardened packaged app. Report only | S | 150 |
 | | **Total** | | | **~6k** |
@@ -117,7 +117,7 @@ The milestones below can partly run in parallel. Recommended order: **M1 → M2 
 |---|---|---|---|---|
 | M2-1 | Port the agent loop | Copy cooldown's `agent-loop`, `defineTool`, `tool-result`, `tool-result-view`, `stream-assemble` into `packages/agent` with their tests | S | 900 (mostly ported) |
 | M2-2 | Loop fixes | AbortSignal, call ids on events, explicit max-turns event, keep assistant text, structured history replay, queued approvals, retry/backoff on 429/5xx | M | 800 |
-| M2-3 | Anthropic LlmClient | Native messages API, tool_use blocks, prompt caching breakpoints, thinking, custom `baseURL` (for the proxy later) | M | 500 |
+| M2-3 | OpenAI-compatible LlmClient | Port cooldown's `byok-client.ts` (`openai` SDK): OpenRouter default, OpenAI direct, custom `baseURL` (for the proxy later), prompt caching (`cache_control`) and reasoning through OpenRouter | M | 400 |
 | M2-4 | HITL protocol | `requestUser({kind, schema})`: vault forms, risky confirmations, ambiguity questions (with screenshot), takeover. IPC contract | M | 500 |
 | M2-5 | Browser tools | `browser.snapshot` (trimmed around the target), `browser.act`, `browser.screenshot` (blurred), all through the runtime + scrubber | L | 900 |
 | M2-6 | Scene / composition / history tools | `scene.*`, `composition.setCamera/setSpeed/setCaption/describe`, `history.list/diff/restore` | M | 800 |
