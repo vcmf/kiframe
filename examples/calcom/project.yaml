@@ -1,0 +1,23 @@
+# Phase 0 third-party app for grounding (P0-8): Cal.com, a throwaway free account.
+# Credentials come from the vault in the app; in the Phase 0 scripts from env vars
+# CALCOM_EMAIL / CALCOM_PASSWORD (secret names calcom.email / calcom.password).
+version: 1
+target: { kind: web, url: "https://app.cal.com", viewport: { width: 1440, height: 900 } }
+presets:
+  # Once per batch; later scenes reuse the signed-in session (storage state).
+  login:
+    session: true
+    steps:
+      - { action: goto, url: /auth/login }
+      - {
+          action: type,
+          target: { by: role, role: textbox, name: Email },
+          value: "{{secrets.calcom.email}}",
+        }
+      - {
+          action: type,
+          target: { by: role, role: textbox, name: Password },
+          value: "{{secrets.calcom.password}}",
+        }
+      - { action: click, target: { by: role, role: button, name: Continue, exact: true } }
+      - { action: waitFor, until: { url: /event-types } }

@@ -20,7 +20,7 @@
 | Where it runs | **Locally, as a desktop app (Electron).** Agent, automation, capture and rendering run on the user's machine | 2026-09-26 |
 | Why desktop | Reach **localhost / VPN / internal apps**, keep **recordings and secrets on the machine**. *Not* a margin argument (§10.1) | 2026-09-26 |
 | LLM access | **BYOK** (user's own API key) *or* **Kiframe account** (our server proxies LLM calls = the paid product) | 2026-09-25 |
-| Agent stack | **cooldown's agent loop** (moved to the Node main process) + an **Anthropic-native `LlmClient`**. Not the Claude Agent SDK (§10b) | 2026-09-26 |
+| Agent stack | **cooldown's agent loop** (moved to the Node main process) + its **OpenAI-compatible `LlmClient`** (the `openai` SDK), pointed at **OpenRouter** by default (many models, one key) or OpenAI directly. Replaces the Anthropic-native client planned on 2026-09-26 (user preference). Not the Claude Agent SDK (§10b) | 2026-09-27 |
 | Automation | **Playwright library** in the Node main process. The agent's browser tools are **our own tools built on it, not Playwright MCP**, so every action and output passes through the vault's resolver/scrubber and the event logger. Fallback: computer use for canvas-heavy UIs | 2026-09-26 |
 | Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2** (⚠️ Phase 0 finding F1: screencast frames come out at CSS resolution; see docs/PHASE0-FINDINGS.md). **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-26 |
 | Rendering | Own **compositor (Canvas 2D; PixiJS if the preview needs it) + WebCodecs + Mediabunny in the frontend**. Preview = export | 2026-09-27 (PHASE0-FINDINGS F3) |
@@ -323,7 +323,7 @@ Data-model lessons: [OBJECT-MODEL.md](./OBJECT-MODEL.md). Commercial analysis: [
 ### 10.3 LLM access: two modes
 | Mode | How | Notes |
 |---|---|---|
-| **BYOK** | User pastes their Anthropic API key (stored in the OS keychain). Calls go straight to the API | The user pays Anthropic directly |
+| **BYOK** | User pastes their OpenRouter (or OpenAI) key (stored in the OS keychain). Calls go straight to the provider | The user pays the provider directly |
 | **Kiframe account (paid)** | The `LlmClient` points at **our proxy** (`@anthropic-ai/sdk` supports a custom `baseURL`). The proxy authenticates the user, meters usage **per org**, applies plan limits and holds our key | Only prompts and **blurred** screenshots go through us, never vault secrets |
 
 Still to decide: the proxy's retention policy (§12), and pricing.
@@ -336,7 +336,7 @@ Still to decide: the proxy's retention policy (§12), and pricing.
 │   Compositor (PixiJS) + export (WebCodecs + Mediabunny): preview = export            │
 │───────────────────────────────────── IPC ─────────────────────────────────────────────│
 │ Main process (Node)                                                                   │
-│   Agent loop (from cooldown, §10b) ──▶ Anthropic API (BYOK) / Kiframe proxy          │
+│   Agent loop (from cooldown, §10b) ──▶ OpenRouter / OpenAI (BYOK) / Kiframe proxy     │
 │     tools: browser.*, vault.list/request, scene.*, composition.*, history.*           │
 │   Automation runtime (Playwright)                                                     │
 │     ├─ secret resolver (fill only, origin- and field-bound)  ◀── OS keychain          │
@@ -366,7 +366,7 @@ Reviewed 2026-09-25, spot-checked 2026-09-26. cooldown is Tauri + React 19. Its 
 
 **Changes for Kiframe:**
 1. **The agent loop runs in the Electron main (Node) process**, not in the UI. The UI gets `AgentEvent`s over IPC and answers `hitl.request` messages.
-2. **Add an Anthropic-native `LlmClient`** (prompt caching, thinking, native tool_use blocks).
+2. **Keep cooldown's OpenAI-compatible `LlmClient`** (`byok-client.ts`, the `openai` SDK) with OpenRouter as the default base URL (decision 2026-09-27, replacing an Anthropic-native client). Anthropic prompt caching and reasoning still work through OpenRouter (`cache_control` on content parts, the `reasoning` parameter).
 3. **Fix before reusing:**
    - no cancellation (no AbortSignal)
    - no call id on events (parallel calls to the same tool get mis-paired)
