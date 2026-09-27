@@ -3,6 +3,10 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // A collapsed sidebar: translated off screen, still "visible" to Playwright.
+  "/collapsed": `<!doctype html><title>Collapsed</title>
+    <nav style="position:fixed; left:0; top:0; width:200px; transform:translateX(-100%)"><button>New board</button></nav>
+    <main style="margin-left:40px"><div role="button" tabindex="0">New Board card</div></main>`,
   // Boards kept in localStorage (they survive a reload, like app data); Delete shows on hover only.
   "/boards": `<!doctype html><title>Boards</title>
     <style>.card button { display: none } .card:hover button { display: inline }</style>

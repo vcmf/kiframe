@@ -719,6 +719,24 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
+  // Still entirely outside the viewport (a collapsed sidebar or drawer translated away): say so
+  // now, instead of letting the action time out on an element nobody can see.
+  const box = await result.locator.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+  if (box !== null) {
+    const viewport = await viewportOf(ctx.page)
+    const outside =
+      box.x + box.width <= 0 ||
+      box.y + box.height <= 0 ||
+      box.x >= viewport.width ||
+      box.y >= viewport.height
+    if (outside) {
+      throw new StepError(
+        step,
+        "target-not-found",
+        `the target is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`,
+      )
+    }
+  }
   return result.locator
 }
 
