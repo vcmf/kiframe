@@ -26,6 +26,8 @@ export type StepErrorReason =
 export class StepError extends Error {
   readonly step: StepRef
   readonly reason: StepErrorReason
+  /** The message without the "where" prefix. */
+  readonly detail: string
 
   constructor(
     step: StepRef,
@@ -38,5 +40,6 @@ export class StepError extends Error {
     this.name = "StepError"
     this.step = step
     this.reason = reason
+    this.detail = detail
   }
 }

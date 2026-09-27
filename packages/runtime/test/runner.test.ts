@@ -842,9 +842,14 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
         { timeoutMs: 800, onEvent: (e) => events.push(e) },
       ),
     ).rejects.toThrow(/Timeout/)
+    // The press is reported, the click fails, the release is reported anyway: nothing left held.
     const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
-    expect(pressed.filter(Boolean)).toHaveLength(1)
-    expect(pressed.at(-1)).toBe(false)
+    // Movement samples are pressed: false too, so count transitions: every press is released.
+    const presses = pressed.filter((p, i) => p && pressed[i - 1] !== true).length
+    const releases = pressed.filter((p, i) => !p && pressed[i - 1] === true).length
+    expect(presses).toBe(1)
+    expect(releases).toBe(1)
+    expect(pressed.at(-1) ?? false).toBe(false)
   })
 
   // ─── P0-4 review round 2 (regressions) ─────────────────────────────────────
