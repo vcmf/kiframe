@@ -88,7 +88,10 @@ export function generateCamera(
     if (directive === "auto") {
       // A navigation or a scroll changes the whole view: wide from there.
       if (span.step.action === "goto" || span.step.action === "scroll") return flush()
+      // Whether this step is part of the current framing (a navigation in it then ends it there).
+      let joined = false
       if (rect !== undefined) {
+        joined = true
         const union = cluster === undefined ? rect : unionRect(cluster.rect, rect)
         const joins =
           cluster !== undefined &&
@@ -100,12 +103,19 @@ export function generateCamera(
             ? { first: span, rect, a: span.start, b: span.end }
             : { ...cluster, rect: union, b: span.end }
       } else if (cluster !== undefined && span.start - cluster.b <= gapMs) {
-        // A step with nothing to frame (press, wait, check) keeps the current framing.
-        cluster.b = span.end
+        // A step with nothing to frame (press, wait, check) keeps the current framing, but not
+        // through a long wait: nobody looks at an untouched button for 10 s.
+        joined = true
+        cluster.b = Math.min(span.end, span.start + gapMs)
+        if (span.end - span.start > gapMs) flush()
+      } else {
+        flush()
       }
       if (navigates) {
         const nav = tl.events.find((e) => e.stepId === span.id && e.kind === "navigate")
-        if (cluster !== undefined && nav !== undefined) cluster.b = Math.max(cluster.a + 1, nav.t)
+        if (joined && cluster !== undefined && nav !== undefined) {
+          cluster.b = Math.max(cluster.a + 1, nav.t)
+        }
         flush()
       }
       return
@@ -151,12 +161,15 @@ export function generateCamera(
   flush()
 
   // Timing rules: a minimum hold, no overlap, and no short zoom-out between two framings.
-  const sorted = framings
-    .map((f) => {
-      const a = Math.max(0, f.a)
-      return { ...f, a, b: Math.min(tl.duration, Math.max(f.b, a + minHold)) }
-    })
-    .sort((x, y) => x.a - y.a)
+  // Framings come in step order. A lead-in never reaches back over the previous framing's own
+  // hold: at the latest, the next framing starts with its step.
+  const sorted: Framing[] = []
+  for (const f of framings) {
+    const prev = sorted.at(-1)
+    let a = Math.max(0, f.a)
+    if (prev !== undefined) a = Math.max(a, Math.min(f.first.start, prev.a + minHold))
+    sorted.push({ ...f, a, b: Math.min(tl.duration, Math.max(f.b, a + minHold)) })
+  }
   sorted.forEach((f, i) => {
     const next = sorted[i + 1]
     if (next === undefined) return
