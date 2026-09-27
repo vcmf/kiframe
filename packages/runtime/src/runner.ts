@@ -136,7 +136,28 @@ export async function runScenario(
   const network = new NetworkTracker(page)
   // Tabs and popups opened by the page being driven: followed after the step that opened them.
   const opened: Page[] = []
-  const onPopup = (popup: Page) => void opened.push(popup)
+  // Every page seen keeps its network tracker (created when it opens, so its load requests count)
+  // and its popup listener (a page the opener opens while a popup is driven is still seen).
+  const trackers = new Map<Page, NetworkTracker>([[page, network]])
+  const watched = new Set<Page>()
+  const watch = (p: Page) => {
+    if (watched.has(p)) return
+    watched.add(p)
+    p.on("popup", onPopup)
+  }
+  const onPopup = (popup: Page) => {
+    opened.push(popup)
+    if (!trackers.has(popup)) trackers.set(popup, new NetworkTracker(popup))
+    watch(popup)
+  }
+  const trackerOf = (p: Page): NetworkTracker => {
+    let tracker = trackers.get(p)
+    if (tracker === undefined) {
+      tracker = new NetworkTracker(p)
+      trackers.set(p, tracker)
+    }
+    return tracker
+  }
   // Every main-frame navigation is reported (goto, redirects, links clicked…), attributed to the
   // step running at that moment.
   let current: StepRef | undefined
@@ -161,14 +182,12 @@ export async function runScenario(
       }
     }
   }
+  // Navigation reports come from the driven page only.
   const attach = (p: Page) => {
     p.on("framenavigated", onNavigated)
-    p.on("popup", onPopup)
+    watch(p)
   }
-  const detach = (p: Page) => {
-    p.off("framenavigated", onNavigated)
-    p.off("popup", onPopup)
-  }
+  const detach = (p: Page) => void p.off("framenavigated", onNavigated)
   attach(page)
   const ctx: Ctx = {
     page,
@@ -176,6 +195,7 @@ export async function runScenario(
     opened,
     attach,
     detach,
+    trackerOf,
     base,
     settleMs,
     options,
@@ -210,8 +230,6 @@ export async function runScenario(
       // The step's own error is the one reported: don't let a pending listener error from the same
       // step resurface later and cut teardown short.
       ctx.clearListenerError()
-      // Pages the failed step opened aren't followed by the teardown.
-      ctx.opened.length = 0
       failure =
         error instanceof StepError || current === undefined
           ? (error as Error)
@@ -267,7 +285,8 @@ export async function runScenario(
     if (teardownFailure !== undefined) throw scrubError(teardownFailure, secretValues)
     if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
   } finally {
-    ctx.network.dispose()
+    for (const tracker of trackers.values()) tracker.dispose()
+    for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)
   }
 }
@@ -283,9 +302,11 @@ interface Ctx {
   openers: Page[]
   /** Tabs and popups the driven page opened, not followed yet. */
   opened: Page[]
-  /** Moves the run's page listeners (navigation reports, popups) to or from a page. */
+  /** Moves the run's navigation reports to or from a page. */
   attach: (page: Page) => void
   detach: (page: Page) => void
+  /** The network tracker of a page (kept for the whole run). */
+  trackerOf: (page: Page) => NetworkTracker
   setCurrent: (step: StepRef | undefined) => void
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
@@ -497,9 +518,8 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
 async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.detach(ctx.page)
-  ctx.network.dispose()
   ctx.page = next
-  ctx.network = new NetworkTracker(next)
+  ctx.network = ctx.trackerOf(next)
   ctx.attach(next)
   // The real mouse is per page: the next travel starts from the new page's centre.
   ctx.cursor = undefined
@@ -534,6 +554,8 @@ async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
       )
     }
     await switchPage(ctx, back, step)
+    // The opener reacts (an OAuth callback loads the app): settled before going on.
+    await guard(step, () => settle(ctx, step.phase === "steps"))
   }
   const next = ctx.opened.splice(0).at(-1)
   if (step.phase === "teardown" || next === undefined || next.isClosed()) return
@@ -572,6 +594,7 @@ async function followSecretFields(
       field.page === ctx.page ? measureField(field.locator) : Promise.resolve(null),
     ),
   )
+  if (fields.length === 0) return
   const viewport = await viewportOf(ctx.page).catch(() => undefined)
   for (const [i, field] of fields.entries()) {
     const box = measured[i]
@@ -615,7 +638,7 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
  * (docs/OBJECT-MODEL.md §2b). `risky: false` on the step is an explicit opt-out.
  */
 const RISKY_LABEL =
-  /\b(delete|remove|destroy|erase|drop|revoke|cancel subscription|send|submit payment|pay|purchase|buy|checkout|transfer|invite|publish|deploy)\b/i
+  /\b(delete|remove|trash|destroy|erase|drop|revoke|cancel subscription|send|submit payment|pay|purchase|buy|checkout|transfer|invite|publish|deploy)\b/i
 
 /**
  * Runs a pointer action; if it fails on a target that is off screen (entirely outside the viewport,
@@ -893,6 +916,8 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       // The cursor goes to it (on camera); the native dropdown isn't in the screencast anyway.
       const at = await moveCursorTo(ctx, target, step)
       await reportPress(ctx, step, target, at)
+      // "Cancel subscription" as an option is as risky as the button would be.
+      await checkRiskyLabel(ctx, step, action.risky, action.option)
       // Playwright's own: a string matches an option's value or its label.
       await guard(step, () => target.selectOption(action.option, { timeout: ctx.timeoutMs }))
       return
@@ -928,6 +953,31 @@ async function reportPress(
   ctx.options.onEvent({ kind: "click", step, ...where, box, button: "left", count: 1 })
 }
 
+/** `n` evenly spaced samples from `from` (excluded) to `to` (included), 16 ms apart. */
+function evenPath(from: Point, to: Point, n: number): { t: number; x: number; y: number }[] {
+  return Array.from({ length: n }, (_, i) => {
+    const u = (i + 1) / n
+    return { t: (i + 1) * 16, x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u }
+  })
+}
+
+/**
+ * The risky-word check (§2b, fails closed) for what isn't a click: the drop target of a drag, the
+ * option of a select. `risky: false` on the step opts out; `risky: true` was asked for already.
+ */
+async function checkRiskyLabel(
+  ctx: Ctx,
+  step: StepRef,
+  risky: boolean | undefined,
+  label: string,
+): Promise<void> {
+  if (risky !== undefined) return
+  const word = RISKY_LABEL.exec(label)?.[0]
+  if (word !== undefined) {
+    await requireApproval(ctx, step, `"${word.toLowerCase()}": this may be a risky action`)
+  }
+}
+
 function unionBox(a: Box, b: Box): Box {
   const x = Math.min(a.x, b.x)
   const y = Math.min(a.y, b.y)
@@ -950,6 +1000,21 @@ async function drag(
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
   const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
+  if (dest !== undefined) {
+    // Dropping onto "Trash" / "Delete" deletes like a click on it would.
+    const label = await dest
+      .evaluate(
+        (el) =>
+          [el.textContent, el.getAttribute("aria-label"), el.getAttribute("title")]
+            .filter(Boolean)
+            .join(" "),
+        undefined,
+        { timeout: ctx.timeoutMs },
+      )
+      // Unreadable: fails closed like the click check.
+      .catch(() => "delete")
+    await checkRiskyLabel(ctx, step, action.risky, label)
+  }
   // Filmed (even with instant pacing: the cursor and the press are still reported), or not.
   const onCamera = step.phase === "steps"
   if (!onCamera && dest !== undefined) {
@@ -995,12 +1060,16 @@ async function drag(
   emit(start, true)
   let released = false
   try {
-    const path = planPath(start, to, {
+    const planned = planPath(start, to, {
       pacing: onCamera ? ctx.pacing.cursor : "instant",
       targetWidth: 40,
       viewport,
       random: seededRandom(`${seedOf(step)}:drag`),
+      // Never past the drop point with the button held (another column, a slider value).
+      overshoot: false,
     })
+    // Pointer drag libraries ignore the move that starts a drag: always several moves.
+    const path = planned.length >= 5 ? planned : evenPath(start, to, 5)
     await travel(ctx, step, path, true)
     await guard(step, () => ctx.page.mouse.up())
     released = true

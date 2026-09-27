@@ -3,6 +3,22 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // Like dnd-kit: the move that activates a drag doesn't move the element.
+  "/pointer-lib": `<!doctype html><title>Pointer lib</title>
+    <div id="k" role="slider" aria-label="Level" style="position:absolute; left:100px; top:100px; width:40px; height:40px; background:#888"></div>
+    <div id="trash" style="position:absolute; left:500px; top:100px; width:120px; height:80px; background:#fcc">Trash</div>
+    <label>Plan <select id="plan2"><option>Keep</option><option>Cancel subscription</option></select></label>
+    <p id="s" style="position:absolute; top:400px"></p>
+    <script>
+      const k = document.getElementById("k"); let down, active = false
+      k.addEventListener("pointerdown", (e) => { down = { x: e.clientX, left: k.offsetLeft }; active = false; k.setPointerCapture(e.pointerId) })
+      k.addEventListener("pointermove", (e) => {
+        if (!down) return
+        if (!active) { active = true; return }
+        k.style.left = (down.left + e.clientX - down.x) + "px"
+      })
+      k.addEventListener("pointerup", () => { down = undefined; document.getElementById("s").textContent = "at " + k.offsetLeft })
+    </script>`,
   // M1-2: native select, drags (pointer and HTML5), uploads, tabs and popups.
   "/controls": `<!doctype html><title>Controls</title>
     <label>Plan <select id="plan"><option value="free">Free</option><option value="pro">Pro plan</option></select></label>

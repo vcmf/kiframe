@@ -103,5 +103,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Several pages opened in one step:** the last one opened is followed; the others stay open in the background, undriven.
 - **`hover.hold`:** OBJECT-MODEL lists a hover `hold?`; the common `hold` (a freeze after the step) covers the presentation beat, a hover that keeps the pointer for a duration isn't implemented.
 - **`select` on camera:** the native dropdown isn't in the screencast (the value just changes); a custom overlay could show the options.
+- **Several hidden file inputs:** the hidden-input path needs exactly one match of the primary locator (no `nth`, no fallbacks): use the target resolution with a hidden-allowed mode.
+- **Late file chooser in headed mode:** a chooser that opens after the step's timeout isn't intercepted any more, so the OS dialog shows: keep a listener that cancels it until the step ends.
 - **Drag of long lists:** a drag doesn't auto-scroll the page while held; a drop target off screen fails with "the drop target isn't on screen".
 
