@@ -66,3 +66,33 @@ lower zoom cap).
 - **Codecs:** Electron 44 on macOS encodes H.264 (OpenH264, software); Playwright's Chromium on
   macOS reports H.264, VP9, VP8 and AV1 encoders. MP4/H.264 export of 9 s at 1080p30 takes ~5 s.
 
+
+## F4. Driving a packaged Electron app: CDP works where `_electron.launch` doesn't (2026-09-27)
+
+**Test (P0-10):** smterm 0.1.37 as installed (`/Applications/smterm.app`, ad-hoc signed, default
+fuses), and a hardened copy (fuses `RunAsNode`, `EnableNodeCliInspectArguments` and
+`EnableNodeOptionsEnvironmentVariable` off, `OnlyLoadAppFromAsar` on, re-signed ad hoc). Script:
+`scripts/p0-10/electron-check.ts`. Each launch uses its own temporary `--user-data-dir`, so it
+never attaches to a running instance (single-instance lock) or its sessions.
+
+| App | `_electron.launch` | `--remote-debugging-port` + `connectOverCDP` |
+|---|---|---|
+| smterm, default fuses | ✅ 2.1 s to first window; screenshot, screencast | ✅ 1.9 s; screenshot, screencast |
+| smterm, hardened fuses | ❌ times out (it needs Node's `--inspect`, off with the fuse) | ✅ 2.0 s; screenshot, screencast |
+
+**Decision for now:** the Electron target (v0.1) uses **`--remote-debugging-port` + `connectOverCDP`**
+(APPROACHES §6b): it doesn't depend on the Node fuses, which shipping apps increasingly turn off.
+`_electron.launch` stays a convenience for apps we build in development.
+
+**Open (v0):**
+- An app can still refuse the switch: `app.commandLine.removeSwitch("remote-debugging-port")` in
+  its main process, or a check that quits. Then the only way is a debug build: say so in onboarding.
+- **Security of the port:** anything on the machine can connect to a remote-debugging port while
+  it's open. Use a random port (or `0` and read `DevToolsActivePort` from the user-data dir), bind
+  to 127.0.0.1, and keep the window of exposure to the recording.
+- **Frame rate:** the screencast gave ~6 frames in 0.5 s through CDP vs ~35 through
+  `_electron.launch` for the same mouse moves on a terminal (frames only come on repaint; the
+  terminal barely repaints). Measure on an animated page before relying on it.
+- A separate `--user-data-dir` means a fresh profile: the app's own login state isn't there.
+  Recording an app with its real data needs the user's profile, which conflicts with the running
+  instance (the user must quit the app first, or the app supports a second profile).
