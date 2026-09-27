@@ -19,7 +19,7 @@ import {
   type Scenario,
 } from "@kiframe/schema"
 import type { Page } from "playwright"
-import type { StepRef } from "./errors.ts"
+import { StepError, type StepRef } from "./errors.ts"
 import type { Box } from "./motion.ts"
 import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
@@ -50,6 +50,8 @@ export interface Take {
   cursor: CursorSample[]
   /** Records that couldn't be written (also saved as warnings.json). */
   warnings: string[]
+  /** Teardown (off camera) failed after every step ran: the take is complete, the app state isn't clean. */
+  teardownError?: StepError
 }
 
 /** Records a scenario into a take directory. Rethrows the runner's error after writing what was captured. */
@@ -102,7 +104,6 @@ export async function recordScenario(
         writeError ??= error instanceof Error ? error : new Error(String(error))
       })
     let frameSize: { width: number; height: number } | undefined
-    let lastSize: { width: number; height: number } | undefined
     let stopped = false
     let sizeChanged = false
     let lastFrame: Buffer | undefined
@@ -124,16 +125,15 @@ export async function recordScenario(
         const size = jpegSize(data)
         if (size !== undefined) {
           if (
-            lastSize !== undefined &&
-            (size.width !== lastSize.width || size.height !== lastSize.height) &&
-            !sizeChanged
+            frameSize !== undefined &&
+            !sizeChanged &&
+            (size.width !== frameSize.width || size.height !== frameSize.height)
           ) {
             sizeChanged = true
             warnings.push(
-              `frame size changed mid-take (${lastSize.width}×${lastSize.height} → ${size.width}×${size.height})`,
+              `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
             )
           }
-          lastSize = size
           frameSize ??= size
         }
         lastFrame = data
@@ -159,6 +159,7 @@ export async function recordScenario(
         )
     }
     const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
+    const clickedSteps = new Set<string>()
     const handle = (e: RunnerEvent) => {
       switch (e.kind) {
         case "step_start":
@@ -171,12 +172,19 @@ export async function recordScenario(
           }
           break
         case "step_end":
+          if (
+            e.step.phase === "steps" &&
+            e.step.action === "click" &&
+            !clickedSteps.has(keyOf(e.step))
+          )
+            warnings.push(`no box for the click of ${keyOf(e.step)}: click not logged`)
           push({ ...base(e.step), kind: "step_end" })
           break
         case "navigate":
           push({ ...base(e.step), kind: "navigate", url: e.url })
           break
         case "click":
+          clickedSteps.add(keyOf(e.step))
           push({
             ...base(e.step),
             kind: "click",
@@ -213,7 +221,7 @@ export async function recordScenario(
             push({
               ...base(e.step),
               kind: "sensitive",
-              id: `secret:${e.secret}:${e.step.phase}:${e.step.index}`,
+              id: e.sensitiveId ?? `secret:${e.secret}`,
               rect: box === undefined ? fullFrame : rect(box),
               why: "secret-field",
             })
@@ -258,6 +266,14 @@ export async function recordScenario(
       await runScenario(page, scenario, project, { ...options, onEvent, recording: true })
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
+    }
+    // Every step ran (teardown runs after them, off camera): the take is complete. The dirty state
+    // is the caller's to handle, from `teardownError`.
+    let teardownError: StepError | undefined
+    if (failure instanceof StepError && failure.step.phase === "teardown") {
+      teardownError = failure
+      warnings.push(`teardown failed: ${firstLine(failure)}`)
+      failure = undefined
     }
     stopped = true
     await page.screencast.stop().catch(() => undefined)
@@ -357,7 +373,14 @@ export async function recordScenario(
     }
     if (fileError !== undefined || meta === undefined)
       throw fileError ?? new Error("take metadata missing")
-    return { dir: finalDir, meta, events, cursor, warnings }
+    return {
+      dir: finalDir,
+      meta,
+      events,
+      cursor,
+      warnings,
+      ...(teardownError !== undefined && { teardownError }),
+    }
   } finally {
     if (!placed) rmSync(outDir, { recursive: true, force: true })
   }

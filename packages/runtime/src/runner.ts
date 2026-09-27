@@ -43,7 +43,14 @@ export type RunnerEvent =
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
   | { kind: "type"; step: StepRef; secret?: string | undefined; box?: Box | undefined }
   /** Typing into a field starts (the `type` event marks its end). `box`: the field (CSS pixels). */
-  | { kind: "type_start"; step: StepRef; secret?: string | undefined; box?: Box | undefined }
+  | {
+      kind: "type_start"
+      step: StepRef
+      secret?: string | undefined
+      /** With a secret: the id of its sensitive region (later `secret_field` events use it). */
+      sensitiveId?: string | undefined
+      box?: Box | undefined
+    }
   /** A click is about to be dispatched at (x, y), on the target's `box` (CSS pixels). */
   | {
       kind: "click"
@@ -225,7 +232,7 @@ interface Ctx {
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
   /** Fields a secret was typed into (recording): re-measured after every step. */
-  secretFields: { id: string; locator: Locator; step: StepRef; last?: string }[]
+  secretFields: { id: string; locator: Locator; last?: string }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void
   clearListenerError: () => void
@@ -417,13 +424,11 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
+      const sensitiveId =
+        secret === undefined ? undefined : `secret:${secret}:${step.phase}:${step.index}`
       // A field holding a secret is followed until the end of the take: its blur rect must move with it.
-      if (secret !== undefined && ctx.options.recording === true) {
-        ctx.secretFields.push({
-          id: `secret:${secret}:${step.phase}:${step.index}`,
-          locator: target,
-          step,
-        })
+      if (sensitiveId !== undefined && ctx.options.recording === true) {
+        ctx.secretFields.push({ id: sensitiveId, locator: target })
       }
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
@@ -460,7 +465,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
             .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
             .catch(() => null)
         }
-        ctx.options.onEvent?.({ kind: "type_start", step, secret, box: fieldBox ?? undefined })
+        ctx.options.onEvent?.({
+          kind: "type_start",
+          step,
+          secret,
+          sensitiveId,
+          box: fieldBox ?? undefined,
+        })
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
