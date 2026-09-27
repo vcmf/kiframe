@@ -2,7 +2,7 @@
 // Usage: node apps/exporter/src/cli.ts --project project.yaml --scenario scenario.yaml \
 //          --take <take dir> --out demo.mp4 [--format mp4|webm] [--composition c.json]
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -31,7 +31,11 @@ if (!values.project || !values.scenario || !values.take || !values.out) {
   )
   process.exit(2)
 }
-const format = values.format === "webm" ? "webm" : "mp4"
+if (values.format !== "mp4" && values.format !== "webm") {
+  console.error(`unknown --format ${JSON.stringify(values.format)}: mp4 or webm`)
+  process.exit(2)
+}
+const format = values.format
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const takeDir = resolve(values.take)
@@ -66,10 +70,13 @@ const job: ExportJob = {
   out: resolve(values.out),
   args: { composition, scenario, take, format },
 }
+const jobFile = join(work, "job.json")
+writeFileSync(jobFile, JSON.stringify(job))
 const electron = createRequire(import.meta.url)("electron") as unknown as string
 const run = spawnSync(electron, [join(work, "main.cjs")], {
-  env: { ...process.env, KIFRAME_EXPORT: JSON.stringify(job) },
+  env: { ...process.env, KIFRAME_EXPORT_JOB: jobFile },
   stdio: ["ignore", "inherit", "inherit"],
-  maxBuffer: 1 << 30,
 })
+rmSync(work, { recursive: true, force: true })
+if (run.error !== undefined) console.error(`couldn't start Electron: ${run.error.message}`)
 process.exit(run.status ?? 1)

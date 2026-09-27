@@ -163,6 +163,42 @@ describe("overlays", () => {
     expect(mid.captions.map((c) => c.text)).toEqual(["Open the menu"])
   })
 
+  it("never shows the next step's caption during the previous step's reading freeze", () => {
+    const scenario = parseScenarioYaml(
+      `version: 1\nsteps:\n${btn("a", `, caption: "A fairly long caption that needs reading time"`)}${btn("b", `, caption: "Then this"`)}`,
+    )
+    const base = fixture()
+    // b starts exactly where a ends, like the recorder logs them.
+    const events = base.take.events.map((e) =>
+      e.kind === "step_start" && e.stepId === "b" ? { ...e, t: 1500 } : e,
+    )
+    const take = { ...base.take, events }
+    const { composition } = generate(project, scenario, take)
+    const p = prepare(composition, scenario, take)
+    const freeze = composition.tracks.clips.find((c) => c.mode === "freeze" && c.id.endsWith(":a"))
+    expect(freeze).toBeDefined()
+    const start = p.map.toOutput(1500)
+    const ms = freeze?.mode === "freeze" ? freeze.ms : 0
+    for (const u of [1, ms / 2, ms - 1]) {
+      expect(sceneAt(p, start + u).captions.map((c) => c.text)).toEqual([
+        "A fairly long caption that needs reading time",
+      ])
+    }
+    expect(sceneAt(p, start + ms + 50).captions.map((c) => c.text)).toEqual(["Then this"])
+  })
+
+  it("blurs both positions around a move (the frame can lag the DOM)", () => {
+    const { scenario, take, composition } = fixture()
+    const p = prepare(composition, scenario, take)
+    const ys = (source: number) =>
+      sceneAt(p, p.map.toOutput(source))
+        .blurs.map((r) => Math.round(r.y * 100) / 100)
+        .sort()
+    expect(ys(2900)).toEqual([0.3, 0.5])
+    expect(ys(3100)).toEqual([0.3, 0.5])
+    expect(ys(3400)).toEqual([0.5])
+  })
+
   it("blurs the sensitive region at its latest rect", () => {
     const { scenario, take, composition } = fixture()
     const p = prepare(composition, scenario, take)

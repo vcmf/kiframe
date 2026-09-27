@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src", "browser/export-page.ts"],
+  "compilerOptions": {
+    "types": []
+  }
+}

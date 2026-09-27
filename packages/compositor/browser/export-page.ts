@@ -21,7 +21,9 @@ declare global {
 }
 
 window.kiframeExport = async (args) => {
-  const video = await (await fetch(args.videoUrl)).blob()
+  const response = await fetch(args.videoUrl)
+  if (!response.ok) throw new Error(`couldn't load the take video (${response.status})`)
+  const video = await response.blob()
   const result = await exportVideo({ ...args, video })
   const bytes = new Uint8Array(result.data)
   let binary = ""
