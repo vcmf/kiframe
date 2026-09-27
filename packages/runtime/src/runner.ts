@@ -484,6 +484,41 @@ async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise
 const RISKY_LABEL =
   /\b(delete|remove|destroy|erase|drop|revoke|cancel subscription|send|submit payment|pay|purchase|buy|checkout|transfer|invite|publish|deploy)\b/i
 
+/**
+ * Runs a pointer action; if it fails on a target that is off screen (entirely outside the viewport,
+ * after `find` scrolled it: a collapsed sidebar or drawer), the error says so instead of a bare
+ * timeout. Diagnosis only: nothing changes for an action that succeeds.
+ */
+async function explainOffScreen(
+  ctx: Ctx,
+  target: Locator,
+  step: StepRef,
+  action: () => Promise<void>,
+): Promise<void> {
+  try {
+    await action()
+  } catch (error) {
+    // Only an action that failed on its own (a timeout…): approvals and other reasons stay as is.
+    if (!(error instanceof StepError) || error.reason !== "action-failed") throw error
+    const box = await target.boundingBox({ timeout: 300 }).catch(() => null)
+    const viewport = box === null ? undefined : await viewportOf(ctx.page).catch(() => undefined)
+    const outside =
+      box !== null &&
+      viewport !== undefined &&
+      (box.x + box.width <= 0 ||
+        box.y + box.height <= 0 ||
+        box.x >= viewport.width ||
+        box.y >= viewport.height)
+    if (!outside) throw error
+    throw new StepError(
+      step,
+      "target-not-found",
+      "the target is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element",
+      { cause: error },
+    )
+  }
+}
+
 /** Upper bound of each settle wait: pages with constant activity (animations, polling) never block. */
 const SETTLE_MAX_MS = 3000
 
@@ -567,30 +602,32 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     }
     case "click": {
-      const target = await find(ctx, action.target, step, { pointer: true })
-      await clickAtCursor(ctx, target, step, action)
+      const target = await find(ctx, action.target, step)
+      await explainOffScreen(ctx, target, step, () => clickAtCursor(ctx, target, step, action))
       return
     }
     case "hover": {
-      const target = await find(ctx, action.target, step, { pointer: true })
-      // The cursor's own (real) mouse move ends over the target; without a box, Playwright hovers.
-      const at = await moveCursorTo(ctx, target, step)
-      // Something on top (a sticky header, a toast) can take the hover: then Playwright hovers,
-      // with its own actionability and hit checks.
-      const hovered =
-        at !== undefined &&
-        (await target
-          .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
-          .catch(() => false))
-      if (!hovered) {
-        await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
-        // Playwright hovered the center: the cursor (and its next travel) starts from there.
-        const box = await target.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
-        if (box !== null) {
-          ctx.cursor = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-          ctx.options.onEvent?.({ kind: "cursor", step, ...ctx.cursor, pressed: false })
+      const target = await find(ctx, action.target, step)
+      await explainOffScreen(ctx, target, step, async () => {
+        // The cursor's own (real) mouse move ends over the target; without a box, Playwright hovers.
+        const at = await moveCursorTo(ctx, target, step)
+        // Something on top (a sticky header, a toast) can take the hover: then Playwright hovers,
+        // with its own actionability and hit checks.
+        const hovered =
+          at !== undefined &&
+          (await target
+            .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
+            .catch(() => false))
+        if (!hovered) {
+          await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
+          // Playwright hovered the center: the cursor (and its next travel) starts from there.
+          const box = await target.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+          if (box !== null) {
+            ctx.cursor = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+            ctx.options.onEvent?.({ kind: "cursor", step, ...ctx.cursor, pressed: false })
+          }
         }
-      }
+      })
       return
     }
     case "type": {
@@ -711,15 +748,8 @@ function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
   return Math.max(MIN_TIMEOUT_MS, stepTimeout ?? ctx.timeoutMs)
 }
 
-async function find(
-  ctx: Ctx,
-  target: Target,
-  step: StepRef,
-  { pointer = false }: { pointer?: boolean } = {},
-): Promise<Locator> {
-  const result = await guard(step, () =>
-    resolveTarget(ctx.page, target, ctx.timeoutMs, { reachable: pointer }),
-  )
+async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
+  const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
   if (result.fallbackIndex !== undefined) {
     ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })

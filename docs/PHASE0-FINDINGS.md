@@ -154,8 +154,8 @@ app.dim0.net 18.6 s ([frames](phase0/p0-8-dim0-video.png)), Cal.com 24.1 s with 
 runs ran out of turns without a scene. Causes, all fixed in the harness or runtime, none in the
 model: `run_step` accepted only on-camera steps (the model couldn't run the login preset); steps
 sent as YAML strings were rejected; a click on the collapsed sidebar's off-screen button timed out
-with no reason, so the model retried it ~15 times (now: reported within ~2 s, "off screen … inside
-a collapsed panel?"); the model re-grounded everything instead of calling `finish`; the scene relied
+with no reason, so the model retried it ~15 times (now the failure says "off screen … inside a
+collapsed panel?"); the model re-grounded everything instead of calling `finish`; the scene relied
 on a panel it had opened while exploring; Cal.com's login needs more than a 6 s step timeout
 (FAILURE-CATALOGUE #8–11).
 

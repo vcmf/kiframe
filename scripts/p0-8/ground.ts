@@ -193,7 +193,6 @@ const browser: Browser = await chromium.launch({
 })
 const viewport = { width: project.target.viewport.width, height: project.target.viewport.height }
 const page: Page = await browser.newPage({ viewport })
-await page.goto(project.target.url)
 
 const quickProject: ProjectConfig = {
   ...project,
@@ -407,6 +406,7 @@ const started = Date.now()
 let finalYaml: string | undefined
 
 try {
+  await page.goto(project.target.url)
   for (let turn = 0; turn < maxTurns && finalYaml === undefined && !stopRequested; turn++) {
     stats.turns++
     const response = await client.chat.completions.create({
@@ -443,6 +443,11 @@ try {
       continue
     }
     for (const call of message.tool_calls) {
+      if (stopRequested) {
+        // Stopped: answer the remaining calls without running them (no replay, no deletes).
+        messages.push({ role: "tool", tool_call_id: call.id, content: "stopped by the user" })
+        continue
+      }
       if (call.type !== "function") {
         // Every tool call needs a reply, or the next request is rejected.
         messages.push({
@@ -511,7 +516,7 @@ try {
       messages.push({ role: "tool", tool_call_id: call.id, content: scrub(result) })
     }
   }
-  stats.result = finalYaml === undefined ? "not grounded" : "grounded"
+  stats.result = finalYaml !== undefined ? "grounded" : stopRequested ? "stopped" : "not grounded"
 } catch (error) {
   stats.result = `error: ${scrub(String(error)).slice(0, 300)}`
 } finally {

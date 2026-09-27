@@ -31,6 +31,11 @@ if (!values.project || !values.scenario || !values.out) {
 }
 loadDotEnv()
 const resolveSecret = envSecretResolver(values.secrets.split(",").filter(Boolean))
+const timeoutMs = Number(values.timeout)
+if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
+  console.error(`--timeout takes milliseconds, got ${values.timeout}`)
+  process.exit(2)
+}
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 // A high DPR only helps headed (headless frames stay at CSS resolution, F1): the project's DPR
 // headed, 1 headless, unless --dpr says otherwise.
@@ -51,7 +56,7 @@ try {
     outDir: values.out,
     resolveSecret,
     ...(values["approve-risky"] && { approveRisky: () => true }),
-    timeoutMs: Number(values.timeout),
+    timeoutMs,
   })
   console.log(
     `take ${take.meta.takeKey}: ${Math.round(take.meta.durationMs)} ms, ${take.warnings.length} warnings`,
