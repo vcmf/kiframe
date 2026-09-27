@@ -38,7 +38,11 @@ const pages: Record<string, string> = {
   "/opener": `<!doctype html><title>Opener</title>
     <label>API key <input id="key"></label>
     <a href="/popup-report" target="_blank">Open report</a>
-    <button onclick="window.open('/popup-report', 'report', 'width=800,height=600')">Open popup</button>`,
+    <button onclick="window.open('/popup-report', 'report', 'width=800,height=600')">Open popup</button>
+    <button onclick="window.open('/quick-close')">Sign in with provider</button>
+    <button onclick="setTimeout(() => window.open('/popup-report'), 800)">Open later</button>`,
+  // An OAuth popup with a session already: closes itself at once.
+  "/quick-close": `<!doctype html><title>Provider</title><script>window.close()</script>`,
   // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
   "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
     <label>Code <input id="code" style="position:absolute; left:300px; top:285px; width:200px; height:30px; box-sizing:border-box"></label>

@@ -28,6 +28,7 @@ import {
   pointProbe,
   type ProbeArgs,
   resolveTarget,
+  stripExtras,
   toPlaywright,
   viewportOf,
   visibleOnly,
@@ -202,6 +203,8 @@ export async function runScenario(
       // The step's own error is the one reported: don't let a pending listener error from the same
       // step resurface later and cut teardown short.
       ctx.clearListenerError()
+      // Pages the failed step opened aren't followed by the teardown.
+      ctx.opened.length = 0
       failure =
         error instanceof StepError || current === undefined
           ? (error as Error)
@@ -455,10 +458,11 @@ async function ensure(
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
   ctx.setCurrent(step)
-  // Only pages this step opens are followed (not one opened by an earlier, failed step).
-  ctx.opened.length = 0
   // A popup that closed itself (an OAuth window, a print preview…): back to the page that opened it.
   await returnFromClosedPage(ctx, step)
+  // A page the previous step opened late (after its settle): followed before this step. Pages
+  // opened by a step that failed were dropped (runScenario), never followed into teardown.
+  await followOpenedPage(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
   await perform(ctx, action, step)
@@ -485,15 +489,15 @@ async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.attach(next)
   // The real mouse is per page: the next travel starts from the new page's centre.
   ctx.cursor = undefined
+  // Secret fields on this page are on screen again (or no longer): their blur rects are known
+  // BEFORE the capture moves here, so the first frame of this page is already covered.
+  if (ctx.options.recording === true) await followSecretFields(ctx, step)
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
   ctx.options.onEvent?.({
     kind: "navigate",
     step,
     url: scrubSecrets(pathOnly(next.url()), ctx.secretValues),
   })
-  // Secret fields on this page are on screen again (or no longer): their blur follows now, not at
-  // the end of the step.
-  if (ctx.options.recording === true) await followSecretFields(ctx, step)
 }
 
 async function followOpenedPage(ctx: Ctx, step: StepRef): Promise<void> {
@@ -503,9 +507,14 @@ async function followOpenedPage(ctx: Ctx, step: StepRef): Promise<void> {
     .filter((p) => !p.isClosed())
     .at(-1)
   if (next === undefined) return
-  await guard(step, () =>
-    next.waitForLoadState("domcontentloaded", { timeout: ctx.navigationTimeoutMs }),
-  )
+  try {
+    await next.waitForLoadState("domcontentloaded", { timeout: ctx.navigationTimeoutMs })
+  } catch (error) {
+    // Closed itself while loading (an OAuth popup with a session already): stay on the opener.
+    if (next.isClosed()) return
+    throw new StepError(step, "action-failed", firstLine(error), { cause: error })
+  }
+  if (next.isClosed()) return
   ctx.openers.push(ctx.page)
   await switchPage(ctx, next, step)
 }
@@ -888,7 +897,8 @@ async function drag(
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
   const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
-  const onCamera = step.phase === "steps" && ctx.pacing.cursor !== "instant"
+  // Filmed (even with instant pacing: the cursor and the press are still reported), or not.
+  const onCamera = step.phase === "steps"
   if (!onCamera && dest !== undefined) {
     await guard(step, () => source.dragTo(dest, { timeout: ctx.timeoutMs }))
     return
@@ -927,7 +937,7 @@ async function drag(
   let released = false
   try {
     const path = planPath(start, to, {
-      pacing: onCamera ? ctx.pacing.cursor : "fast",
+      pacing: onCamera ? ctx.pacing.cursor : "instant",
       targetWidth: 40,
       viewport,
       random: seededRandom(`${seedOf(step)}:drag`),
@@ -945,8 +955,9 @@ async function drag(
 /** The target, if it resolves to exactly one hidden `<input type=file>` (primary locator only). */
 async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
-  const { intent: _i, fallbacks: _f, fingerprint: _p, nth: _n, ...locator } = target
-  const candidates = toPlaywright(ctx.page, locator).and(ctx.page.locator("input[type=file]"))
+  const candidates = toPlaywright(ctx.page, stripExtras(target)).and(
+    ctx.page.locator("input[type=file]"),
+  )
   const count = await candidates.count().catch(() => 0)
   if (count !== 1) return undefined
   const visible = await candidates.isVisible().catch(() => true)
@@ -977,7 +988,16 @@ async function upload(
     await guard(step, () => hidden.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return
   }
-  const target = await find(ctx, action.target, step)
+  let target: Locator
+  try {
+    target = await find(ctx, action.target, step)
+  } catch (error) {
+    // Nothing visible: the hidden input may have rendered late (checked once more now).
+    const late = await hiddenFileInput(ctx, action.target)
+    if (late === undefined) throw error
+    await guard(step, () => late.setInputFiles(file, { timeout: ctx.timeoutMs }))
+    return
+  }
   const isFileInput = await guard(step, () =>
     target.evaluate((el) => el instanceof HTMLInputElement && el.type === "file", undefined, {
       timeout: ctx.timeoutMs,
@@ -990,25 +1010,27 @@ async function upload(
   }
   // Listening before the click, with no deadline of its own: cursor travel and a risky approval
   // (a human) come first; the wait for the chooser starts once the click is done.
-  let chooser: FileChooser | undefined
-  const onChooser = (c: FileChooser) => void (chooser ??= c)
-  ctx.page.on("filechooser", onChooser)
+  let onChooser: ((c: FileChooser) => void) | undefined
+  const chosen = new Promise<FileChooser>((resolve) => {
+    onChooser = resolve
+    ctx.page.once("filechooser", resolve)
+  })
+  let picked: FileChooser | undefined
   try {
     await clickAtCursor(ctx, target, step, {
       action: "click",
       target: action.target,
       ...(action.risky !== undefined && { risky: action.risky }),
     })
-    const deadline = Date.now() + ctx.timeoutMs
-    while (chooser === undefined && Date.now() < deadline) await sleep(50)
+    picked = await Promise.race([chosen, sleep(ctx.timeoutMs).then(() => undefined)])
   } finally {
-    ctx.page.off("filechooser", onChooser)
+    if (onChooser !== undefined) ctx.page.off("filechooser", onChooser)
   }
-  const picked = chooser
   if (picked === undefined) {
     throw new StepError(step, "action-failed", "clicking the target didn't open a file chooser")
   }
-  await guard(step, () => picked.setFiles(file, { timeout: ctx.timeoutMs }))
+  const chooser = picked
+  await guard(step, () => chooser.setFiles(file, { timeout: ctx.timeoutMs }))
 }
 
 function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {

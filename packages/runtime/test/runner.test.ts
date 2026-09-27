@@ -344,6 +344,23 @@ steps:
 `)
   })
 
+  it("stays on the opener when a popup closes itself at once (OAuth with a session)", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: sso, action: click, target: { by: role, role: button, name: Sign in with provider } }
+  - { id: still, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
+  it("follows a popup that opens after its step settled, from the next step on", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: later, action: click, target: { by: role, role: button, name: Open later } }
+  - { id: wait, action: pause, ms: 1200 }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+`)
+  })
+
   it("follows a new tab opened by a click, and returns when a popup closes itself", async () => {
     const switched: string[] = []
     const events = await run(

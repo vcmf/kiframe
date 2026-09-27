@@ -300,6 +300,7 @@ function hasTarget(step: Step): boolean {
     step.action === "type" ||
     step.action === "select" ||
     step.action === "drag" ||
+    step.action === "upload" ||
     (step.action === "scroll" &&
       (step.to !== undefined || step.until !== undefined || step.within !== undefined))
   )
