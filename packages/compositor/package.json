@@ -4,9 +4,19 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./browser/bundle.ts": "./browser/bundle.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@kiframe/generators": "workspace:*",
+    "@kiframe/schema": "workspace:*",
+    "mediabunny": "1.60.0"
+  },
+  "devDependencies": {
+    "@kiframe/runtime": "workspace:*",
+    "playwright": "1.63.0"
   }
 }

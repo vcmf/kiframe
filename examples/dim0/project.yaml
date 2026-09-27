@@ -1,0 +1,3 @@
+# Phase 0 test app: app.dim0.net (local boards, no account needed).
+version: 1
+target: { kind: web, url: "https://app.dim0.net", viewport: { width: 1440, height: 900 } }

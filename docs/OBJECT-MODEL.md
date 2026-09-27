@@ -572,7 +572,7 @@ Renderer options:
 | Revideo | MIT | Scenes are TS code. Worth a spike if the compositor turns out to be more work than expected |
 | Plain ffmpeg filtergraphs | LGPL/GPL builds | Fine for cuts and speed changes. Too awkward for springs, cursor drawing and rich overlays |
 
-**Recommendation:** our own **PixiJS compositor**, with **the export done in the frontend** (Electron's Chromium).
+**Recommendation:** our own compositor, with **the export done in the frontend** (Electron's Chromium). **Implemented with Canvas 2D** (P0-7, PHASE0-FINDINGS F3): enough for one video layer, a camera and overlays; PixiJS if the live preview needs more.
 
 **Video in the frontend: the pipeline**
 ```
