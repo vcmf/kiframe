@@ -1,9 +1,12 @@
 // Phase 0 scripts: secrets from the environment (a git-ignored `.env` at the repo root, see
 // .env.example). Secret `a.b` is read from `A_B`. Only the names given are resolvable.
 import { existsSync } from "node:fs"
+import { join } from "node:path"
 
+/** The repo root's `.env`, whatever the current directory. */
 export function loadDotEnv(): void {
-  if (existsSync(".env")) process.loadEnvFile(".env")
+  const file = join(import.meta.dirname, "..", "..", ".env")
+  if (existsSync(file)) process.loadEnvFile(file)
 }
 
 export const envName = (secret: string) => secret.toUpperCase().replace(/[^A-Z0-9]/g, "_")

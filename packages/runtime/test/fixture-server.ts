@@ -14,10 +14,9 @@ const pages: Record<string, string> = {
       document.getElementById("del").onclick = () => document.getElementById("s").textContent = "drawer"
       document.getElementById("other").onclick = () => document.getElementById("s").textContent = "elsewhere"
     </script>`,
-  // App shell: the body doesn't scroll, <main> does; a fixed drawer collapsed above the viewport.
+  // App shell: the body doesn't scroll, <main> does.
   "/shell-scroll": `<!doctype html><title>Shell scroll</title>
     <style>html, body { margin: 0; height: 100%; overflow: hidden } main { height: 100%; overflow: auto }</style>
-    <div style="position:fixed; top:0; left:0; right:0; transform:translateY(-100%)"><button>Drawer action</button></div>
     <main id="m"><button id="top">Top action</button><div style="height:4000px"></div><p id="s"></p></main>
     <script>document.getElementById("top").onclick = () => document.getElementById("s").textContent = "Top clicked"</script>`,
   // A collapsed sidebar: translated off screen, still "visible" to Playwright.
