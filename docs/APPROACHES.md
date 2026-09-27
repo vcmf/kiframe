@@ -14,6 +14,7 @@
 | Name | **Kiframe** (replaces Dimo). Tagline idea: "No time to waste" | 2026-09-25 |
 | Output v0 | **Captions only** (voiceover later). Output kinds in v0: **video + guide** | 2026-09-26 |
 | Targets | **v0: web apps.** v0.1: Electron. Later: Tauri (see §6b, partial support only) | 2026-09-26 |
+| Electron attach | **`--remote-debugging-port=0` + `connectOverCDP`** by default: works on hardened packaged apps, where `_electron.launch` doesn't (§6b, PHASE0-FINDINGS F4) | 2026-09-27 |
 | Access to the app | **Black box**: no test IDs or seed hooks required in the customer's app. When the agent is blocked, it asks the user | 2026-09-25 |
 | App state | ICP requires a **resettable demo/staging account**. One login per recording batch (session reuse). Pre-approved `teardown` per environment. One idempotency primitive, `ensure` (§7.2) | 2026-09-26 |
 | Where it runs | **Locally, as a desktop app (Electron).** Agent, automation, capture and rendering run on the user's machine | 2026-09-26 |
@@ -149,8 +150,8 @@ Note: capture does involve encoding. Screencast frames (JPEG) are encoded into t
 | Target | Web engine | Playwright? | Plan |
 |---|---|---|---|
 | Web app | Chromium | ✅ Full support | **v0** |
-| Electron (dev build or unhardened app) | Bundled Chromium | ✅ `_electron.launch()` | **v0.1** |
-| Electron (packaged + hardened) | Bundled Chromium | ⚠️ `_electron.launch()` fails if the app turned off the `EnableNodeCliInspectArguments` fuse (a common hardening step). **Fallback:** launch with `--remote-debugging-port` + `connectOverCDP` (if that isn't disabled too) | v0.1: test on a real hardened app |
+| Electron (dev build or unhardened app) | Bundled Chromium | ✅ `connectOverCDP` (default), or `_electron.launch()` for dev builds | **v0.1** |
+| Electron (packaged + hardened) | Bundled Chromium | ⚠️ `_electron.launch()` fails when the app turned off the `EnableNodeCliInspectArguments` fuse. **`--remote-debugging-port` + `connectOverCDP` works** (measured on smterm with hardened fuses, PHASE0-FINDINGS F4): the default for Electron targets, unless the app strips the switch | v0.1 |
 | Tauri on **Windows** | WebView2 (Chromium) | ✅ CDP attach (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`) | Later |
 | Tauri on **macOS** | WKWebView (WebKit) | ❌ No CDP, no Playwright, and **tauri-driver doesn't support macOS** either | Workaround 1 only |
 | Tauri on **Linux** | WebKitGTK | ⚠️ WebDriver only (`tauri-driver`), not Playwright | Later, second driver |
