@@ -57,7 +57,9 @@ export function generateClips(
       reason: "setup",
     })
   }
-  const end = Math.min(tl.duration, last.end + endBeat)
+  // The teardown runs right after the last step: the end beat stops where it starts.
+  const teardownStart = tl.events.find((e) => e.phase === "teardown" && e.t >= last.end)?.t
+  const end = Math.min(tl.duration, last.end + endBeat, teardownStart ?? Infinity)
   if (end < tl.duration) {
     clips.push({
       id: "clip:teardown",
@@ -79,7 +81,7 @@ export function generateClips(
     if (e.kind !== "interrupt" || e.until <= e.t) continue
     interruptSpans.push({ a: e.t, b: e.until })
     clips.push({
-      id: `clip:interrupt:${Math.round(e.t)}`,
+      id: `clip:interrupt:${interruptSpans.length - 1}`,
       source: "auto",
       mode: "cut",
       at: anchorFor(e.t, tl),
@@ -110,7 +112,14 @@ export function generateClips(
 
   // Rule 3: idle stretches, between the first step and the end beat, outside what's protected or
   // already sped up by the author.
-  const busy = mergeSpans([...activity(tl), ...protectedSpans, ...speedSpans, ...interruptSpans])
+  // The end beat plays in real time too.
+  const busy = mergeSpans([
+    ...activity(tl),
+    ...protectedSpans,
+    ...speedSpans,
+    ...interruptSpans,
+    { a: last.end, b: end },
+  ])
   for (const gap of complement(busy, first.start, end)) {
     const a = gap.a + margin
     const b = gap.b - margin
@@ -118,7 +127,11 @@ export function generateClips(
     const speed = Math.min(MAX_SPEED, Math.max(idleSpeed, (b - a) / threshold))
     // A navigation is itself a short busy span: one right before the gap is the page loading.
     const network = tl.events.some(
-      (e) => e.kind === "navigate" && e.t >= gap.a - NAVIGATE_BUSY_MS - 1 && e.t <= gap.b,
+      (e) =>
+        e.kind === "navigate" &&
+        e.phase === "steps" &&
+        e.t >= gap.a - NAVIGATE_BUSY_MS - 1 &&
+        e.t <= gap.b,
     )
     const at = anchorFor(a, tl)
     const until = anchorFor(b, tl)

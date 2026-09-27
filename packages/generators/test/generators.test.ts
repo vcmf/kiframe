@@ -154,6 +154,31 @@ describe("clips (time model)", () => {
     expect(clips.some((c) => c.mode === "cut" && c.reason === "interrupt")).toBe(true)
   })
 
+  it("cuts the teardown where it starts, and never speeds up the end beat", () => {
+    const s = scenario(btn("a"))
+    const t = take(
+      [["a", 0, 11_500]],
+      [
+        click("a", 10_000, 0.1, 0.1),
+        { stepId: "cleanup", phase: "teardown", t: 11_510, kind: "step_start" },
+        {
+          stepId: "cleanup",
+          phase: "teardown",
+          t: 11_520,
+          kind: "navigate",
+          url: "https://app.example.com/admin",
+        },
+      ],
+    )
+    const { composition } = generate(project(), s, t)
+    const { timeline } = buildTimeline(s, t)
+    const cut = composition.tracks.clips.find((c) => c.id === "clip:teardown")
+    expect(cut && resolveAnchor(cut.at, timeline)).toBeLessThanOrEqual(11_510)
+    const idle = composition.tracks.clips.filter((c) => c.mode === "speed")
+    expect(idle.every((c) => resolveAnchor(c.until, timeline)! <= 11_500)).toBe(true)
+    expect(idle.every((c) => c.reason === "idle")).toBe(true)
+  })
+
   it("freezes at the end of a short caption step for its reading time, plus its hold", () => {
     const caption = "Name the project and press Enter to create it"
     const s = scenario(btn("a", `, caption: "${caption}", hold: 700`))
@@ -215,11 +240,43 @@ describe("camera", () => {
         { stepId: "enter", t: 20_200, kind: "navigate", url: "https://app.example.com/x" },
       ],
     )
-    const { composition } = generate(project(), s, t)
+    // Waits played in real time (no idle speed-up): the zoom can't hold through them.
+    const { composition } = generate(project(), s, t, { clips: { idleThresholdMs: 1e9 } })
     const { timeline } = buildTimeline(s, t)
     const ends = composition.tracks.camera.map((c) => resolveAnchor(c.until, timeline)!)
     expect(ends[0]).toBeLessThanOrEqual(1000 + 2500 + 400)
     expect(ends.at(-1)).toBeLessThan(15_000)
+  })
+
+  it("keeps one framing across a wait that the clips speed up", () => {
+    const s = scenario(btn("a") + btn("b"))
+    const t = take(
+      [
+        ["a", 0, 1000],
+        ["b", 7000, 8000],
+      ],
+      [click("a", 500, 0.1, 0.1), click("b", 7500, 0.15, 0.1)],
+    )
+    const ids = generate(project(), s, t).composition.tracks.camera.map((c) => c.id)
+    expect(ids).toEqual(["camera:a"])
+  })
+
+  it("ends a target framing at the step's navigation", () => {
+    const s = scenario(btn("a", ", camera: target") + btn("b", ", camera: wide"))
+    const t = take(
+      [
+        ["a", 0, 6000],
+        ["b", 6000, 7000],
+      ],
+      [
+        click("a", 500, 0.1, 0.1),
+        { stepId: "a", t: 600, kind: "navigate", url: "https://app.example.com/next" },
+        click("b", 6500, 0.5, 0.5),
+      ],
+    )
+    const { composition } = generate(project(), s, t)
+    const { timeline } = buildTimeline(s, t)
+    expect(resolveAnchor(composition.tracks.camera[0]!.until, timeline)).toBeLessThan(2000)
   })
 
   it("never drops a framing because the next one's lead-in reaches back over it", () => {
@@ -294,6 +351,7 @@ describe("camera", () => {
       3000,
     )
     expect(warnings.join()).toMatch(/kept wide/)
+    // (step d is after the `until` span: its own directive applies.)
   })
 })
 
@@ -307,6 +365,31 @@ describe("captions, cursor and masks", () => {
     expect(ripple.kind).toBe("click-ripple")
     expect(resolveAnchor(ripple.at, timeline)).toBe(640)
     expect(composition.tracks.captions[0]).toMatchObject({ id: "caption:a", text: "Open it" })
+  })
+
+  it("no ripple on a step with a hidden cursor", () => {
+    const s = scenario(btn("a", ", cursor: hide"))
+    const t = take([["a", 0, 1000]], [click("a", 500, 0.1, 0.1)])
+    const kinds = generate(project(), s, t).composition.tracks.cursor.map((c) => c.kind)
+    expect(kinds).toEqual(["hidden"])
+  })
+
+  it("a mask never starts late or ends early (rounded outwards)", () => {
+    const s = scenario(btn("a"))
+    const ev = (t: number, w: number) => ({
+      stepId: "a",
+      t,
+      kind: "sensitive" as const,
+      id: "s",
+      rect: { x: 0.1, y: 0.1, w, h: w },
+      why: "secret-field",
+    })
+    const t = take([["a", 0, 3000]], [ev(1000.6, 0.1), ev(2000.4, 0)])
+    const { composition } = generate(project(), s, t)
+    const { timeline } = buildTimeline(s, t)
+    const [m] = composition.tracks.masks
+    expect(resolveAnchor(m!.at, timeline)).toBeLessThanOrEqual(1000.6)
+    expect(resolveAnchor(m!.until, timeline)).toBeGreaterThanOrEqual(2000.4)
   })
 
   it("shows two ripples for a double click", () => {

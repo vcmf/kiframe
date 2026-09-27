@@ -38,6 +38,8 @@ export function generateCursor(tl: Timeline): CursorSegment[] {
         until: { step: s.id, edge: "end" },
       })
     }
+    // No ripple where the author hid the cursor.
+    if (s.step.cursor === "hide") continue
     const clicks = tl.events.filter(
       (e) => e.kind === "click" && e.phase === "steps" && e.stepId === s.id,
     )
@@ -78,7 +80,8 @@ export function generateMasks(tl: Timeline): MaskSegment[] {
       id: `mask:${id}:${n}`,
       source: "auto",
       kind: "blur",
-      at: anchorFor(at, tl),
+      // Rounded outwards: a privacy mask never leaves a frame uncovered.
+      at: anchorFor(at, tl, "down"),
       until,
       target: { sensitiveId: id },
     })
@@ -86,7 +89,7 @@ export function generateMasks(tl: Timeline): MaskSegment[] {
   for (const e of tl.events) {
     if (e.kind !== "sensitive") continue
     const gone = e.rect.w === 0 || e.rect.h === 0
-    if (gone) close(e.id, anchorFor(e.t, tl))
+    if (gone) close(e.id, anchorFor(e.t, tl, "up"))
     else if (!open.has(e.id)) open.set(e.id, e.t)
   }
   for (const id of [...open.keys()]) close(id, { scene: "end" })

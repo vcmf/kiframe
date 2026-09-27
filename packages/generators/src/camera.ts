@@ -44,11 +44,17 @@ export function effectiveCamera(
   return span.step.camera ?? sceneDefault ?? projectDefault
 }
 
+/**
+ * `toOutput` maps source time to output time (the clips): gaps are judged as the viewer sees them,
+ * so a wait sped up to 1 s doesn't split a framing.
+ */
 export function generateCamera(
   tl: Timeline,
   directives: Map<string, CameraDirective>,
   options: CameraOptions = {},
+  toOutput: (t: number) => number = (t) => t,
 ): { camera: CameraSegment[]; warnings: string[] } {
+  const seen = (a: number, b: number) => toOutput(b) - toOutput(a)
   const maxAuto = options.maxAutoScale ?? 2
   const followScale = options.followScale ?? 1.8
   const minScale = options.minScale ?? 1.2
@@ -80,11 +86,16 @@ export function generateCamera(
 
   let coveredUntil = -1
   tl.steps.forEach((span, i) => {
-    // Inside an earlier step's `until` span: that framing already covers this step.
-    if (i <= coveredUntil) return
     const directive = directives.get(span.id) ?? "auto"
+    // Inside an earlier step's `until` span: that framing already covers this step.
+    if (i <= coveredUntil) {
+      if (span.step.camera !== undefined && span.step.camera !== "auto") {
+        warnings.push(`step ${span.id}: camera ignored (inside an earlier step's camera.until)`)
+      }
+      return
+    }
     const rect = targetRect(span, tl)
-    const navigates = tl.events.some((e) => e.stepId === span.id && e.kind === "navigate")
+    const nav = tl.events.find((e) => e.stepId === span.id && e.kind === "navigate")
     if (directive === "auto") {
       // A navigation or a scroll changes the whole view: wide from there.
       if (span.step.action === "goto" || span.step.action === "scroll") return flush()
@@ -95,25 +106,24 @@ export function generateCamera(
         const union = cluster === undefined ? rect : unionRect(cluster.rect, rect)
         const joins =
           cluster !== undefined &&
-          span.start - cluster.b <= gapMs &&
+          seen(cluster.b, span.start) <= gapMs &&
           Math.min(maxAuto, fitScale(union)) >= minScale
         if (!joins) flush()
         cluster =
           cluster === undefined
             ? { first: span, rect, a: span.start, b: span.end }
             : { ...cluster, rect: union, b: span.end }
-      } else if (cluster !== undefined && span.start - cluster.b <= gapMs) {
+      } else if (cluster !== undefined && seen(cluster.b, span.start) <= gapMs) {
         // A step with nothing to frame (press, wait, check) keeps the current framing, but not
         // through a long wait: nobody looks at an untouched button for 10 s.
         joined = true
         cluster.b = Math.min(span.end, span.start + gapMs)
-        if (span.end - span.start > gapMs) flush()
+        if (seen(span.start, span.end) > gapMs) flush()
       } else {
         flush()
       }
-      if (navigates) {
-        const nav = tl.events.find((e) => e.stepId === span.id && e.kind === "navigate")
-        if (joined && cluster !== undefined && nav !== undefined) {
+      if (nav !== undefined) {
+        if (joined && cluster !== undefined) {
           cluster.b = Math.max(cluster.a + 1, nav.t)
         }
         flush()
@@ -126,7 +136,13 @@ export function generateCamera(
     const untilIndex = untilId === undefined ? -1 : tl.steps.findIndex((s) => s.id === untilId)
     const endSpan = untilIndex > i ? tl.steps[untilIndex] : span
     if (untilIndex > i) coveredUntil = untilIndex
-    const b = endSpan?.end ?? span.end
+    else if (untilId !== undefined) {
+      warnings.push(
+        `step ${span.id}: camera.until step ${untilId} isn't in the take: this step only`,
+      )
+    }
+    // Without `until`, a navigation in the step ends the framing (the old element is gone).
+    const b = untilIndex > i ? (endSpan?.end ?? span.end) : Math.min(span.end, nav?.t ?? Infinity)
     if (directive === "target" || (typeof directive === "object" && "frame" in directive)) {
       const frame = directive === "target" ? "target" : directive.frame
       const forced =
@@ -173,7 +189,7 @@ export function generateCamera(
   sorted.forEach((f, i) => {
     const next = sorted[i + 1]
     if (next === undefined) return
-    if (next.a < f.b || next.a - f.b < bridge) f.b = next.a
+    if (next.a < f.b || seen(f.b, next.a) < bridge) f.b = next.a
   })
   const camera: CameraSegment[] = sorted
     .filter((f) => f.b - f.a >= 1)
