@@ -158,6 +158,30 @@ const Goto = z.strictObject({
 })
 /** Moves the pointer over the target (menus and buttons that only show on hover). */
 const Hover = z.strictObject({ action: z.literal("hover"), target: Target })
+/** A native `<select>` (custom dropdowns are clicks): the option's label or value. */
+const Select = z.strictObject({
+  action: z.literal("select"),
+  target: Target,
+  option: z.string().min(1).max(500),
+})
+/** Drag the target to another element, or by an offset in CSS pixels (sliders, kanban, reorder). */
+const Drag = z.strictObject({
+  action: z.literal("drag"),
+  target: Target,
+  to: z.union([
+    Target,
+    z.strictObject({
+      dx: z.number().int().min(-10_000).max(10_000),
+      dy: z.number().int().min(-10_000).max(10_000),
+    }),
+  ]),
+})
+/** A project asset (content-addressed, `assets/<sha256>.<ext>`). */
+export const UploadFile = z
+  .string()
+  .regex(/^[0-9a-f]{64}\.[a-z0-9]{1,10}$/, "an upload is a project asset: <sha256>.<ext>")
+/** Put a project asset in a file input (or the chooser a button opens): the OS dialog isn't filmed. */
+const Upload = z.strictObject({ action: z.literal("upload"), target: Target, file: UploadFile })
 const Click = z.strictObject({
   action: z.literal("click"),
   target: Target,
@@ -212,6 +236,9 @@ export const Action = z
     Goto.extend(offCamera),
     Click.extend(offCamera),
     Hover.extend(offCamera),
+    Select.extend(offCamera),
+    Drag.extend(offCamera),
+    Upload.extend(offCamera),
     Type.extend(offCamera),
     Press.extend(offCamera),
     Scroll.extend(offCamera),
@@ -231,6 +258,9 @@ export const Step = z
     Goto.extend(onCamera),
     Click.extend(onCamera),
     Hover.extend(onCamera),
+    Select.extend(onCamera),
+    Drag.extend(onCamera),
+    Upload.extend(onCamera),
     Type.extend(onCamera),
     Press.extend(onCamera),
     Scroll.extend(onCamera),
@@ -268,6 +298,8 @@ function hasTarget(step: Step): boolean {
   return (
     step.action === "click" ||
     step.action === "type" ||
+    step.action === "select" ||
+    step.action === "drag" ||
     (step.action === "scroll" &&
       (step.to !== undefined || step.until !== undefined || step.within !== undefined))
   )

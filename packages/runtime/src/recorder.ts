@@ -114,7 +114,7 @@ export async function recordScenario(
     // zooms); headless gives CSS resolution whatever is asked (Phase 0 findings F1, F2).
     // Capped at 3, the most a take records (TakeMeta): a 350% display or browser zoom goes above.
     const dpr = Math.min(3, await page.evaluate(() => window.devicePixelRatio).catch(() => 1))
-    await page.screencast.start({
+    const castOptions: Parameters<Page["screencast"]["start"]>[0] = {
       // Without `size`, frames are scaled down to fit a small default box.
       size: { width: Math.round(viewport.width * dpr), height: Math.round(viewport.height * dpr) },
       quality: options.quality ?? 85,
@@ -142,7 +142,16 @@ export async function recordScenario(
         lastFrame = data
         for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
       },
-    })
+    }
+    // The page being filmed: the runner may follow a tab or popup (and come back), the capture
+    // follows it on the same clock (frame timestamps are epoch milliseconds whatever the page).
+    let capturing = page
+    await capturing.screencast.start(castOptions)
+    const onPageSwitch = async (next: Page) => {
+      await capturing.screencast.stop().catch(() => undefined)
+      capturing = next
+      await next.screencast.start(castOptions)
+    }
 
     // ── events ──
     const events: TakeEvent[] = []
@@ -266,7 +275,15 @@ export async function recordScenario(
 
     let failure: Error | undefined
     try {
-      await runScenario(page, scenario, project, { ...options, onEvent, recording: true })
+      await runScenario(page, scenario, project, {
+        ...options,
+        onEvent,
+        recording: true,
+        onPageSwitch: async (next) => {
+          await onPageSwitch(next)
+          await options.onPageSwitch?.(next)
+        },
+      })
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
     }
@@ -279,7 +296,7 @@ export async function recordScenario(
       failure = undefined
     }
     stopped = true
-    await page.screencast.stop().catch(() => undefined)
+    await capturing.screencast.stop().catch(() => undefined)
     // Capture time, not disk-flush time.
     const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
 

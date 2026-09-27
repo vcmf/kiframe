@@ -3,6 +3,42 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // M1-2: native select, drags (pointer and HTML5), uploads, tabs and popups.
+  "/controls": `<!doctype html><title>Controls</title>
+    <label>Plan <select id="plan"><option value="free">Free</option><option value="pro">Pro plan</option></select></label>
+    <p id="s"></p>
+    <script>document.getElementById("plan").onchange = (e) => document.getElementById("s").textContent = "plan " + e.target.value</script>`,
+  "/drag": `<!doctype html><title>Drag</title>
+    <div id="knob" role="slider" aria-label="Volume" style="position:absolute; left:100px; top:100px; width:40px; height:40px; background:#888"></div>
+    <div id="card" draggable="true" style="position:absolute; left:100px; top:300px; width:120px; height:40px; background:#ccf">Card</div>
+    <div id="zone" style="position:absolute; left:500px; top:300px; width:200px; height:120px; background:#cfc">Done</div>
+    <p id="s" style="position:absolute; top:500px"></p>
+    <script>
+      const knob = document.getElementById("knob"); let grab
+      knob.addEventListener("pointerdown", (e) => { grab = { x: e.clientX - knob.offsetLeft }; knob.setPointerCapture(e.pointerId) })
+      knob.addEventListener("pointermove", (e) => { if (grab) knob.style.left = (e.clientX - grab.x) + "px" })
+      knob.addEventListener("pointerup", () => { grab = undefined; document.getElementById("s").textContent = "knob " + knob.offsetLeft })
+      const zone = document.getElementById("zone")
+      document.getElementById("card").addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", "card"))
+      zone.addEventListener("dragover", (e) => e.preventDefault())
+      zone.addEventListener("drop", (e) => { e.preventDefault(); document.getElementById("s").textContent = "dropped " + e.dataTransfer.getData("text/plain") })
+    </script>`,
+  "/upload": `<!doctype html><title>Upload</title>
+    <label>Attachment <input type="file" id="f"></label>
+    <button id="b">Choose avatar</button><input type="file" id="hidden" style="display:none">
+    <p id="s"></p>
+    <script>
+      const show = (e) => document.getElementById("s").textContent = e.target.id + ": " + [...e.target.files].map((f) => f.name).join(",")
+      document.getElementById("f").onchange = show
+      document.getElementById("hidden").onchange = show
+      document.getElementById("b").onclick = () => document.getElementById("hidden").click()
+    </script>`,
+  "/opener": `<!doctype html><title>Opener</title>
+    <a href="/popup-report" target="_blank">Open report</a>
+    <button onclick="window.open('/popup-report', 'report', 'width=800,height=600')">Open popup</button>`,
+  // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
+  "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
+    <style>@keyframes spin { to { transform: rotate(360deg) } } #spin { width: 40px; height: 40px; background: #888; animation: spin 0.5s linear infinite }</style><div id="spin"></div>`,
   // A drawer that slides in (400 ms) after a click; another "Delete" exists elsewhere on the page.
   "/drawer": `<!doctype html><title>Drawer</title>
     <style>#d { position: fixed; top: 0; right: 0; width: 240px; transform: translateX(100%); transition: transform 400ms }
