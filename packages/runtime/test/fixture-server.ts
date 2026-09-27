@@ -3,6 +3,17 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // A drawer that slides in (400 ms) after a click; another "Delete" exists elsewhere on the page.
+  "/drawer": `<!doctype html><title>Drawer</title>
+    <style>#d { position: fixed; top: 0; right: 0; width: 240px; transform: translateX(100%); transition: transform 400ms }
+      #d.open { transform: none }</style>
+    <button id="open">Open drawer</button><button id="other">Delete elsewhere</button><p id="s"></p>
+    <div id="d"><button id="del">Delete</button></div>
+    <script>
+      document.getElementById("open").onclick = () => document.getElementById("d").classList.add("open")
+      document.getElementById("del").onclick = () => document.getElementById("s").textContent = "drawer"
+      document.getElementById("other").onclick = () => document.getElementById("s").textContent = "elsewhere"
+    </script>`,
   // App shell: the body doesn't scroll, <main> does; a fixed drawer collapsed above the viewport.
   "/shell-scroll": `<!doctype html><title>Shell scroll</title>
     <style>html, body { margin: 0; height: 100%; overflow: hidden } main { height: 100%; overflow: auto }</style>

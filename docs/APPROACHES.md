@@ -324,7 +324,7 @@ Data-model lessons: [OBJECT-MODEL.md](./OBJECT-MODEL.md). Commercial analysis: [
 | Mode | How | Notes |
 |---|---|---|
 | **BYOK** | User pastes their OpenRouter (or OpenAI) key (stored in the OS keychain). Calls go straight to the provider | The user pays the provider directly |
-| **Kiframe account (paid)** | The `LlmClient` points at **our proxy** (`@anthropic-ai/sdk` supports a custom `baseURL`). The proxy authenticates the user, meters usage **per org**, applies plan limits and holds our key | Only prompts and **blurred** screenshots go through us, never vault secrets |
+| **Kiframe account (paid)** | The `LlmClient` points at **our proxy** (the `openai` SDK takes a custom `baseURL`; the proxy speaks the same OpenAI-compatible API as OpenRouter). The proxy authenticates the user, meters usage **per org**, applies plan limits and holds our key | Only prompts and **blurred** screenshots go through us, never vault secrets |
 
 Still to decide: the proxy's retention policy (§12), and pricing.
 

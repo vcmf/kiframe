@@ -83,7 +83,10 @@ export async function resolveTarget(
     { locator: stripExtras(target), nth },
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
-  const deadline = Date.now() + timeoutMs
+  const started = Date.now()
+  const deadline = started + timeoutMs
+  // Short step timeouts still leave room for the fallbacks after the grace.
+  const grace = Math.min(OFF_SCREEN_GRACE_MS, timeoutMs / 2)
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
   let ambiguous: string | undefined
@@ -108,6 +111,9 @@ export async function resolveTarget(
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       if (reachable && !(await canBeOnScreen(page, locator))) {
         offScreen ??= `${describeLocator(candidate.locator)} is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`
+        // During the grace, this candidate keeps its priority (a panel may still be sliding in):
+        // poll again rather than fall through to a fallback that may point elsewhere.
+        if (Date.now() - started < grace) break
         continue
       }
       return {
@@ -121,7 +127,7 @@ export async function resolveTarget(
     // not the whole step timeout (the agent needs a fast, clear answer).
     if (offScreen !== undefined && ambiguous === undefined) {
       offScreenSince ??= Date.now()
-      if (Date.now() - offScreenSince >= OFF_SCREEN_GRACE_MS) break
+      if (Date.now() - offScreenSince >= grace) break
     } else {
       offScreenSince = undefined
     }
@@ -144,17 +150,23 @@ const OFF_SCREEN_GRACE_MS = 2000
  * detached mid-check) counts as reachable: the action itself will say what's wrong.
  */
 async function canBeOnScreen(page: Page, locator: Locator): Promise<boolean> {
-  await locator.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined)
-  const box = await locator.boundingBox({ timeout: 300 }).catch(() => null)
-  if (box === null) return true
   const viewport = await viewportOf(page).catch(() => undefined)
   if (viewport === undefined) return true
-  return (
-    box.x + box.width > 0 &&
-    box.y + box.height > 0 &&
-    box.x < viewport.width &&
-    box.y < viewport.height
-  )
+  const overlaps = async () => {
+    const box = await locator.boundingBox({ timeout: 300 }).catch(() => null)
+    // Unknown: the action itself will say what's wrong.
+    if (box === null) return true
+    return (
+      box.x + box.width > 0 &&
+      box.y + box.height > 0 &&
+      box.x < viewport.width &&
+      box.y < viewport.height
+    )
+  }
+  // Already on screen: no scrolling (no side effect on the page).
+  if (await overlaps()) return true
+  await locator.scrollIntoViewIfNeeded({ timeout: 500 }).catch(() => undefined)
+  return overlaps()
 }
 
 /** The locator part of a grounded target, without the healing metadata. */

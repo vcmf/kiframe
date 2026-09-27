@@ -17,6 +17,7 @@ import {
   checkScenarioAgainstProject,
   parseProjectYaml,
   parseScenarioYaml,
+  Locator,
   SetupItem,
   Step,
   type ProjectConfig,
@@ -104,10 +105,23 @@ if (!takeLock()) {
   process.exit(2)
 }
 process.on("exit", () => rmSync(lock, { force: true }))
-for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(130))
+// Ctrl-C: stop after the current call, then close the browser and still write the report (the
+// partial run's tokens and cost are measurements too). A second signal exits at once.
+let stopRequested = false
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    if (stopRequested) process.exit(130)
+    stopRequested = true
+    console.error("stopping after the current call (again to quit now)")
+  })
+}
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const model = values.model
 const maxTurns = Number(values["max-turns"])
+if (!Number.isInteger(maxTurns) || maxTurns < 1) {
+  console.error("--max-turns takes a positive whole number")
+  process.exit(2)
+}
 
 // ─── Secrets: names for the model, values only for the runner ────────────────
 const secretNames = values.secrets.split(",").filter(Boolean)
@@ -207,8 +221,12 @@ async function runStep(input: unknown): Promise<string> {
   const step = Step.safeParse(raw)
   const setupItem = step.success ? undefined : SetupItem.safeParse(raw)
   if (!step.success && setupItem?.success !== true) {
-    const issue = (setupItem?.error ?? step.error).issues[0]
-    return `invalid step: ${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}`
+    // A step has an id; a setup item is a preset, an ensure or an action without id: report the
+    // error of the shape the model meant (union errors say only "Invalid input").
+    const r = raw as Record<string, unknown>
+    const meantSetup = "preset" in r || "ensure" in r || !("id" in r)
+    const issue = (meantSetup ? setupItem?.error : step.error)?.issues[0] ?? step.error.issues[0]
+    return `invalid ${meantSetup ? "setup item" : "step"}: ${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}`
   }
   const scenario = step.success
     ? { version: 1 as const, steps: [step.data] }
@@ -238,11 +256,12 @@ const logApproval = (step: { phase: string; index: number; action: string }) => 
 async function snapshot(within?: unknown): Promise<string> {
   let root = page.locator("body")
   if (within !== undefined) {
-    try {
-      root = visibleOnly(toPlaywright(page, within as Parameters<typeof toPlaywright>[1])).first()
-    } catch {
-      return "invalid `within` locator"
+    const parsed = Locator.safeParse(within)
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0]
+      return `invalid \`within\` locator: ${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}`
     }
+    root = visibleOnly(toPlaywright(page, parsed.data)).first()
   }
   const text = await root
     .ariaSnapshot({ timeout: 5000 })
@@ -272,7 +291,7 @@ async function replay(yaml: string): Promise<string> {
   try {
     await runScenario(fresh, scenario, quickProject, {
       resolveSecret,
-      approveRisky: () => true,
+      approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,
     })
     return "ok"
@@ -369,7 +388,7 @@ const started = Date.now()
 let finalYaml: string | undefined
 
 try {
-  for (let turn = 0; turn < maxTurns && finalYaml === undefined; turn++) {
+  for (let turn = 0; turn < maxTurns && finalYaml === undefined && !stopRequested; turn++) {
     stats.turns++
     const response = await client.chat.completions.create({
       model,
@@ -405,7 +424,15 @@ try {
       continue
     }
     for (const call of message.tool_calls) {
-      if (call.type !== "function") continue
+      if (call.type !== "function") {
+        // Every tool call needs a reply, or the next request is rejected.
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: "unsupported tool call type",
+        })
+        continue
+      }
       stats.toolCalls++
       let args: Record<string, unknown> = {}
       let badArgs = false
