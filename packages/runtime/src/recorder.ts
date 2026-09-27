@@ -112,7 +112,8 @@ export async function recordScenario(
       pendingWrites.push(track(writeFile(join(outDir, "shots", `${stepId}.jpg`), data)))
     // Device pixels: a headed window on a high-DPI screen gives frames at viewport × DPR (sharp
     // zooms); headless gives CSS resolution whatever is asked (Phase 0 findings F1, F2).
-    const dpr = await page.evaluate(() => window.devicePixelRatio).catch(() => 1)
+    // Capped at 3, the most a take records (TakeMeta): a 350% display or browser zoom goes above.
+    const dpr = Math.min(3, await page.evaluate(() => window.devicePixelRatio).catch(() => 1))
     await page.screencast.start({
       // Without `size`, frames are scaled down to fit a small default box.
       size: { width: Math.round(viewport.width * dpr), height: Math.round(viewport.height * dpr) },

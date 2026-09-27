@@ -125,8 +125,10 @@ function drawArrow(ctx: Ctx, x: number, y: number, size: number) {
   ctx.restore()
 }
 
-/** A caption on a dark pill, wrapped to at most 70% of the width. */
-/** Draws one caption pill `shift` px further from the edge; returns the space it takes. */
+/**
+ * One caption on a dark pill, wrapped to at most 70% of the width, `shift` px further from the edge
+ * (stacking). Returns the space it takes.
+ */
 function drawCaption(
   ctx: Ctx,
   text: string,

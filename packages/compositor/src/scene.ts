@@ -1,6 +1,7 @@
 import {
   RIPPLE_MS,
   buildTimeline,
+  clipRect,
   resolveAnchor,
   timeMap,
   type TakeInput,
@@ -99,7 +100,8 @@ export function prepare(
   take: TakeInput,
   style: Partial<Style> = {},
 ): Prepared {
-  const s = { ...DEFAULT_STYLE, ...style }
+  // The composition's own style (scene overrides), then the caller's (export presets) on top.
+  const s = { ...DEFAULT_STYLE, ...styleFrom(composition.style), ...style }
   const { timeline } = buildTimeline(scenario, take)
   const map = timeMap(composition.tracks.clips, timeline)
   const base: Omit<Prepared, "moves" | "softness"> = {
@@ -117,6 +119,24 @@ export function prepare(
   const content = contentBox(s, take.meta.frameSize)
   const softness = (maxScale * content.w) / take.meta.frameSize.width
   return { ...base, moves, softness }
+}
+
+/** The known Style fields of a composition's `style` (kept verbatim by the schema until typed). */
+function styleFrom(raw: Record<string, unknown> | undefined): Partial<Style> {
+  if (raw === undefined) return {}
+  const out: Partial<Style> = {}
+  for (const key of Object.keys(DEFAULT_STYLE) as (keyof Style)[]) {
+    const value = raw[key]
+    const expected = DEFAULT_STYLE[key]
+    if (Array.isArray(expected)) {
+      if (Array.isArray(value) && value.length === 2 && value.every((v) => typeof v === "string")) {
+        out.background = [value[0] as string, value[1] as string]
+      }
+    } else if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+      ;(out as Record<string, number>)[key] = value
+    }
+  }
+  return out
 }
 
 /** Where the take frame goes in the output (aspect kept, centered, inside the padding). */
@@ -204,34 +224,23 @@ const MOVE_OVERLAP_MS = 250
 
 /** The rects of a sensitive region at source time `t` (it follows the element). */
 function maskRects(tl: Timeline, id: string, t: number): NRect[] {
-  let current: NRect | undefined
-  let previous: NRect | undefined
-  let changedAt = -Infinity
-  let next: { t: number; rect: NRect | undefined } | undefined
-  for (const e of tl.events) {
-    if (e.kind !== "sensitive" || e.id !== id) continue
-    if (e.t > t) {
-      next = { t: e.t, rect: clipRect(e.rect) }
-      break
-    }
-    previous = current
-    current = clipRect(e.rect)
-    changedAt = e.t
-  }
+  const events = tl.events.filter(
+    (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive" && e.id === id,
+  )
   const out: NRect[] = []
-  if (current !== undefined) out.push(current)
-  if (previous !== undefined && t - changedAt < MOVE_OVERLAP_MS) out.push(previous)
-  // A move coming up: the new position is covered a little early too.
-  if (next?.rect !== undefined && next.t - t < MOVE_OVERLAP_MS) out.push(next.rect)
+  events.forEach((e, i) => {
+    const rect = clipRect(e.rect)
+    if (rect === undefined) return
+    // From the start of the step that reported it (the field is measured at step end: it may have
+    // moved anywhere in that step), at least MOVE_OVERLAP_MS early...
+    const step = e.stepId === undefined ? undefined : tl.byId.get(e.stepId)
+    const from = Math.min(e.t - MOVE_OVERLAP_MS, step?.start ?? Infinity)
+    // ...until MOVE_OVERLAP_MS after the next report replaced it (frames lag the DOM).
+    const next = events[i + 1]
+    const until = next === undefined ? Infinity : next.t + MOVE_OVERLAP_MS
+    if (t >= from && t < until) out.push(rect)
+  })
   return out
-}
-
-function clipRect(r: { x: number; y: number; w: number; h: number }): NRect | undefined {
-  const x = Math.max(0, r.x)
-  const y = Math.max(0, r.y)
-  const w = Math.min(1, r.x + r.w) - x
-  const h = Math.min(1, r.y + r.h) - y
-  return w > 0 && h > 0 ? { x, y, w, h } : undefined
 }
 
 /**
