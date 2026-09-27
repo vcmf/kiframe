@@ -68,5 +68,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **`ensure` re-check replays the whole setup before it:** fine for `goto`-style setups; a setup with side effects (creating data) before an `ensure` would run them twice. Validate that only navigation/waits precede an `ensure`, or re-run a declared "context" part only.
 - **Session presets saved at the end of a run:** the harness carries the whole profile after each run (app data included). For login presets, v0's batch runner should save right after `preset_done` and create every scene's context from that.
 - **`ensure` settles on its own:** it settles (up to 3 s of network/DOM activity) even right after a step that just settled; on busy pages that's dead time off camera. Skip the settle when the previous entry settled.
+- **`ensure: absent` always waits its 1 s grace:** the clean case pays the full grace (the wait only ends early when something appears). Use `count()` after settle, and the grace only after a declared late list (`waitFor` on it, FAILURE-CATALOGUE #6).
+- **Harness dirty runs have no teardown at all:** their `ensure` can't clean an unexpected leftover. Skip only the final teardown (a runner option) or create the leftover with a separate scene.
 - **Pre-approval per environment:** the harness approves every risky step (sandbox). v0 needs the per-environment pre-approval list (APPROACHES §7.2).
 
