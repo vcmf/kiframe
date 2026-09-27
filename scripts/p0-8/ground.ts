@@ -4,9 +4,9 @@
 // cost, time, turns and questions (APPROACHES §12, IMPLEMENTATION-PLAN P0-8).
 //
 // Usage: OPENROUTER_API_KEY=… node scripts/p0-8/ground.ts --project p.yaml --goal "…" --out scene.yaml
-//          [--model anthropic/claude-sonnet-5] [--secrets calcom.email,calcom.password] [--headed]
+//          [--model z-ai/glm-5.3] [--secrets calcom.email,calcom.password] [--headed]
 // Secret `a.b` is read from the env var `A_B` (CALCOM_EMAIL…). The model only ever sees names.
-import { readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { runScenario, scrubSecrets, StepError, visibleOnly, toPlaywright } from "@kiframe/runtime"
 import {
@@ -28,7 +28,7 @@ const { values } = parseArgs({
     project: { type: "string" },
     goal: { type: "string" },
     out: { type: "string" },
-    model: { type: "string", default: "anthropic/claude-sonnet-5" },
+    model: { type: "string", default: "z-ai/glm-5.3" },
     secrets: { type: "string", default: "" },
     "max-turns": { type: "string", default: "80" },
     headed: { type: "boolean", default: false },
@@ -42,6 +42,8 @@ if (!values.project || !values.goal || !values.out) {
   )
   process.exit(2)
 }
+// Keys and credentials can live in a git-ignored `.env` at the repo root (see .env.example).
+if (existsSync(".env")) process.loadEnvFile(".env")
 const apiKey = process.env.OPENROUTER_API_KEY
 if (apiKey === undefined || apiKey === "") {
   console.error("OPENROUTER_API_KEY is not set")
