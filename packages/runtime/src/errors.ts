@@ -18,6 +18,7 @@ export type StepErrorReason =
   | "secret-unavailable"
   | "action-failed"
   | "invalid-setup"
+  | "ensure-failed"
 
 /**
  * A step failed. The message says which step and why, in words a user (or the agent) can act on:

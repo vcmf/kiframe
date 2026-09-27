@@ -1,0 +1,65 @@
+[
+  {
+    "run": 1,
+    "dirty": false,
+    "skippedSessions": [],
+    "clean": true,
+    "outcome": "complete",
+    "warnings": [],
+    "ensureRanTeardown": false,
+    "durationMs": 9012,
+    "wallMs": 9785
+  },
+  {
+    "run": 2,
+    "dirty": true,
+    "skippedSessions": [
+      "open-app"
+    ],
+    "clean": true,
+    "outcome": "complete",
+    "warnings": [],
+    "ensureRanTeardown": false,
+    "durationMs": 7238,
+    "wallMs": 7944
+  },
+  {
+    "run": 3,
+    "dirty": false,
+    "skippedSessions": [
+      "open-app"
+    ],
+    "clean": true,
+    "outcome": "complete",
+    "warnings": [],
+    "ensureRanTeardown": true,
+    "durationMs": 10529,
+    "wallMs": 11389
+  },
+  {
+    "run": 4,
+    "dirty": true,
+    "skippedSessions": [
+      "open-app"
+    ],
+    "clean": true,
+    "outcome": "complete",
+    "warnings": [],
+    "ensureRanTeardown": false,
+    "durationMs": 7220,
+    "wallMs": 7923
+  },
+  {
+    "run": 5,
+    "dirty": false,
+    "skippedSessions": [
+      "open-app"
+    ],
+    "clean": true,
+    "outcome": "complete",
+    "warnings": [],
+    "ensureRanTeardown": true,
+    "durationMs": 10562,
+    "wallMs": 11452
+  }
+]

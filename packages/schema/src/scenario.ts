@@ -156,6 +156,8 @@ const Goto = z.strictObject({
       message: "goto URL must be relative to the environment (e.g. `/projects`)",
     }),
 })
+/** Moves the pointer over the target (menus and buttons that only show on hover). */
+const Hover = z.strictObject({ action: z.literal("hover"), target: Target })
 const Click = z.strictObject({
   action: z.literal("click"),
   target: Target,
@@ -209,6 +211,7 @@ export const Action = z
   .discriminatedUnion("action", [
     Goto.extend(offCamera),
     Click.extend(offCamera),
+    Hover.extend(offCamera),
     Type.extend(offCamera),
     Press.extend(offCamera),
     Scroll.extend(offCamera),
@@ -227,6 +230,7 @@ export const Step = z
   .discriminatedUnion("action", [
     Goto.extend(onCamera),
     Click.extend(onCamera),
+    Hover.extend(onCamera),
     Type.extend(onCamera),
     Press.extend(onCamera),
     Scroll.extend(onCamera),
@@ -245,6 +249,7 @@ export const PresetRef = z.strictObject({ preset: RuleName })
 export const Ensure = z.strictObject({
   ensure: z.union([z.strictObject({ absent: Locator }), z.strictObject({ present: Locator })]),
 })
+export type Ensure = z.infer<typeof Ensure>
 export const SetupItem = z.union([PresetRef, Ensure, Action])
 export type SetupItem = z.infer<typeof SetupItem>
 
