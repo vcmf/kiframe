@@ -1,0 +1,68 @@
+# Written and grounded by the P0-8 agent (scripts/p0-8/ground.ts), unedited.
+version: 1
+setup:
+  - preset: login
+  - action: goto
+    url: /event-types
+  - ensure:
+      absent: { by: role, role: link, name: "15 min intro call", exact: true }
+steps:
+  - id: open-new
+    action: click
+    target: { by: role, role: button, name: "New", exact: true }
+    caption: "Create a new event type"
+  - id: name-event
+    action: type
+    target: { by: label, name: "Title" }
+    value: "15 min intro call"
+    clear: true
+    submit: false
+    caption: "Name it: 15 min intro call"
+  - id: confirm-15-min
+    action: expect
+    that: { visible: { by: role, role: textbox, name: "Duration" } }
+    caption: "15 minutes, ready to share"
+  - id: create-event
+    action: click
+    target: { by: role, role: button, name: "Continue", exact: true }
+    caption: "Confirm — your link is ready"
+  - id: editor-loaded
+    action: waitFor
+    until: { visible: { by: role, role: textbox, name: "Title" } }
+    caption: "Your event page, ready to customize"
+  - id: add-description
+    action: type
+    target: { by: css, selector: "div[contenteditable='true']" }
+    value: "A quick 15-minute introduction call."
+    clear: true
+    submit: false
+    caption: "Add a friendly description"
+  - id: save-event
+    action: click
+    target: { by: role, role: button, name: "Save", exact: true }
+    caption: "Save your event type"
+  - id: beat-after-save
+    action: pause
+    ms: 800
+  - id: back-to-list
+    action: click
+    target: { by: role, role: link, name: "Back", exact: true }
+    caption: "Back to your links"
+  - id: list-loaded
+    action: waitFor
+    until: { visible: { by: role, role: link, name: "15 min intro call", exact: true } }
+  - id: check-booking-link
+    action: expect
+    that: { visible: { by: text, text: "/quanglee/15-min-intro-call", exact: true } }
+    caption: "Your new link is live"
+teardown:
+  - action: click
+    target: { by: role, role: link, name: "15 min intro call", exact: true }
+  - action: waitFor
+    until: { visible: { by: role, role: button, name: "Delete", exact: true } }
+  - action: click
+    target: { by: role, role: button, name: "Delete", exact: true }
+    risky: true
+  - action: click
+    target: { by: role, role: button, name: "Delete link", exact: true }
+    risky: true

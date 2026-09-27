@@ -3,6 +3,28 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // A drawer that slides in (400 ms) after a click; another "Delete" exists elsewhere on the page.
+  "/drawer": `<!doctype html><title>Drawer</title>
+    <style>#d { position: fixed; top: 0; right: 0; width: 240px; transform: translateX(100%); transition: transform 400ms }
+      #d.open { transform: none }</style>
+    <button id="open">Open drawer</button><button id="other">Delete elsewhere</button><p id="s"></p>
+    <div id="d"><button id="del">Delete</button></div>
+    <script>
+      document.getElementById("open").onclick = () => document.getElementById("d").classList.add("open")
+      document.getElementById("del").onclick = () => document.getElementById("s").textContent = "drawer"
+      document.getElementById("other").onclick = () => document.getElementById("s").textContent = "elsewhere"
+    </script>`,
+  // App shell: the body doesn't scroll, <main> does.
+  "/shell-scroll": `<!doctype html><title>Shell scroll</title>
+    <style>html, body { margin: 0; height: 100%; overflow: hidden } main { height: 100%; overflow: auto }</style>
+    <main id="m"><button id="top">Top action</button><div style="height:4000px"></div><p id="s"></p></main>
+    <script>document.getElementById("top").onclick = () => document.getElementById("s").textContent = "Top clicked"</script>`,
+  // A collapsed sidebar: translated off screen, still "visible" to Playwright.
+  "/collapsed": `<!doctype html><title>Collapsed</title>
+    <nav style="position:fixed; left:0; top:0; width:200px; transform:translateX(-100%)"><button>New board</button></nav>
+    <main style="margin-left:40px"><div role="button" tabindex="0">New Board card</div>
+      <label>Hidden field <input id="sr" style="position:absolute; left:-9999px"></label><p id="v"></p>
+      <script>document.getElementById("sr").oninput = (e) => document.getElementById("v").textContent = e.target.value</script></main>`,
   // Boards kept in localStorage (they survive a reload, like app data); Delete shows on hover only.
   "/boards": `<!doctype html><title>Boards</title>
     <style>.card button { display: none } .card:hover button { display: inline }</style>

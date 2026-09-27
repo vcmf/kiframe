@@ -1,0 +1,16 @@
+{
+  "goal": "Show a new user how to create an event type in Cal.com: after signing in (setup, use the login preset), create a new event type titled '15 min intro call' with a 15 minute duration, save it, and show it in the event types list. 10-15 on-camera steps with short captions. The teardown must delete that event type.",
+  "model": "z-ai/glm-5.3",
+  "turns": 67,
+  "toolCalls": 64,
+  "stepsRun": 45,
+  "stepFailures": 11,
+  "questions": [],
+  "replays": 1,
+  "promptTokens": 887038,
+  "completionTokens": 38406,
+  "cachedTokens": 860352,
+  "costUsd": 0.21856987500000002,
+  "ms": 721732,
+  "result": "grounded"
+}
