@@ -62,11 +62,11 @@ export async function resolveTarget(
   target: Target,
   timeoutMs: number,
   /**
-   * For pointer actions (click, hover): when the element picked can't be brought on screen even
-   * after scrolling (a collapsed sidebar or drawer), the candidate doesn't match: the next fallback
-   * is tried, else the error says "off screen" (after a short grace, not the whole timeout). `nth`
-   * and ambiguity still count every visible match (scenes grounded with them keep working). Typing
-   * only needs focus: an input hidden off screen on purpose still works.
+   * For pointer actions (click, hover): when the element picked stays off screen even after
+   * scrolling (a collapsed sidebar or drawer) for a short grace, the error says so instead of the
+   * action timing out without a reason. Matching is unchanged: fallbacks are only for no match,
+   * `nth` and ambiguity count every visible match. Typing only needs focus: an input hidden off
+   * screen on purpose still works.
    */
   { reachable = false }: { reachable?: boolean } = {},
 ): Promise<ResolveResult> {
@@ -83,8 +83,7 @@ export async function resolveTarget(
     { locator: stripExtras(target), nth },
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
-  const started = Date.now()
-  const deadline = started + timeoutMs
+  const deadline = Date.now() + timeoutMs
   // Short step timeouts still leave room for the fallbacks after the grace.
   const grace = Math.min(OFF_SCREEN_GRACE_MS, timeoutMs / 2)
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
@@ -110,11 +109,10 @@ export async function resolveTarget(
       }
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       if (reachable && !(await canBeOnScreen(page, locator))) {
-        offScreen ??= `${describeLocator(candidate.locator)} is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`
-        // During the grace, this candidate keeps its priority (a panel may still be sliding in):
-        // poll again rather than fall through to a fallback that may point elsewhere.
-        if (Date.now() - started < grace) break
-        continue
+        // This is the element to act on (fallbacks are only for no match at all, as always): keep
+        // polling while it may still be sliding in, then say why it can't be clicked.
+        offScreen = `${describeLocator(candidate.locator)} is off screen even after scrolling (inside a collapsed panel or drawer?): open it first, or use another element`
+        break
       }
       return {
         ok: true,
@@ -123,9 +121,9 @@ export async function resolveTarget(
         fallbackIndex: i === 0 ? undefined : i - 1,
       }
     }
-    // Only off-screen matches: a panel that is opening slides in quickly, so give it a moment,
-    // not the whole step timeout (the agent needs a fast, clear answer).
-    if (offScreen !== undefined && ambiguous === undefined) {
+    // Off screen since when it was first seen so (a late-mounting panel gets the full grace): an
+    // opening panel slides in quickly, so give it a moment, not the whole step timeout.
+    if (offScreen !== undefined) {
       offScreenSince ??= Date.now()
       if (Date.now() - offScreenSince >= grace) break
     } else {

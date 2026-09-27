@@ -248,15 +248,6 @@ steps: [{ id: top, action: click, target: { by: role, role: button, name: Top ac
     expect(await page.locator("#s").textContent()).toBe("Top clicked")
   })
 
-  it("tries the fallback when the primary target is only off screen", async () => {
-    await run(`setup: [{ action: goto, url: /collapsed }]
-steps:
-  - id: open
-    action: click
-    target: { by: role, role: button, name: New board, exact: true, fallbacks: [{ by: text, text: New Board card }] }
-`)
-  })
-
   it("waits for a primary target that is sliding in, rather than jumping to a fallback", async () => {
     const events = await run(`setup: [{ action: goto, url: /drawer }]
 steps:

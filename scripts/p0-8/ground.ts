@@ -17,7 +17,10 @@ import {
   checkScenarioAgainstProject,
   parseProjectYaml,
   parseScenarioYaml,
+  Action,
+  Ensure,
   Locator,
+  PresetRef,
   SetupItem,
   Step,
   type ProjectConfig,
@@ -182,7 +185,12 @@ Project presets available: ${Object.keys(project.presets).join(", ") || "none"}.
 App: ${project.target.url}`
 
 // ─── Browser ─────────────────────────────────────────────────────────────────
-const browser: Browser = await chromium.launch({ headless: !values.headed })
+// Our own Ctrl-C handling closes the browser after the current call (Playwright would at once).
+const browser: Browser = await chromium.launch({
+  headless: !values.headed,
+  handleSIGINT: false,
+  handleSIGTERM: false,
+})
 const viewport = { width: project.target.viewport.width, height: project.target.viewport.height }
 const page: Page = await browser.newPage({ viewport })
 await page.goto(project.target.url)
@@ -199,6 +207,10 @@ const quickProject: ProjectConfig = {
  * One item on the live page, through the real runner: an on-camera step (with its id), or a
  * setup / teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`).
  */
+/** One zod issue as the model reads it. */
+const formatIssue = (issue: { message: string; path: PropertyKey[] } | undefined) =>
+  `${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.map(String).join(".")}` : ""}`
+
 /** Models sometimes send an object as a JSON or YAML string: accept both. */
 function asObject(raw: unknown): unknown {
   if (typeof raw !== "string") return raw
@@ -221,12 +233,19 @@ async function runStep(input: unknown): Promise<string> {
   const step = Step.safeParse(raw)
   const setupItem = step.success ? undefined : SetupItem.safeParse(raw)
   if (!step.success && setupItem?.success !== true) {
-    // A step has an id; a setup item is a preset, an ensure or an action without id: report the
-    // error of the shape the model meant (union errors say only "Invalid input").
+    // A step has an id; a setup item is a preset, an ensure or an action without id. Parse against
+    // the exact shape the model meant (a union's error only says "Invalid input").
     const r = raw as Record<string, unknown>
-    const meantSetup = "preset" in r || "ensure" in r || !("id" in r)
-    const issue = (meantSetup ? setupItem?.error : step.error)?.issues[0] ?? step.error.issues[0]
-    return `invalid ${meantSetup ? "setup item" : "step"}: ${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}`
+    const [what, schema] =
+      "preset" in r
+        ? (["preset", PresetRef] as const)
+        : "ensure" in r
+          ? (["ensure", Ensure] as const)
+          : "id" in r
+            ? (["step", Step] as const)
+            : (["setup action", Action] as const)
+    const result = schema.safeParse(raw)
+    return `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}`
   }
   const scenario = step.success
     ? { version: 1 as const, steps: [step.data] }
@@ -259,7 +278,7 @@ async function snapshot(within?: unknown): Promise<string> {
     const parsed = Locator.safeParse(within)
     if (!parsed.success) {
       const issue = parsed.error.issues[0]
-      return `invalid \`within\` locator: ${issue?.message ?? "?"}${issue?.path.length ? ` at ${issue.path.join(".")}` : ""}`
+      return `invalid \`within\` locator: ${formatIssue(issue)}`
     }
     root = visibleOnly(toPlaywright(page, parsed.data)).first()
   }
