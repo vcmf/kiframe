@@ -36,7 +36,8 @@ describe("strictness everywhere (typos are errors)", () => {
   it("keeps composition style, callouts and keystrokes instead of stripping them", () => {
     const c = Composition.parse({
       version: 1,
-      style: { background: "#000" },
+      // Typed since M1-1 (a StyleOverride).
+      style: { background: ["#000000", "#111111"] },
       tracks: {
         callouts: [
           {
@@ -52,7 +53,7 @@ describe("strictness everywhere (typos are errors)", () => {
         keystrokes: [{ id: "k", source: "auto", keys: "Mod+K", at: { ms: 0 }, until: { ms: 300 } }],
       },
     })
-    expect(c.style).toEqual({ background: "#000" })
+    expect(c.style).toEqual({ background: ["#000000", "#111111"] })
     expect(c.tracks.callouts).toHaveLength(1)
     expect(c.tracks.keystrokes).toHaveLength(1)
     expect(Composition.safeParse({ version: 1, tracks: {}, extra: 1 }).success).toBe(false)

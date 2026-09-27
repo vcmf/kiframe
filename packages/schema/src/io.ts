@@ -1,7 +1,11 @@
 import { parseDocument, YAMLParseError } from "yaml"
 import * as z from "zod"
-import { ProjectConfig } from "./project.ts"
+import { Composition } from "./composition.ts"
+import { OrgSettings, UserPreferences } from "./org.ts"
+import { Project, ProjectConfig } from "./project.ts"
 import { Scenario } from "./scenario.ts"
+import { Scene } from "./scene.ts"
+import { migrate, VersionError, type DocumentKind } from "./versioning.ts"
 
 /** Thrown when a file isn't valid YAML or doesn't match its schema. `issues` lists schema problems. */
 export class SchemaError extends Error {
@@ -40,21 +44,78 @@ function loadYaml(text: string, what: string): unknown {
   }
 }
 
-function parseWith<T extends z.ZodType>(schema: T, what: string, text: string): z.output<T> {
-  const data = loadYaml(text, what)
-  const result = schema.safeParse(data)
+/** Migrates (older versions are upgraded, newer ones refused: VersionError), then validates. */
+function validate<T extends z.ZodType>(
+  schema: T,
+  kind: DocumentKind,
+  what: string,
+  data: unknown,
+): z.output<T> {
+  let doc: unknown
+  try {
+    doc = migrate(kind, data).doc
+  } catch (error) {
+    // A file-level problem like any other: callers handle SchemaError (the message says to update).
+    if (error instanceof VersionError) throw new SchemaError(what, error.message)
+    throw error
+  }
+  const result = schema.safeParse(doc)
   if (!result.success) {
     throw new SchemaError(what, z.prettifyError(result.error), result.error.issues)
   }
   return result.data
 }
 
-/** Parse and validate a scene's `scenario.yaml`. */
-export function parseScenarioYaml(text: string): Scenario {
-  return parseWith(Scenario, "scenario", text)
+function loadJson(text: string, what: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    // Not the parser's message: newer engines quote part of the input, which could be anything.
+    throw new SchemaError(what, "not valid JSON")
+  }
 }
 
-/** Parse and validate a project config written as YAML (docs examples, fixtures). */
+/** Parse and validate a scene's `scenario.yaml`. */
+export function parseScenarioYaml(text: string): Scenario {
+  return validate(Scenario, "scenario", "scenario", loadYaml(text, "scenario"))
+}
+
+/** Parse and validate a resolved project config written as YAML (examples, fixtures, scripts). */
 export function parseProjectYaml(text: string): ProjectConfig {
-  return parseWith(ProjectConfig, "project config", text)
+  return validate(
+    ProjectConfig,
+    "project-config",
+    "project config",
+    loadYaml(text, "project config"),
+  )
+}
+
+/** Parse and validate a project folder's `project.json`. */
+export function parseProjectJson(text: string): Project {
+  return validate(Project, "project", "project", loadJson(text, "project"))
+}
+
+/** Parse and validate a scene's `scene.json`. */
+export function parseSceneJson(text: string): Scene {
+  return validate(Scene, "scene", "scene", loadJson(text, "scene"))
+}
+
+/** Parse and validate a scene's `composition.json`. */
+export function parseCompositionJson(text: string): Composition {
+  return validate(Composition, "composition", "composition", loadJson(text, "composition"))
+}
+
+/** Parse and validate org settings (as synced from the server). */
+export function parseOrgSettingsJson(text: string): OrgSettings {
+  return validate(OrgSettings, "org-settings", "org settings", loadJson(text, "org settings"))
+}
+
+/** Parse and validate user preferences. */
+export function parseUserPreferencesJson(text: string): UserPreferences {
+  return validate(
+    UserPreferences,
+    "user-preferences",
+    "user preferences",
+    loadJson(text, "user preferences"),
+  )
 }

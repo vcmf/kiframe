@@ -1,5 +1,5 @@
 import type { TakeInput } from "@kiframe/generators"
-import type { Composition, Scenario } from "@kiframe/schema"
+import type { Composition, Scenario, Style as SchemaStyle } from "@kiframe/schema"
 import {
   ALL_FORMATS,
   BlobSource,
@@ -25,7 +25,10 @@ export interface ExportOptions {
   composition: Composition
   scenario: Scenario
   take: TakeInput
+  /** The output layer (size, format, its overrides), on top of the scene's style. */
   style?: Partial<Style>
+  /** Org + project style (`resolveStyle(org, project)`), below the scene's. Default: product defaults. */
+  baseStyle?: SchemaStyle
   format: "mp4" | "webm"
   onProgress?: (done: number, total: number) => void
 }
@@ -46,7 +49,13 @@ const CODECS: Record<ExportOptions["format"], VideoCodec[]> = {
 }
 
 export async function exportVideo(options: ExportOptions): Promise<ExportResult> {
-  const prepared = prepare(options.composition, options.scenario, options.take, options.style)
+  const prepared = prepare(
+    options.composition,
+    options.scenario,
+    options.take,
+    options.style,
+    options.baseStyle,
+  )
   const { style } = prepared
   const codec = await pickCodec(options.format, style)
 
