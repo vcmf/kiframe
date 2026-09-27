@@ -12,11 +12,17 @@ const { values } = parseArgs({
     scenario: { type: "string" },
     out: { type: "string" },
     headed: { type: "boolean", default: false },
-    dpr: { type: "string", default: "2" },
+    dpr: { type: "string" },
   },
 })
 if (!values.project || !values.scenario || !values.out) {
-  console.error("usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed]")
+  console.error("usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2]")
+  process.exit(2)
+}
+// DPR 2 only helps headed (headless frames stay at CSS resolution, F1): default 2 headed, 1 headless.
+const dpr = Number(values.dpr ?? (values.headed ? 2 : 1))
+if (!Number.isFinite(dpr) || dpr <= 0 || dpr > 3) {
+  console.error(`--dpr must be a number in (0, 3], got ${values.dpr}`)
   process.exit(2)
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
@@ -26,7 +32,7 @@ try {
   // Headed on a high-DPI screen: frames at device resolution (Phase 0 finding F2).
   const page = await browser.newPage({
     viewport: project.target.viewport,
-    deviceScaleFactor: Number(values.dpr),
+    deviceScaleFactor: dpr,
   })
   const take = await recordScenario(page, scenario, project, { outDir: values.out })
   console.log(

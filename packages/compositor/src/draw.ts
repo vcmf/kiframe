@@ -83,7 +83,12 @@ export function drawScene(ctx: Ctx, frame: Frame, scene: Scene, style: Style): v
   }
   ctx.restore()
 
-  for (const caption of scene.captions) drawCaption(ctx, caption.text, caption.position, style)
+  // Captions shown together stack (bottom ones upwards, top ones downwards), never overlap.
+  const offset = { top: 0, bottom: 0 }
+  for (const caption of scene.captions) {
+    const side = caption.position === "top" ? "top" : "bottom"
+    offset[side] += drawCaption(ctx, caption.text, side, offset[side], style)
+  }
 }
 
 function roundRect(ctx: Ctx, x: number, y: number, w: number, h: number, r: number) {
@@ -121,7 +126,14 @@ function drawArrow(ctx: Ctx, x: number, y: number, size: number) {
 }
 
 /** A caption on a dark pill, wrapped to at most 70% of the width. */
-function drawCaption(ctx: Ctx, text: string, position: string, style: Style) {
+/** Draws one caption pill `shift` px further from the edge; returns the space it takes. */
+function drawCaption(
+  ctx: Ctx,
+  text: string,
+  side: "top" | "bottom",
+  shift: number,
+  style: Style,
+): number {
   const size = style.captionSize
   ctx.save()
   ctx.font = `600 ${size}px -apple-system, "Segoe UI", system-ui, sans-serif`
@@ -143,7 +155,7 @@ function drawCaption(ctx: Ctx, text: string, position: string, style: Style) {
   const h = lines.length * lineH + 2 * padY
   const x = (style.width - w) / 2
   const margin = style.height * 0.06
-  const y = position === "top" ? margin : style.height - margin - h
+  const y = side === "top" ? margin + shift : style.height - margin - h - shift
   ctx.fillStyle = "rgba(15, 23, 42, 0.86)"
   roundRect(ctx, x, y, w, h, Math.min(h / 2, size))
   ctx.fill()
@@ -152,4 +164,5 @@ function drawCaption(ctx: Ctx, text: string, position: string, style: Style) {
   ctx.textBaseline = "middle"
   lines.forEach((l, i) => ctx.fillText(l, style.width / 2, y + padY + lineH * (i + 0.5)))
   ctx.restore()
+  return h + size * 0.4
 }
