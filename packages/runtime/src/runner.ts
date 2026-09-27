@@ -221,7 +221,9 @@ export async function runScenario(
     // reported, and the first one is thrown if nothing failed before. Not after an `ensure`
     // failure: no scene step ran, so what the teardown would delete wasn't created by this run.
     const ensureFailed = failure instanceof StepError && failure.step.action === "ensure"
-    // The teardown cleans the app where the scene started, not a tab or popup it followed.
+    // The teardown cleans the app where the scene started, not a tab or popup it followed, and
+    // never follows a page the scene opened late.
+    ctx.opened.length = 0
     const root = ctx.openers[0]
     if (
       !ensureFailed &&
@@ -244,8 +246,6 @@ export async function runScenario(
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
         ctx.clearListenerError()
-        // Pages a failed cleanup step opened aren't followed by the next ones.
-        ctx.opened.length = 0
         // The first teardown failure is thrown when nothing failed before: it isn't also reported
         // as an event. Every other one is (it would be lost otherwise).
         if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
@@ -392,7 +392,7 @@ async function ensure(
 ): Promise<void> {
   const ref: StepRef = { phase: "setup", index, action: "ensure" }
   ctx.setCurrent(ref)
-  await returnFromClosedPage(ctx, ref)
+  await syncPage(ctx, ref)
   ctx.options.onEvent?.({ kind: "step_start", step: ref })
   const locator = "absent" in condition ? condition.absent : condition.present
   const what = describeLocator(locator)
@@ -479,25 +479,16 @@ async function ensure(
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
   ctx.setCurrent(step)
-  // A popup that closed itself (an OAuth window, a print preview…): back to the page that opened it.
-  await returnFromClosedPage(ctx, step)
-  // A page the previous step opened late (after its settle): followed before this step. Pages
-  // opened by a step that failed were dropped (runScenario), never followed into teardown.
-  await followOpenedPage(ctx, step)
+  await syncPage(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
   await perform(ctx, action, step)
-  // This step closed the page it drove (a popup's "Done"): back to the opener before settling.
-  await returnFromClosedPage(ctx, step)
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
-  // pacing is a presentation choice: on camera only.
+  // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
-  // It may also have closed while settling: back to the opener.
-  await returnFromClosedPage(ctx, step)
-  // A tab or popup this step opened: the next steps drive it (OBJECT-MODEL §2b).
-  await followOpenedPage(ctx, step)
+  await syncPage(ctx, step)
   if (ctx.options.recording === true) await followSecretFields(ctx, step)
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
@@ -524,37 +515,40 @@ async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   })
 }
 
-async function followOpenedPage(ctx: Ctx, step: StepRef): Promise<void> {
-  // The last one opened wins; earlier ones (closed or not) aren't driven.
-  const next = ctx.opened
-    .splice(0)
-    .filter((p) => !p.isClosed())
-    .at(-1)
-  if (next === undefined) return
+/**
+ * Brings the driven page in line with the browser, at a step boundary (the one place pages change):
+ * 1. the driven page closed (a popup's "Done", an OAuth window): back to the nearest open opener;
+ * 2. setup and scene steps only: the LAST page opened, if it's still open once loaded, is driven
+ *    from now on (and settled). If it closed already, the run stays where it is: an earlier tab is
+ *    never picked instead. The teardown never follows new pages (it cleans up where it runs).
+ */
+async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
+  if (ctx.page.isClosed()) {
+    let back = ctx.openers.pop()
+    while (back?.isClosed() === true) back = ctx.openers.pop()
+    if (back === undefined) {
+      throw new StepError(
+        step,
+        "action-failed",
+        "the page was closed and there's no page to return to",
+      )
+    }
+    await switchPage(ctx, back, step)
+  }
+  const next = ctx.opened.splice(0).at(-1)
+  if (step.phase === "teardown" || next === undefined || next.isClosed()) return
   try {
     await next.waitForLoadState("domcontentloaded", { timeout: ctx.navigationTimeoutMs })
   } catch (error) {
-    // Closed itself while loading (an OAuth popup with a session already): stay on the opener.
+    // Closed itself while loading (an OAuth popup with a session already): stay here.
     if (next.isClosed()) return
     throw new StepError(step, "action-failed", firstLine(error), { cause: error })
   }
   if (next.isClosed()) return
   ctx.openers.push(ctx.page)
   await switchPage(ctx, next, step)
-}
-
-async function returnFromClosedPage(ctx: Ctx, step: StepRef): Promise<void> {
-  if (!ctx.page.isClosed()) return
-  let back = ctx.openers.pop()
-  while (back?.isClosed() === true) back = ctx.openers.pop()
-  if (back === undefined) {
-    throw new StepError(
-      step,
-      "action-failed",
-      "the page was closed and there's no page to return to",
-    )
-  }
-  await switchPage(ctx, back, step)
+  // Settled like any page an action led to (its data may load after DOMContentLoaded).
+  await guard(step, () => settle(ctx, step.phase === "steps"))
 }
 
 /**
@@ -923,12 +917,26 @@ async function reportPress(
   step: StepRef,
   target: Locator,
   at: Point | undefined,
+  /** Also framed (a drag's drop area): the rect covers both. */
+  also?: Box,
 ): Promise<void> {
   if (ctx.options.onEvent === undefined || ctx.options.recording !== true) return
-  const box = await target.boundingBox({ timeout: 300 }).catch(() => null)
-  if (box === null) return
+  const own = await target.boundingBox({ timeout: 300 }).catch(() => null)
+  if (own === null) return
+  const box = also === undefined ? own : unionBox(own, also)
   const where = at ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
   ctx.options.onEvent({ kind: "click", step, ...where, box, button: "left", count: 1 })
+}
+
+function unionBox(a: Box, b: Box): Box {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  return {
+    x,
+    y,
+    width: Math.max(a.x + a.width, b.x + b.width) - x,
+    height: Math.max(a.y + a.height, b.y + b.height) - y,
+  }
 }
 
 /**
@@ -979,7 +987,8 @@ async function drag(
     }
     to = clickPoint(visible, seededRandom(`${seedOf(step)}:drop`))
   }
-  await reportPress(ctx, step, source, start)
+  // Framed as source + drop area: the camera must show where the card goes.
+  await reportPress(ctx, step, source, start, { x: to.x - 20, y: to.y - 20, width: 40, height: 40 })
   const emit = (p: Point, pressed: boolean) =>
     ctx.options.onEvent?.({ kind: "cursor", step, ...p, pressed })
   await guard(step, () => ctx.page.mouse.down())

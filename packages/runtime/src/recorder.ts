@@ -160,7 +160,13 @@ export async function recordScenario(
       // A popup opened at its own size: rects and the capture size follow it (the take warns
       // about the frame-size change).
       current = await viewportOf(next).catch(() => current)
-      await next.screencast.start({ ...castOptions, size: await castSize(next, current) })
+      // A popup that closed right after loading: nothing to film (the runner returns to its
+      // opener at the next step boundary).
+      await next.screencast
+        .start({ ...castOptions, size: await castSize(next, current) })
+        .catch((error: unknown) => {
+          if (!next.isClosed()) throw error
+        })
     }
 
     // ── events ──

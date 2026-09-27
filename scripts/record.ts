@@ -1,7 +1,8 @@
 // Phase 0 (throwaway): record a scenario into a take folder.
 // Usage: node scripts/record.ts --project p.yaml --scenario s.yaml --out <take dir> [--headed] [--dpr 2]
 //          [--secrets calcom.username,calcom.password] [--approve-risky]
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
@@ -19,13 +20,15 @@ const { values } = parseArgs({
     secrets: { type: "string", default: "" },
     /** Pre-approve risky steps (a sandbox account's teardown deletes). */
     "approve-risky": { type: "boolean", default: false },
+    /** The project's assets folder, for `upload` steps (`<sha256>.<ext>` files). */
+    assets: { type: "string" },
     /** Step timeout (ms): real SaaS pages can take seconds to hydrate (FAILURE-CATALOGUE #8). */
     timeout: { type: "string", default: "15000" },
   },
 })
 if (!values.project || !values.scenario || !values.out) {
   console.error(
-    "usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2] [--secrets a.b,c.d] [--approve-risky] [--timeout 15000]",
+    "usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2] [--secrets a.b,c.d] [--approve-risky] [--assets dir] [--timeout 15000]",
   )
   process.exit(2)
 }
@@ -55,6 +58,13 @@ try {
   const take = await recordScenario(page, scenario, project, {
     outDir: values.out,
     resolveSecret,
+    ...(values.assets !== undefined && {
+      resolveAsset: (file: string) => {
+        const path = join(values.assets as string, file)
+        if (!existsSync(path)) throw new Error(`asset ${file} isn't in ${values.assets}`)
+        return path
+      },
+    }),
     ...(values["approve-risky"] && { approveRisky: () => true }),
     timeoutMs,
   })

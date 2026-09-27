@@ -41,6 +41,7 @@ const pages: Record<string, string> = {
     <button onclick="window.open('/popup-report', 'report', 'width=800,height=600')">Open popup</button>
     <button onclick="window.open('/quick-close')">Sign in with provider</button>
     <button onclick="setTimeout(() => window.open('/popup-report'), 800)">Open later</button>
+    <button onclick="window.open('/popup-report'); window.open('/quick-close')">Open two</button>
     <button onclick="document.getElementById('reset').textContent = 'reset done'">Reset</button><p id="reset"></p>`,
   // An OAuth popup with a session already: closes itself at once.
   "/quick-close": `<!doctype html><title>Provider</title><script>window.close()</script>`,
