@@ -60,7 +60,15 @@ const segmentBase = {
   until: Anchor,
 }
 
-export const ClipReason = z.enum(["idle", "network", "setup", "interrupt", "reading", "user"])
+export const ClipReason = z.enum([
+  "idle",
+  "network",
+  "setup",
+  "teardown",
+  "interrupt",
+  "reading",
+  "user",
+])
 
 export const ClipSegment = z.discriminatedUnion("mode", [
   z.strictObject({
@@ -70,7 +78,11 @@ export const ClipSegment = z.discriminatedUnion("mode", [
     reason: ClipReason.optional(),
   }),
   z.strictObject({ ...segmentBase, mode: z.literal("cut"), reason: ClipReason.optional() }),
-  /** Hold the source frame at `at` for `ms` of output time (e.g. caption reading time). No `until`. */
+  /**
+   * Hold the source frame at `at` for `ms` of output time (e.g. caption reading time). No `until`.
+   * Every segment covering `at` (with `until` inclusive) stays shown during the freeze: a caption
+   * ending at its step's end is still on screen during a freeze at that end.
+   */
   z.strictObject({
     id: segmentBase.id,
     source: segmentBase.source,
