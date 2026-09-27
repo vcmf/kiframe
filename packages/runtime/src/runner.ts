@@ -12,6 +12,7 @@ import type { ElementHandle, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import {
   clickPoint,
+  type Box,
   planPath,
   seededRandom,
   typingDelays,
@@ -40,7 +41,30 @@ export type RunnerEvent =
   | { kind: "step_start" | "step_end"; step: StepRef }
   | { kind: "navigate"; step: StepRef; url: string }
   /** `secret` is the secret NAME when the value came from the vault; the value is never reported. */
-  | { kind: "type"; step: StepRef; secret?: string | undefined }
+  | { kind: "type"; step: StepRef; secret?: string | undefined; box?: Box | undefined }
+  /** Typing into a field starts (the `type` event marks its end). `box`: the field (CSS pixels). */
+  | {
+      kind: "type_start"
+      step: StepRef
+      secret?: string | undefined
+      /** With a secret: the id of its sensitive region (later `secret_field` events use it). */
+      sensitiveId?: string | undefined
+      box?: Box | undefined
+    }
+  /** A click is about to be dispatched at (x, y), on the target's `box` (CSS pixels). */
+  | {
+      kind: "click"
+      step: StepRef
+      x: number
+      y: number
+      box: Box
+      button: "left" | "right"
+      count: number
+    }
+  /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
+  | { kind: "secret_field"; step: StepRef; id: string; box?: Box | undefined }
+  /** A key combination was pressed (`press` action). */
+  | { kind: "key"; step: StepRef; keys: string }
   /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
   | { kind: "cursor"; step: StepRef; x: number; y: number; pressed: boolean }
   /** A fallback locator was used: the primary one no longer matches (a signal for self-healing). */
@@ -59,6 +83,8 @@ export interface RunOptions {
   timeoutMs?: number
   /** Timeout of a `goto` navigation (page load). Default 30000 ms. */
   navigationTimeoutMs?: number
+  /** Set by the recorder: measure targets and fields for the take (extra page round trips). */
+  recording?: boolean
 }
 
 type AnyAction = Action | Step
@@ -89,10 +115,18 @@ export async function runScenario(
   // step running at that moment.
   let current: StepRef | undefined
   let listenerError: StepError | undefined
+  const secretValues = new Set<string>()
   const onNavigated = (frame: Frame) => {
     if (frame === page.mainFrame() && current !== undefined) {
       try {
-        options.onEvent?.({ kind: "navigate", step: current, url: frame.url() })
+        // Only the origin and path are reported: a query string or hash can carry a typed secret or a
+        // token in any encoding (a GET form, a `?next=` redirect…). Not recording them removes the
+        // whole class; the path is scrubbed too.
+        options.onEvent?.({
+          kind: "navigate",
+          step: current,
+          url: scrubSecrets(pathOnly(frame.url()), secretValues),
+        })
       } catch (error) {
         // Thrown inside Playwright's event dispatch: keep it and fail the step afterwards.
         listenerError ??= new StepError(current, "action-failed", firstLine(error), {
@@ -109,6 +143,8 @@ export async function runScenario(
     options,
     network,
     setCurrent: (step) => (current = step),
+    secretValues,
+    secretFields: [],
     clearListenerError: () => (listenerError = undefined),
     throwListenerError: () => {
       const error = listenerError
@@ -164,16 +200,21 @@ export async function runScenario(
         if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
         else {
           try {
-            options.onEvent?.({ kind: "teardown_failed", error: stepError })
+            options.onEvent?.({
+              kind: "teardown_failed",
+              error: scrubError(stepError, secretValues) as StepError,
+            })
           } catch {
             // reporting must never stop the remaining cleanup
           }
         }
       }
     }
-    if (failure !== undefined) throw failure
-    if (teardownFailure !== undefined) throw teardownFailure
-    if (listenerError !== undefined) throw listenerError
+    // Errors leave the runner scrubbed of every secret value (a Playwright message can quote a URL
+    // or a value that carries one).
+    if (failure !== undefined) throw scrubError(failure, secretValues)
+    if (teardownFailure !== undefined) throw scrubError(teardownFailure, secretValues)
+    if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
   } finally {
     network.dispose()
     page.off("framenavigated", onNavigated)
@@ -188,6 +229,10 @@ interface Ctx {
   navigationTimeoutMs: number
   network: NetworkTracker
   setCurrent: (step: StepRef | undefined) => void
+  /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
+  secretValues: Set<string>
+  /** Fields a secret was typed into (recording): re-measured after every step. */
+  secretFields: { id: string; locator: Locator; last?: string }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void
   clearListenerError: () => void
@@ -236,8 +281,43 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
+  if (ctx.options.recording === true) await followSecretFields(ctx, step)
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
+}
+
+/**
+ * Re-measures every field a secret was typed into and reports when it moved (the blur follows it)
+ * or is gone (navigated away, removed: nothing left to blur). Only changes are reported. Bounded,
+ * never fails a step.
+ */
+async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
+  // In parallel: every field costs a round trip or two after each step.
+  const measured = await Promise.all(ctx.secretFields.map((field) => measureField(field.locator)))
+  for (const [i, field] of ctx.secretFields.entries()) {
+    const box = measured[i]
+    // Unsure (a measurement failed): keep the last rect. Only a field known to be gone ends its blur.
+    if (box === undefined || box === "unknown") continue
+    const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
+    if (key === field.last) continue
+    field.last = key
+    ctx.options.onEvent?.({ kind: "secret_field", step, id: field.id, box: box ?? undefined })
+  }
+}
+
+/**
+ * Where a secret field is now: its box, null when it's known to be gone (detached or not rendered),
+ * "unknown" when measuring failed (timeout, several matches): the blur stays where it was.
+ */
+async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
+  try {
+    // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
+    // boundingBox's attach timeout on every later step.
+    if ((await locator.count()) === 0) return null
+    return await locator.boundingBox({ timeout: 300 })
+  } catch {
+    return "unknown"
+  }
 }
 
 async function requireApproval(ctx: Ctx, step: StepRef, detail: string): Promise<void> {
@@ -344,7 +424,14 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
+      const sensitiveId =
+        secret === undefined ? undefined : `secret:${secret}:${step.phase}:${step.index}`
+      // A field holding a secret is followed until the end of the take: its blur rect must move with it.
+      if (sensitiveId !== undefined && ctx.options.recording === true) {
+        ctx.secretFields.push({ id: sensitiveId, locator: target })
+      }
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
+      let fieldBox: Box | null = null
       await guard(step, async () => {
         const timeout = ctx.timeoutMs
         // Same semantics on and off camera: the text is added at the end of the field's content,
@@ -372,6 +459,19 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
+        // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
+        if (ctx.options.recording === true) {
+          fieldBox = await target
+            .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
+            .catch(() => null)
+        }
+        ctx.options.onEvent?.({
+          kind: "type_start",
+          step,
+          secret,
+          sensitiveId,
+          box: fieldBox ?? undefined,
+        })
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
@@ -393,13 +493,18 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
             }
           }
         }
-        if (action.submit === true) await target.press("Enter", { timeout })
       })
-      ctx.options.onEvent?.({ kind: "type", step, secret })
+      // End of typing (before the submit, which may navigate or re-lay out the page).
+      ctx.options.onEvent?.({ kind: "type", step, secret, box: fieldBox ?? undefined })
+      if (action.submit === true) {
+        await guard(step, () => target.press("Enter", { timeout: ctx.timeoutMs }))
+        ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
+      }
       return
     }
     case "press":
       await guard(step, () => page.keyboard.press(toPlaywrightKeys(action.keys)))
+      ctx.options.onEvent?.({ kind: "key", step, keys: action.keys })
       return
     case "scroll":
       await scroll(ctx, action, step)
@@ -452,7 +557,9 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
     )
   }
   try {
-    return await ctx.options.resolveSecret(name)
+    const value = await ctx.options.resolveSecret(name)
+    if (value !== "") ctx.secretValues.add(value)
+    return value
   } catch {
     // Never include the resolver's error: its message could contain the value.
     throw new StepError(step, "secret-unavailable", `secret "${name}" is unavailable`)
@@ -841,8 +948,9 @@ async function clickAtCursor(
       }
     }
     let position: Point | undefined
+    let box: Box | null = null
     if (point !== undefined) {
-      const box = await target.boundingBox({ timeout: left() })
+      box = await target.boundingBox({ timeout: left() })
       // The box vanished after the check: never fall back to the element's center, which wasn't
       // checked (it could be the Delete button in the middle of a card).
       if (box === null)
@@ -852,6 +960,26 @@ async function clickAtCursor(
           "the target changed right before the click: nothing was clicked",
         )
       position = await clickOffset(target, box, point, left())
+    }
+    // The click event the recorder logs, at our point or the box center when Playwright picks it.
+    // No trial click first: Playwright's trial really presses the mouse (the button would flash
+    // twice on camera). A click that then fails fails the step, and so the take: no phantom click.
+    if (ctx.options.onEvent !== undefined && ctx.options.recording === true) {
+      const clickBox = box ?? (await target.boundingBox({ timeout: left() }).catch(() => null))
+      if (clickBox !== null) {
+        const where = point ?? {
+          x: clickBox.x + clickBox.width / 2,
+          y: clickBox.y + clickBox.height / 2,
+        }
+        ctx.options.onEvent({
+          kind: "click",
+          step,
+          ...where,
+          box: clickBox,
+          button: action.button ?? "left",
+          count: action.count ?? 1,
+        })
+      }
     }
     const at = point
     const emit = (pressed: boolean) => {
@@ -946,6 +1074,76 @@ async function travel(ctx: Ctx, step: StepRef, path: { t: number; x: number; y: 
   if (end !== undefined) ctx.cursor = { x: end.x, y: end.y }
 }
 
+/** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */
+function urlPath(value: string): string | undefined {
+  // Per character, never through the URL parser: it would cut the value at ? or # and resolve ".."
+  // (a secret "p#Kd93!x" must not become the pattern "p").
+  try {
+    return value.replace(/[^\x21-\x7e]|["#<>?`{}]/gu, (c) => encodeURIComponent(c))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Replaces every known secret value in `text` (as-is and in its common encodings: URL-encoded,
+ * form-encoded, base64, JSON-escaped) with `[secret]`.
+ */
+export function scrubSecrets(text: string, values: Iterable<string>): string {
+  const variants = new Set<string>()
+  const encode = (f: (s: string) => string, s: string): string | undefined => {
+    try {
+      return f(s)
+    } catch {
+      return undefined // a lone surrogate can't be URI-encoded: the raw value is still matched
+    }
+  }
+  for (const value of values) {
+    const component = encode(encodeURIComponent, value)
+    // WHATWG application/x-www-form-urlencoded (what browsers use for GET forms): also encodes !'()~
+    const form = new URLSearchParams({ v: value }).toString().slice(2)
+    const base64 = Buffer.from(value).toString("base64")
+    const base64url = base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    for (const v of [
+      value,
+      component,
+      component?.replace(/%20/g, "+"),
+      form,
+      // Encoded twice (a URL inside a `?next=` / `?return=` parameter).
+      component === undefined ? undefined : encode(encodeURIComponent, component),
+      encode(encodeURIComponent, form),
+      encode(encodeURI, value),
+      // WHATWG path encoding (what a URL's pathname holds): leaves |[]^ as they are, unlike encodeURI.
+      urlPath(value),
+      base64,
+      encode(encodeURIComponent, base64),
+      base64url,
+      JSON.stringify(value).slice(1, -1),
+    ]) {
+      if (v !== undefined && v !== "") variants.add(v)
+    }
+  }
+  // One pass over one alternation of every variant of every secret, longest first: a secret that
+  // contains another ("password123", "pass") is replaced whole, and a replacement is never re-scanned
+  // (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and over-scrubbing is safe.
+  if (variants.size === 0) return text
+  const alternation = [...variants]
+    .sort((a, b) => b.length - a.length)
+    .map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")
+  return text.replace(new RegExp(alternation, "gi"), "[secret]")
+}
+
+/** `https://host/path?query#hash` → `https://host/path` (non-URLs are returned as they are). */
+export function pathOnly(url: string): string {
+  const parsed = URL.parse(url)
+  if (parsed === null) return url
+  // blob:, data:, about:, javascript:… have no meaningful origin/path: only the scheme is kept
+  // (never a data: payload).
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return parsed.protocol
+  return `${parsed.origin}${parsed.pathname}`
+}
+
 /** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */
 function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef) {
   if (secret === undefined) return
@@ -978,8 +1176,20 @@ function moveCaretToEnd(el: Element) {
   }
 }
 
+/** The same error with its message (and a StepError's detail) scrubbed of secret values; no cause kept. */
+function scrubError(error: Error, secrets: Set<string>): Error {
+  if (secrets.size === 0) return error
+  // Rebuilt even when the message is clean: the cause (Playwright's full call log) could hold a secret.
+  const message = scrubSecrets(error.message, secrets)
+  if (error instanceof StepError)
+    return new StepError(error.step, error.reason, scrubSecrets(error.detail, secrets))
+  const scrubbed = new Error(message)
+  scrubbed.name = error.name // e.g. TimeoutError: callers may branch on it
+  return scrubbed
+}
+
 /** First line of an error's message (Playwright errors carry long call logs after it). */
-function firstLine(cause: unknown): string {
+export function firstLine(cause: unknown): string {
   const message = cause instanceof Error ? cause.message : String(cause)
   return message.split("\n")[0] || "action failed"
 }

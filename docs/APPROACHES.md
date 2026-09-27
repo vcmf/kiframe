@@ -21,7 +21,7 @@
 | LLM access | **BYOK** (user's own API key) *or* **Kiframe account** (our server proxies LLM calls = the paid product) | 2026-09-25 |
 | Agent stack | **cooldown's agent loop** (moved to the Node main process) + an **Anthropic-native `LlmClient`**. Not the Claude Agent SDK (§10b) | 2026-09-26 |
 | Automation | **Playwright library** in the Node main process. The agent's browser tools are **our own tools built on it, not Playwright MCP**, so every action and output passes through the vault's resolver/scrubber and the event logger. Fallback: computer use for canvas-heavy UIs | 2026-09-26 |
-| Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2**. **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-26 |
+| Capture | **CDP only** (`page.screencast` / CDP screencast) at **deviceScaleFactor 2** (⚠️ Phase 0 finding F1: screencast frames come out at CSS resolution; see docs/PHASE0-FINDINGS.md). **No native OS window capture** (it needs the screen-recording permission, has a monthly re-consent on macOS, and the user can interfere). Desktop window frames are composited in post | 2026-09-26 |
 | Rendering | Own **PixiJS compositor + WebCodecs + Mediabunny in the frontend**. Preview = export | 2026-09-26 |
 | Source vs artifacts | **Scenes are objects, video is a build artifact.** Takes are **pinned** (referenced by an export, a named version or the active composition, never evicted) or **scratch** (evictable). See OBJECT-MODEL §0.7 | 2026-09-26 |
 | Credentials | **Vault**: the agent can see which secrets exist but can never read their values. Hardened leak paths (§7.4) | 2026-09-26 |
