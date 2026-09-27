@@ -19,13 +19,14 @@ if (!values.project || !values.scenario || !values.out) {
   console.error("usage: --project <yaml> --scenario <yaml> --out <take dir> [--headed] [--dpr 2]")
   process.exit(2)
 }
-// DPR 2 only helps headed (headless frames stay at CSS resolution, F1): default 2 headed, 1 headless.
-const dpr = Number(values.dpr ?? (values.headed ? 2 : 1))
+const project = parseProjectYaml(readFileSync(values.project, "utf8"))
+// A high DPR only helps headed (headless frames stay at CSS resolution, F1): the project's DPR
+// headed, 1 headless, unless --dpr says otherwise.
+const dpr = Number(values.dpr ?? (values.headed ? project.target.viewport.deviceScaleFactor : 1))
 if (!Number.isFinite(dpr) || dpr <= 0 || dpr > 3) {
   console.error(`--dpr must be a number in (0, 3], got ${values.dpr}`)
   process.exit(2)
 }
-const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const browser = await chromium.launch({ headless: !values.headed })
 try {

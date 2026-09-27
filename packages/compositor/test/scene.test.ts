@@ -43,17 +43,18 @@ function fixture(extra: string = "") {
       why: "secret-field",
     },
     { t: 1500, phase: "steps", stepId: "a", kind: "step_end" },
+    { t: 4000, phase: "steps", stepId: "b", kind: "step_start" },
+    click("b", 4500, 0.8, 0.8),
+    // The field moved during step b: reported at its end, like the runner does.
     {
-      t: 3000,
+      t: 5000,
       phase: "steps",
-      stepId: "a",
+      stepId: "b",
       kind: "sensitive",
       id: "s1",
       rect: { x: 0.3, y: 0.5, w: 0.2, h: 0.05 },
       why: "secret-field",
     },
-    { t: 4000, phase: "steps", stepId: "b", kind: "step_start" },
-    click("b", 4500, 0.8, 0.8),
     { t: 5000, phase: "steps", stepId: "b", kind: "step_end" },
   ] as TakeEvent[]
   const move = (end: number, from: number, to: number) =>
@@ -160,6 +161,13 @@ describe("camera", () => {
     expect(max).toBeGreaterThan(1.8)
   })
 
+  it("uses the composition's own style, the caller's on top", () => {
+    const { scenario, take, composition } = fixture()
+    const styled: Composition = { ...composition, style: { width: 1080, height: 1920, bogus: 1 } }
+    expect(prepare(styled, scenario, take).style).toMatchObject({ width: 1080, height: 1920 })
+    expect(prepare(styled, scenario, take, { width: 720 }).style.width).toBe(720)
+  })
+
   it("caps the zoom and reports the softness", () => {
     const { scenario, take, composition } = fixture()
     const forced: Composition = {
@@ -222,15 +230,19 @@ describe("overlays", () => {
       sceneAt(p, p.map.toOutput(source))
         .blurs.map((r) => Math.round(r.y * 100) / 100)
         .sort()
-    expect(ys(2900)).toEqual([0.3, 0.5])
-    expect(ys(3100)).toEqual([0.3, 0.5])
-    expect(ys(3400)).toEqual([0.5])
+    // Before step b: the old position only.
+    expect(ys(3900)).toEqual([0.3])
+    // During step b (the move is reported at its end): both.
+    expect(ys(4200)).toEqual([0.3, 0.5])
+    // Just after the report (capture lag): both; then the new one only.
+    expect(ys(5100)).toEqual([0.3, 0.5])
+    expect(ys(5400)).toEqual([0.5])
   })
 
   it("keeps blurring the last rect just after the region is gone (capture lag)", () => {
     const { scenario, take } = fixture()
     const gone = {
-      t: 4300,
+      t: 5300,
       phase: "steps",
       stepId: "b",
       kind: "sensitive",
@@ -243,8 +255,8 @@ describe("overlays", () => {
     const { composition: c } = generate(project, scenario, withGone)
     const p = prepare(c, scenario, withGone)
     const at = (source: number) => sceneAt(p, p.map.toOutput(source)).blurs.length
-    expect(at(4400)).toBe(1)
-    expect(at(4700)).toBe(0)
+    expect(at(5400)).toBeGreaterThan(0)
+    expect(at(5700)).toBe(0)
   })
 
   it("blurs the sensitive region at its latest rect", () => {
@@ -259,7 +271,7 @@ describe("overlays", () => {
         h: round(r.h),
       }))
     expect(at(1200)).toEqual([{ x: 0.3, y: 0.3, w: 0.2, h: 0.05 }])
-    expect(at(4200)).toEqual([{ x: 0.3, y: 0.5, w: 0.2, h: 0.05 }])
+    expect(at(5400)).toEqual([{ x: 0.3, y: 0.5, w: 0.2, h: 0.05 }])
   })
 
   it("shows a ripple at the click, and the cursor rests between moves", () => {

@@ -1,15 +1,15 @@
 // kiframe-export: take + scenario + project → MP4 (or WebM), through Electron's Chromium.
 // Usage: node apps/exporter/src/cli.ts --project project.yaml --scenario scenario.yaml \
 //          --take <take dir> --out demo.mp4 [--format mp4|webm] [--composition c.json]
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, extname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { parseArgs } from "node:util"
 import { bundleExportPage } from "@kiframe/compositor/browser/bundle.ts"
-import { generate } from "@kiframe/generators"
+import { buildTimeline, generate } from "@kiframe/generators"
 import { Composition, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { build } from "esbuild"
 import { readTake } from "./take.ts"
@@ -21,7 +21,7 @@ const { values } = parseArgs({
     scenario: { type: "string" },
     take: { type: "string" },
     out: { type: "string" },
-    format: { type: "string", default: "mp4" },
+    format: { type: "string" },
     composition: { type: "string" },
   },
 })
@@ -31,11 +31,19 @@ if (!values.project || !values.scenario || !values.take || !values.out) {
   )
   process.exit(2)
 }
-if (values.format !== "mp4" && values.format !== "webm") {
-  console.error(`unknown --format ${JSON.stringify(values.format)}: mp4 or webm`)
+// The format follows the file name unless --format says so; a mismatch is an error.
+const ext = extname(values.out).slice(1).toLowerCase()
+const format = values.format ?? ext
+if (format !== "mp4" && format !== "webm") {
+  console.error(
+    `unknown format ${JSON.stringify(format)}: mp4 or webm (--format, or the --out extension)`,
+  )
   process.exit(2)
 }
-const format = values.format
+if (ext !== format) {
+  console.error(`--out ${values.out} doesn't end in .${format}`)
+  process.exit(2)
+}
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const takeDir = resolve(values.take)
@@ -48,6 +56,16 @@ if (values.composition === undefined) {
   composition = generated.composition
 } else {
   composition = Composition.parse(JSON.parse(readFileSync(values.composition, "utf8")))
+  // Anchors are relative to steps: on another take they land at other times (a mask could start
+  // late). Say so; the user may have re-recorded on purpose.
+  if (composition.take !== undefined && composition.take.key !== take.meta.takeKey) {
+    console.error(
+      `warning: the composition was made for take ${composition.take.key}, this is ${take.meta.takeKey}: check the timing (masks especially)`,
+    )
+  }
+  for (const id of buildTimeline(scenario, take).missing) {
+    console.error(`warning: step ${id} isn't in the take: its segments are skipped`)
+  }
 }
 // Fail now, not after the whole export: the output folder must exist.
 const out = resolve(values.out)
@@ -84,12 +102,21 @@ try {
   const jobFile = join(work, "job.json")
   writeFileSync(jobFile, JSON.stringify(job))
   const electron = createRequire(import.meta.url)("electron") as unknown as string
-  const run = spawnSync(electron, [join(work, "main.cjs")], {
+  const child = spawn(electron, [join(work, "main.cjs")], {
     env: { ...process.env, KIFRAME_EXPORT_JOB: jobFile },
     stdio: ["ignore", "inherit", "inherit"],
   })
-  if (run.error !== undefined) console.error(`couldn't start Electron: ${run.error.message}`)
-  status = run.status ?? 1
+  // Ctrl-C: stop Electron and still remove the folder (job.json holds the whole take).
+  const stop = () => child.kill()
+  process.once("SIGINT", stop)
+  process.once("SIGTERM", stop)
+  status = await new Promise<number>((resolveStatus) => {
+    child.once("error", (error) => {
+      console.error(`couldn't start Electron: ${error.message}`)
+      resolveStatus(1)
+    })
+    child.once("exit", (code) => resolveStatus(code ?? 1))
+  })
 } finally {
   // job.json holds the whole take: never left behind.
   rmSync(work, { recursive: true, force: true })
