@@ -245,10 +245,11 @@ ${
     expect(phases(events)).toEqual([
       "setup:goto",
       "setup:ensure",
-      // leftovers from an earlier run: the teardown (hover reveals Delete), then setup again
-      "teardown:hover",
-      "teardown:click",
-      "setup:goto",
+      // leftovers from an earlier run: the teardown (hover reveals Delete), then setup again,
+      // all inside the ensure step
+      "setup:ensure: hover",
+      "setup:ensure: click",
+      "setup:ensure: goto",
       "steps:click",
       "steps:expect",
       // the scene's own cleanup
@@ -275,6 +276,18 @@ steps: [{ id: a, action: pause, ms: 1 }]
 teardown: [{ action: pause, ms: 1 }]
 `)
     expect(stubborn.message).toMatch(/still present after the teardown/)
+    // A cleanup step that fails is the ensure's failure (setup), never a teardown failure: a take
+    // with no step filmed must not pass as complete.
+    await seedBoard()
+    const cleanup = await failure(`setup:
+  - { action: goto, url: /boards }
+  - ensure: { absent: { by: role, role: heading, name: Q4 roadmap } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown: [{ action: click, target: { by: role, role: button, name: Nowhere } }]
+`)
+    expect(cleanup.reason).toBe("ensure-failed")
+    expect(cleanup.step.phase).toBe("setup")
+    expect(cleanup.message).toMatch(/couldn't remove/)
     const present = await failure(`setup:
   - { action: goto, url: /boards }
   - ensure: { present: { by: role, role: heading, name: Launch plan } }

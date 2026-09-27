@@ -119,7 +119,9 @@ purpose (an interrupted run). Report: [p0-9-dim0-report.json](phase0/p0-9-dim0-r
 | 4 | yes | skipped | no | ✅ | 5.3 s |
 | 5 | | skipped | **yes → teardown, setup again** | ✅ | 5.4 s |
 
-Clean = the take is complete, no warnings, no teardown error, every step ran. Warm runs are
+Clean = the take is complete, no warnings, no teardown error, every step ran. Re-run after the
+review fixes (`ensure` waits for late lists, its cleanup runs inside the step): 5/5 again, and run 1
+wasn't slow that time ([report 2](phase0/p0-9-dim0-report-2.json)): the cold start varies. Warm runs are
 consistent: each step within ~100 ms from run to run.
 
 **Limits:** dim0 has no accounts, so the session preset only opens the app; session reuse was

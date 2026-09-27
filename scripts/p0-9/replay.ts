@@ -69,10 +69,9 @@ try {
         approveRisky: () => true,
         onEvent: (e) => events.push(e),
       })
-      const firstStep = events.findIndex((e) => e.kind === "step_start" && e.step.phase === "steps")
-      const cleanedUp = events
-        .slice(0, firstStep)
-        .filter((e) => e.kind === "step_start" && e.step.phase === "teardown").length
+      const cleanedUp = events.filter(
+        (e) => e.kind === "step_start" && e.step.action.startsWith("ensure: "),
+      ).length
       const ended = new Set(
         events.flatMap((e) =>
           e.kind === "step_end" && e.step.phase === "steps" ? [e.step.stepId] : [],
@@ -90,10 +89,11 @@ try {
         ensureRanTeardown: cleanedUp > 0,
         durationMs: Math.round(take.meta.durationMs),
       })
-      for (const e of events) if (e.kind === "preset_done" && e.session) sessions.add(e.name)
     } catch (error) {
       Object.assign(row, { clean: false, error: String(error).split("\n")[0] })
     }
+    // Even from a failed run: its profile is carried over, with the session in it.
+    for (const e of events) if (e.kind === "preset_done" && e.session) sessions.add(e.name)
     row.wallMs = Date.now() - started
     // Carried to the next run: the "account" keeps its data (IndexedDB included).
     storageState = await context.storageState({ indexedDB: true })

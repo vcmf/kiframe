@@ -34,8 +34,8 @@ import {
 } from "./targets.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
-// expanded), steps, teardown. Phase 0 scope: no human motion yet (P0-4), no recording (P0-5), no
-// `ensure` / session reuse (P0-9).
+// expanded, session presets skipped when the page already has their state, `ensure`), steps,
+// teardown.
 
 /** What the runner reports as it goes. The recorder (P0-5) turns these into take events. */
 export type RunnerEvent =
@@ -170,8 +170,8 @@ export async function runScenario(
   try {
     let failure: Error | undefined
     try {
-      for (const [index, entry] of setup.entries()) {
-        await runSetupEntry(ctx, scenario, setup, index, entry)
+      for (const [position, entry] of setup.entries()) {
+        await runSetupEntry(ctx, scenario, setup, position, entry)
       }
       for (const [index, step] of scenario.steps.entries()) {
         await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
@@ -247,8 +247,13 @@ interface Ctx {
 
 /** A setup item once presets are inlined: an action, an `ensure`, or the end of a preset. */
 type SetupEntry =
-  | { kind: "action"; action: Action; preset?: { name: string; session: boolean } }
-  | { kind: "ensure"; ensure: Ensure["ensure"]; preset?: { name: string; session: boolean } }
+  | { kind: "action"; index: number; action: Action; preset?: { name: string; session: boolean } }
+  | {
+      kind: "ensure"
+      index: number
+      ensure: Ensure["ensure"]
+      preset?: { name: string; session: boolean }
+    }
   | { kind: "preset_done"; name: string; session: boolean }
 
 /**
@@ -261,8 +266,10 @@ function expandSetup(
   skip: readonly string[],
 ): SetupEntry[] {
   const out: SetupEntry[] = []
+  // Setup indexes count actions and ensures only (`preset_done` is a marker, not a step).
+  let n = 0
   const invalid = (detail: string) =>
-    new StepError({ phase: "setup", index: out.length, action: "setup" }, "invalid-setup", detail)
+    new StepError({ phase: "setup", index: n, action: "setup" }, "invalid-setup", detail)
   for (const item of items) {
     if ("preset" in item) {
       const preset = Object.hasOwn(project.presets, item.preset)
@@ -274,15 +281,15 @@ function expandSetup(
       for (const s of preset.steps) {
         out.push(
           "ensure" in s
-            ? { kind: "ensure", ensure: s.ensure, preset: from }
-            : { kind: "action", action: s, preset: from },
+            ? { kind: "ensure", index: n++, ensure: s.ensure, preset: from }
+            : { kind: "action", index: n++, action: s, preset: from },
         )
       }
       out.push({ kind: "preset_done", ...from })
     } else if ("ensure" in item) {
-      out.push({ kind: "ensure", ensure: item.ensure })
+      out.push({ kind: "ensure", index: n++, ensure: item.ensure })
     } else {
-      out.push({ kind: "action", action: item })
+      out.push({ kind: "action", index: n++, action: item })
     }
   }
   return out
@@ -292,7 +299,7 @@ async function runSetupEntry(
   ctx: Ctx,
   scenario: Scenario,
   setup: readonly SetupEntry[],
-  index: number,
+  position: number,
   entry: SetupEntry,
 ): Promise<void> {
   if (entry.kind === "preset_done") {
@@ -301,23 +308,34 @@ async function runSetupEntry(
   }
   if (entry.kind === "action") {
     const { action } = entry
-    await runOne(ctx, action, { phase: "setup", index, stepId: action.id, action: action.action })
+    await runOne(ctx, action, {
+      phase: "setup",
+      index: entry.index,
+      stepId: action.id,
+      action: action.action,
+    })
     return
   }
-  await ensure(ctx, scenario, setup, index, entry.ensure)
+  await ensure(ctx, scenario, setup.slice(0, position), entry.index, entry.ensure)
 }
+
+/** After the page settles, how long an `absent` check waits for something that renders late. */
+const ABSENT_GRACE_MS = 1000
 
 /**
  * `ensure` (docs/OBJECT-MODEL.md §2): the one declarative idempotency primitive.
  * - `absent`: if the element is there, run this scene's teardown, replay the setup that led here
  *   (actions only: no session preset, no other `ensure`), and check again.
  * - `present`: nothing can create it declaratively: fail with a message saying so.
- * "There" = a visible match once the page has settled.
+ * "There" = a visible match: waited for up to the step timeout (`present`), or for a short grace
+ * after the page settles (`absent`: lists that load late must not look empty).
+ * The cleanup runs inside this step: its steps are reported as `ensure: <action>` of this setup
+ * index, and any failure is this step's (`ensure-failed`), never a teardown failure.
  */
 async function ensure(
   ctx: Ctx,
   scenario: Scenario,
-  setup: readonly SetupEntry[],
+  before: readonly SetupEntry[],
   index: number,
   condition: Ensure["ensure"],
 ): Promise<void> {
@@ -326,19 +344,32 @@ async function ensure(
   ctx.options.onEvent?.({ kind: "step_start", step: ref })
   const locator = "absent" in condition ? condition.absent : condition.present
   const what = describeLocator(locator)
-  const isThere = async () => {
+  const appears = async (timeout: number) =>
+    guard(ref, () =>
+      visibleOnly(toPlaywright(ctx.page, locator))
+        .first()
+        .waitFor({ state: "visible", timeout: Math.max(MIN_TIMEOUT_MS, timeout) })
+        .then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof Error && error.name === "TimeoutError") return false
+            throw error
+          },
+        ),
+    )
+  const leftovers = async () => {
     await guard(ref, () => settle(ctx, false))
-    return guard(ref, async () => (await visibleOnly(toPlaywright(ctx.page, locator)).count()) > 0)
+    return appears(ABSENT_GRACE_MS)
   }
   if ("present" in condition) {
-    if (!(await isThere())) {
+    if (!(await appears(ctx.timeoutMs))) {
       throw new StepError(
         ref,
         "ensure-failed",
         `${what} must be present before filming: create it earlier in the setup or in a preset`,
       )
     }
-  } else if (await isThere()) {
+  } else if (await leftovers()) {
     // Leftovers from an earlier run: the scene's own teardown removes what the scene creates.
     const teardown = scenario.teardown ?? []
     if (teardown.length === 0) {
@@ -348,25 +379,27 @@ async function ensure(
         `${what} must be absent before filming, and the scene has no teardown to remove it`,
       )
     }
-    for (const [i, action] of teardown.entries()) {
-      await runOne(ctx, action, {
-        phase: "teardown",
-        index: i,
-        stepId: action.id,
-        action: action.action,
-      })
-    }
-    for (const [i, entry] of setup.slice(0, index).entries()) {
-      if (entry.kind !== "action" || entry.preset?.session === true) continue
-      await runOne(ctx, entry.action, {
-        phase: "setup",
-        index: i,
-        stepId: entry.action.id,
-        action: entry.action.action,
+    const replay = before.flatMap((e) =>
+      e.kind === "action" && e.preset?.session !== true ? [e.action] : [],
+    )
+    try {
+      for (const action of [...teardown, ...replay]) {
+        await runOne(ctx, action, {
+          phase: "setup",
+          index,
+          stepId: action.id,
+          action: `ensure: ${action.action}`,
+        })
+      }
+    } catch (error) {
+      ctx.clearListenerError()
+      const detail = error instanceof StepError ? error.detail : firstLine(error)
+      throw new StepError(ref, "ensure-failed", `couldn't remove ${what}: ${detail}`, {
+        cause: error,
       })
     }
     ctx.setCurrent(ref)
-    if (await isThere()) {
+    if (await leftovers()) {
       throw new StepError(ref, "ensure-failed", `${what} is still present after the teardown ran`)
     }
   }
@@ -527,7 +560,14 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       // The cursor's own (real) mouse move ends over the target; without a box, Playwright hovers.
       const at = await moveCursorTo(ctx, target, step)
-      if (at === undefined) await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
+      // Something on top (a sticky header, a toast) can take the hover: then Playwright hovers,
+      // with its own actionability and hit checks.
+      const hovered =
+        at !== undefined &&
+        (await target
+          .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
+          .catch(() => false))
+      if (!hovered) await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
       return
     }
     case "type": {
