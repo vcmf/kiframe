@@ -330,7 +330,16 @@ interface Ctx {
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
   /** Fields a secret was typed into (recording): re-measured after every step. */
-  secretFields: { id: string; locator: Locator; page: Page; last?: string }[]
+  secretFields: {
+    id: string
+    locator: Locator
+    page: Page
+    last?: string
+    /** The last real box (kept while the run is on another page). */
+    lastBox?: Box
+    /** Blur ended only because the run left its page (not because the field went away). */
+    away?: boolean
+  }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void
   clearListenerError: () => void
@@ -432,7 +441,9 @@ async function ensure(
 ): Promise<void> {
   const ref: StepRef = { phase: "setup", index, action: "ensure" }
   ctx.setCurrent(ref)
-  await syncPage(ctx, ref)
+  // Its own ref: a page failing to load here is that setup's failure, not an `ensure` one (which
+  // would skip the teardown).
+  await syncPage(ctx, { phase: "setup", index, action: "follow page" })
   ctx.options.onEvent?.({ kind: "step_start", step: ref })
   const locator = "absent" in condition ? condition.absent : condition.present
   const what = describeLocator(locator)
@@ -569,6 +580,9 @@ async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
   if (ctx.page.isClosed()) {
     let back = ctx.openers.pop()
     while (back?.isClosed() === true) back = ctx.openers.pop()
+    // "Continue in a new window": the page opened a tab and closed itself.
+    back ??= ctx.opened.filter((p) => !p.isClosed()).at(-1)
+    if (back !== undefined) ctx.opened.splice(0)
     if (back === undefined) {
       throw new StepError(
         step,
@@ -620,9 +634,14 @@ async function followSecretFields(
   )
   const viewport = await viewportOf(ctx.page).catch(() => undefined)
   for (const [i, field] of fields.entries()) {
-    const box = measured[i]
-    // Unsure (a measurement failed): keep the last rect. Only a field known to be gone ends its blur.
+    let box = measured[i]
+    const elsewhere = field.page !== ctx.page
+    // Unsure, just back on its page: the last real rect comes back (fails closed). Otherwise an
+    // unsure measurement keeps the current rect; only a field known to be gone ends its blur.
+    if (box === "unknown" && field.away === true && !elsewhere) box = field.lastBox ?? "unknown"
     if (box === undefined || box === "unknown") continue
+    field.away = elsewhere
+    if (box !== null) field.lastBox = box
     const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
     if (key === field.last) continue
     field.last = key
@@ -937,10 +956,12 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
     case "select": {
       const target = await find(ctx, action.target, step)
       // The cursor goes to it (on camera); the native dropdown isn't in the screencast anyway.
-      const at = await moveCursorTo(ctx, target, step)
-      await reportPress(ctx, step, target, at)
-      // Playwright's own: a string matches an option's value or its label.
-      await guard(step, () => target.selectOption(action.option, { timeout: ctx.timeoutMs }))
+      await explainOffScreen(ctx, target, step, async () => {
+        const at = await moveCursorTo(ctx, target, step)
+        await reportPress(ctx, step, target, at)
+        // Playwright's own: a string matches an option's value or its label.
+        await guard(step, () => target.selectOption(action.option, { timeout: ctx.timeoutMs }))
+      })
       return
     }
     case "drag":
@@ -1004,13 +1025,16 @@ async function drag(
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
   const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
+  // Playwright's own drag (its actionability and hit checks), several moves: pointer drag
+  // libraries ignore the move that starts a drag. The cursor ends where the drop was.
+  const platformDrag = async (to: Locator) => {
+    const box = await to.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
+    await guard(step, () => source.dragTo(to, { timeout: ctx.timeoutMs, steps: 5 }))
+    if (box !== null) ctx.cursor = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  }
   // Filmed (even with instant pacing: the cursor and the press are still reported), or not.
   const onCamera = step.phase === "steps"
-  if (!onCamera && dest !== undefined) {
-    // Several moves: pointer drag libraries ignore the move that starts a drag.
-    await guard(step, () => source.dragTo(dest, { timeout: ctx.timeoutMs, steps: 5 }))
-    return
-  }
+  if (!onCamera && dest !== undefined) return platformDrag(dest)
   // Pressed where the cursor is, on the source: never elsewhere (scrolling to the drop target can
   // push the source off screen: then the two don't fit together, and the step says so).
   const start = await moveCursorTo(ctx, source, step)
@@ -1021,46 +1045,71 @@ async function drag(
       "the element to drag isn't on screen (with its drop target): make the view show both",
     )
   }
+  // Something on top of the source at that point (a sticky toolbar, a toast) would get the press:
+  // then Playwright drags, with its own hit checks (the cursor path isn't filmed for this one).
+  const onSource = await source
+    .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
+    .catch(() => false)
+  if (!onSource) {
+    if (dest !== undefined) return platformDrag(dest)
+    throw new StepError(
+      step,
+      "action-failed",
+      "the element to drag is covered where it would be pressed",
+    )
+  }
   const viewport = await guard(step, () => viewportOf(ctx.page))
-  let to: Point
-  if (dest === undefined) {
-    const offset = action.to as { dx: number; dy: number }
-    to = { x: start.x + offset.dx, y: start.y + offset.dy }
-    // Never a shorter drag than asked (a slider would stop at the wrong value): say so instead.
-    if (to.x < 0 || to.y < 0 || to.x > viewport.width - 1 || to.y > viewport.height - 1) {
-      throw new StepError(
-        step,
-        "action-failed",
-        `the drag by (${offset.dx}, ${offset.dy}) would leave the view: scroll first, or drag less`,
-      )
+  const dropPoint = async (): Promise<Point> => {
+    if (dest === undefined) {
+      const offset = action.to as { dx: number; dy: number }
+      const p = { x: start.x + offset.dx, y: start.y + offset.dy }
+      // Never a shorter drag than asked (a slider would stop at the wrong value): say so instead.
+      if (p.x < 0 || p.y < 0 || p.x > viewport.width - 1 || p.y > viewport.height - 1) {
+        throw new StepError(
+          step,
+          "action-failed",
+          `the drag by (${offset.dx}, ${offset.dy}) would leave the view: scroll first, or drag less`,
+        )
+      }
+      return p
     }
-  } else {
     const box = await guard(step, () => dest.boundingBox({ timeout: ctx.timeoutMs }))
     const visible = visiblePart(box, viewport)
     if (visible === undefined) {
       throw new StepError(step, "target-not-found", "the drop target isn't on screen")
     }
-    to = clickPoint(visible, seededRandom(`${seedOf(step)}:drop`))
+    return clickPoint(visible, seededRandom(`${seedOf(step)}:drop`))
   }
+  const planned = await dropPoint()
   // Framed as source + drop area: the camera must show where the card goes.
-  await reportPress(ctx, step, source, start, { x: to.x - 20, y: to.y - 20, width: 40, height: 40 })
+  await reportPress(ctx, step, source, start, {
+    x: planned.x - 20,
+    y: planned.y - 20,
+    width: 40,
+    height: 40,
+  })
   const emit = (p: Point, pressed: boolean) =>
     ctx.options.onEvent?.({ kind: "cursor", step, ...p, pressed })
   await guard(step, () => ctx.page.mouse.down())
   emit(start, true)
   let released = false
   try {
-    const planned = planPath(start, to, {
-      pacing: onCamera ? ctx.pacing.cursor : "instant",
+    // A small first move: drag libraries start the drag on it, and may re-lay out (the source
+    // leaves the list, a placeholder appears). The drop point is measured after that.
+    const nudge = { x: Math.min(viewport.width - 1, start.x + 4), y: start.y }
+    await guard(step, () => ctx.page.mouse.move(nudge.x, nudge.y))
+    emit(nudge, true)
+    const to = dest === undefined ? planned : await dropPoint()
+    const path = planPath(nudge, to, {
+      pacing: ctx.pacing.cursor,
       targetWidth: 40,
       viewport,
       random: seededRandom(`${seedOf(step)}:drag`),
       // Never past the drop point with the button held (another column, a slider value).
       overshoot: false,
     })
-    // Pointer drag libraries ignore the move that starts a drag: always several moves.
-    const path = planned.length >= 5 ? planned : evenPath(start, to, 5)
-    await travel(ctx, step, path, true)
+    // Always several moves (instant pacing plans one).
+    await travel(ctx, step, path.length >= 5 ? path : evenPath(nudge, to, 5), true)
     await guard(step, () => ctx.page.mouse.up())
     released = true
     emit(to, false)

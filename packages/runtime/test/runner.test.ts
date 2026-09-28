@@ -403,6 +403,13 @@ steps: [{ id: a, action: pause, ms: 1 }]
     expect(at).toBeGreaterThan(400)
   })
 
+  it("measures the drop target after the drag starts (sortable lists re-lay out on press)", async () => {
+    await run(`setup: [{ action: goto, url: /sortable }]
+steps: [{ id: move, action: drag, target: { by: text, text: A, exact: true }, to: { by: text, text: D, exact: true } }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("B C A D E")
+  })
+
   it("doesn't judge a drag by its drop zone's text ('Drop files here' is no risky action)", async () => {
     await run(`setup: [{ action: goto, url: /pointer-lib }]
 steps: [{ id: put, action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Drop files here } }]

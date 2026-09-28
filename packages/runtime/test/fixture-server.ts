@@ -3,6 +3,24 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // A sortable list: pressing an item takes it out of the flow (the rows below shift up); it's
+  // dropped before the row under the pointer.
+  "/sortable": `<!doctype html><title>Sortable</title>
+    <style>li { height: 40px; list-style: none; border-bottom: 1px solid #ccc }</style>
+    <ul id="l" style="width:300px"><li>A</li><li>B</li><li>C</li><li>D</li><li>E</li></ul><p id="s"></p>
+    <script>
+      const list = document.getElementById("l"); let held
+      list.addEventListener("pointerdown", (e) => { held = e.target.closest("li"); held.style.display = "none"; list.setPointerCapture(e.pointerId) })
+      list.addEventListener("pointerup", (e) => {
+        if (!held) return
+        list.releasePointerCapture(e.pointerId)
+        const under = document.elementFromPoint(e.clientX, e.clientY)?.closest("li")
+        held.style.display = ""
+        if (under && under !== held) list.insertBefore(held, under)
+        held = undefined
+        document.getElementById("s").textContent = [...list.children].map((li) => li.textContent).join(" ")
+      })
+    </script>`,
   // Like dnd-kit: the move that activates a drag doesn't move the element.
   "/pointer-lib": `<!doctype html><title>Pointer lib</title>
     <div id="k" role="slider" aria-label="Level" style="position:absolute; left:100px; top:100px; width:40px; height:40px; background:#888"></div>
