@@ -318,6 +318,9 @@ const pages: Record<string, string> = {
   // A field whose aria-labelledby and aria-label disagree (the accessible name is the labelledby).
   "/labelled": `<!doctype html><title>Labelled</title>
     <span id="cc">Card number</span><input type="text" aria-labelledby="cc" aria-label="Password">`,
+  // A textarea holding a known value re-flowed over two lines.
+  "/reflowed": `<!doctype html><title>Reflowed</title><textarea id="bio">Bob
+Smith</textarea>`,
   // A field holding a secret's value, and one holding a longer word that merely contains it.
   "/words": `<!doctype html><title>Words</title>
     <label>Search <input id="search" value="administrators"></label><label>User <input id="user" value="admin"></label>`,
