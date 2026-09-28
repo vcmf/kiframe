@@ -1,3 +1,4 @@
+import { assertNotProbing } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
@@ -21,6 +22,7 @@ export function toPlaywright(page: Page, locator: SchemaLocator): Locator {
     case "placeholder":
       return page.getByPlaceholder(locator.text)
     case "css":
+      assertNotProbing(page.context(), locator.selector)
       return page.locator(locator.selector)
   }
 }

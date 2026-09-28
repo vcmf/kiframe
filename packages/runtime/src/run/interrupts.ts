@@ -1,6 +1,7 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
+import { ProbeRefusal } from "../secret-state.ts"
 import { toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
@@ -76,11 +77,22 @@ async function matchingInterrupt(
   const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
   // All rules queried at once, not one after another (an org rule bank can be long).
   const counts = await Promise.all(
-    rules.map((rule) =>
-      whenOf(ctx, rule)
-        .count()
-        .catch(() => 0),
-    ),
+    rules.map((rule) => {
+      try {
+        return whenOf(ctx, rule)
+          .count()
+          .catch(() => 0)
+      } catch (error) {
+        // A `when` that could probe a known value (§3 A8) never matches while secrets are known:
+        // the rule is refused by its selector's form, whatever the value (nothing leaks).
+        if (!(error instanceof ProbeRefusal)) throw error
+        ctx.options.onEvent?.({
+          kind: "warning",
+          message: `interrupt rule "${rule.id}" is skipped: ${error.message}`,
+        })
+        return Promise.resolve(0)
+      }
+    }),
   )
   return rules.find((_, i) => (counts[i] ?? 0) > 0)
 }

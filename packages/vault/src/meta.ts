@@ -27,15 +27,31 @@ export const ElementInfo = z.strictObject({
 })
 export type ElementInfo = z.infer<typeof ElementInfo>
 
-/** A pathname pattern: segments, `*` for any one segment (projects, then any id, then settings). */
+/** A pathname pattern (plain, as the user saw it): `*` for any one segment, or `*` for every path. */
 export const PathPattern = z
   .string()
-  .max(500)
-  .refine(
-    (s) => s === "*" || s.startsWith("/"),
-    "a path pattern is a pathname, or `*` for every path",
-  )
+  .max(2000)
   .regex(/^(\*|\/[^\s?#]*)$/, "a path pattern is a pathname (`*` for any one segment), or `*`")
+
+/** A keyed hash (HMAC-SHA256, hex) of page-derived text: never stored in the clear (§3 A1). */
+const Hash = z.string().regex(/^[0-9a-f]{64}$/)
+
+/**
+ * A stored path pattern: `*` (every path), or segments that are `*` (any one segment) or the keyed
+ * hash of a literal segment.
+ */
+export const HashedPathPattern = z
+  .string()
+  .max(6000)
+  .regex(/^(\*|(\/(\*|[0-9a-f]{64})?)+)$/)
+
+/** A grant's element: its tag and type, and its label as a keyed hash. */
+export const GrantElement = z.strictObject({
+  tag: ElementInfo.shape.tag,
+  type: ElementInfo.shape.type,
+  label: Hash.nullable(),
+})
+export type GrantElement = z.infer<typeof GrantElement>
 
 /**
  * A step key (§3 A1): `scene:<scene>/<phase>/<step>`, `preset:<name>/<step>`, `interrupt:<rule>`
@@ -58,10 +74,10 @@ export const Grant = z.strictObject({
   stepKey: StepKey,
   secret: SecretName,
   origin: Origin,
-  pathPattern: PathPattern,
-  /** `canonicalTarget` of the step's target when approved. */
+  pathPattern: HashedPathPattern,
+  /** `canonicalTarget` of the step's target when approved (agent-written: not page text). */
   target: z.string().min(2).max(4000),
-  element: ElementInfo,
+  element: GrantElement,
   grantedAt: z.iso.datetime(),
 })
 export type Grant = z.infer<typeof Grant>

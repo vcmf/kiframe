@@ -7,6 +7,7 @@ import {
 import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
+import { secretsOf } from "./secret-state.ts"
 
 // A recording batch (APPROACHES §7.2): several scenes of one project, one after another. Each scene
 // gets a fresh browser context (nothing leaks from one take to the next but the session), and
@@ -89,6 +90,7 @@ export async function recordBatch(
   // The session presets the saved state holds, and the page each one ended on.
   let landings: Record<string, string> = {}
   const results: BatchResult[] = []
+  const seenValues = new Set<string>()
   for (const [index, scene] of scenes.entries()) {
     const uses = sessionPresetsOf(scene.scenario, project)
     // Only a scene using the saved session starts from it (a signed-out scene stays signed out).
@@ -115,6 +117,9 @@ export async function recordBatch(
         ...record,
         outDir: scene.outDir,
         sceneId: scene.sceneId,
+        // The values earlier scenes resolved (they share a session): a scene whose login was
+        // skipped still refuses paste and blurs "Signed in as bob@acme.com" (§5 R6).
+        knownSecretValues: [...(record.knownSecretValues ?? []), ...seenValues],
         skipSessionPresets: reuse ? uses : [],
         sessionLandings: landings,
         onSessionReady: async (preset, at) => {
@@ -148,6 +153,7 @@ export async function recordBatch(
         landings = {}
       }
     } finally {
+      if (context !== undefined) for (const v of secretsOf(context).values) seenValues.add(v)
       await context?.close().catch(() => undefined)
     }
     results.push(result)

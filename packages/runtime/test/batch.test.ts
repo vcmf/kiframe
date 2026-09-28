@@ -164,6 +164,35 @@ steps:
   })
 })
 
+describe("recordBatch known values", () => {
+  it("carries the values a scene resolved to the next scenes (paste refused there too)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-batch-"))
+    const typing = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`)
+    const pasting = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: e, action: click, target: { by: label, name: Email } }
+  - { id: k, action: press, keys: "Mod+v" }
+`)
+    const results = await recordBatch(
+      browser,
+      [
+        { scenario: typing, outDir: join(dir, "a"), sceneId: "a" },
+        { scenario: pasting, outDir: join(dir, "b"), sceneId: "b" },
+      ],
+      project(),
+      { timeoutMs: 1500, scope: "project-1", resolveSecret: () => "hunter2-secret" },
+    )
+    expect(results[0]?.ok).toBe(true)
+    expect(results[1]?.ok).toBe(false)
+    expect(String(results[1]?.ok === false ? results[1].error : "")).toMatch(/no paste/)
+  })
+})
+
 describe("recordBatch contexts", () => {
   it("never gives the page clipboard permissions", async () => {
     await expect(

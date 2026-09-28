@@ -141,7 +141,8 @@ describe("Vault: grants", () => {
       element: { tag: "input" as const, type: "text", label: "API key" },
     }
     await vault.approve("acme.key", use)
-    expect(vault.grants()[0]?.pathPattern).toBe("/projects/*/settings")
+    // Stored with its literal segments hashed (§3 A1): `*` kept.
+    expect(vault.grants()[0]?.pathPattern).toMatch(/^\/[0-9a-f]{64}\/\*\/[0-9a-f]{64}$/)
     expect(await vault.resolve("acme.key", { ...use, path: "/projects/8177/settings" })).toBe("k")
     expect(
       await refusal(vault.resolve("acme.key", { ...use, path: "/projects/8177/settings/extra" })),
@@ -252,20 +253,37 @@ describe("Vault: grants, round 1 review", () => {
 })
 
 describe("Vault: grants, round 3 review", () => {
-  it("never stores a secret value from the page in a grant (path, label)", async () => {
-    const { vault, path } = open()
-    await vault.request({ ...form, name: "acme.user", kind: "username" }, provide("bob@acme.com"))
+  it("stores nothing page-derived in the clear: path segments and labels are keyed hashes", async () => {
+    const { vault, path, backend } = open()
     await vault.request(form, provide("hunter2-secret"))
     const use = {
       ...USE,
       path: "/invite/bob%40acme.com/accept",
       element: { tag: "input" as const, type: "password", label: "Password for bob@acme.com" },
     }
-    const grant = await vault.approve("acme.password", use)
-    expect(grant.pathPattern).toBe("/invite/*/accept")
-    expect(grant.element.label).toBe("Password for [secret]")
-    expect(readFileSync(path, "utf8")).not.toMatch(/bob@acme|bob%40acme/)
+    await vault.approve("acme.password", use)
+    const file = readFileSync(path, "utf8")
+    expect(file).not.toMatch(/bob|invite|accept|Password for/)
     expect(await vault.resolve("acme.password", use)).toBe("hunter2-secret")
+    // Exactly as approved: another label, another literal segment, refused.
+    expect(
+      await refusal(
+        vault.resolve("acme.password", { ...use, path: "/invite/eve%40acme.com/accept" }),
+      ),
+    ).toBe("no-grant")
+    expect(
+      await refusal(
+        vault.resolve("acme.password", { ...use, element: { ...use.element, label: "Password" } }),
+      ),
+    ).toBe("no-grant")
+    // The hash key survives reopening (the keychain has it).
+    expect(await Vault.open(path, backend).resolve("acme.password", use)).toBe("hunter2-secret")
+  })
+
+  it("doesn't depend on which secrets exist: adding one keeps every grant as it was", async () => {
+    const { vault } = await approved()
+    await vault.request({ ...form, name: "acme.user", kind: "username" }, provide("login"))
+    expect(await vault.resolve("acme.password", USE)).toBe("hunter2-secret")
   })
 
   it("keeps a grant per page for one step (a preset landing on /en/login and /fr/login)", async () => {

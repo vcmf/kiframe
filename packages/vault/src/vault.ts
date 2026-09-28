@@ -1,10 +1,20 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { createHmac, randomBytes } from "node:crypto"
 import { dirname } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { SecretName } from "@kiframe/schema"
 import type { SecretBackend } from "./backend.ts"
 import * as z from "zod"
-import { ElementInfo, Grant, Origin, SecretKind, SecretMeta, StepKey, VaultFile } from "./meta.ts"
+import {
+  ElementInfo,
+  Grant,
+  Origin,
+  PathPattern,
+  SecretKind,
+  SecretMeta,
+  StepKey,
+  VaultFile,
+} from "./meta.ts"
 
 // The vault (APPROACHES §7.4, SECRETS-DESIGN §3). The agent knows WHAT secrets exist (`list`),
 // asks the user for a missing one (`request`: it only learns "provided" or "declined"), and the
@@ -52,8 +62,31 @@ export interface SecretForm {
 /** The host's native form: the value the user typed, or undefined if they declined. */
 export type AskUser = (form: SecretForm) => Promise<string | undefined>
 
-function escapeRegExpLiteral(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+/** The keychain entry of the grants' hash key (not a valid secret name: never a user's secret). */
+const GRANT_KEY = "#grant-hash-key"
+
+/** A plain path pattern as stored: literal segments hashed, `*` kept. */
+function hashPattern(pattern: string, hash: (s: string) => string): string {
+  if (pattern === "*") return "*"
+  return pattern
+    .split("/")
+    .map((s) => (s === "" || s === "*" ? s : hash(s)))
+    .join("/")
+}
+
+/** Whether a pathname matches a stored (hashed) pattern: the same rules as `pathMatches`. */
+function hashedPathMatches(stored: string, pathname: string, hash: (s: string) => string): boolean {
+  if (stored === "*") return true
+  const want = stored.split("/")
+  const got = pathname.split("/")
+  return (
+    want.length === got.length &&
+    want.every((w, i) => {
+      const g = got[i] ?? ""
+      if (w === "*") return g !== ""
+      return w === "" ? g === "" : g !== "" && w === hash(g)
+    })
+  )
 }
 
 /** A path's default pattern (§3 A1): numeric, UUID and long hex segments become `*`. */
@@ -97,6 +130,7 @@ export class Vault {
   readonly #backend: SecretBackend
   #secrets: SecretMeta[]
   #grants: Grant[]
+  #key: string | undefined
 
   private constructor(path: string, backend: SecretBackend, file: VaultFile) {
     this.#path = path
@@ -177,8 +211,8 @@ export class Vault {
   async resolve(name: string, use: SecretUse): Promise<string> {
     const parsed = SecretUse.safeParse(use)
     if (!parsed.success) throw new SecretRefusal("invalid-use", `secret "${name}": invalid use`)
-    // Compared as grants store it: a value in the path or the label masked (I1).
-    const u = this.#masked(parsed.data, await this.#values())
+    const u = parsed.data
+    const hash = await this.#hasher()
     const check = () => {
       const meta = this.#find(name)
       if (meta === undefined) {
@@ -196,8 +230,8 @@ export class Vault {
           `secret "${name}" is a ${meta.kind}: it doesn't go into ${u.element.tag === "input" ? `an input of type ${u.element.type}` : "a textarea"}`,
         )
       }
-      if (this.#grantFor(name, u) === undefined) {
-        throw new SecretRefusal("no-grant", `secret "${name}": ${this.#whyNoGrant(name, u)}`)
+      if (this.#grantFor(name, u, hash) === undefined) {
+        throw new SecretRefusal("no-grant", `secret "${name}": ${this.#whyNoGrant(name, u, hash)}`)
       }
     }
     check()
@@ -221,22 +255,24 @@ export class Vault {
    * as `*`). Replaces an older grant for the same step and secret.
    */
   async approve(name: string, use: SecretUse, pathPattern?: string): Promise<Grant> {
-    // Never a secret value in the metadata (I1): a path segment or a label holding one is masked.
-    const u = this.#masked(SecretUse.parse(use), await this.#values())
+    const u = SecretUse.parse(use)
     // An interrupt shows anywhere ("Session expired"): its grant covers every path (§3 A1).
     pathPattern ??= isInterrupt(u.stepKey) ? "*" : pathPatternOf(u.path)
+    PathPattern.parse(pathPattern)
     if (!pathMatches(pathPattern, u.path)) {
-      throw new Error(`the path pattern ${pathPattern} doesn't cover ${u.path}`)
+      throw new Error("the path pattern doesn't cover the page it was approved on")
     }
+    // Nothing page-derived in the clear (§3 A1): literal segments and the label as keyed hashes.
+    const hash = await this.#hasher()
     if (this.#find(name) === undefined) throw new Error(`secret "${name}" isn't in the vault`)
     const grant = Grant.parse({
       scope: u.scope,
       stepKey: u.stepKey,
       secret: name,
       origin: u.origin,
-      pathPattern,
+      pathPattern: hashPattern(pathPattern, hash),
       target: u.target,
-      element: u.element,
+      element: { ...u.element, label: u.element.label === null ? null : hash(u.element.label) },
       grantedAt: new Date().toISOString(),
     })
     this.#update((file) => ({
@@ -293,7 +329,7 @@ export class Vault {
   }
 
   /** What stopped a use matching (§3 A4: the user must tell "never approved" from "changed"). */
-  #whyNoGrant(name: string, u: SecretUse): string {
+  #whyNoGrant(name: string, u: SecretUse, hash: (s: string) => string): string {
     const mine = this.#grants.filter(
       (g) => g.secret === name && g.scope === u.scope && g.stepKey === u.stepKey,
     )
@@ -303,41 +339,33 @@ export class Vault {
     if (!onOrigin.some((g) => g.target === u.target)) {
       return "approved for another target: the step's target changed (healed or re-grounded)"
     }
-    if (!onOrigin.some((g) => g.target === u.target && pathMatches(g.pathPattern, u.path))) {
+    if (
+      !onOrigin.some((g) => g.target === u.target && hashedPathMatches(g.pathPattern, u.path, hash))
+    ) {
       return "approved on other pages, not this one"
     }
     return "approved for another field: the element's type or label changed"
   }
 
-  /** The values of every secret on this machine (memory, while resolving or approving). */
-  async #values(): Promise<string[]> {
-    const values = await Promise.all(this.#secrets.map((s) => this.#backend.get(s.name)))
-    return values.filter((v): v is string => v !== undefined && v.trim() !== "")
+  /** The key of the grants' hashes (in the keychain, created on first use; kept in memory). */
+  async #hashKey(): Promise<string> {
+    if (this.#key !== undefined) return this.#key
+    let key = await this.#backend.get(GRANT_KEY)
+    if (key === undefined || !/^[0-9a-f]{64}$/.test(key)) {
+      key = randomBytes(32).toString("hex")
+      await this.#backend.set(GRANT_KEY, key)
+    }
+    return (this.#key = key)
   }
 
-  /** A use with any secret value in its path (the segment: `*`) or label (`[secret]`) masked. */
-  #masked(u: SecretUse, values: readonly string[]): SecretUse {
-    const holds = (s: string) => values.some((v) => s.toLowerCase().includes(v.toLowerCase()))
-    const decoded = (s: string) => {
-      try {
-        return decodeURIComponent(s)
-      } catch {
-        return s
-      }
-    }
-    const path = u.path
-      .split("/")
-      .map((s) => (s !== "" && (holds(s) || holds(decoded(s))) ? "*" : s))
-      .join("/")
-    let label = u.element.label
-    if (label !== null) {
-      for (const v of values)
-        label = label.replace(new RegExp(escapeRegExpLiteral(v), "gi"), "[secret]")
-    }
-    return { ...u, path, element: { ...u.element, label } }
+  /** Page-derived text as it's stored and compared: its keyed hash. */
+  async #hasher(): Promise<(text: string) => string> {
+    const key = await this.#hashKey()
+    return (text) => createHmac("sha256", key).update(text).digest("hex")
   }
 
-  #grantFor(name: string, u: SecretUse): Grant | undefined {
+  #grantFor(name: string, u: SecretUse, hash: (s: string) => string): Grant | undefined {
+    const element = { ...u.element, label: u.element.label === null ? null : hash(u.element.label) }
     return this.#grants.find(
       (g) =>
         g.secret === name &&
@@ -345,8 +373,8 @@ export class Vault {
         g.stepKey === u.stepKey &&
         g.origin === u.origin &&
         g.target === u.target &&
-        pathMatches(g.pathPattern, u.path) &&
-        isDeepStrictEqual(g.element, u.element),
+        hashedPathMatches(g.pathPattern, u.path, hash) &&
+        isDeepStrictEqual(g.element, element),
     )
   }
 

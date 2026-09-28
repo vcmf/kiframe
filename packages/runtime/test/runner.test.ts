@@ -488,6 +488,35 @@ steps:
       expect(asked[0]?.use.element.label).toBe("Card number")
     })
 
+    it("refuses locators that could probe a known value (§3 A8), plain CSS still works", async () => {
+      const vault = await vaultWithPassword()
+      const options = approving(vault, [])
+      for (const selector of [
+        `"input[type=password][value^='h']"`,
+        `"xpath=//input"`,
+        `"//input"`,
+        `"form >> input"`,
+      ]) {
+        const error = await failure(
+          into(
+            password,
+            "/login-form",
+            `  - { id: probe, action: expect, that: { visible: { by: css, selector: ${selector} } } }\n`,
+          ),
+          options,
+        )
+        expect(error.reason, selector).toBe("secret-refused")
+      }
+      await run(
+        into(
+          password,
+          "/login-form",
+          `  - { id: ok, action: expect, that: { visible: { by: css, selector: "input[type=password]" } } }\n`,
+        ),
+        options,
+      )
+    })
+
     it("refuses a secret step without the host's scene id (never a shared default)", async () => {
       const vault = await vaultWithPassword()
       const error = await failure(into(password), {
