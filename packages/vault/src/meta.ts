@@ -31,7 +31,11 @@ export type ElementInfo = z.infer<typeof ElementInfo>
 export const PathPattern = z
   .string()
   .max(500)
-  .regex(/^\/[^\s?#]*$/, "a path pattern is a pathname, `*` for any one segment")
+  .refine(
+    (s) => s === "*" || s.startsWith("/"),
+    "a path pattern is a pathname, or `*` for every path",
+  )
+  .regex(/^(\*|\/[^\s?#]*)$/, "a path pattern is a pathname (`*` for any one segment), or `*`")
 
 /**
  * A step key (§3 A1): `scene:<scene>/<phase>/<step>`, `preset:<name>/<step>`, `interrupt:<rule>`
@@ -62,13 +66,21 @@ export const Grant = z.strictObject({
 })
 export type Grant = z.infer<typeof Grant>
 
-export const SecretMeta = z.strictObject({
-  name: SecretName,
-  kind: SecretKind,
-  /** Where it may be typed. */
-  origins: z.array(Origin).min(1).max(20),
-  updatedAt: z.iso.datetime(),
-})
+export const SecretMeta = z.preprocess(
+  // An M1-5 file's field binding (replaced by grants): dropped on read, never an unreadable vault.
+  (v) => {
+    if (typeof v !== "object" || v === null || !("field" in v)) return v
+    const { field: _, ...rest } = v as Record<string, unknown>
+    return rest
+  },
+  z.strictObject({
+    name: SecretName,
+    kind: SecretKind,
+    /** Where it may be typed. */
+    origins: z.array(Origin).min(1).max(20),
+    updatedAt: z.iso.datetime(),
+  }),
+)
 export type SecretMeta = z.infer<typeof SecretMeta>
 
 export const VaultFile = z.strictObject({

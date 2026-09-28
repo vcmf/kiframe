@@ -315,6 +315,17 @@ const pages: Record<string, string> = {
     <label>Age <input type="number"></label>
     <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
     <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
+  // A password field inside a web component's shadow root.
+  "/shadow-login": `<!doctype html><title>Shadow login</title>
+    <pw-field id="host"></pw-field><label>Email <input id="email"></label>
+    <script>
+      customElements.define("pw-field", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open", delegatesFocus: true }).innerHTML = '<input type="password" aria-label="Password">'
+        }
+      })
+    </script>`,
   // The same form on another path (an approved step moved elsewhere).
   "/other/login-form": `<!doctype html><title>Login form</title>
     <label>Email <input type="email"></label>

@@ -33,6 +33,8 @@ steps:
       const recordPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
       const take = await recordScenario(recordPage, scenario, project, {
         outDir: dir,
+        scope: "test",
+        sceneId: "test",
         resolveSecret: () => "hunter2",
       })
       await recordPage.close()

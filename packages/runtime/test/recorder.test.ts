@@ -62,6 +62,8 @@ steps:
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const take = await recordScenario(page, scenario, project, {
       outDir,
+      scope: "test",
+      sceneId: "test",
       resolveSecret: () => SECRET,
       timeoutMs: 3000,
     })
@@ -169,7 +171,7 @@ steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}", submit: true }
   - { id: after, action: waitFor, until: { url: /get-login } }
 `,
-      { resolveSecret: () => SECRET },
+      { scope: "test", sceneId: "test", resolveSecret: () => SECRET },
     )
     const events = readFileSync(join(outDir, "events.jsonl"), "utf8")
     expect(events).not.toContain(SECRET)
@@ -216,7 +218,7 @@ steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}", submit: true }
   - { id: after, action: waitFor, until: { url: /get-login } }
 `,
-      { resolveSecret: () => tricky },
+      { scope: "test", sceneId: "test", resolveSecret: () => tricky },
     )
     const events = readFileSync(join(outDir, "events.jsonl"), "utf8")
     expect(events).not.toContain(new URLSearchParams({ v: tricky }).toString().slice(2))
@@ -348,7 +350,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
   - { id: boom, action: click, target: { by: role, role: button, name: Zebra42 } }
 `),
       project(),
-      { outDir, timeoutMs: 500, resolveSecret: () => "Zebra42" },
+      { outDir, timeoutMs: 500, scope: "test", sceneId: "test", resolveSecret: () => "Zebra42" },
     ).then(
       () => new Error("expected the recording to fail"),
       (e: unknown) => e as Error,
@@ -493,7 +495,12 @@ steps:
   - { id: look, action: pause, ms: 300 }
 `),
       project(),
-      { outDir, resolveSecret: (name) => (name === "acme.key" ? "k-123456" : "c-987654") },
+      {
+        outDir,
+        scope: "test",
+        sceneId: "test",
+        resolveSecret: (name) => (name === "acme.key" ? "k-123456" : "c-987654"),
+      },
     )
     await context.close()
     const sensitive = take.events.filter(
@@ -560,7 +567,7 @@ steps:
   - { id: down, action: scroll, by: { y: 150 } }
 `),
       project(),
-      { outDir, resolveSecret: () => SECRET },
+      { outDir, scope: "test", sceneId: "test", resolveSecret: () => SECRET },
     )
     await context.close()
     const rects = take.events.flatMap((e) => (e.kind === "sensitive" ? [e.rect.y] : []))
@@ -584,7 +591,7 @@ steps:
   - { id: w3, action: scroll, by: { y: 10 } }
 `),
       project(),
-      { outDir, resolveSecret: () => SECRET },
+      { outDir, scope: "test", sceneId: "test", resolveSecret: () => SECRET },
     )
     await context.close()
     const sensitive = take.events.filter((e) => e.kind === "sensitive")

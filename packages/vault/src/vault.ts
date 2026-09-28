@@ -74,6 +74,7 @@ export function pathPatternOf(pathname: string): string {
 
 /** Whether a pathname matches a pattern: same segments, `*` for any one non-empty segment. */
 export function pathMatches(pattern: string, pathname: string): boolean {
+  if (pattern === "*") return true // an interrupt rule's grant: every path on its origin (§3 A1)
   const want = pattern.split("/")
   const got = pathname.split("/")
   return (
@@ -194,10 +195,7 @@ export class Vault {
         )
       }
       if (this.#grantFor(name, u) === undefined) {
-        throw new SecretRefusal(
-          "no-grant",
-          `secret "${name}" isn't approved for this step, field and page (${u.stepKey}, ${u.path})`,
-        )
+        throw new SecretRefusal("no-grant", `secret "${name}": ${this.#whyNoGrant(name, u)}`)
       }
     }
     check()
@@ -220,8 +218,10 @@ export class Vault {
    * step, target and element, on its origin, for `pathPattern` (default: the use's path with ids
    * as `*`). Replaces an older grant for the same step and secret.
    */
-  approve(name: string, use: SecretUse, pathPattern = pathPatternOf(use.path)): Grant {
+  approve(name: string, use: SecretUse, pathPattern?: string): Grant {
     const u = SecretUse.parse(use)
+    // An interrupt shows anywhere ("Session expired"): its grant covers every path (§3 A1).
+    pathPattern ??= u.interrupt ? "*" : pathPatternOf(u.path)
     if (!pathMatches(pathPattern, u.path)) {
       throw new Error(`the path pattern ${pathPattern} doesn't cover ${u.path}`)
     }
@@ -239,8 +239,16 @@ export class Vault {
     this.#update((file) => ({
       ...file,
       grants: [
+        // Replaces the grant for the same step and secret on this origin only: a step running on
+        // several origins (staging and prod) keeps one grant per origin.
         ...file.grants.filter(
-          (g) => !(g.scope === grant.scope && g.stepKey === grant.stepKey && g.secret === name),
+          (g) =>
+            !(
+              g.scope === grant.scope &&
+              g.stepKey === grant.stepKey &&
+              g.secret === name &&
+              g.origin === grant.origin
+            ),
         ),
         grant,
       ],
@@ -277,6 +285,23 @@ export class Vault {
 
   #find(name: string): SecretMeta | undefined {
     return this.#secrets.find((s) => s.name === name)
+  }
+
+  /** What stopped a use matching (§3 A4: the user must tell "never approved" from "changed"). */
+  #whyNoGrant(name: string, u: SecretUse): string {
+    const mine = this.#grants.filter(
+      (g) => g.secret === name && g.scope === u.scope && g.stepKey === u.stepKey,
+    )
+    if (mine.length === 0) return `isn't approved for this step (${u.stepKey})`
+    const onOrigin = mine.filter((g) => g.origin === u.origin)
+    if (onOrigin.length === 0) return `approved for this step on another origin, not ${u.origin}`
+    if (!onOrigin.some((g) => g.target === u.target)) {
+      return "approved for another target: the step's target changed (healed or re-grounded)"
+    }
+    if (!onOrigin.some((g) => g.target === u.target && pathMatches(g.pathPattern, u.path))) {
+      return `approved on other pages, not ${u.path}`
+    }
+    return "approved for another field: the element's type or label changed"
   }
 
   #grantFor(name: string, u: SecretUse): Grant | undefined {

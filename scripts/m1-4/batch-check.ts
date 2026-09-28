@@ -43,6 +43,8 @@ try {
     })),
     project,
     {
+      scope: "phase0",
+      sceneId: "batch-check",
       resolveSecret: envSecretResolver(["calcom.username", "calcom.password"]),
       timeoutMs: 15000,
       onEvent: (e) => {

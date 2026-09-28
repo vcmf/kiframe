@@ -139,7 +139,11 @@ steps:
 steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
 `,
-      { resolveSecret: (name) => (name === "acme.password" ? "hunter2-secret" : "") },
+      {
+        scope: "test",
+        sceneId: "test",
+        resolveSecret: (name) => (name === "acme.password" ? "hunter2-secret" : ""),
+      },
     )
     expect(await page.getByLabel("Password").inputValue()).toBe("hunter2-secret")
     expect(JSON.stringify(events)).not.toContain("hunter2-secret")
@@ -282,13 +286,14 @@ interrupts:
           withRule,
           { ...approving(vault, asked), ...(orgInterrupts && { orgInterrupts }), timeoutMs: 1500 },
         )
-        return asked.map((a) => [a.use.stepKey, a.use.interrupt])
+        return asked.map((a) => [a.use.scope, a.use.stepKey, a.use.interrupt])
       }
+      // An org rule's approval is the org's (its scope, whatever the project).
       expect(await keys({ orgId: "acme", ruleIds: ["relogin"] })).toEqual([
-        ["org:acme/interrupt:relogin", true],
+        ["org:acme", "org:acme/interrupt:relogin", true],
       ])
       // The project's own rule with that id is a different key: the org's grant doesn't serve it.
-      expect(await keys()).toEqual([["interrupt:relogin", true]])
+      expect(await keys()).toEqual([["project-1", "interrupt:relogin", true]])
       // The grant covers the rule's `when`: retargeting it asks again.
       const retargeted = parseProjectYaml(
         JSON.stringify({
@@ -310,7 +315,7 @@ interrupts:
         { resolveSecret: vault.resolver(), scope: "project-1", timeoutMs: 1500 },
       ).catch((e: unknown) => e)
       expect(error).toMatchObject({ reason: "secret-refused" })
-      expect(String(error)).toMatch(/isn't approved/)
+      expect(String(error)).toMatch(/target changed/)
     })
 
     it("refuses a drag out of a field holding a secret", async () => {
@@ -324,6 +329,47 @@ interrupts:
         approving(vault, []),
       )
       expect(error.message).toMatch(/would move a field holding a secret/)
+    })
+
+    it("refuses every spelling of paste and copy (aliases, code names, left/right keys)", async () => {
+      const vault = await vaultWithPassword()
+      const options = approving(vault, [])
+      for (const keys of ["ControlOrMeta+v", "Control+KeyV", "ControlLeft+v", "Meta+V"]) {
+        const error = await failure(
+          into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
+          options,
+        )
+        expect(error.message, keys).toMatch(/no paste/)
+      }
+      for (const keys of ["ControlOrMeta+a", "Control+KeyC", "MetaRight+x"]) {
+        const error = await failure(
+          into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
+          options,
+        )
+        expect(error.message, keys).toMatch(/would copy/)
+      }
+    })
+
+    it("refuses a drag of a web component whose shadow root holds the secret", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(
+        into(
+          "{ by: css, selector: pw-field }",
+          "/shadow-login",
+          `  - { id: d, action: drag, target: { by: css, selector: pw-field }, to: { by: label, name: Email } }\n`,
+        ),
+        approving(vault, []),
+      )
+      expect(error.message).toMatch(/would move a field holding a secret/)
+    })
+
+    it("refuses a secret step without the host's scene id (never a shared default)", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(into(password), {
+        scope: "project-1",
+        resolveSecret: vault.resolver(),
+      })
+      expect(error.message).toMatch(/no scene id from the host/)
     })
 
     it("refuses paste once a secret is known, and copy or select-all from its field", async () => {
@@ -362,6 +408,8 @@ steps:
   - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
 `,
       {
+        scope: "test",
+        sceneId: "test",
         resolveSecret: async () => {
           await page.getByLabel("Email").focus()
           return "hunter2-secret"
@@ -379,6 +427,8 @@ steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
 `,
       {
+        scope: "test",
+        sceneId: "test",
         resolveSecret: () => {
           throw new Error("vault said: value hunter2 expired")
         },
@@ -1332,7 +1382,7 @@ teardown:
       `steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
 `,
-      { resolveSecret: () => "hunter2" },
+      { scope: "test", sceneId: "test", resolveSecret: () => "hunter2" },
     )
     expect(error.reason).toBe("off-origin")
   })
@@ -1365,7 +1415,7 @@ teardown:
   - { id: email, action: type, target: { by: label, name: Email }, value: bob@acme.com }
   - { id: pw, action: type, target: { by: css, selector: body }, value: "{{secrets.acme.password}}" }
 `,
-      { resolveSecret: () => "hunter2" },
+      { scope: "test", sceneId: "test", resolveSecret: () => "hunter2" },
     )
     expect(error.message).toMatch(
       /can't take keyboard focus|goes into an input or a textarea itself/,
