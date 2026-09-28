@@ -650,7 +650,7 @@ ${
       // all inside the ensure step
       "setup:ensure: hover",
       "setup:ensure: click",
-      "setup:ensure: goto",
+      "setup:ensure (back): goto",
       "steps:click",
       "steps:expect",
       // the scene's own cleanup
