@@ -57,7 +57,7 @@ describe("recordBatch", () => {
       {
         timeoutMs: 1500,
         onEvent: (e: RunnerEvent) => {
-          if (e.kind === "preset_done") logins.push(e.session ? 1 : 0)
+          if (e.kind === "preset_done" && e.session) logins.push(1)
         },
       },
     )
