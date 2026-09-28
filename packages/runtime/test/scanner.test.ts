@@ -50,6 +50,12 @@ describe("matchParts", () => {
     ])
   })
 
+  it("keeps offsets exact when the case changes a string's length", () => {
+    expect(matchParts([{ text: "İstanbul: bob@acme.com", block: 0 }], [SECRET])).toEqual([
+      [{ part: 0, start: 10, end: 22 }],
+    ])
+  })
+
   it("never joins two blocks", () => {
     expect(
       matchParts(
@@ -93,6 +99,8 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets(`textbox "Email": bob@\n  acme.com`, [SECRET])).toBe(
       `textbox "Email": [secret]`,
     )
+    // A longer secret split by whitespace wins over a shorter one it contains.
+    expect(scrubSecrets("bob@\n  acme.com", ["bob", SECRET])).toBe("[secret]")
     // Short values aren't matched across whitespace (they'd eat ordinary words).
     expect(scrubSecrets("a b c", ["abc"])).toBe("a b c")
   })
@@ -125,5 +133,37 @@ steps: [{ id: wait, action: pause, ms: 900 }]
     expect(JSON.stringify(events)).not.toContain(SECRET)
     const ts = events.map((e) => e.t)
     expect(ts).toEqual([...ts].sort((a, b) => a - b))
+  })
+
+  it("keeps every occurrence blurred through re-renders: a region never comes back", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "kiframe-scan-")), "take")
+    const project = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+    const take = await recordScenario(
+      page,
+      parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /flicker }]
+steps: [{ id: wait, action: pause, ms: 1500 }]
+`),
+      project,
+      { outDir: dir, knownSecretValues: [SECRET], timeoutMs: 1500 },
+    )
+    const regions = new Map<string, boolean[]>()
+    for (const e of take.events) {
+      if (e.kind !== "sensitive" || e.why !== "secret-text") continue
+      const shown = e.rect.w > 0 && e.rect.h > 0
+      regions.set(e.id, [...(regions.get(e.id) ?? []), shown])
+    }
+    // Each region: shown once, then at most gone once.
+    for (const states of regions.values()) {
+      expect(states[0]).toBe(true)
+      expect(states.slice(1).every((s) => !s)).toBe(true)
+      expect(states.length).toBeLessThanOrEqual(2)
+    }
+    // Both occurrences are on screen at the end: two regions still open.
+    const open = [...regions.values()].filter((s) => s.length === 1)
+    expect(open).toHaveLength(2)
   })
 })
