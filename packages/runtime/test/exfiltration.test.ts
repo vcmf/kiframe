@@ -72,7 +72,10 @@ const approving = (v: Vault) => ({
   scope: "project-1",
   sceneId: "exfil",
   resolveSecret: v.resolver(),
-  requestApproval: (request: ApprovalRequest) => (v.approve(request.secret, request.use), true),
+  requestApproval: async (request: ApprovalRequest) => (
+    await v.approve(request.secret, request.use),
+    true
+  ),
 })
 
 const take = async (path: string) => {

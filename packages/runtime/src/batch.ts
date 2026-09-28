@@ -76,6 +76,11 @@ export async function recordBatch(
   options: BatchOptions = {},
 ): Promise<BatchResult[]> {
   const { context: contextOptions, onScene, environment, ...record } = options
+  // Never clipboard access for the page (SECRETS-DESIGN §3 A5).
+  const clipboard = (contextOptions?.permissions ?? []).filter((p) => p.startsWith("clipboard"))
+  if (clipboard.length > 0) {
+    throw new Error(`recording contexts never get clipboard permissions (${clipboard.join(", ")})`)
+  }
   if (environment !== undefined) {
     record.approveRisky = approvalPolicy(environment, options.approveRisky)
   }
@@ -131,7 +136,14 @@ export async function recordBatch(
       result = { ok: false, error }
       // A step failing on the reused session may be the session (expired, signed out): the next
       // scene logs in again rather than failing the same way. Not for a setup error or a file one.
-      if (reuse && error instanceof StepError && error.reason !== "invalid-setup") {
+      // Not a refusal: approvals and risky steps say nothing about the session.
+      const notSession = [
+        "invalid-setup",
+        "secret-refused",
+        "secret-declined",
+        "risky-not-approved",
+      ]
+      if (reuse && error instanceof StepError && !notSession.includes(error.reason)) {
         state = undefined
         landings = {}
       }

@@ -177,9 +177,9 @@ ${extra}`
     const approving = (vault: Vault, asked: ApprovalRequest[]) => ({
       ...scope,
       resolveSecret: vault.resolver(),
-      requestApproval: (request: ApprovalRequest) => {
+      requestApproval: async (request: ApprovalRequest) => {
         asked.push(request)
-        vault.approve(request.secret, request.use)
+        await vault.approve(request.secret, request.use)
         return true
       },
     })
@@ -217,7 +217,7 @@ ${extra}`
         resolveSecret: vault.resolver(),
         requestApproval: () => false,
       })
-      expect(declined.message).toMatch(/declined/)
+      expect(declined.reason).toBe("secret-declined")
       expect(await page.getByLabel("Password input").inputValue()).toBe("")
     })
 
@@ -286,14 +286,14 @@ interrupts:
           withRule,
           { ...approving(vault, asked), ...(orgInterrupts && { orgInterrupts }), timeoutMs: 1500 },
         )
-        return asked.map((a) => [a.use.scope, a.use.stepKey, a.use.interrupt])
+        return asked.map((a) => [a.use.scope, a.use.stepKey])
       }
       // An org rule's approval is the org's (its scope, whatever the project).
       expect(await keys({ orgId: "acme", ruleIds: ["relogin"] })).toEqual([
-        ["org:acme", "org:acme/interrupt:relogin", true],
+        ["org:acme", "org:acme/interrupt:relogin"],
       ])
       // The project's own rule with that id is a different key: the org's grant doesn't serve it.
-      expect(await keys()).toEqual([["project-1", "interrupt:relogin", true]])
+      expect(await keys()).toEqual([["project-1", "interrupt:relogin"]])
       // The grant covers the rule's `when`: retargeting it asks again.
       const retargeted = parseProjectYaml(
         JSON.stringify({
@@ -383,7 +383,7 @@ interrupts:
         ...scope,
         resolveSecret: vault.resolver(),
         requestApproval: async (request: ApprovalRequest) => {
-          vault.approve(request.secret, request.use)
+          await vault.approve(request.secret, request.use)
           await page
             .getByLabel("Password input")
             .evaluate((el) => ((el as HTMLInputElement).type = "text"))
@@ -418,6 +418,74 @@ steps:
         timeoutMs: 1500,
       }).catch((e: unknown) => e)
       expect(String(error)).toMatch(/can't have fallbacks or nth/)
+    })
+
+    it("keeps its protections across runs on the same browser context", async () => {
+      const vault = await vaultWithPassword()
+      await run(into(password), approving(vault, []))
+      // A later run on the same page (grounding runs one step at a time): focus is still there.
+      const copy = await failure(`steps:\n  - { id: k, action: press, keys: "Mod+a" }\n`, scope)
+      expect(copy.message).toMatch(/in a field holding a secret/)
+      const paste = await failure(`steps:\n  - { id: k, action: press, keys: "Mod+v" }\n`, scope)
+      expect(paste.message).toMatch(/no paste/)
+    })
+
+    it("matches a short known value as a whole word only", async () => {
+      const onWords = (field: string) =>
+        `setup: [{ action: goto, url: /words }, { action: click, target: { by: css, selector: "#${field}" } }]
+steps:
+  - { id: k, action: press, keys: "ArrowLeft" }
+`
+      await run(onWords("search"), { knownSecretValues: ["admin"] })
+      const error = await failure(onWords("user"), { knownSecretValues: ["admin"] })
+      expect(error.message).toMatch(/in a field holding a secret/)
+    })
+
+    it("says a declined approval is a decline (the scene is blocked, not refused)", async () => {
+      const vault = await vaultWithPassword()
+      const declined = await failure(into(password), {
+        ...scope,
+        resolveSecret: vault.resolver(),
+        requestApproval: () => false,
+      })
+      expect(declined.reason).toBe("secret-declined")
+    })
+
+    it("refuses a fallback before touching anything (no `clear` of another field)", async () => {
+      const vault = await vaultWithPassword()
+      await page.goto(`${server.url}/login-form`)
+      await page.getByLabel("Email").fill("keep me")
+      const built = scenario(`steps:
+  - { id: pw, action: type, target: { by: label, name: Nope }, value: "{{secrets.acme.password}}", clear: true }
+`)
+      const step = built.steps[0] as { target: object }
+      step.target = { ...step.target, fallbacks: [{ by: "label", name: "Email" }] }
+      const error = await runScenario(page, built, project, {
+        ...approving(vault, []),
+        timeoutMs: 1500,
+      }).catch((e: unknown) => e)
+      expect(String(error)).toMatch(/can't have fallbacks or nth/)
+      expect(await page.getByLabel("Email").inputValue()).toBe("keep me")
+    })
+
+    it("records the accessible name's label: aria-labelledby before aria-label", async () => {
+      const vault = Vault.open(
+        join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+        memoryBackend(),
+      )
+      await vault.request(
+        { name: "acme.note", kind: "text", origin: new URL(server.url).origin, reason: "t" },
+        () => Promise.resolve("n"),
+      )
+      const asked: ApprovalRequest[] = []
+      await run(
+        `setup: [{ action: goto, url: /labelled }]
+steps:
+  - { id: n, action: type, target: { by: css, selector: input }, value: "{{secrets.acme.note}}" }
+`,
+        approving(vault, asked),
+      )
+      expect(asked[0]?.use.element.label).toBe("Card number")
     })
 
     it("refuses a secret step without the host's scene id (never a shared default)", async () => {

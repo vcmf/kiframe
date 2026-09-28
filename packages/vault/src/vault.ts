@@ -14,7 +14,7 @@ import { ElementInfo, Grant, Origin, SecretKind, SecretMeta, StepKey, VaultFile 
 
 /** Why a resolution was refused: `no-grant` is the one a user's approval can fix. */
 export type RefusalReason =
-  "unknown-secret" | "no-value" | "origin" | "kind" | "no-grant" | "invalid-use" | "changed"
+  "unknown-secret" | "no-value" | "origin" | "kind" | "no-grant" | "invalid-use"
 
 /** A refused resolution. Its message names the secret and the reason, never a value. */
 export class SecretRefusal extends Error {
@@ -29,21 +29,15 @@ export class SecretRefusal extends Error {
 }
 
 /** A use the runtime asks for (SECRETS-DESIGN §3 A2): everything a grant is checked against. */
-export const SecretUse = z
-  .strictObject({
-    scope: z.string().min(1).max(200),
-    stepKey: StepKey,
-    origin: Origin,
-    /** The page's pathname. */
-    path: z.string().max(2000).regex(/^\//),
-    target: z.string().min(2).max(4000),
-    element: ElementInfo,
-    /** Typed by an interrupt rule: passwords only (§3 A6). */
-    interrupt: z.boolean(),
-  })
-  .refine((u) => u.interrupt === /^(org:[^/]+\/)?interrupt:/.test(u.stepKey), {
-    message: "an interrupt's use has an interrupt step key, and only it",
-  })
+export const SecretUse = z.strictObject({
+  scope: z.string().min(1).max(200),
+  stepKey: StepKey,
+  origin: Origin,
+  /** The page's pathname. */
+  path: z.string().max(2000).regex(/^\//),
+  target: z.string().min(2).max(4000),
+  element: ElementInfo,
+})
 export type SecretUse = z.infer<typeof SecretUse>
 
 /** What the user's form is told (the host shows it; the value never goes back to the agent). */
@@ -57,6 +51,10 @@ export interface SecretForm {
 
 /** The host's native form: the value the user typed, or undefined if they declined. */
 export type AskUser = (form: SecretForm) => Promise<string | undefined>
+
+function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
 
 /** A path's default pattern (§3 A1): numeric, UUID and long hex segments become `*`. */
 export function pathPatternOf(pathname: string): string {
@@ -81,6 +79,9 @@ export function pathMatches(pattern: string, pathname: string): boolean {
     want.length === got.length && want.every((w, i) => w === got[i] || (w === "*" && got[i] !== ""))
   )
 }
+
+/** Whether a use is an interrupt rule's (§3 A6: passwords only), from its step key. */
+const isInterrupt = (stepKey: string) => /^(org:[^/]+\/)?interrupt:/.test(stepKey)
 
 /** Which elements a kind of secret may go into (§3 A2). */
 function kindAllows(kind: SecretKind, element: ElementInfo): boolean {
@@ -176,7 +177,8 @@ export class Vault {
   async resolve(name: string, use: SecretUse): Promise<string> {
     const parsed = SecretUse.safeParse(use)
     if (!parsed.success) throw new SecretRefusal("invalid-use", `secret "${name}": invalid use`)
-    const u = parsed.data
+    // Compared as grants store it: a value in the path or the label masked (I1).
+    const u = this.#masked(parsed.data, await this.#values())
     const check = () => {
       const meta = this.#find(name)
       if (meta === undefined) {
@@ -185,7 +187,7 @@ export class Vault {
       if (!meta.origins.includes(u.origin)) {
         throw new SecretRefusal("origin", `secret "${name}" isn't allowed on ${u.origin}`)
       }
-      if (u.interrupt && meta.kind !== "password") {
+      if (isInterrupt(u.stepKey) && meta.kind !== "password") {
         throw new SecretRefusal("kind", `secret "${name}": interrupt rules only type passwords`)
       }
       if (!kindAllows(meta.kind, u.element)) {
@@ -218,10 +220,11 @@ export class Vault {
    * step, target and element, on its origin, for `pathPattern` (default: the use's path with ids
    * as `*`). Replaces an older grant for the same step and secret.
    */
-  approve(name: string, use: SecretUse, pathPattern?: string): Grant {
-    const u = SecretUse.parse(use)
+  async approve(name: string, use: SecretUse, pathPattern?: string): Promise<Grant> {
+    // Never a secret value in the metadata (I1): a path segment or a label holding one is masked.
+    const u = this.#masked(SecretUse.parse(use), await this.#values())
     // An interrupt shows anywhere ("Session expired"): its grant covers every path (§3 A1).
-    pathPattern ??= u.interrupt ? "*" : pathPatternOf(u.path)
+    pathPattern ??= isInterrupt(u.stepKey) ? "*" : pathPatternOf(u.path)
     if (!pathMatches(pathPattern, u.path)) {
       throw new Error(`the path pattern ${pathPattern} doesn't cover ${u.path}`)
     }
@@ -239,15 +242,17 @@ export class Vault {
     this.#update((file) => ({
       ...file,
       grants: [
-        // Replaces the grant for the same step and secret on this origin only: a step running on
-        // several origins (staging and prod) keeps one grant per origin.
+        // Replaces the grant for the same step and secret on the same origin and pages only: a
+        // step running on several origins (staging, prod) or pages (/en/login, /fr/login) keeps
+        // one grant for each.
         ...file.grants.filter(
           (g) =>
             !(
               g.scope === grant.scope &&
               g.stepKey === grant.stepKey &&
               g.secret === name &&
-              g.origin === grant.origin
+              g.origin === grant.origin &&
+              g.pathPattern === grant.pathPattern
             ),
         ),
         grant,
@@ -294,14 +299,42 @@ export class Vault {
     )
     if (mine.length === 0) return `isn't approved for this step (${u.stepKey})`
     const onOrigin = mine.filter((g) => g.origin === u.origin)
-    if (onOrigin.length === 0) return `approved for this step on another origin, not ${u.origin}`
+    if (onOrigin.length === 0) return "approved for this step on another origin"
     if (!onOrigin.some((g) => g.target === u.target)) {
       return "approved for another target: the step's target changed (healed or re-grounded)"
     }
     if (!onOrigin.some((g) => g.target === u.target && pathMatches(g.pathPattern, u.path))) {
-      return `approved on other pages, not ${u.path}`
+      return "approved on other pages, not this one"
     }
     return "approved for another field: the element's type or label changed"
+  }
+
+  /** The values of every secret on this machine (memory, while resolving or approving). */
+  async #values(): Promise<string[]> {
+    const values = await Promise.all(this.#secrets.map((s) => this.#backend.get(s.name)))
+    return values.filter((v): v is string => v !== undefined && v.trim() !== "")
+  }
+
+  /** A use with any secret value in its path (the segment: `*`) or label (`[secret]`) masked. */
+  #masked(u: SecretUse, values: readonly string[]): SecretUse {
+    const holds = (s: string) => values.some((v) => s.toLowerCase().includes(v.toLowerCase()))
+    const decoded = (s: string) => {
+      try {
+        return decodeURIComponent(s)
+      } catch {
+        return s
+      }
+    }
+    const path = u.path
+      .split("/")
+      .map((s) => (s !== "" && (holds(s) || holds(decoded(s))) ? "*" : s))
+      .join("/")
+    let label = u.element.label
+    if (label !== null) {
+      for (const v of values)
+        label = label.replace(new RegExp(escapeRegExpLiteral(v), "gi"), "[secret]")
+    }
+    return { ...u, path, element: { ...u.element, label } }
   }
 
   #grantFor(name: string, u: SecretUse): Grant | undefined {

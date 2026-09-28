@@ -11,7 +11,7 @@ import {
   scrubError,
   scrubSecrets,
   TEXT_SCAN_MS,
-  releaseSecretWritten,
+  secretsOf,
 } from "./run/secrets.ts"
 import { expandSetup, runSetupEntry } from "./run/setup.ts"
 import { perform } from "./run/actions.ts"
@@ -73,9 +73,11 @@ export async function runScenario(
   // step running at that moment.
   let current: StepRef | undefined
   let listenerError: StepError | undefined
-  const secretValues = new Set<string>(
-    (options.knownSecretValues ?? []).filter((v) => v.trim() !== ""),
-  )
+  // Per browser context, not per run (SECRETS-DESIGN §3 A5): a later run on the same page still
+  // knows the values and the fields they were written to (grounding runs one step at a time).
+  const secrets = secretsOf(page.context())
+  const secretValues = secrets.values
+  for (const v of options.knownSecretValues ?? []) if (v.trim() !== "") secretValues.add(v)
   const onNavigated = (frame: Frame) => {
     if (frame === ctx.page.mainFrame() && current !== undefined) {
       try {
@@ -122,7 +124,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
-    secretWritten: [],
+    secretWritten: secrets.written,
     secretText: {
       shown: new Map(),
       next: 0,
@@ -251,7 +253,6 @@ export async function runScenario(
     clearInterval(scan)
     // A scan still running reports before the run ends (the recorder writes right after).
     await ctx.secretText.inflight?.catch(() => undefined)
-    await releaseSecretWritten(ctx)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)

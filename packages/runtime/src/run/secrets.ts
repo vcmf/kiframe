@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
 import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@kiframe/schema"
-import type { ElementHandle, Locator } from "playwright"
+import type { BrowserContext, ElementHandle, Locator, Page } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
@@ -163,7 +163,7 @@ async function resolveSecret(
       if (!(await guard(step, async () => ask({ secret: name, use, box })))) {
         throw new StepError(
           step,
-          "secret-refused",
+          "secret-declined",
           `the user declined typing secret "${name}" here`,
         )
       }
@@ -395,22 +395,23 @@ function elementInfo(el: HTMLInputElement | HTMLTextAreaElement): {
     const t = s?.replace(/\s+/g, " ").trim().slice(0, 200)
     return t === undefined || t === "" ? null : t
   }
-  // A label, aria-label or aria-labelledby; never a placeholder (apps localize or change it).
+  // The accessible name's order: aria-labelledby, then aria-label, then a <label>; rendered text
+  // only (hidden text isn't part of it); never a placeholder (apps localize or change it).
+  const rendered = (n: Element | null | undefined) =>
+    n instanceof HTMLElement ? n.innerText : n?.textContent
   const labelledBy = el.getAttribute("aria-labelledby")
+  const root = el.getRootNode() as Document | ShadowRoot
   const label =
-    text(el.getAttribute("aria-label")) ??
     (labelledBy === null
       ? null
       : text(
           labelledBy
             .split(/\s+/)
-            .map(
-              (id) =>
-                (el.getRootNode() as Document | ShadowRoot).getElementById?.(id)?.textContent ?? "",
-            )
+            .map((id) => rendered(root.getElementById?.(id)) ?? "")
             .join(" "),
         )) ??
-    text(el.labels?.[0]?.textContent)
+    text(el.getAttribute("aria-label")) ??
+    text(rendered(el.labels?.[0]))
   return el instanceof HTMLInputElement
     ? { tag: "input", type: el.type, label }
     : { tag: "textarea", type: "textarea", label }
@@ -444,15 +445,6 @@ export async function prepareSecretWrite(
   }
   try {
     if (!isGrounded(stepTarget)) throw new StepError(step, "not-grounded", "target not grounded")
-    // Enforced here too, not only by the schema (a scenario built in code skips it): one exact
-    // locator, no fallback or `nth` that could reach another field (§3 A2).
-    if (stepTarget.fallbacks !== undefined || stepTarget.nth !== undefined) {
-      throw new StepError(
-        step,
-        "secret-refused",
-        `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
-      )
-    }
     const url = new URL(ctx.page.url())
     const use: SecretUse = {
       ...approvalKeyOf(ctx, step, secret),
@@ -460,7 +452,6 @@ export async function prepareSecretWrite(
       path: url.pathname,
       target: grantedTarget(ctx, step, stepTarget),
       element: await input.evaluate(elementInfo),
-      interrupt: step.interrupt !== undefined,
     }
     const value = await resolveSecret(ctx, secret, step, use, input)
     return { input, value, use }
@@ -484,6 +475,15 @@ export async function writeSecret(
   timeout: number,
 ): Promise<void> {
   try {
+    // The element as approved: the approval prompt or the keychain may have taken seconds, and a
+    // "show password" toggle (or the page) may have turned it into a text field meanwhile.
+    const element = await write.input.evaluate(elementInfo, undefined)
+    if (!isDeepStrictEqual(element, write.use.element)) {
+      throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
+    }
+    const before = await write.input.inputValue({ timeout })
+    // The page's URL last (a `pushState` doesn't detach the handle): nothing awaits between it and
+    // the write but the write itself.
     const now = new URL(ctx.page.url())
     if (now.origin !== write.use.origin || now.pathname !== write.use.path) {
       throw new StepError(
@@ -492,13 +492,6 @@ export async function writeSecret(
         `the page moved to ${now.origin}${now.pathname} while the secret was resolved`,
       )
     }
-    // The element as approved: the approval prompt or the keychain may have taken seconds, and a
-    // "show password" toggle (or the page) may have turned it into a text field meanwhile.
-    const element = await write.input.evaluate(elementInfo, undefined)
-    if (!isDeepStrictEqual(element, write.use.element)) {
-      throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
-    }
-    const before = await write.input.inputValue({ timeout })
     await write.input.fill(before + write.value, { timeout })
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
   } catch (error) {
@@ -543,7 +536,14 @@ const chordName = (c: Set<string>) =>
 function containsKnown(ctx: Ctx, text: string | null | undefined): boolean {
   if (text === null || text === undefined || text === "") return false
   const lower = text.toLowerCase()
-  for (const v of ctx.secretValues) if (v !== "" && lower.includes(v.toLowerCase())) return true
+  for (const v of ctx.secretValues) {
+    if (v.trim() === "") continue
+    // A short value (a username "admin") as a whole word only, like the scanner (R2).
+    if (v.length < 6) {
+      if (new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(v)}(?![\\p{L}\\p{N}])`, "iu").test(text))
+        return true
+    } else if (lower.includes(v.toLowerCase())) return true
+  }
   return false
 }
 
@@ -648,13 +648,35 @@ export async function assertDragKeepsSecrets(
   }
 }
 
-/** Releases the handles to the elements secrets were written to (the run is over). */
-export async function releaseSecretWritten(ctx: Ctx): Promise<void> {
-  await Promise.all(ctx.secretWritten.map((w) => w.handle.dispose().catch(() => undefined)))
-  ctx.secretWritten.length = 0
+/** What a browser context's runs know about secrets: values, and the elements they went into. */
+export interface ContextSecrets {
+  values: Set<string>
+  written: { page: Page; handle: ElementHandle }[]
+}
+const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
+
+/**
+ * The secret state of a browser context (SECRETS-DESIGN §3 A5: "while secrets are known in a
+ * context"): shared by every run on it, gone with it (its handles die with the context).
+ */
+export function secretsOf(context: BrowserContext): ContextSecrets {
+  let state = contextSecrets.get(context)
+  if (state === undefined) contextSecrets.set(context, (state = { values: new Set(), written: [] }))
+  return state
 }
 
 /** Releases a prepared write that won't happen (the step failed before it). */
 export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {
   await write?.input.dispose().catch(() => undefined)
+}
+
+/** A secret step's target has no fallbacks and no `nth` (§3 A2). */
+export function assertSecretTarget(target: Target, step: StepRef, secret: string): void {
+  if (isGrounded(target) && (target.fallbacks !== undefined || target.nth !== undefined)) {
+    throw new StepError(
+      step,
+      "secret-refused",
+      `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
+    )
+  }
 }
