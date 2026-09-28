@@ -620,11 +620,11 @@ hide: ["#chat", "form:has(input[value^='h']) button"]
       )
     })
 
-    it("keeps every hide rule in a run that can't know a secret", async () => {
+    it("applies hide rules using the grammar's `:has` and `*` (common banner rules)", async () => {
       const withHide = parseProjectYaml(`version: 1
 target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
-hide: ["div:is(#chat)"]
+hide: ["body:has(> #chat) > #chat", "#nothing *"]
 `)
       await runScenario(
         page,
@@ -674,6 +674,34 @@ steps:
 `,
         approving(vault, []),
       )
+    })
+
+    it("keeps a field that took only part of the secret as holding one", async () => {
+      const vault = await vaultWithPassword()
+      const options = approving(vault, [])
+      const error = await failure(
+        `setup: [{ action: goto, url: /truncating }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+`,
+        options,
+      )
+      expect(error.message).toMatch(/didn't take the value/)
+      // A later run on the same page: focus in that field, copy refused.
+      await page.getByLabel("Password").focus()
+      const copy = await failure(`steps:\n  - { id: k, action: press, keys: "Mod+a" }\n`, scope)
+      expect(copy.message).toMatch(/in a field holding a secret/)
+    })
+
+    it("refuses a code-built secret step without an id, saying why", async () => {
+      const vault = await vaultWithPassword()
+      const built = scenario(into(password))
+      delete (built.steps[0] as { id?: string }).id
+      const error = await runScenario(page, built, project, {
+        ...approving(vault, []),
+        timeoutMs: 1500,
+      }).catch((e: unknown) => e)
+      expect(String(error)).toMatch(/needs an id/)
     })
 
     it("refuses a secret step without the host's scene id (never a shared default)", async () => {

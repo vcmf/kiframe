@@ -16,6 +16,12 @@ describe("isSafeSelector", () => {
     "input[name^=pass i]",
     "ul li + li ~ li",
     "button:focus",
+    // Common hide rules: descendants, a banner's container, an escaped utility class.
+    "#intercom-container *",
+    "div:has(> .cookie-banner)",
+    "div:has(input)",
+    ".md\\:hidden",
+    "*",
   ])("accepts %s", (selector) => expect(isSafeSelector(selector)).toBe(true))
 
   it.each([
@@ -24,6 +30,9 @@ describe("isSafeSelector", () => {
     "input[ value ]",
     "input[VALUE*=x]",
     "input[data-value=1]",
+    "input[ng-reflect-model^=h]",
+    "input[aria-valuetext=x]",
+    "form:has(input[value^='h']) button",
     'input[\\76 alue^="hun"]',
     "input[*|value]",
     "input[|value]",
@@ -38,10 +47,9 @@ describe("isSafeSelector", () => {
     "form >> input",
     // Playwright's CSS extensions and anything outside the subset.
     'div:has-text("x")',
-    "div:has(input)",
     "input:visible",
-    "*",
     "a\\:b",
+    "[\\76 alue]",
     "input[type=password",
     "",
   ])("refuses %s", (selector) => expect(isSafeSelector(selector)).toBe(false))

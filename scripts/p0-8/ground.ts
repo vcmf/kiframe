@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { parseArgs } from "node:util"
-import { runScenario, scrubSecrets, StepError, visibleOnly, toPlaywright } from "@kiframe/runtime"
+import { runScenario, scrubSecrets, StepError, visibleOnly, locatorFor } from "@kiframe/runtime"
 import {
   checkScenarioAgainstProject,
   parseProjectYaml,
@@ -287,7 +287,7 @@ async function snapshot(within?: unknown): Promise<string> {
       const issue = parsed.error.issues[0]
       return `invalid \`within\` locator: ${formatIssue(issue)}`
     }
-    root = visibleOnly(toPlaywright(page, parsed.data)).first()
+    root = visibleOnly(await locatorFor(page, parsed.data)).first()
   }
   const text = await root
     .ariaSnapshot({ timeout: 5000 })
