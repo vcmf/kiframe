@@ -18,12 +18,24 @@ const pages: Record<string, string> = {
         d.querySelector("button").onclick = () => {
           // ?fade: the dialog fades out for 400 ms, still in the page (no clicks through it).
           if (!location.search.includes("fade")) return d.remove()
-          d.style.transition = "opacity 0.4s"; d.style.opacity = "0"; d.style.pointerEvents = "none"
+          d.style.transition = "opacity 0.4s"; d.style.opacity = "0"
+          // ?fadeblock: it still catches clicks while fading.
+          if (!location.search.includes("fadeblock")) d.style.pointerEvents = "none"
           setTimeout(() => d.remove(), 400)
         }
         document.body.append(d)
       }
       if (location.search.includes("late")) setTimeout(dialog, 300)
+      // ?stacked: a "What's new" modal over the cookie dialog, both at load.
+      if (location.search.includes("stacked")) {
+        dialog()
+        const m = document.createElement("div")
+        m.setAttribute("role", "dialog"); m.setAttribute("aria-label", "What's new")
+        m.style.cssText = "position:fixed; inset:0; background:#fff"
+        m.innerHTML = "<button>Close</button>"
+        m.querySelector("button").onclick = () => m.remove()
+        document.body.append(m)
+      }
       if (location.search.includes("onmove")) addEventListener("mousemove", dialog, { once: true })
     </script>`,
   // The same list, but the drag starts only after 8 px of movement (dnd-kit's distance constraint).

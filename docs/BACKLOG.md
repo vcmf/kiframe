@@ -118,7 +118,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## @kiframe/runtime interrupts and hide (M1-3)
 - **`ensure` and interrupts:** an `ensure` check doesn't run the interrupt check first; a banner over the list can hide what `ensure: absent` looks for (it then passes). Run the check at the start of `ensure` too.
-- **An interrupt that doesn't go away:** handled up to 3 times in a row, then the step runs anyway (and likely fails with the target covered). Say which rule kept matching.
+- **Stacked interrupts:** rules are tried in config order, not stacking order. A cookie banner (rule 1) under a "What's new" modal (rule 2) fails the step: rule 1's button is covered. Try the next matching rule when a `do` fails, then come back to the first.
+- **Interrupt check cost:** one locator count per rule, before every step and on every covered click. For a long org rule bank, one combined `or()` count for the common no-match case, then find the rule.
+- **Hide under a strict CSP:** a `style-src` without inline styles blocks the injected style (a take warning says so). Use a constructable stylesheet (`adoptedStyleSheets`) or the context's `bypassCSP` where Kiframe creates the context.
 - **Interrupt actions' events:** the `do` action runs with an off-camera ref (phase `setup`): its cursor samples and click events land inside the cut span, tagged setup. Harmless for the video; a dedicated phase would be cleaner for the timeline editor.
 - **Mid-step interrupts beyond clicks:** a covered target is handled inside a click (the probe sees it covered); a `type` into an input a modal covers isn't (no step retry: a retry could repeat an action that already happened).
 - **Hide rules per page, not per run:** the init script stays on the page, so a harness running two projects on one page keeps the first one's hide rules.

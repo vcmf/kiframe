@@ -1,0 +1,1 @@
+{"root":["./vitest.config.ts","./tests/workspace.test.ts","./scripts/record.ts","./scripts/lib/secrets.ts","./scripts/p0-10/electron-check.ts","./scripts/p0-8/ground.ts","./scripts/p0-8/login-check.ts","./scripts/p0-9/replay.ts"],"version":"6.0.3"}

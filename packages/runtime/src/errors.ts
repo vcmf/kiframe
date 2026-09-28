@@ -5,6 +5,8 @@ export interface StepRef {
   index: number
   stepId?: string | undefined
   action: string
+  /** Set on the action of an interrupt rule's `do`, run within this step (the rule's id). */
+  interrupt?: string | undefined
 }
 
 export type StepErrorReason =
