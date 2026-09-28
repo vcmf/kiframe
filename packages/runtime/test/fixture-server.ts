@@ -315,6 +315,12 @@ const pages: Record<string, string> = {
     <label>Age <input type="number"></label>
     <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
     <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
+  // The same form on another path (an approved step moved elsewhere).
+  "/other/login-form": `<!doctype html><title>Login form</title>
+    <label>Email <input type="email"></label>
+    <label>Age <input type="number"></label>
+    <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
+    <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
   "/shadow-render": `<!doctype html><title>Shadow render</title>
     <x-panel></x-panel><button id="go">Load panel</button>
     <script>

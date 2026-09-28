@@ -41,7 +41,15 @@ export class ResolveError extends Error {
 export function resolveProjectConfig(
   project: Project,
   org: OrgSettings | undefined,
-): { config: ProjectConfig; environment: ResolvedEnvironment } {
+): {
+  config: ProjectConfig
+  environment: ResolvedEnvironment
+  /**
+   * The ids of the org's interrupt rules the config kept as they are (a project rule with the same
+   * id replaces one): their secret approvals are the org's (SECRETS-DESIGN §3 A1).
+   */
+  orgInterrupts: string[]
+} {
   let env: Environment | undefined
   if (project.environment !== undefined) {
     env = org?.environments.find((e) => e.name === project.environment)
@@ -75,6 +83,7 @@ export function resolveProjectConfig(
   })
   return {
     config,
+    orgInterrupts: orgRules.filter((r) => !own.has(r.id)).map((r) => r.id),
     environment: {
       ...(env !== undefined && { name: env.name }),
       url,

@@ -101,6 +101,7 @@ export async function runSetupEntry(
       index: entry.index,
       stepId: action.id,
       action: action.action,
+      ...(entry.preset !== undefined && { preset: entry.preset.name }),
     })
     return
   }
@@ -174,23 +175,26 @@ async function ensure(
     // (their state is kept, but the page they led to may be the only `goto`).
     const replay = before.flatMap((e) =>
       e.kind === "action" && (e.preset?.session !== true || e.action.action === "goto")
-        ? [e.action]
+        ? [{ action: e.action, preset: e.preset?.name }]
         : [],
     )
     // Only the teardown is a cleanup (a sandbox may pre-approve it); going back replays the setup.
-    const stages: [string, string, readonly Action[]][] = [
-      [`removing ${what} (teardown)`, "ensure", teardown],
+    // Each action keeps the list it's written in, for its secret approvals (§3 A1).
+    const stages: [string, string, readonly { action: Action; preset?: string | undefined }[]][] = [
+      [`removing ${what} (teardown)`, "ensure", teardown.map((action) => ({ action }))],
       ["returning to the setup page", "ensure (back)", replay],
     ]
-    for (const [stage, label, actions] of stages) {
-      for (const [i, action] of actions.entries()) {
+    for (const [stage, label, items] of stages) {
+      const cleanup = label === "ensure"
+      for (const [i, { action, preset }] of items.entries()) {
         try {
           await runOne(ctx, action, {
             phase: "setup",
             index,
             stepId: action.id,
             action: `${label}: ${action.action}`,
-            ...(actions === teardown && { cleanup: true as const }),
+            ...(cleanup && { cleanup: true as const, keyPhase: "teardown" as const }),
+            ...(preset !== undefined && { preset }),
           })
         } catch (error) {
           ctx.clearListenerError()

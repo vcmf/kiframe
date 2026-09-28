@@ -1,9 +1,10 @@
+import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@kiframe/schema"
 import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { viewportOf } from "../targets.ts"
-import { type Ctx, firstLine } from "./context.ts"
+import { type Ctx, firstLine, guard } from "./context.ts"
 
 // Everything about secret values: resolution, origin checks, the scrubber, field tracking and the text scan.
 
@@ -135,6 +136,7 @@ async function resolveSecret(
   name: string,
   step: StepRef,
   use: SecretUse,
+  input: ElementHandle,
 ): Promise<string> {
   if (ctx.options.resolveSecret === undefined) {
     throw new StepError(
@@ -143,12 +145,32 @@ async function resolveSecret(
       `secret "${name}" needed but no secret resolver given`,
     )
   }
-  try {
-    const value = await ctx.options.resolveSecret(name, use)
+  const resolve = ctx.options.resolveSecret
+  const attempt = async () => {
+    const value = await resolve(name, use)
     if (value !== "") ctx.secretValues.add(value)
     return value
+  }
+  try {
+    try {
+      return await attempt()
+    } catch (error) {
+      // No grant yet: an interactive run asks the user once, with the element to outline.
+      const ask = ctx.options.requestApproval
+      if (!isSecretRefusal(error) || error.reason !== "no-grant" || ask === undefined) throw error
+      const box = (await input.boundingBox().catch(() => null)) ?? undefined
+      if (!(await guard(step, async () => ask({ secret: name, use, box })))) {
+        throw new StepError(
+          step,
+          "secret-refused",
+          `the user declined typing secret "${name}" here`,
+        )
+      }
+      return await attempt()
+    }
   } catch (error) {
-    // The vault's refusals say why (origin, field) and never hold a value; any other error's
+    if (error instanceof StepError) throw error
+    // The vault's refusals say why (origin, grant) and never hold a value; any other error's
     // message could contain one: never included.
     if (isSecretRefusal(error)) {
       throw new StepError(step, "secret-refused", firstLine(error.message))
@@ -292,10 +314,12 @@ export function scrubError(error: Error, secrets: Set<string>): Error {
   return scrubbed
 }
 
-/** A secret about to be written: the approved element (a handle) and the value. */
+/** A secret about to be written: the approved element (a handle), the value, and where. */
 export interface SecretWrite {
   input: ElementHandle<HTMLInputElement | HTMLTextAreaElement>
   value: string
+  origin: string
+  path: string
 }
 
 /**
@@ -315,18 +339,80 @@ export function followSecretField(
   return id
 }
 
+/** The approval key of the step an action belongs to (SECRETS-DESIGN §3 A1). */
+function stepKeyOf(ctx: Ctx, step: StepRef): string {
+  if (step.interrupt !== undefined) {
+    const org = ctx.options.orgInterrupts
+    return org !== undefined && org.ruleIds.includes(step.interrupt)
+      ? `org:${org.orgId}/interrupt:${step.interrupt}`
+      : `interrupt:${step.interrupt}`
+  }
+  if (step.preset !== undefined) return `preset:${step.preset}/${step.stepId ?? ""}`
+  return `scene:${ctx.options.sceneId ?? "scene"}/${step.keyPhase ?? step.phase}/${step.stepId ?? ""}`
+}
+
+/**
+ * What a grant binds as the target (§3 A1, A6): the step's canonical target; for an interrupt
+ * rule, its `when` too (a rule approved for a "Session expired" modal can't be retargeted).
+ */
+function grantedTarget(ctx: Ctx, step: StepRef, target: GroundedTarget): string {
+  const canonical = canonicalTarget(target)
+  if (step.interrupt === undefined) return canonical
+  const rule = ctx.interrupts.find((r) => r.id === step.interrupt)
+  const when =
+    rule === undefined
+      ? null
+      : "by" in rule.when
+        ? canonicalTarget(rule.when)
+        : JSON.stringify({ text: rule.when.text })
+  return JSON.stringify({ do: canonical, when })
+}
+
+/** What an element a secret goes into is (runs in the page): tag, type, and its label. */
+function elementInfo(el: HTMLInputElement | HTMLTextAreaElement): {
+  tag: "input" | "textarea"
+  type: string
+  label: string | null
+} {
+  const text = (s: string | null | undefined) => {
+    const t = s?.replace(/\s+/g, " ").trim().slice(0, 200)
+    return t === undefined || t === "" ? null : t
+  }
+  // A label, aria-label or aria-labelledby; never a placeholder (apps localize or change it).
+  const labelledBy = el.getAttribute("aria-labelledby")
+  const label =
+    text(el.getAttribute("aria-label")) ??
+    (labelledBy === null
+      ? null
+      : text(
+          labelledBy
+            .split(/\s+/)
+            .map(
+              (id) =>
+                (el.getRootNode() as Document | ShadowRoot).getElementById?.(id)?.textContent ?? "",
+            )
+            .join(" "),
+        )) ??
+    text(el.labels?.[0]?.textContent)
+  return el instanceof HTMLInputElement
+    ? { tag: "input", type: el.type, label }
+    : { tag: "textarea", type: "textarea", label }
+}
+
 /**
  * The element a secret goes into and its value, resolved now (the field is focused). The target
  * itself (or the input in its shadow root), never another field inside it: the one focused before
  * could be a visible text box. Only an input or a textarea (a value written as a whole). A handle is
  * bound to its document, so a navigation (another origin, another page) can't swap it between the
- * checks and the write.
+ * checks and the write. The use is what the vault checks against the user's grants; an interactive
+ * run asks the user once when there's none yet (§3 A3).
  */
 export async function prepareSecretWrite(
   ctx: Ctx,
   target: Locator,
   step: StepRef,
   secret: string,
+  stepTarget: Target,
 ): Promise<SecretWrite> {
   const timeout = ctx.timeoutMs
   const handle = await target.evaluateHandle(secretInputOf, undefined, { timeout })
@@ -340,14 +426,19 @@ export async function prepareSecretWrite(
     )
   }
   try {
-    const inputType = await input.evaluate((el) =>
-      el instanceof HTMLInputElement ? el.type : "textarea",
-    )
-    const value = await resolveSecret(ctx, secret, step, {
-      origin: new URL(ctx.page.url()).origin,
-      field: { inputType },
-    })
-    return { input, value }
+    if (!isGrounded(stepTarget)) throw new StepError(step, "not-grounded", "target not grounded")
+    const url = new URL(ctx.page.url())
+    const use: SecretUse = {
+      scope: ctx.options.scope ?? "",
+      stepKey: stepKeyOf(ctx, step),
+      origin: url.origin,
+      path: url.pathname,
+      target: grantedTarget(ctx, step, stepTarget),
+      element: await input.evaluate(elementInfo),
+      interrupt: step.interrupt !== undefined,
+    }
+    const value = await resolveSecret(ctx, secret, step, use, input)
+    return { input, value, origin: use.origin, path: use.path }
   } catch (error) {
     await input.dispose().catch(() => undefined)
     throw error
@@ -357,14 +448,107 @@ export async function prepareSecretWrite(
 /**
  * Writes the secret into the approved element itself, not to whatever has focus now (focus may
  * have moved while the vault resolved it: a keychain prompt, an autofocus script). A handle whose
- * document was replaced throws: nothing is written anywhere. Appended to what the field holds, like
- * typing.
+ * document was replaced throws: nothing is written anywhere; the origin and path are checked again
+ * right before (a `pushState` doesn't replace the document). Appended to what the field holds,
+ * like typing. The element is remembered: nothing is copied or dragged out of it (§3 A5).
  */
-export async function writeSecret(write: SecretWrite, timeout: number): Promise<void> {
+export async function writeSecret(
+  ctx: Ctx,
+  write: SecretWrite,
+  step: StepRef,
+  timeout: number,
+): Promise<void> {
   try {
+    const now = new URL(ctx.page.url())
+    if (now.origin !== write.origin || now.pathname !== write.path) {
+      throw new StepError(
+        step,
+        "off-origin",
+        `the page moved to ${now.origin}${now.pathname} while the secret was resolved`,
+      )
+    }
     const before = await write.input.inputValue({ timeout })
     await write.input.fill(before + write.value, { timeout })
-  } finally {
+    ctx.secretWritten.push({ page: ctx.page, handle: write.input })
+  } catch (error) {
     await write.input.dispose().catch(() => undefined)
+    throw error
+  }
+}
+
+/** A shortcut as a set of lowercased parts ("Mod+Shift+V" → mod, shift, v). */
+function chord(keys: string): Set<string> {
+  return new Set(keys.split("+").map((k) => k.trim().toLowerCase()))
+}
+const hasCommand = (c: Set<string>) => c.has("mod") || c.has("control") || c.has("meta")
+const isPaste = (c: Set<string>) =>
+  (hasCommand(c) && c.has("v")) || (c.has("shift") && c.has("insert"))
+const isCopyLike = (c: Set<string>) =>
+  (hasCommand(c) && (c.has("c") || c.has("x") || c.has("a"))) ||
+  (c.has("control") && c.has("insert")) ||
+  (c.has("shift") && c.has("delete"))
+
+/** The written elements still in the driven page's current document (a navigation drops them). */
+async function writtenHere(ctx: Ctx): Promise<ElementHandle<Element>[]> {
+  const here = ctx.secretWritten.filter((w) => w.page === ctx.page)
+  const live = await Promise.all(
+    here.map((w) => w.handle.evaluate((e) => e.isConnected).catch(() => false)),
+  )
+  return here.filter((_, i) => live[i]).map((w) => w.handle as ElementHandle<Element>)
+}
+
+/** Whether focus or the selection is inside one of these elements (runs in the page). */
+function holdsFocusOrSelection(elements: Element[]): boolean {
+  const inside = (n: Node | null) => n !== null && elements.some((e) => e === n || e.contains(n))
+  let active: Element | null = document.activeElement
+  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement
+  const selection = getSelection()
+  return (
+    inside(active) || inside(selection?.anchorNode ?? null) || inside(selection?.focusNode ?? null)
+  )
+}
+
+/**
+ * SECRETS-DESIGN §3 A5: while secrets are known, no paste (an app's own "Copy" button may have put
+ * a value in the clipboard); no copy, cut or select-all while focus or the selection is in an
+ * element a secret was written to.
+ */
+export async function assertKeysKeepSecrets(ctx: Ctx, step: StepRef, keys: string): Promise<void> {
+  const c = chord(keys)
+  if (isPaste(c) && ctx.secretValues.size > 0) {
+    throw new StepError(
+      step,
+      "secret-refused",
+      "no paste in a scene that knows a secret: type the text instead",
+    )
+  }
+  if (!isCopyLike(c)) return
+  const written = await writtenHere(ctx)
+  if (written.length === 0) return
+  const held = await ctx.page.evaluate(holdsFocusOrSelection, written).catch(() => true) // unsure: refused (fails closed)
+  if (held) {
+    throw new StepError(
+      step,
+      "secret-refused",
+      `"${keys}" would copy from a field holding a secret`,
+    )
+  }
+}
+
+/** §3 A5: nothing is dragged out of an element a secret was written to. */
+export async function assertDragKeepsSecrets(
+  ctx: Ctx,
+  step: StepRef,
+  source: Locator,
+): Promise<void> {
+  const written = await writtenHere(ctx)
+  if (written.length === 0) return
+  const holds = await source
+    .evaluate((src, elements) => elements.some((e) => src === e || src.contains(e)), written, {
+      timeout: ctx.timeoutMs,
+    })
+    .catch(() => true)
+  if (holds) {
+    throw new StepError(step, "secret-refused", "this drag would move a field holding a secret")
   }
 }

@@ -3,7 +3,15 @@ import { claimIds, CssSelector, idsOf, OrgId, ProjectId, withoutCredentials } fr
 import { SceneId } from "./scene.ts"
 import { Format, OutputPreset, StyleOverride } from "./style.ts"
 import { guarded } from "./guards.ts"
-import { Action, CameraDefault, Ensure, Locator, presetRefs, type Scenario } from "./scenario.ts"
+import {
+  Action,
+  CameraDefault,
+  Ensure,
+  Locator,
+  presetRefs,
+  type Scenario,
+  typesSecret,
+} from "./scenario.ts"
 import { Pacing, RuleName, Viewport } from "./settings.ts"
 
 // Two shapes (docs/OBJECT-MODEL.md §0.5, §2; APPROACHES §10c):
@@ -24,7 +32,21 @@ export type TargetApp = z.infer<typeof TargetApp>
 export const Preset = z.strictObject({
   /** Run once per recording batch, then reuse its browser session (login presets). */
   session: z.boolean().default(false),
-  steps: z.array(z.union([Ensure, Action])).min(1),
+  steps: z
+    .array(z.union([Ensure, Action]))
+    .min(1)
+    .superRefine((steps, ctx) => {
+      // A preset step typing a secret needs an id: its approval refers to it (SECRETS-DESIGN §3).
+      for (const [i, s] of steps.entries()) {
+        if ("action" in s && typesSecret(s) && s.id === undefined) {
+          ctx.addIssue({
+            code: "custom",
+            message: "a step typing a secret needs an id (its approval refers to it)",
+            path: [i, "id"],
+          })
+        }
+      }
+    }),
 })
 export type Preset = z.infer<typeof Preset>
 

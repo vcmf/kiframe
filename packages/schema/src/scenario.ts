@@ -73,6 +73,27 @@ export type UngroundedTarget = z.infer<typeof UngroundedTarget>
 export const Target = z.union([GroundedTarget, UngroundedTarget])
 export type Target = z.infer<typeof Target>
 
+/**
+ * A grounded target as a stable string (SECRETS-DESIGN §3 A1): what a secret approval binds. Its
+ * healing metadata (`intent`, `fingerprint`) is left out; keys sorted; the default `exact: false`
+ * dropped, so the same target written two ways is the same string.
+ */
+export function canonicalTarget(target: GroundedTarget): string {
+  const { intent: _intent, fingerprint: _fingerprint, ...rest } = target
+  const stable = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(stable)
+    if (value === null || typeof value !== "object") return value
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(value).sort()) {
+      const v = (value as Record<string, unknown>)[key]
+      if (v === undefined || (key === "exact" && v === false)) continue
+      out[key] = stable(v)
+    }
+    return out
+  }
+  return JSON.stringify(stable(rest))
+}
+
 export function isGrounded(target: Target): target is GroundedTarget {
   return "by" in target
 }
@@ -227,6 +248,29 @@ const scrollHasExactlyOneMode = (s: {
 }) => s.action !== "scroll" || [s.to, s.by, s.until].filter((v) => v !== undefined).length === 1
 const scrollModeError = { message: "scroll needs exactly one of `to`, `by` or `until`" }
 
+/**
+ * A step typing a secret targets exactly one element, as the user approved it (SECRETS-DESIGN §3
+ * A2): a grounded locator with no fallbacks and no `nth` (either could reach another field).
+ */
+const secretTargetIsExact = (s: { action: string; value?: unknown; target?: unknown }) =>
+  s.action !== "type" ||
+  typeof s.value !== "string" ||
+  secretRefName(s.value) === undefined ||
+  (typeof s.target === "object" &&
+    s.target !== null &&
+    "by" in s.target &&
+    !("fallbacks" in s.target && s.target.fallbacks !== undefined) &&
+    !("nth" in s.target && s.target.nth !== undefined))
+const secretTargetError = {
+  message: "a step typing a secret needs one exact grounded target: no fallbacks, no `nth`",
+  path: ["target"],
+}
+
+/** Whether an action types a secret (its step then needs an id: approvals are keyed by it). */
+export function typesSecret(a: { action: string; value?: unknown }): boolean {
+  return a.action === "type" && typeof a.value === "string" && secretRefName(a.value) !== undefined
+}
+
 /** Off-camera fields (setup, teardown, presets): IDs are optional there. */
 const offCamera = { id: StepId.optional(), risky: z.boolean().optional() }
 
@@ -247,6 +291,7 @@ export const Action = z
     Expect.extend(offCamera),
   ])
   .refine(scrollHasExactlyOneMode, scrollModeError)
+  .refine(secretTargetIsExact, secretTargetError)
 export type Action = z.infer<typeof Action>
 
 /** On-camera fields: a stable ID plus presentation directives. */
@@ -269,6 +314,7 @@ export const Step = z
     Expect.extend(onCamera),
   ])
   .refine(scrollHasExactlyOneMode, scrollModeError)
+  .refine(secretTargetIsExact, secretTargetError)
 export type Step = z.infer<typeof Step>
 
 // ─── Setup / teardown items ───────────────────────────────────────────────────
@@ -332,6 +378,21 @@ const ScenarioBase = z
     teardown: z.array(Action).optional(),
   })
   .superRefine((s, ctx) => {
+    // Off-camera steps typing a secret need an id too: approvals are keyed by it (§3 A1).
+    for (const [phase, items] of [
+      ["setup", s.setup ?? []],
+      ["teardown", s.teardown ?? []],
+    ] as const) {
+      for (const [i, item] of items.entries()) {
+        if ("action" in item && typesSecret(item) && item.id === undefined) {
+          ctx.addIssue({
+            code: "custom",
+            message: "a step typing a secret needs an id (its approval refers to it)",
+            path: [phase, i, "id"],
+          })
+        }
+      }
+    }
     // IDs are unique across setup, steps and teardown, so anchors are never ambiguous.
     // (Preset step ids are checked against these by `checkScenarioAgainstProject`.)
     const claims = claimIds(s.setup, ["setup"], ctx)
