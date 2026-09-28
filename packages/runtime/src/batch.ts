@@ -1,4 +1,9 @@
-import type { ProjectConfig, ResolvedEnvironment, Scenario } from "@kiframe/schema"
+import {
+  Action,
+  type ProjectConfig,
+  type ResolvedEnvironment,
+  type Scenario,
+} from "@kiframe/schema"
 import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
@@ -74,17 +79,15 @@ export async function recordBatch(
   }
   const origin = new URL(project.target.url).origin
   let state: BrowserContextOptions["storageState"]
-  const ready = new Set<string>()
-  const landings: Record<string, string> = {}
+  // The session presets the saved state holds, and the page each one ended on.
+  let landings: Record<string, string> = {}
   const results: BatchResult[] = []
   for (const [index, scene] of scenes.entries()) {
     const uses = sessionPresetsOf(scene.scenario, project)
     // Only a scene using the saved session starts from it (a signed-out scene stays signed out).
     // And only with a page to go back to for each (the setup may rely on it).
     const reuse =
-      state !== undefined &&
-      uses.length > 0 &&
-      uses.every((p) => ready.has(p) && Object.hasOwn(landings, p))
+      state !== undefined && uses.length > 0 && uses.every((p) => Object.hasOwn(landings, p))
     const saved = reuse ? state : undefined
     const savedHere = new Set<string>()
     let context: BrowserContext | undefined
@@ -107,17 +110,17 @@ export async function recordBatch(
         skipSessionPresets: reuse ? uses : [],
         sessionLandings: landings,
         onSessionReady: async (preset, at) => {
+          // Only fresh-login scenes get here (a reusing one skips its session presets). Its fresh
+          // context holds only what it logged into: sessions saved by earlier scenes are gone.
           state = await current.storageState({ indexedDB: true })
-          // A fresh context's state holds only what this scene logged into: sessions saved by
-          // earlier scenes aren't in it any more.
-          if (!reuse && !savedHere.has(preset)) {
-            for (const p of ready) if (!savedHere.has(p)) ready.delete(p)
-          }
+          if (savedHere.size === 0) landings = {}
           savedHere.add(preset)
-          ready.add(preset)
           const url = new URL(at.url())
-          if (url.origin === origin) landings[preset] = `${url.pathname}${url.search}`
-          else delete landings[preset]
+          const landing = `${url.pathname}${url.search}${url.hash}`
+          // Kept only if the runner can go back there (same origin, a valid relative `goto`).
+          if (url.origin === origin && Action.safeParse({ action: "goto", url: landing }).success) {
+            landings[preset] = landing
+          }
         },
       })
       result = { ok: true, take }
@@ -127,7 +130,7 @@ export async function recordBatch(
       // scene logs in again rather than failing the same way. Not for a setup error or a file one.
       if (reuse && error instanceof StepError && error.reason !== "invalid-setup") {
         state = undefined
-        ready.clear()
+        landings = {}
       }
     } finally {
       await context?.close().catch(() => undefined)
