@@ -6,7 +6,7 @@ import { type Ctx, guard } from "./context.ts"
 // Risky actions: approvals, the label check, and the off-screen diagnosis of failed pointer actions.
 
 /** Playwright's own "Timeout …ms exceeded" on an action (nothing else is): a StepError's detail. */
-export function isActionTimeout(error: StepError): boolean {
+function isActionTimeout(error: StepError): boolean {
   return /Timeout \d+ms exceeded/.test(error.detail)
 }
 

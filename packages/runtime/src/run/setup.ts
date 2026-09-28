@@ -16,8 +16,8 @@ import { runOne } from "./step.ts"
 // Setup: presets inlined (session presets skipped or replaced by their landing), and `ensure`.
 
 /** A setup item once presets are inlined: an action, an `ensure`, or the end of a preset. */
-export type PresetOrigin = { name: string; session: boolean }
-export type SetupEntry =
+type PresetOrigin = { name: string; session: boolean }
+type SetupEntry =
   | { kind: "action"; index: number; action: Action; preset?: PresetOrigin }
   | { kind: "ensure"; index: number; ensure: Ensure["ensure"] }
   | ({ kind: "preset_done"; index: number } & PresetOrigin)
@@ -108,7 +108,7 @@ export async function runSetupEntry(
 }
 
 /** After the page settles, how long an `absent` check waits for something that renders late. */
-export const ABSENT_GRACE_MS = 1000
+const ABSENT_GRACE_MS = 1000
 
 /**
  * `ensure` (docs/OBJECT-MODEL.md §2): the one declarative idempotency primitive.
@@ -120,7 +120,7 @@ export const ABSENT_GRACE_MS = 1000
  * The cleanup runs inside this step: its steps are reported as `ensure: <action>` of this setup
  * index, and any failure is this step's (`ensure-failed`), never a teardown failure.
  */
-export async function ensure(
+async function ensure(
   ctx: Ctx,
   scenario: Scenario,
   before: readonly SetupEntry[],

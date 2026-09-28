@@ -1,4 +1,4 @@
-import type { Locator } from "playwright"
+import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
@@ -54,7 +54,7 @@ export async function followSecretFields(
 
 /** How often the page is scanned for secret text while recording, and how long a scan may take. */
 export const TEXT_SCAN_MS = 300
-export const SCAN_TIMEOUT_MS = 2000
+const SCAN_TIMEOUT_MS = 2000
 
 /**
  * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`). A region is one
@@ -119,7 +119,7 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
  * Where a secret field is now: its box, null when it's known to be gone (detached or not rendered),
  * "unknown" when measuring failed (timeout, several matches): the blur stays where it was.
  */
-export async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
+async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
   try {
     // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
     // boundingBox's attach timeout on every later step.
@@ -130,7 +130,7 @@ export async function measureField(locator: Locator): Promise<Box | null | "unkn
   }
 }
 
-export async function resolveSecret(
+async function resolveSecret(
   ctx: Ctx,
   name: string,
   step: StepRef,
@@ -158,7 +158,7 @@ export async function resolveSecret(
 }
 
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */
-export function urlPath(value: string): string | undefined {
+function urlPath(value: string): string | undefined {
   // Per character, never through the URL parser: it would cut the value at ? or # and resolve ".."
   // (a secret "p#Kd93!x" must not become the pattern "p").
   try {
@@ -237,7 +237,7 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
   return text.replace(new RegExp(alternation, "giu"), "[secret]")
 }
 
-export function htmlEscape(value: string, apostrophe: string): string {
+function htmlEscape(value: string, apostrophe: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -271,7 +271,7 @@ export function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: S
  * The input or textarea a secret would be written to (runs in the page): the target itself must be
  * focused (a web component: its host, then the focused element in its shadow root). Null otherwise.
  */
-export function secretInputOf(el: Element): HTMLInputElement | HTMLTextAreaElement | null {
+function secretInputOf(el: Element): HTMLInputElement | HTMLTextAreaElement | null {
   const root = el.getRootNode()
   const active = root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
   if (active !== el) return null
@@ -290,4 +290,81 @@ export function scrubError(error: Error, secrets: Set<string>): Error {
   const scrubbed = new Error(message)
   scrubbed.name = error.name // e.g. TimeoutError: callers may branch on it
   return scrubbed
+}
+
+/** A secret about to be written: the approved element (a handle) and the value. */
+export interface SecretWrite {
+  input: ElementHandle<HTMLInputElement | HTMLTextAreaElement>
+  value: string
+}
+
+/**
+ * Follows a field a secret is typed into until the end of the take (recording): its blur rect
+ * moves with it. Returns the id of its sensitive region.
+ */
+export function followSecretField(
+  ctx: Ctx,
+  step: StepRef,
+  secret: string,
+  target: Locator,
+): string {
+  const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}`
+  if (ctx.options.recording === true) {
+    ctx.secretFields.push({ id, locator: target, page: ctx.page })
+  }
+  return id
+}
+
+/**
+ * The element a secret goes into and its value, resolved now (the field is focused). The target
+ * itself (or the input in its shadow root), never another field inside it: the one focused before
+ * could be a visible text box. Only an input or a textarea (a value written as a whole). A handle is
+ * bound to its document, so a navigation (another origin, another page) can't swap it between the
+ * checks and the write.
+ */
+export async function prepareSecretWrite(
+  ctx: Ctx,
+  target: Locator,
+  step: StepRef,
+  secret: string,
+): Promise<SecretWrite> {
+  const timeout = ctx.timeoutMs
+  const handle = await target.evaluateHandle(secretInputOf, undefined, { timeout })
+  const input = handle.asElement() as ElementHandle<HTMLInputElement | HTMLTextAreaElement> | null
+  if (input === null) {
+    await handle.dispose()
+    throw new StepError(
+      step,
+      "action-failed",
+      `secret "${secret}" goes into an input or a textarea itself: use a locator for the field, not a container`,
+    )
+  }
+  try {
+    const inputType = await input.evaluate((el) =>
+      el instanceof HTMLInputElement ? el.type : "textarea",
+    )
+    const value = await resolveSecret(ctx, secret, step, {
+      origin: new URL(ctx.page.url()).origin,
+      field: { inputType },
+    })
+    return { input, value }
+  } catch (error) {
+    await input.dispose().catch(() => undefined)
+    throw error
+  }
+}
+
+/**
+ * Writes the secret into the approved element itself, not to whatever has focus now (focus may
+ * have moved while the vault resolved it: a keychain prompt, an autofocus script). A handle whose
+ * document was replaced throws: nothing is written anywhere. Appended to what the field holds, like
+ * typing.
+ */
+export async function writeSecret(write: SecretWrite, timeout: number): Promise<void> {
+  try {
+    const before = await write.input.inputValue({ timeout })
+    await write.input.fill(before + write.value, { timeout })
+  } finally {
+    await write.input.dispose().catch(() => undefined)
+  }
 }

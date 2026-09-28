@@ -6,7 +6,7 @@ import { type Ctx, firstLine } from "./context.ts"
 // Conditions for `waitFor` / `expect` / `ensure`, and URL matching.
 
 /** Signals a condition that timed out without a Playwright TimeoutError (network idle). */
-export class ConditionTimeout extends Error {}
+class ConditionTimeout extends Error {}
 
 export async function waitForCondition(
   ctx: Ctx,
@@ -51,7 +51,7 @@ export async function waitForCondition(
   }
 }
 
-export function describeCondition(condition: Condition): string {
+function describeCondition(condition: Condition): string {
   if ("visible" in condition) return `${describeLocator(condition.visible)} never became visible`
   if ("hidden" in condition) return `${describeLocator(condition.hidden)} never disappeared`
   if ("text" in condition) return `text "${condition.text}" never appeared`
@@ -83,7 +83,7 @@ export function urlMatches(actual: URL, expected: URL): boolean {
   return true
 }
 
-export function pathMatches(actual: string, expected: string): boolean {
+function pathMatches(actual: string, expected: string): boolean {
   const want = expected.replace(/\/+$/, "")
   const path = actual.replace(/\/+$/, "")
   if (want === "") return path === ""

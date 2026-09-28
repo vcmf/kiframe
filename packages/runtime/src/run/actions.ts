@@ -23,7 +23,13 @@ import {
 import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
 import { clickAtCursor, moveCursorTo, travel, visiblePart } from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
-import { assertSecretOrigin, resolveSecret, secretInputOf } from "./secrets.ts"
+import {
+  assertSecretOrigin,
+  followSecretField,
+  prepareSecretWrite,
+  type SecretWrite,
+  writeSecret,
+} from "./secrets.ts"
 
 // The actions: `perform` dispatches each step to its implementation (type, drag, upload, scroll…).
 
@@ -90,18 +96,10 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       // A secret is resolved at the last moment, once the field it goes into is focused.
-      let text = secret === undefined ? action.value : ""
-      // The very element a secret goes into: a handle is bound to its document, so a navigation
-      // (another origin, another page) can't swap it between the checks and the write.
-      let secretInput: ElementHandle<HTMLInputElement | HTMLTextAreaElement> | undefined
+      const text = secret === undefined ? action.value : ""
+      let secretWrite: SecretWrite | undefined
       const sensitiveId =
-        secret === undefined
-          ? undefined
-          : `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}`
-      // A field holding a secret is followed until the end of the take: its blur rect must move with it.
-      if (sensitiveId !== undefined && ctx.options.recording === true) {
-        ctx.secretFields.push({ id: sensitiveId, locator: target, page: ctx.page })
-      }
+        secret === undefined ? undefined : followSecretField(ctx, step, secret, target)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
       await guard(step, async () => {
@@ -120,31 +118,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
           )
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
-        if (secret !== undefined) {
-          // A secret goes into the target itself (or the input in its shadow root), never into
-          // another field inside it: the one focused before could be a visible text box. Only an
-          // input or a textarea (a value it can be written to as a whole).
-          const input = await target.evaluateHandle(secretInputOf, undefined, { timeout })
-          const element = input.asElement() as ElementHandle<
-            HTMLInputElement | HTMLTextAreaElement
-          > | null
-          if (element === null) {
-            await input.dispose()
-            throw new StepError(
-              step,
-              "action-failed",
-              `secret "${secret}" goes into an input or a textarea itself: use a locator for the field, not a container`,
-            )
-          }
-          secretInput = element
-          const inputType = await element.evaluate((el) =>
-            el instanceof HTMLInputElement ? el.type : "textarea",
-          )
-          text = await resolveSecret(ctx, secret, step, {
-            origin: new URL(page.url()).origin,
-            field: { inputType },
-          })
-        }
+        if (secret !== undefined) secretWrite = await prepareSecretWrite(ctx, target, step, secret)
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
         if (ctx.options.recording === true) {
           fieldBox = await target
@@ -161,18 +135,8 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
-        if (secretInput !== undefined) {
-          // Written into the approved element itself, not to whatever has focus now (focus may
-          // have moved while the vault resolved it: a keychain prompt, an autofocus script). A
-          // handle whose document was replaced throws: nothing is written anywhere. Appended to
-          // what the field holds, like typing.
-          const input = secretInput
-          try {
-            const before = await input.inputValue({ timeout })
-            await input.fill(before + text, { timeout })
-          } finally {
-            await input.dispose().catch(() => undefined)
-          }
+        if (secretWrite !== undefined) {
+          await writeSecret(secretWrite, timeout)
         } else if (action.instant === true) {
           await page.keyboard.insertText(text)
         } else {
@@ -254,7 +218,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
 }
 
 /** A press (click event) for the recorder: ripple and camera framing. Recording only. */
-export async function reportPress(
+async function reportPress(
   ctx: Ctx,
   step: StepRef,
   target: Locator,
@@ -271,14 +235,14 @@ export async function reportPress(
 }
 
 /** `n` evenly spaced samples from `from` (excluded) to `to` (included), 16 ms apart. */
-export function evenPath(from: Point, to: Point, n: number): { t: number; x: number; y: number }[] {
+function evenPath(from: Point, to: Point, n: number): { t: number; x: number; y: number }[] {
   return Array.from({ length: n }, (_, i) => {
     const u = (i + 1) / n
     return { t: (i + 1) * 16, x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u }
   })
 }
 
-export function unionBox(a: Box, b: Box): Box {
+function unionBox(a: Box, b: Box): Box {
   const x = Math.min(a.x, b.x)
   const y = Math.min(a.y, b.y)
   return {
@@ -293,7 +257,7 @@ export function unionBox(a: Box, b: Box): Box {
  * Drag the target to another element or by an offset. On camera: the human cursor path with the
  * button held (pressed cursor samples). Off camera: Playwright's own `dragTo`, or a plain offset.
  */
-export async function drag(
+async function drag(
   ctx: Ctx,
   action: Extract<AnyAction, { action: "drag" }>,
   step: StepRef,
@@ -413,7 +377,7 @@ export async function drag(
 }
 
 /** The target, if it resolves to exactly one hidden `<input type=file>` (primary locator only). */
-export async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
+async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
   const candidates = toPlaywright(ctx.page, stripExtras(target)).and(
     ctx.page.locator("input[type=file]"),
@@ -428,7 +392,7 @@ export async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator
  * Upload a project asset: straight into the target if it's a file input, else through the file
  * chooser that clicking the target opens (a styled button or label). The OS dialog never shows.
  */
-export async function upload(
+async function upload(
   ctx: Ctx,
   action: Extract<AnyAction, { action: "upload" }>,
   step: StepRef,
@@ -505,7 +469,7 @@ export async function upload(
   await guard(step, () => chooser.setFiles(file, { timeout: ctx.timeoutMs }))
 }
 
-export async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
+async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
   if (result.fallbackIndex !== undefined) {
@@ -523,11 +487,7 @@ export async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Loc
  * element (app-shell layouts, where `<body>` doesn't scroll and a `<main>` pane does).
  * Smooth, human-like scrolling comes with P0-4; here it's instant and deterministic.
  */
-export async function scroll(
-  ctx: Ctx,
-  action: Extract<AnyAction, { action: "scroll" }>,
-  step: StepRef,
-) {
+async function scroll(ctx: Ctx, action: Extract<AnyAction, { action: "scroll" }>, step: StepRef) {
   if (action.to !== undefined) {
     await find(ctx, action.to, step)
     return
@@ -584,7 +544,7 @@ export async function scroll(
 }
 
 /** What a scroll reports: whether it moved, and the scroller's visible area and content height. */
-export interface ScrollState {
+interface ScrollState {
   moved: boolean
   height: number
   contentHeight: number
@@ -596,7 +556,7 @@ export interface ScrollState {
  * towards the target when it's in the DOM (up if it's above the scroller's visible area), else
  * downwards. At the end of the content, waits for lazily loaded content once before giving up.
  */
-export async function scrollUntil(
+async function scrollUntil(
   ctx: Ctx,
   until: Target,
   step: StepRef,
@@ -685,7 +645,7 @@ export async function scrollUntil(
  * The page's main scroller: the document when it scrolls, otherwise the largest visible scrollable
  * element (app-shell layouts, where `<body>` doesn't scroll and a `<main>` pane does). Runs in the page.
  */
-export function findMainScroller(): Element {
+function findMainScroller(): Element {
   const doc = document.scrollingElement ?? document.documentElement
   const docScrolls =
     doc.scrollHeight > innerHeight + 1 &&

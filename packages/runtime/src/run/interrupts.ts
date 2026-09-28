@@ -2,7 +2,6 @@ import type { ProjectConfig } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import { toPlaywright, visibleOnly } from "../targets.ts"
-import { perform } from "./actions.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
 import { settle } from "./settle.ts"
@@ -15,7 +14,7 @@ export function hideCss(selectors: readonly string[]): string {
 }
 
 /** Pages already hiding a given CSS (a harness may run many scenarios on one page). */
-export const hiddenOn = new WeakMap<Page, Set<string>>()
+const hiddenOn = new WeakMap<Page, Set<string>>()
 
 /**
  * Hides the project's `hide` selectors on a page: in the current document and in every later one
@@ -63,14 +62,14 @@ export async function applyHide(ctx: Ctx, page: Page): Promise<void> {
 }
 
 /** The visible elements matching a rule's `when`. */
-export function whenOf(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Locator {
+function whenOf(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Locator {
   return visibleOnly(
     toPlaywright(ctx.page, "by" in rule.when ? rule.when : { by: "text", text: rule.when.text }),
   )
 }
 
 /** The first rule (in order, not in `skip`) whose `when` is visible right now (no waiting). */
-export async function matchingInterrupt(
+async function matchingInterrupt(
   ctx: Ctx,
   skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
@@ -115,7 +114,7 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
       if (rule.do.risky === true) {
         await requireApproval(ctx, ref, "risky step needs approval")
       }
-      await perform(ctx, rule.do, ref)
+      await ctx.perform(rule.do, ref)
       await guard(ref, () => settle(ctx, false))
       // Best effort, inside the cut: a dialog fading out is gone before the step is filmed. One
       // that fades in place (opacity 0) never counts as hidden: the wait just ends.
