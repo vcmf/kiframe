@@ -11,10 +11,12 @@
   },
   "dependencies": {
     "@kiframe/schema": "workspace:*",
-    "playwright": "1.63.0"
+    "playwright": "1.63.0",
+    "pngjs": "7.0.0"
   },
   "devDependencies": {
     "@kiframe/generators": "workspace:*",
-    "@kiframe/vault": "workspace:*"
+    "@kiframe/vault": "workspace:*",
+    "@types/pngjs": "6.0.5"
   }
 }

@@ -231,6 +231,12 @@ The chat never contains secret values. If a user pastes one there anyway, we det
 - **Cut after three review rounds:** v0 binds the field *kind*, not the locator or `autocomplete` of §7.4 point 3 (they change with healing, fallbacks and anti-autofill tricks, and broke normal logins). A same-origin text box of the same kind can still receive a non-password secret: BACKLOG.
 - The page's origin is checked again right before the text is sent.
 
+#### v0 scrubber and scanner (M1-6)
+- **Scrubber** (`scrubSecrets`): exact values and their URL, form, double-URL, path, base64 (url), JSON and HTML encodings, ignoring case, longest first in one pass; a raw value of 4+ characters also matches when split by whitespace or line breaks (page text across nodes, accessibility snapshots). Errors and navigate URLs go through it.
+- **Scanner** (`scanSecretText`): the page's visible text nodes and field values (not password inputs, not hidden text), in the viewport, are pulled into Node and matched there, per block (a value split across nodes is found); the secret values never enter the page. Rects come from the page's own Range layout.
+- **While recording**, the scan runs at every step boundary and every 300 ms; each occurrence is a `sensitive` region (`secret-text`) that follows it and ends when it's gone. A new one is **backdated to the previous scan** (no frame shows it unblurred). Values come from the secrets resolved in the run plus `knownSecretValues` (the project's secrets, for a scene whose login was skipped).
+- **Model screenshots** (`screenshotForModel`): scanned before and after the screenshot, the union painted over in Node; a page that can't be scanned gives no screenshot.
+
 #### Secret kinds
 - v0: `password`, `username`, `api_key`, generic `text`, `session` (saved `storageState`).
 - Later: `totp_seed` (the vault generates the current 2FA code at fill time).

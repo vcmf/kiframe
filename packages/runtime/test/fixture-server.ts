@@ -4,6 +4,12 @@ import type { AddressInfo } from "node:net"
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
   // M1-3: a chat widget to hide, a cookie dialog that shows up late, one that shows on first move.
+  // M1-6: a secret shown as text: split across nodes, in a field, hidden, late, in a password input.
+  "/whoami": `<!doctype html><title>Who am I</title>
+    <p id="a">Logged in as <b>bob@</b>acme.com</p>
+    <input id="f" value="bob@acme.com"><input type="password" value="bob@acme.com">
+    <p style="display:none">bob@acme.com</p><p id="late"></p>
+    <script>setTimeout(() => document.getElementById("late").textContent = "Hi BOB@ACME.COM", 400)</script>`,
   // M1-4: a cookie session. "Sign in" sets it, "Sign out" clears it.
   "/session": `<!doctype html><title>Session</title>
     <p id="who"></p><button id="in">Sign in</button><button id="out">Sign out</button>
