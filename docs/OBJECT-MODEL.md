@@ -355,14 +355,15 @@ interrupts:                      # checked before each step; handled off camera
     when: { by: role, role: dialog, name: "Cookie preferences" }
     do: { action: click, target: { by: role, role: button, name: "Accept all" } }
   - id: whats-new
-    when: { text: "What's new" }
+    when: { by: role, role: dialog, name: "What's new" }   # the dialog, not a text also in a menu
     do: { action: press, keys: "Escape" }
 hide:                            # removed from the frame with injected CSS (display: none)
   - "#intercom-container"
   - ".nps-survey"
 ```
 - **Mechanism (revised):** *not* Playwright's `page.addLocatorHandler()`. That handler fires inside actionability checks, which can be between a `mouse.move()` and a `mouse.down()`, and Playwright warns that the mouse is then left in the wrong position. That's exactly our human-cursor pattern. Instead, **the runtime runs an explicit interrupt check before each step's cursor travel**. If an interrupt matches, it runs its `do`, marks the time span, and **re-plans the cursor path**. The screencast keeps running, and the marked span becomes a **cut** in the `clips` track, so it's invisible in the video.
-- Interrupts that appear **mid-step** (rare) make the step fail and retry once after handling them.
+- Interrupts that appear **mid-step** (rare) are handled inside a click when its target is found covered, before the press. Steps are never retried (a retry could repeat an action that already happened).
+- A rule runs **at most once per page** in a run (a dismissed banner may stay in the page, faded out). After its `do`, a fading dialog is waited for briefly, inside the cut. A rule's own actions never trigger another interrupt check, and a `do` marked `risky: true` asks for approval like a step.
 - The agent proposes interrupt and hide rules itself when it hits them during grounding. Rules can be **shared at org level** (a bank of known cookie banners, APPROACHES §10c).
 
 **Keystroke overlay** is a **style** option, `style.keystrokes`:

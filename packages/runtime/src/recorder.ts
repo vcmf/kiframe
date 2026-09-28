@@ -187,6 +187,7 @@ export async function recordScenario(
         )
     }
     const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
+    const interruptStarts = new Map<string, number>()
     const clickedSteps = new Set<string>()
     const handle = (e: RunnerEvent) => {
       switch (e.kind) {
@@ -273,10 +274,23 @@ export async function recordScenario(
           break
         case "target_fallback":
           break
+        case "interrupt_start":
+          interruptStarts.set(e.rule, at())
+          break
+        case "interrupt_end": {
+          // The handled span, cut from the video by the clips generator.
+          const from = interruptStarts.get(e.rule) ?? at()
+          interruptStarts.delete(e.rule)
+          push({ ...base(e.step), t: from, kind: "interrupt", rule: e.rule, until: at() })
+          break
+        }
         case "teardown_failed":
           // Only the first teardown failure is thrown (Take.teardownError); every other one is
           // a warning of the take, never silent.
           warnings.push(`teardown: ${firstLine(e.error)}`)
+          break
+        case "warning":
+          if (!warnings.includes(e.message)) warnings.push(e.message)
           break
       }
     }

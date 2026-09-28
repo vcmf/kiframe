@@ -8,3 +8,4 @@ coverage/
 !.env.example
 # Phase 0 local outputs (takes, renders, experiment logs)
 .kiframe-local/
+*.tsbuildinfo

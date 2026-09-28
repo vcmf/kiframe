@@ -3,6 +3,41 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // M1-3: a chat widget to hide, a cookie dialog that shows up late, one that shows on first move.
+  "/banner": `<!doctype html><title>Banner</title>
+    <div id="chat" style="position:fixed; right:10px; bottom:10px">Chat with us</div>
+    <button id="go">Continue</button><p id="s"></p>
+    <script>
+      document.getElementById("go").onclick = () => document.getElementById("s").textContent = "continued"
+      const dialog = () => {
+        if (document.getElementById("cookies")) return
+        const d = document.createElement("div")
+        d.id = "cookies"; d.setAttribute("role", "dialog"); d.setAttribute("aria-label", "Cookie preferences")
+        d.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.5)"
+        d.innerHTML = "<button>Accept all</button>"
+        d.querySelector("button").onclick = () => {
+          // ?fade: the dialog fades out for 400 ms, still in the page (no clicks through it).
+          if (!location.search.includes("fade")) return d.remove()
+          d.style.transition = "opacity 0.4s"; d.style.opacity = "0"
+          // ?fadeblock: it still catches clicks while fading.
+          if (!location.search.includes("fadeblock")) d.style.pointerEvents = "none"
+          setTimeout(() => d.remove(), 400)
+        }
+        document.body.append(d)
+      }
+      if (location.search.includes("late")) setTimeout(dialog, 300)
+      // ?stacked: a "What's new" modal over the cookie dialog, both at load.
+      if (location.search.includes("stacked")) {
+        dialog()
+        const m = document.createElement("div")
+        m.setAttribute("role", "dialog"); m.setAttribute("aria-label", "What's new")
+        m.style.cssText = "position:fixed; inset:0; background:#fff"
+        m.innerHTML = "<button>Close</button>"
+        m.querySelector("button").onclick = () => m.remove()
+        document.body.append(m)
+      }
+      if (location.search.includes("onmove")) addEventListener("mousemove", dialog, { once: true })
+    </script>`,
   // The same list, but the drag starts only after 8 px of movement (dnd-kit's distance constraint).
   "/sortable-8": `<!doctype html><title>Sortable 8</title>
     <style>li { height: 40px; list-style: none; border-bottom: 1px solid #ccc }</style>
