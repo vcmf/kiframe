@@ -1,5 +1,5 @@
-import type { Action, Locator as SchemaLocator, ProjectConfig, Step } from "@kiframe/schema"
-import type { ElementHandle, Page } from "playwright"
+import type { Action, ProjectConfig, Step } from "@kiframe/schema"
+import type { ElementHandle, Locator, Page } from "playwright"
 import { type ApprovalRequest, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
 import type { NetworkTracker } from "../network.ts"
@@ -183,8 +183,13 @@ export interface Ctx {
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
-    /** The step's target (its locator): rebuilt at each measure with the exact-names rule (A8). */
-    target: SchemaLocator
+    /** The target as the type step found it (a fallback when the handle's element is replaced). */
+    locator: Locator
+    /**
+     * The element the secret was written to: followed first (not re-found by name: the field
+     * itself turns exact names on, A8). Blur tracking is never reported to the agent.
+     */
+    handle?: ElementHandle
     page: Page
     last?: string
     /** The last real box (kept while the run is on another page). */

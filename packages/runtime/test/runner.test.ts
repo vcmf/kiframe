@@ -715,6 +715,49 @@ steps:
 `)
     })
 
+    it("keeps following a secret field typed through a partial label", async () => {
+      const vault = await vaultWithPassword()
+      const events: RunnerEvent[] = []
+      await run(
+        `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: a, action: pause, ms: 1 }
+`,
+        { ...approving(vault, []), recording: true, onEvent: (e) => events.push(e) },
+      )
+      const fields = events.filter((e) => e.kind === "secret_field")
+      expect(fields.length).toBeGreaterThan(0)
+      for (const f of fields) expect(f.kind === "secret_field" && f.box).toBeTruthy()
+    })
+
+    it("follows a secret field when the page scrolls, despite a hidden duplicate", async () => {
+      const vault = await vaultWithPassword()
+      const events: RunnerEvent[] = []
+      await run(
+        `setup: [{ action: goto, url: /dup-password }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password, exact: true }, value: "{{secrets.acme.password}}" }
+  - { id: s, action: scroll, by: { y: 200 } }
+`,
+        { ...approving(vault, []), recording: true, onEvent: (e) => events.push(e) },
+      )
+      const start = events.find((e) => e.kind === "type_start")
+      const moved = events.filter((e) => e.kind === "secret_field").at(-1)
+      const y = (e: RunnerEvent | undefined) =>
+        e !== undefined && "box" in e && e.box !== undefined ? e.box.y : undefined
+      expect(y(moved)).toBeDefined()
+      expect(y(moved)).toBeLessThan((y(start) ?? 0) - 100)
+    })
+
+    it("sees an absence on a page whose HTML is still streaming (no secret)", async () => {
+      await run(`setup: [{ action: goto, url: /to-stream }]
+steps:
+  - { id: open, action: click, target: { by: role, role: link, name: Open } }
+  - { id: h, action: waitFor, until: { hidden: { by: css, selector: "#sp" } }, timeout: 2000 }
+`)
+    })
+
     it("never passes an ensure-absent it couldn't check (unreadable page)", async () => {
       const error = await failure(
         `setup:

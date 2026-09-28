@@ -324,6 +324,11 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  "/to-stream": `<!doctype html><title>To stream</title><a href="/stream-page">Open</a>`,
+  // A hidden duplicate password field (a mobile layout), the visible one lower on a tall page.
+  "/dup-password": `<!doctype html><title>Dup password</title><div style="height:300px"></div>
+    <input type="password" aria-label="Password" style="display:none">
+    <input type="password" aria-label="Password"><div style="height:2000px"></div>`,
   // A leftover and a field holding a secret that render together, 500 ms after load.
   "/late-both": `<!doctype html><title>Late both</title><div id="d"></div>
     <script>setTimeout(() => { document.getElementById("d").innerHTML = '<p>Q4 report</p><input value="bob@acme.com">' }, 500)</script>`,
@@ -527,6 +532,13 @@ export async function startFixtureServer(): Promise<{ url: string; close: () => 
       // Server-sent events that never end (notifications): must not block "network idle".
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" })
       res.write("data: hello\n\n")
+      return
+    }
+    if (path === "/stream-page") {
+      // HTML that never finishes streaming (the document stays "loading"); #sp goes after 100 ms.
+      res.writeHead(200, { "content-type": "text/html" })
+      res.write(`<!doctype html><title>Stream</title><div id="sp">Loading</div>
+        <script>setTimeout(() => document.getElementById("sp").remove(), 100)</script>`)
       return
     }
     if (path === "/api/slow5") {
