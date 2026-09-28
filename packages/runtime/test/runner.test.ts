@@ -531,6 +531,81 @@ steps:
     expect(events.filter((e) => e.kind === "interrupt_start")).toHaveLength(1)
   })
 
+  it("doesn't re-run a rule on a fading dialog that still catches clicks", async () => {
+    const events = await runWith(`setup: [{ action: goto, url: "/banner?late&fadeblock" }]
+steps:
+  - { id: wait, action: pause, ms: 600 }
+  - { id: go, action: click, target: { by: role, role: button, name: Continue } }
+`)
+    expect(await page.locator("#s").textContent()).toBe("continued")
+    expect(events.filter((e) => e.kind === "interrupt_start")).toHaveLength(1)
+  })
+
+  const rules = (extra: string) =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+interrupts:
+${extra}`)
+
+  it("fails, never loops, when a rule's own button is covered by another dialog", async () => {
+    const run = runScenario(
+      page,
+      scenario(`setup: [{ action: goto, url: "/banner?stacked" }]
+steps: [{ id: go, action: click, target: { by: role, role: button, name: Continue } }]
+`),
+      rules(`  - id: cookies
+    when: { by: role, role: dialog, name: Cookie preferences }
+    do: { action: click, target: { by: role, role: button, name: Accept all } }
+  - id: whats-new
+    when: { by: role, role: dialog, name: "What's new" }
+    do: { action: click, target: { by: role, role: button, name: Close } }
+`),
+      { timeoutMs: 1000 },
+    )
+    await expect(run).rejects.toThrow(/the interrupt "cookies" couldn't be handled/)
+  })
+
+  it("fails loudly on a rule whose `when` is always on the page", async () => {
+    const run = runScenario(
+      page,
+      scenario(`setup: [{ action: goto, url: /banner }]
+steps: [{ id: a, action: pause, ms: 1 }]
+`),
+      rules(`  - id: chat
+    when: { text: Chat with us }
+    do: { action: press, keys: Escape }
+`),
+      { timeoutMs: 500 },
+    )
+    await expect(run).rejects.toThrow(/still showing after its `do`/)
+  })
+
+  it("asks for approval before a rule's `do` marked risky", async () => {
+    const asked: string[] = []
+    const run = runScenario(
+      page,
+      scenario(`setup: [{ action: goto, url: "/banner?late" }]
+steps:
+  - { id: wait, action: pause, ms: 600 }
+  - { id: go, action: click, target: { by: role, role: button, name: Continue } }
+`),
+      rules(`  - id: cookies
+    when: { by: role, role: dialog, name: Cookie preferences }
+    do: { action: click, target: { by: role, role: button, name: Accept all }, risky: true }
+`),
+      {
+        timeoutMs: 1500,
+        approveRisky: (step) => {
+          asked.push(step.action)
+          return Promise.resolve(false)
+        },
+      },
+    )
+    await expect(run).rejects.toMatchObject({ reason: "risky-not-approved" })
+    expect(asked).toEqual(["interrupt cookies"])
+  })
+
   it("handles an interrupt that covers the target mid-step, before the press", async () => {
     const events = await runWith(`setup: [{ action: goto, url: "/banner?onmove" }]
 steps: [{ id: go, action: click, target: { by: role, role: button, name: Continue } }]

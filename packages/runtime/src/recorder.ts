@@ -289,6 +289,9 @@ export async function recordScenario(
           // a warning of the take, never silent.
           warnings.push(`teardown: ${firstLine(e.error)}`)
           break
+        case "warning":
+          if (!warnings.includes(e.message)) warnings.push(e.message)
+          break
       }
     }
     const onEvent = (e: RunnerEvent) => {
