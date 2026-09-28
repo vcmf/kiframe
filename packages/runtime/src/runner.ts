@@ -1,5 +1,4 @@
 import type {
-  Locator as LocatorSpec,
   Condition,
   Ensure,
   ProjectConfig,
@@ -9,7 +8,6 @@ import type {
   Target,
 } from "@kiframe/schema"
 import { Action, isGrounded, secretRefName } from "@kiframe/schema"
-import { isDeepStrictEqual } from "node:util"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
 import { isSecretRefusal, StepError, type SecretUse, type StepRef } from "./errors.ts"
 import {
@@ -1059,12 +1057,12 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     }
     case "type": {
-      const { locator: target, binding } = await findTarget(ctx, action.target, step)
+      const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       // A secret is resolved at the last moment, once the field it goes into is focused.
       let text = secret === undefined ? action.value : ""
-      let secretField: ReturnType<typeof focusedField> | undefined
+      let secretField: string | undefined
       const sensitiveId =
         secret === undefined
           ? undefined
@@ -1092,12 +1090,20 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
         if (secret !== undefined) {
-          // The element that receives the text (the target, or the input inside it) is what the
-          // vault binds the secret to.
-          secretField = await target.evaluate(focusedField, undefined, { timeout })
+          // A secret goes into the target itself (or the input in its shadow root), never into
+          // another field inside it: the one focused before could be a visible text box.
+          const field = await target.evaluate(secretFieldOf, undefined, { timeout })
+          if (field === null) {
+            throw new StepError(
+              step,
+              "action-failed",
+              `secret "${secret}" goes into an input itself: use a locator for the field, not a container`,
+            )
+          }
+          secretField = field
           text = await resolveSecret(ctx, secret, step, {
             origin: new URL(page.url()).origin,
-            field: { ...binding, ...secretField },
+            field: { inputType: field },
           })
         }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
@@ -1119,13 +1125,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         if (secretField !== undefined) {
           // And still into the field the vault approved: focus may have moved while it resolved
           // (a keychain prompt, an autofocus script), and the text goes to the focused element.
-          const still =
-            (await target.evaluate(hasFocus, undefined, { timeout })) &&
-            isDeepStrictEqual(
-              await target.evaluate(focusedField, undefined, { timeout }),
-              secretField,
-            )
-          if (!still) {
+          if ((await target.evaluate(secretFieldOf, undefined, { timeout })) !== secretField) {
             throw new StepError(
               step,
               "action-failed",
@@ -1470,15 +1470,6 @@ function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
 }
 
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
-  return (await findTarget(ctx, target, step)).locator
-}
-
-/** `find`, and which of the target's locators matched (the primary one or a fallback), with `nth`. */
-async function findTarget(
-  ctx: Ctx,
-  target: Target,
-  step: StepRef,
-): Promise<{ locator: Locator; binding: { locator: LocatorSpec; nth?: number } }> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
   if (result.fallbackIndex !== undefined) {
@@ -1486,15 +1477,7 @@ async function findTarget(
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
-  // `nth` belongs to the primary locator only. Normalized: `exact: false` and `nth: 0` on a
-  // unique match are the defaults, so the same field is described the same way.
-  const nth = result.fallbackIndex === undefined && isGrounded(target) ? target.nth : undefined
-  const { exact, ...rest } = result.used as LocatorSpec & { exact?: boolean }
-  const locator = (exact === true ? { ...rest, exact } : rest) as LocatorSpec
-  return {
-    locator: result.locator,
-    binding: { locator, ...(nth !== undefined && nth > 0 && { nth }) },
-  }
+  return result.locator
 }
 
 async function resolveSecret(
@@ -2129,16 +2112,19 @@ function hasFocus(el: Element): boolean {
   return active !== null && (el === active || el.contains(active))
 }
 
-/** What the focused element is (runs in the page): the part of a vault field binding it knows. */
-function focusedField(el: Element): { inputType: string | null; autocomplete: string | null } {
+/**
+ * The kind of field a secret would be typed into (runs in the page): the target itself must be
+ * focused (a web component: its host, then the focused element in its shadow root). Null otherwise.
+ */
+function secretFieldOf(el: Element): string | null {
   const root = el.getRootNode()
-  const active =
-    (root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null) ?? el
-  return {
-    inputType: active instanceof HTMLInputElement ? active.type.slice(0, 40) : null,
-    // A random anti-autofill value can be long: the start is enough to tell fields apart.
-    autocomplete: active.getAttribute("autocomplete")?.slice(0, 200) ?? null,
-  }
+  const active = root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
+  if (active !== el) return null
+  let inner: Element = el
+  while (inner.shadowRoot?.activeElement) inner = inner.shadowRoot.activeElement
+  if (inner instanceof HTMLInputElement) return inner.type
+  if (inner instanceof HTMLTextAreaElement) return "textarea"
+  return inner instanceof HTMLElement && inner.isContentEditable ? "contenteditable" : "other"
 }
 
 /**

@@ -1,4 +1,3 @@
-import type { Locator } from "@kiframe/schema"
 /** Where in the scenario something happened. */
 export interface StepRef {
   phase: "setup" | "steps" | "teardown"
@@ -55,18 +54,14 @@ export class StepError extends Error {
 export interface SecretUse {
   /** The page's origin. */
   origin: string
-  /** The locator that matched (primary or fallback) with its `nth`, and the focused element. */
-  field: {
-    locator: Locator
-    nth?: number
-    inputType: string | null
-    autocomplete: string | null
-  }
+  /** The focused field's kind: an input's `type`, `textarea`, `contenteditable` or `other`. */
+  field: { inputType: string }
 }
 
 /**
- * A resolver's refusal (the vault's `SecretRefusal`): any error with `code: "secret-refused"`, so
- * it survives IPC and duplicate modules. Its message is reported, so it must never hold a value.
+ * A resolver's refusal (the vault's `SecretRefusal`): any error with `code: "secret-refused"`, not
+ * `instanceof` (duplicate modules). Over IPC the host must rethrow it with its code (Electron drops
+ * custom properties). Its message is reported, so it must never hold a value.
  */
 export function isSecretRefusal(error: unknown): error is Error {
   return error instanceof Error && (error as { code?: unknown }).code === "secret-refused"

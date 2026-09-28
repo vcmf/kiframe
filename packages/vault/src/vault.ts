@@ -136,6 +136,9 @@ export class Vault {
     const parsed = FieldBinding.safeParse(use.field)
     if (!parsed.success) throw new SecretRefusal(`secret "${name}": the field can't be identified`)
     const field = parsed.data
+    if (meta.kind === "password" && field.inputType !== "password") {
+      throw new SecretRefusal(`secret "${name}" is a password: it only goes into a password field`)
+    }
     if (meta.field !== undefined && !isDeepStrictEqual(meta.field, field)) {
       throw new SecretRefusal(
         `secret "${name}" is bound to another field: the user can unbind it in the vault if the form changed`,
@@ -154,9 +157,11 @@ export class Vault {
       throw new SecretRefusal(`secret "${name}" is bound to another field`)
     }
     // Bound at first use (the latest metadata: another call may have bound it meanwhile).
-    this.#update((secrets) =>
-      secrets.map((s) => (s.name === name && s.field === undefined ? { ...s, field } : s)),
-    )
+    if (latest.field === undefined) {
+      this.#update((secrets) =>
+        secrets.map((s) => (s.name === name && s.field === undefined ? { ...s, field } : s)),
+      )
+    }
     return value
   }
 

@@ -1,5 +1,5 @@
 import * as z from "zod"
-import { Locator, SecretName } from "@kiframe/schema"
+import { SecretName } from "@kiframe/schema"
 
 // The vault's metadata (APPROACHES §7.4): what the agent may know about a secret, never its value.
 // Local to this user and machine (never synced), next to the values in the OS keychain.
@@ -18,17 +18,11 @@ export const Origin = z.string().refine((s) => {
 }, "an origin is scheme://host[:port], nothing after it")
 
 /**
- * The field a secret was first typed into: the step's target and what the element is. A later
- * use must match it (a same-origin comment or search box isn't a password field).
+ * The kind of field a secret was first typed into (an input's `type`, `textarea`…). A later use
+ * must be the same kind: a password never goes into a text or search box. Deliberately not the
+ * locator nor `autocomplete`: they change with healing, fallbacks and anti-autofill tricks.
  */
-export const FieldBinding = z.strictObject({
-  /** The step target's locator and `nth`, not its healing metadata (intent, fallbacks…). */
-  locator: Locator,
-  nth: z.number().int().nonnegative().optional(),
-  /** An input's `type` (password, email…); null for a textarea or contenteditable. */
-  inputType: z.string().max(40).nullable(),
-  autocomplete: z.string().max(200).nullable(),
-})
+export const FieldBinding = z.strictObject({ inputType: z.string().min(1).max(40) })
 export type FieldBinding = z.infer<typeof FieldBinding>
 
 export const SecretMeta = z.strictObject({
