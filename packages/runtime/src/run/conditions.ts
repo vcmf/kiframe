@@ -1,6 +1,8 @@
 import type { Condition } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
-import { EXACT_NAMES_HINT, exactNamesFor, ProbeRefusal } from "../secret-state.ts"
+import { EXACT_NAMES_HINT, exactNamesFor, isPartialName, ProbeRefusal } from "../secret-state.ts"
+import type { Locator as SchemaLocator } from "@kiframe/schema"
+import type { Page } from "playwright"
 import { describeLocator, isNavigationError, toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
@@ -20,7 +22,6 @@ export async function waitForCondition(
 ) {
   const { page } = ctx
   const what = describeCondition(condition)
-  const exactHint = EXACT_NAMES_HINT
   const locator =
     "visible" in condition
       ? condition.visible
@@ -31,63 +32,27 @@ export async function waitForCondition(
           : undefined
   try {
     if (locator !== undefined) {
-      // One polling loop: the locator is rebuilt at every poll with the exact-names rule of the
-      // moment (§3 A8; a no-op while no value is known).
-      const wantVisible = !("hidden" in condition)
-      const absence = negative || !wantVisible
-      const started = Date.now()
-      let deadline = started + timeout
-      // Whether any poll could look (exact names off, the page readable), and when the first did:
-      // an absence's grace runs from there (the wait for a secret field to go doesn't eat it).
-      let firstLook: number | undefined
-      // An absence counts only when seen twice in a row on the same, fully loaded document: mid-
-      // navigation, `count()` reads 0 on a page being replaced.
-      let zeroOn: string | undefined
-      for (;;) {
-        const rule = await exactNamesFor(page, [locator])
-        const blocked = absence && (rule.exact || rule.unsure)
-        if (!blocked) {
-          if (firstLook === undefined) {
-            firstLook = Date.now()
-            // Bounded: at most one more timeout past the step's own.
-            if (absence)
-              deadline = Math.min(Math.max(deadline, firstLook + timeout), started + 2 * timeout)
-          }
-          const count = await visibleOnly(toPlaywright(page, locator, rule.exact))
-            .count()
-            .catch((error: unknown) => {
-              // A navigation replaced the page mid-poll: poll again on the new one. Anything
-              // else is a real failure (never read as "met").
-              if (isNavigationError(error)) return undefined
-              throw error
-            })
-          if (count !== undefined && count > 0 && wantVisible) return
-          if (count === 0 && !wantVisible) {
-            const doc = await page
-              .evaluate(() => (document.readyState === "complete" ? location.href : undefined))
-              .catch(() => undefined)
-            if (doc !== undefined && doc === zeroOn) return
-            zeroOn = doc
-          } else zeroOn = undefined
-        } else zeroOn = undefined
-        if (Date.now() >= deadline) {
-          // Never a timeout for an absence no poll could check: `ensure: absent` would read a
-          // timeout as "not there".
-          if (absence && firstLook === undefined) {
-            throw new StepError(
-              step,
-              "secret-refused",
-              `${describeAbsence(locator)}: couldn't check it by a partial name${exactHint}`,
-            )
-          }
-          throw new StepError(
-            step,
-            reason,
-            `${what} (after ${timeout} ms)${rule.exact ? exactHint : ""}`,
-          )
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
+      await pollLocator(page, locator, {
+        timeout,
+        visible: !("hidden" in condition),
+        negative,
+        failed: (why, waited) =>
+          why === "blocked-exact" || why === "blocked-unreadable"
+            ? new StepError(
+                step,
+                "secret-refused",
+                `couldn't check the absence of ${describeLocator(locator)}: ${
+                  why === "blocked-exact"
+                    ? `a partial name${EXACT_NAMES_HINT}`
+                    : "the page couldn't be read (navigating)"
+                }`,
+              )
+            : new StepError(
+                step,
+                reason,
+                `${what} (after ${waited} ms)${why === "timeout-exact" ? EXACT_NAMES_HINT : ""}`,
+              ),
+      })
     } else if ("url" in condition) {
       const expected = new URL(condition.url, ctx.base)
       await page.waitForURL((url) => urlMatches(url, expected), { timeout })
@@ -107,10 +72,6 @@ export async function waitForCondition(
     if (cause instanceof ProbeRefusal) throw new StepError(step, "secret-refused", cause.message)
     throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
-}
-
-function describeAbsence(locator: Parameters<typeof describeLocator>[0]): string {
-  return `the absence of ${describeLocator(locator)}`
 }
 
 function describeCondition(condition: Condition): string {
@@ -150,4 +111,97 @@ function pathMatches(actual: string, expected: string): boolean {
   const path = actual.replace(/\/+$/, "")
   if (want === "") return path === ""
   return path === want || path.startsWith(`${want}/`)
+}
+
+/** One poll of a locator (§3 A8): seen, clear (conclusively none), or blocked (can't conclude). */
+type Poll = "seen" | "clear" | "blocked-exact" | "blocked-unreadable"
+
+/**
+ * Polls a locator until it's visible (`visible`) or gone (not `visible`), or, for a `negative`
+ * check (`ensure: absent` asks "does it appear?"), until it appears or the grace ends.
+ *
+ * Each poll is `seen` (a count above 0: a real match, even under exact names), `clear` (0, with
+ * exact names off and the page readable) or blocked (0 under exact names for a partial name, or a
+ * page that can't be read). An absence passes only on two `clear` polls in a row on the same
+ * document (`performance.timeOrigin`: mid-navigation a count reads 0). At the deadline, an absence
+ * whose last poll was blocked is refused, never timed out into "gone". An absence's time runs from
+ * the first poll that wasn't blocked (bounded to twice the timeout).
+ */
+export async function pollLocator(
+  page: Page,
+  locator: SchemaLocator,
+  o: {
+    timeout: number
+    visible: boolean
+    negative: boolean
+    failed: (
+      why: "timeout" | "timeout-exact" | "blocked-exact" | "blocked-unreadable",
+      waited: number,
+    ) => Error
+  },
+): Promise<void> {
+  const absence = o.negative || !o.visible
+  const started = Date.now()
+  let deadline = started + o.timeout
+  let looked = false
+  let last: Poll
+  let exactSeen = false
+  let clearOn: number | undefined
+  for (;;) {
+    const names = { ...(await exactNamesFor(page, [locator])) }
+    const countWith = (exact: boolean) =>
+      visibleOnly(toPlaywright(page, locator, exact))
+        .count()
+        .catch((error: unknown) => {
+          if (isNavigationError(error)) return undefined
+          throw error
+        })
+    let count = await countWith(names.exact)
+    // A partial match is confirmed: a field holding a secret may have rendered between the rule's
+    // check and the count (then only an exact match counts).
+    if (count !== undefined && count > 0 && !names.exact && isPartialName(locator)) {
+      const again = await exactNamesFor(page, [locator])
+      if (again.exact) {
+        names.exact = true
+        names.unsure = again.unsure
+        count = await countWith(true)
+      }
+    }
+    const doc =
+      count === 0 && !names.exact && !names.unsure
+        ? await page
+            .evaluate(() =>
+              document.readyState === "loading" ? undefined : performance.timeOrigin,
+            )
+            .catch(() => undefined)
+        : undefined
+    exactSeen ||= names.exact
+    last =
+      count !== undefined && count > 0
+        ? "seen"
+        : count === undefined || names.unsure || (doc === undefined && count === 0 && !names.exact)
+          ? "blocked-unreadable"
+          : names.exact
+            ? "blocked-exact"
+            : "clear"
+    if (last === "seen" && (o.visible || o.negative)) return
+    if (absence && !looked && last !== "blocked-exact" && last !== "blocked-unreadable") {
+      looked = true
+      if (o.negative)
+        deadline = Math.min(Math.max(deadline, Date.now() + o.timeout), started + 2 * o.timeout)
+    }
+    if (last === "clear" && !o.visible && !o.negative) {
+      if (clearOn !== undefined && clearOn === doc) return
+      clearOn = doc
+    } else clearOn = undefined
+    if (Date.now() >= deadline) {
+      const waited = Date.now() - started
+      if (absence && (last === "blocked-exact" || last === "blocked-unreadable")) {
+        throw o.failed(last, waited)
+      }
+      // `ensure: absent`: a timeout means "it didn't appear" (absent), only after a clear poll.
+      throw o.failed(exactSeen ? "timeout-exact" : "timeout", waited)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
 }

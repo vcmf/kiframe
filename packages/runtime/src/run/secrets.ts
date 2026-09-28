@@ -4,7 +4,7 @@ import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
-import { viewportOf } from "../targets.ts"
+import { locatorFor, stripExtras, viewportOf } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import {
   containsKnownValue,
@@ -34,7 +34,9 @@ export async function followSecretFields(
   // and comes back if the run returns to that page.
   const measured = await Promise.all(
     fields.map((field) =>
-      field.page === ctx.page ? measureField(field.locator) : Promise.resolve(null),
+      field.page === ctx.page
+        ? locatorFor(field.page, field.target).then(measureField, () => "unknown" as const)
+        : Promise.resolve(null),
     ),
   )
   const viewport = await viewportOf(ctx.page).catch(() => undefined)
@@ -333,15 +335,11 @@ export interface SecretWrite {
  * Follows a field a secret is typed into until the end of the take (recording): its blur rect
  * moves with it. Returns the id of its sensitive region.
  */
-export function followSecretField(
-  ctx: Ctx,
-  step: StepRef,
-  secret: string,
-  target: Locator,
-): string {
+export function followSecretField(ctx: Ctx, step: StepRef, secret: string, target: Target): string {
   const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}`
   if (ctx.options.recording === true) {
-    ctx.secretFields.push({ id, locator: target, page: ctx.page })
+    if (isGrounded(target))
+      ctx.secretFields.push({ id, target: stripExtras(target), page: ctx.page })
   }
   return id
 }

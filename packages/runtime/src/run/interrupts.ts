@@ -2,6 +2,7 @@ import type { ProjectConfig } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import { exactNamesFor, isSafeSelector, ProbeRefusal } from "../secret-state.ts"
+import { pollLocator } from "./conditions.ts"
 import { toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
@@ -164,17 +165,12 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
   }
 }
 
-/** Waits (up to 1 s, best effort) for a handled rule's `when` to be gone. */
+/** Waits (up to 1 s, best effort) for a handled rule's `when` to be gone (the one absence poll). */
 async function waitGone(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Promise<void> {
-  const locator = whenLocator(rule)
-  const deadline = Date.now() + Math.min(ctx.timeoutMs, 1000)
-  while (Date.now() < deadline) {
-    const names = await exactNamesFor(ctx.page, [locator])
-    if (names.exact && !names.unsure) return
-    const count = await Promise.resolve()
-      .then(() => visibleOnly(toPlaywright(ctx.page, locator, names.exact)).count())
-      .catch(() => 0)
-    if (count === 0 && !names.unsure) return
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
+  await pollLocator(ctx.page, whenLocator(rule), {
+    timeout: Math.min(ctx.timeoutMs, 1000),
+    visible: false,
+    negative: false,
+    failed: () => new Error("still there"),
+  }).catch(() => undefined)
 }

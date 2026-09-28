@@ -324,6 +324,13 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // A leftover and a field holding a secret that render together, 500 ms after load.
+  "/late-both": `<!doctype html><title>Late both</title><div id="d"></div>
+    <script>setTimeout(() => { document.getElementById("d").innerHTML = '<p>Q4 report</p><input value="bob@acme.com">' }, 500)</script>`,
+  // A link to a page whose image never finishes loading, and whose spinner goes after 100 ms.
+  "/to-slow-img": `<!doctype html><title>To slow img</title><a href="/slow-img">Open</a>`,
+  "/slow-img": `<!doctype html><title>Slow img</title><div id="sp">Loading</div><img src="/api/slow5">
+    <script>setTimeout(() => document.getElementById("sp").remove(), 100)</script>`,
   // Shows a leftover row, then navigates (after 300 ms) to a page served late that shows it too.
   "/nav-a": `<!doctype html><title>Nav A</title><p>Leftover row</p>
     <script>setTimeout(() => { location.href = "/nav-b?delay=400" }, 300)</script>`,
