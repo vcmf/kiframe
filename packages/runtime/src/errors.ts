@@ -20,6 +20,7 @@ export type StepErrorReason =
   | "off-origin"
   | "risky-not-approved"
   | "secret-unavailable"
+  | "secret-refused"
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"

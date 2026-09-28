@@ -144,3 +144,10 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Sessions in sessionStorage:** Playwright's storage state carries cookies, localStorage and IndexedDB, not sessionStorage. An app keeping its token there arrives signed out on every reused scene (and the batch logs in again after each failure). Carry sessionStorage with an init script, or detect it and turn reuse off for the project.
 - **`ensure` replay after a fresh login:** it replays the login preset's `goto`s (the login page, signed in), not the page the login ended on; after a reused login it goes to that page. Replay the landing in both cases.
 - **One snapshot per scene:** each session preset that finishes saves the full state (IndexedDB included); with two in one scene the first is thrown away. Save once, after the scene's last session preset.
+
+## @kiframe/vault storage and resolver (M1-5)
+- **Windows and Linux keychains:** keyring-rs covers Credential Manager and libsecret, but only macOS was exercised (the opt-in `keychain.test.ts`). Run it on both before the desktop app ships there; headless Linux without a Secret Service needs a fallback or a clear error.
+- **Metadata integrity:** `vault.json` is a plain local file: anything running as the user can add an origin or clear a binding. Same trust level as the keychain itself on most systems; signing it (a MAC keyed from the keychain) would detect tampering.
+- **`session` secrets:** saved sessions stay in memory for one batch (M1-4); storing them in the keychain (encrypted `storageState`) comes with keeping sessions across batches.
+- **Binding and healing:** a healed target (M2-8) no longer matches the binding, so the secret is refused until the user unbinds it. Healing should say so and offer the unbind in the UI (M4-5) rather than failing with a plain refusal.
+- **Keychain naming across orgs:** one keychain entry per secret name; two orgs using the same name on one machine share a value. Prefix entries with the org id once there are orgs (M5).

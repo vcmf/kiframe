@@ -224,6 +224,12 @@ The chat never contains secret values. If a user pastes one there anyway, we det
 8. **Screenshots through the paid proxy.** → They get the same blur as in point 2 before leaving the machine. The retention policy is still to decide (§12).
 9. **The final video.** → Filled secret fields and detected occurrences are blurred. Typing a secret shows `••••`, even in non-password fields.
 
+#### v0 implementation (M1-5, `@kiframe/vault`)
+- Values: the OS keychain through keyring-rs (`@napi-rs/keyring`), one entry per secret name under the `Kiframe` service. Metadata (name, kind, origins, field binding, `updatedAt`): a local `vault.json` (mode 0600) in the app data directory, never in a project, never synced. A metadata file that doesn't parse is an error, never reset.
+- `request` validates the name, kind and origin **before** the form is shown; the agent gets `"provided"` / `"declined"`. A new origin is added to the secret's list; a new value keeps the field binding.
+- The runtime resolves a secret **at the last moment of a `type`**, once the field is focused, and passes the use: the page's origin and the field (the step's target, plus the focused element's `type` and `autocomplete`). The vault refuses another origin or another field with a `SecretRefusal` (its message names the secret and the reason, never a value; the step fails `secret-refused`). The binding is recorded at first use; only the user can clear it (`unbind`, not an agent tool): a form that changed needs them.
+- The page's origin is checked again right before the text is sent.
+
 #### Secret kinds
 - v0: `password`, `username`, `api_key`, generic `text`, `session` (saved `storageState`).
 - Later: `totp_seed` (the vault generates the current 2FA code at fill time).

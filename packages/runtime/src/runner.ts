@@ -8,6 +8,7 @@ import type {
   Target,
 } from "@kiframe/schema"
 import { Action, isGrounded, secretRefName } from "@kiframe/schema"
+import { SecretRefusal, type SecretUse } from "@kiframe/vault"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import {
@@ -89,8 +90,12 @@ export type RunnerEvent =
   | { kind: "preset_done"; name: string; session: boolean }
 
 export interface RunOptions {
-  /** Resolves a secret NAME to its value, at the moment of the fill. Throw if unavailable. */
-  resolveSecret?: (name: string) => string | Promise<string>
+  /**
+   * Resolves a secret NAME to its value, at the moment of the fill, for this use (the page's origin,
+   * the focused field): the vault's resolver (`Vault.resolver`). Throw if unavailable or refused (a
+   * `SecretRefusal`'s message is reported; any other error's never is).
+   */
+  resolveSecret?: (name: string, use: SecretUse) => string | Promise<string>
   /** Resolves an `upload` step's project asset (`<sha256>.<ext>`) to a file path. */
   resolveAsset?: (file: string) => string | Promise<string>
   /**
@@ -1056,7 +1061,9 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
-      const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
+      // A secret is resolved at the last moment, once the field it goes into is focused.
+      let text = secret === undefined ? action.value : ""
+      let secretOrigin: string | undefined
       const sensitiveId =
         secret === undefined
           ? undefined
@@ -1094,6 +1101,16 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
+        if (secret !== undefined) {
+          // The element that receives the text (the target, or the input inside it) is what the
+          // vault binds the secret to.
+          const field = await target.evaluate(focusedField, undefined, { timeout })
+          secretOrigin = new URL(page.url()).origin
+          text = await resolveSecret(ctx, secret, step, {
+            origin: secretOrigin,
+            field: { target: action.target, ...field },
+          })
+        }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
         if (ctx.options.recording === true) {
           fieldBox = await target
@@ -1110,6 +1127,13 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
+        if (secretOrigin !== undefined && new URL(page.url()).origin !== secretOrigin) {
+          throw new StepError(
+            step,
+            "off-origin",
+            `the page left ${secretOrigin} while secret "${secret}" was resolved`,
+          )
+        }
         if (action.instant === true || secret !== undefined) {
           await page.keyboard.insertText(text)
         } else {
@@ -1457,7 +1481,12 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   return result.locator
 }
 
-async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<string> {
+async function resolveSecret(
+  ctx: Ctx,
+  name: string,
+  step: StepRef,
+  use: SecretUse,
+): Promise<string> {
   if (ctx.options.resolveSecret === undefined) {
     throw new StepError(
       step,
@@ -1466,11 +1495,13 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
     )
   }
   try {
-    const value = await ctx.options.resolveSecret(name)
+    const value = await ctx.options.resolveSecret(name, use)
     if (value !== "") ctx.secretValues.add(value)
     return value
-  } catch {
-    // Never include the resolver's error: its message could contain the value.
+  } catch (error) {
+    // The vault's refusals say why (origin, field) and never hold a value; any other error's
+    // message could contain one: never included.
+    if (error instanceof SecretRefusal) throw new StepError(step, "secret-refused", error.message)
     throw new StepError(step, "secret-unavailable", `secret "${name}" is unavailable`)
   }
 }
@@ -2068,6 +2099,17 @@ function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef)
   // Per-secret origin binding comes with the vault (APPROACHES §7.4).
   if (origin !== ctx.base.origin) {
     throw new StepError(step, "off-origin", `refusing to type secret "${secret}" on ${origin}`)
+  }
+}
+
+/** What the focused element is (runs in the page): the part of a vault field binding it knows. */
+function focusedField(el: Element): { inputType: string | null; autocomplete: string | null } {
+  const root = el.getRootNode()
+  const active =
+    (root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null) ?? el
+  return {
+    inputType: active instanceof HTMLInputElement ? active.type : null,
+    autocomplete: active.getAttribute("autocomplete"),
   }
 }
 
