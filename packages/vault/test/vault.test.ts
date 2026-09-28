@@ -165,6 +165,21 @@ describe("Vault", () => {
     expect(error).toBeInstanceOf(SecretRefusal)
   })
 
+  it("gives the value to one of two concurrent first uses only", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    const search = {
+      locator: { by: "label" as const, name: "Search" },
+      inputType: "search",
+      autocomplete: null,
+    }
+    const results = await Promise.allSettled([
+      vault.resolve("acme.password", { origin: ORIGIN, field: PASSWORD_FIELD }),
+      vault.resolve("acme.password", { origin: ORIGIN, field: search }),
+    ])
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"])
+  })
+
   it("never resets a metadata file it can't read", () => {
     const { path } = open()
     const bad = join(path, "..", "..", "bad.json")

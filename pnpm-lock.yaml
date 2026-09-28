@@ -109,9 +109,6 @@ importers:
       '@kiframe/schema':
         specifier: workspace:*
         version: link:../schema
-      '@kiframe/vault':
-        specifier: workspace:*
-        version: link:../vault
       playwright:
         specifier: 1.63.0
         version: 1.63.0
@@ -119,6 +116,9 @@ importers:
       '@kiframe/generators':
         specifier: workspace:*
         version: link:../generators
+      '@kiframe/vault':
+        specifier: workspace:*
+        version: link:../vault
 
   packages/schema:
     dependencies:

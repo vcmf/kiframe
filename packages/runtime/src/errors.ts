@@ -1,3 +1,4 @@
+import type { Locator } from "@kiframe/schema"
 /** Where in the scenario something happened. */
 export interface StepRef {
   phase: "setup" | "steps" | "teardown"
@@ -48,4 +49,25 @@ export class StepError extends Error {
     this.reason = reason
     this.detail = detail
   }
+}
+
+/** Where and into what a secret is about to be typed: what the resolver (the vault) checks. */
+export interface SecretUse {
+  /** The page's origin. */
+  origin: string
+  /** The locator that matched (primary or fallback) with its `nth`, and the focused element. */
+  field: {
+    locator: Locator
+    nth?: number
+    inputType: string | null
+    autocomplete: string | null
+  }
+}
+
+/**
+ * A resolver's refusal (the vault's `SecretRefusal`): any error with `code: "secret-refused"`, so
+ * it survives IPC and duplicate modules. Its message is reported, so it must never hold a value.
+ */
+export function isSecretRefusal(error: unknown): error is Error {
+  return error instanceof Error && (error as { code?: unknown }).code === "secret-refused"
 }

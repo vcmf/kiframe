@@ -170,10 +170,34 @@ steps:
     expect(error.reason).toBe("secret-refused")
     expect(error.message).toMatch(/bound to another field/)
     expect(await page.getByLabel("Email").inputValue()).toBe("")
+    // A fallback that matches another field is judged by what it matched, not the primary locator.
+    const viaFallback = await failure(
+      into("{ by: label, name: Nope, fallbacks: [{ by: label, name: Email }] }"),
+      { resolveSecret: vault.resolver() },
+    )
+    expect(viaFallback.reason).toBe("secret-refused")
     // Healing metadata isn't part of the binding: a re-grounded target on the same field is fine.
     await run(into(`{ by: label, name: Password input, intent: "the password" }`), {
       resolveSecret: vault.resolver(),
     })
+  })
+
+  it("never types a secret into a field that took focus while it was resolved", async () => {
+    const error = await failure(
+      `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`,
+      {
+        resolveSecret: async () => {
+          await page.getByLabel("Email").focus()
+          return "hunter2-secret"
+        },
+      },
+    )
+    expect(error.message).toMatch(/lost focus/)
+    expect(await page.getByLabel("Email").inputValue()).toBe("")
+    expect(await page.getByLabel("Password input").inputValue()).toBe("")
   })
 
   it("fails clearly when a secret is unavailable, without leaking the resolver's error", async () => {
