@@ -1,6 +1,6 @@
 import type { Condition } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
-import { ProbeRefusal } from "../secret-state.ts"
+import { ProbeRefusal, secretsOf } from "../secret-state.ts"
 import { describeLocator, toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
@@ -30,7 +30,9 @@ export async function waitForCondition(
         .first()
         .waitFor({ state: "detached", timeout })
     } else if ("text" in condition) {
-      await visibleOnly(page.getByText(condition.text))
+      // Exact while a field holding a secret is on the page (§3 A8).
+      const exact = secretsOf(page.context()).exactNames
+      await visibleOnly(page.getByText(condition.text, exact ? { exact: true } : {}))
         .first()
         .waitFor({ state: "visible", timeout })
     } else if ("url" in condition) {

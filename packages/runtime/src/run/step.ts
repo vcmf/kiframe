@@ -4,7 +4,7 @@ import { type AnyAction, type Ctx, guard } from "./context.ts"
 import { handleInterrupts } from "./interrupts.ts"
 import { syncPage } from "./pages.ts"
 import { requireApproval } from "./risky.ts"
-import { followSecretFields, followSecretText } from "./secrets.ts"
+import { followSecretFields, followSecretText, updateExactNames } from "./secrets.ts"
 import { settle } from "./settle.ts"
 
 // One step's lifecycle: follow the page, handle interrupts, approval, the action, settle.
@@ -14,6 +14,9 @@ export async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promis
   ctx.setCurrent(step)
   // Before step_start: the step's storyboard shot (taken at step_start) is of the page it acts on.
   await syncPage(ctx, step)
+  // Exact names while a field holding a secret is on the page (§3 A8): decided on the page as it
+  // is now, before anything this step looks for.
+  await updateExactNames(ctx)
   // Cookie banners, "What's new" modals…: handled off camera between steps (cut from the video).
   // Not before a navigation: the page it would clear is about to be replaced.
   if (action.action !== "goto") await handleInterrupts(ctx, step)

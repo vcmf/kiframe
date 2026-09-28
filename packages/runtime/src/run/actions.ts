@@ -1,6 +1,7 @@
 import { isGrounded, secretRefName, type Target } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
+import { secretsOf } from "../secret-state.ts"
 import {
   type Box,
   clickPoint,
@@ -492,7 +493,12 @@ async function upload(
 
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
-  if (!result.ok) throw new StepError(step, result.reason, result.detail)
+  if (!result.ok) {
+    // Names are exact while a field holding a secret is on the page (§3 A8): say so.
+    const exact = secretsOf(ctx.page.context()).exactNames && result.reason === "target-not-found"
+    const hint = exact ? " (names match exactly while a field holding a secret is on the page)" : ""
+    throw new StepError(step, result.reason, result.detail + hint)
+  }
   if (result.fallbackIndex !== undefined) {
     ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
   }

@@ -496,6 +496,8 @@ export async function writeSecret(
     }
     await write.input.fill(before + write.value, { timeout, force: true })
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
+    // A field holding a secret is on the page now: exact names from here (§3 A8).
+    secretsOf(ctx.page.context()).exactNames = true
   } catch (error) {
     await write.input.dispose().catch(() => undefined)
     throw error
@@ -664,7 +666,7 @@ export async function assertDragKeepsSecrets(
 }
 
 export { secretsOf, type ContextSecrets } from "../secret-state.ts"
-import { isSafeSelector } from "../secret-state.ts"
+import { isSafeSelector, secretsOf } from "../secret-state.ts"
 
 /** Releases a prepared write that won't happen (the step failed before it). */
 export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {
@@ -688,4 +690,37 @@ export function assertSecretTarget(target: Target, step: StepRef, secret: string
       `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
     )
   }
+}
+
+/** Whether a field on the page holds a known value (runs in the page: reads the values out). */
+function fieldValues(written: Element[]): { writtenHere: boolean; values: string[] } {
+  const values: string[] = []
+  const visit = (root: Document | ShadowRoot) => {
+    for (const el of root.querySelectorAll("*")) {
+      if (
+        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) &&
+        el.value !== ""
+      ) {
+        values.push(el.value)
+      }
+      if (el.shadowRoot !== null) visit(el.shadowRoot)
+    }
+  }
+  visit(document)
+  return { writtenHere: written.some((e) => e.isConnected), values }
+}
+
+/**
+ * Updates the context's exact-names rule (§3 A8): on while a field holding a secret is on the
+ * driven page. Unsure (the page is navigating): on, if values are known (fails closed).
+ */
+export async function updateExactNames(ctx: Ctx): Promise<void> {
+  const state = secretsOf(ctx.page.context())
+  if (ctx.secretValues.size === 0) {
+    state.exactNames = false
+    return
+  }
+  const found = await ctx.page.evaluate(fieldValues, await writtenHere(ctx)).catch(() => undefined)
+  state.exactNames =
+    found === undefined || found.writtenHere || found.values.some((v) => containsKnown(ctx, v))
 }
