@@ -741,7 +741,7 @@ describe("round 7: secret slots are positional", () => {
   it("still allows secrets in preset and interrupt type actions", () => {
     const p = parseProjectYaml(
       project(
-        'presets:\n  login:\n    steps: [{ action: type, target: { by: label, name: Email }, value: "{{secrets.acme.email}}" }]\ninterrupts:\n  - id: otp\n    when: { text: Code }\n    do: { action: type, target: { by: label, name: Code }, value: "{{secrets.acme.otp}}" }\n',
+        'presets:\n  login:\n    steps: [{ id: email, action: type, target: { by: label, name: Email }, value: "{{secrets.acme.email}}" }]\ninterrupts:\n  - id: otp\n    when: { text: Code }\n    do: { action: type, target: { by: label, name: Code }, value: "{{secrets.acme.otp}}" }\n',
       ),
     )
     expect(p.interrupts).toHaveLength(1)

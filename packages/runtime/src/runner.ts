@@ -121,6 +121,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
+    secretWritten: [],
     secretText: {
       shown: new Map(),
       next: 0,

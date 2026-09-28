@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kiframe/schema"
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
-import { runScenario, StepError, type RunnerEvent } from "../src/index.ts"
+import { runScenario, StepError, type ApprovalRequest, type RunnerEvent } from "../src/index.ts"
 import { memoryBackend, Vault } from "@kiframe/vault"
 import { startFixtureServer } from "./fixture-server.ts"
 
@@ -146,39 +146,212 @@ steps:
     expect(events.find((e) => e.kind === "type")).toMatchObject({ secret: "acme.password" })
   })
 
-  it("types a vault secret only into the field it's bound to, on its origin", async () => {
-    const vault = Vault.open(
-      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
-      memoryBackend(),
-    )
-    const origin = new URL(server.url).origin
-    await vault.request({ name: "acme.password", kind: "password", origin, reason: "log in" }, () =>
-      Promise.resolve("hunter2-secret"),
-    )
-    const into = (target: string) => `setup: [{ action: goto, url: /login-form }]
+  describe("secret approvals (SECRETS-DESIGN §3)", () => {
+    const vaultWithPassword = async () => {
+      const vault = Vault.open(
+        join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+        memoryBackend(),
+      )
+      const origin = new URL(server.url).origin
+      await vault.request(
+        { name: "acme.password", kind: "password", origin, reason: "log in" },
+        () => Promise.resolve("hunter2-secret"),
+      )
+      return vault
+    }
+    const into = (
+      target: string,
+      path = "/login-form",
+      extra = "",
+    ) => `setup: [{ action: goto, url: ${path} }]
 steps:
   - { id: pw, action: type, target: ${target}, value: "{{secrets.acme.password}}" }
-`
+${extra}`
     const password = "{ by: label, name: Password input }"
-    await run(into(password), { resolveSecret: vault.resolver() })
-    expect(await page.getByLabel("Password input").inputValue()).toBe("hunter2-secret")
-    expect(vault.list()[0]?.field).toMatchObject({ inputType: "password" })
-    // The same secret into another same-origin field: refused, nothing typed.
-    const error = await failure(into("{ by: label, name: Email }"), {
+    const scope = { scope: "project-1", sceneId: "login" }
+    // What the host does on "approve": record the grant.
+    const approving = (vault: Vault, asked: ApprovalRequest[]) => ({
+      ...scope,
       resolveSecret: vault.resolver(),
+      requestApproval: (request: ApprovalRequest) => {
+        asked.push(request)
+        vault.approve(request.secret, request.use)
+        return true
+      },
     })
-    expect(error.reason).toBe("secret-refused")
-    expect(error.message).toMatch(/only goes into a password field/)
-    expect(await page.getByLabel("Email").inputValue()).toBe("")
-    // A fallback that matches another field is judged by what it matched, not the primary locator.
-    const viaFallback = await failure(
-      into("{ by: label, name: Nope, fallbacks: [{ by: label, name: Email }] }"),
-      { resolveSecret: vault.resolver() },
-    )
-    expect(viaFallback.reason).toBe("secret-refused")
-    // Healing metadata isn't part of the binding: a re-grounded target on the same field is fine.
-    await run(into(`{ by: label, name: Password input, intent: "the password" }`), {
-      resolveSecret: vault.resolver(),
+
+    it("asks once in an interactive run, then types without asking", async () => {
+      const vault = await vaultWithPassword()
+      const asked: ApprovalRequest[] = []
+      await run(into(password), approving(vault, asked))
+      expect(await page.getByLabel("Password input").inputValue()).toBe("hunter2-secret")
+      expect(asked).toHaveLength(1)
+      expect(asked[0]?.use).toMatchObject({
+        scope: "project-1",
+        stepKey: "scene:login/steps/pw",
+        path: "/login-form",
+        element: { tag: "input", type: "password", label: "Password input" },
+      })
+      expect(asked[0]?.box).toBeDefined()
+      // Headless now: granted, no hook needed.
+      await run(into(password), { ...scope, resolveSecret: vault.resolver() })
+      expect(asked).toHaveLength(1)
+      // Healing metadata isn't part of the grant.
+      await run(into(`{ by: label, name: Password input, intent: "the password" }`), {
+        ...scope,
+        resolveSecret: vault.resolver(),
+      })
+    })
+
+    it("refuses an ungranted use headless, and a declined one", async () => {
+      const vault = await vaultWithPassword()
+      const headless = await failure(into(password), { ...scope, resolveSecret: vault.resolver() })
+      expect(headless.reason).toBe("secret-refused")
+      expect(headless.message).toMatch(/isn't approved/)
+      const declined = await failure(into(password), {
+        ...scope,
+        resolveSecret: vault.resolver(),
+        requestApproval: () => false,
+      })
+      expect(declined.message).toMatch(/declined/)
+      expect(await page.getByLabel("Password input").inputValue()).toBe("")
+    })
+
+    it("refuses the approved step moved to another page, another scope, or retargeted", async () => {
+      const vault = await vaultWithPassword()
+      await run(into(password), approving(vault, []))
+      const headless = { ...scope, resolveSecret: vault.resolver() }
+      const cases = [
+        await failure(into(password, "/other/login-form"), headless),
+        await failure(into(password), { ...headless, scope: "project-2" }),
+        await failure(into(password), { ...headless, sceneId: "another" }),
+        await failure(into("{ by: css, selector: 'input[type=password]' }"), headless),
+      ]
+      for (const error of cases) expect(error.reason).toBe("secret-refused")
+    })
+
+    it("refuses a password into a non-password field even when asked and approved", async () => {
+      const vault = await vaultWithPassword()
+      const asked: ApprovalRequest[] = []
+      const error = await failure(into("{ by: label, name: Email }"), approving(vault, asked))
+      expect(error.reason).toBe("secret-refused")
+      expect(asked).toHaveLength(0)
+      expect(await page.getByLabel("Email").inputValue()).toBe("")
+    })
+
+    it("keys a preset's step by the preset: one approval serves every scene", async () => {
+      const vault = await vaultWithPassword()
+      const withPreset = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+presets:
+  login:
+    steps:
+      - { action: goto, url: /login-form }
+      - { id: pw, action: type, target: ${password}, value: "{{secrets.acme.password}}" }
+`)
+      const asked: ApprovalRequest[] = []
+      for (const sceneId of ["one", "two"]) {
+        await runScenario(
+          page,
+          scenario(`setup: [{ preset: login }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`),
+          withPreset,
+          { ...approving(vault, asked), sceneId, timeoutMs: 1500 },
+        )
+      }
+      expect(asked.map((a) => a.use.stepKey)).toEqual(["preset:login/pw"])
+    })
+
+    it("keys an org interrupt rule by the org, a project rule by the project", async () => {
+      const vault = await vaultWithPassword()
+      const withRule = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+interrupts:
+  - id: relogin
+    when: { by: label, name: Password input }
+    do: { action: type, target: ${password}, value: "{{secrets.acme.password}}" }
+`)
+      const keys = async (orgInterrupts?: { orgId: string; ruleIds: string[] }) => {
+        const asked: ApprovalRequest[] = []
+        await runScenario(
+          page,
+          scenario(
+            `setup: [{ action: goto, url: /login-form }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+          ),
+          withRule,
+          { ...approving(vault, asked), ...(orgInterrupts && { orgInterrupts }), timeoutMs: 1500 },
+        )
+        return asked.map((a) => [a.use.stepKey, a.use.interrupt])
+      }
+      expect(await keys({ orgId: "acme", ruleIds: ["relogin"] })).toEqual([
+        ["org:acme/interrupt:relogin", true],
+      ])
+      // The project's own rule with that id is a different key: the org's grant doesn't serve it.
+      expect(await keys()).toEqual([["interrupt:relogin", true]])
+      // The grant covers the rule's `when`: retargeting it asks again.
+      const retargeted = parseProjectYaml(
+        JSON.stringify({
+          ...withRule,
+          interrupts: [
+            {
+              ...withRule.interrupts[0],
+              when: { by: "css", selector: "input[type=password]" },
+            },
+          ],
+        }),
+      )
+      const error = await runScenario(
+        page,
+        scenario(
+          `setup: [{ action: goto, url: /login-form }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+        ),
+        retargeted,
+        { resolveSecret: vault.resolver(), scope: "project-1", timeoutMs: 1500 },
+      ).catch((e: unknown) => e)
+      expect(error).toMatchObject({ reason: "secret-refused" })
+      expect(String(error)).toMatch(/isn't approved/)
+    })
+
+    it("refuses a drag out of a field holding a secret", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(
+        into(
+          password,
+          "/login-form",
+          `  - { id: d, action: drag, target: ${password}, to: { by: label, name: Email } }\n`,
+        ),
+        approving(vault, []),
+      )
+      expect(error.message).toMatch(/would move a field holding a secret/)
+    })
+
+    it("refuses paste once a secret is known, and copy or select-all from its field", async () => {
+      const vault = await vaultWithPassword()
+      const options = approving(vault, [])
+      for (const keys of ["Mod+v", "Shift+Insert"]) {
+        const error = await failure(
+          into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
+          options,
+        )
+        expect(error.message, keys).toMatch(/no paste/)
+      }
+      for (const keys of ["Mod+a", "Mod+c", "Control+Insert"]) {
+        const error = await failure(
+          into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
+          options,
+        )
+        expect(error.message, keys).toMatch(/would copy from a field holding a secret/)
+      }
+      // Elsewhere, select-all still works.
+      await run(
+        into(
+          password,
+          "/login-form",
+          `  - { id: e, action: click, target: { by: label, name: Email } }\n  - { id: k, action: press, keys: "Mod+a" }\n`,
+        ),
+        options,
+      )
     })
   })
 

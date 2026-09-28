@@ -6,7 +6,13 @@ import { memoryBackend, Vault } from "@kiframe/vault"
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { PNG } from "pngjs"
-import { recordScenario, runScenario, screenshotForModel, StepError } from "../src/index.ts"
+import {
+  type ApprovalRequest,
+  recordScenario,
+  runScenario,
+  screenshotForModel,
+  StepError,
+} from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 // The vault's exfiltration suite (APPROACHES §7.4, M1-7): hostile pages try to get a typed secret
@@ -61,12 +67,20 @@ const vault = async () => {
   return v
 }
 
+// The user approves every step here: the hostile pages are what's being tested, past the grant.
+const approving = (v: Vault) => ({
+  scope: "project-1",
+  sceneId: "exfil",
+  resolveSecret: v.resolver(),
+  requestApproval: (request: ApprovalRequest) => (v.approve(request.secret, request.use), true),
+})
+
 const take = async (path: string) => {
   const dir = join(tmp("take"), "take")
   const v = await vault()
   return recordScenario(page, typePassword(path), project, {
     outDir: dir,
-    resolveSecret: v.resolver(),
+    ...approving(v),
     timeoutMs: 1500,
   })
 }
@@ -117,7 +131,7 @@ describe("exfiltration", () => {
   it("a page moving focus to another field: nothing typed anywhere", async () => {
     const v = await vault()
     const run = runScenario(page, typePassword("/evil-focus"), project, {
-      resolveSecret: v.resolver(),
+      ...approving(v),
       timeoutMs: 1000,
     })
     await expect(run).rejects.toBeInstanceOf(StepError)
@@ -128,7 +142,7 @@ describe("exfiltration", () => {
   it("a page leaving for another origin: refused, the secret never typed there", async () => {
     const v = await vault()
     const error = await runScenario(page, typePassword("/evil-leave"), project, {
-      resolveSecret: v.resolver(),
+      ...approving(v),
       timeoutMs: 1500,
     }).catch((e: unknown) => e)
     // Whenever the page left (before or after the checks), the write went to the approved element
@@ -143,7 +157,7 @@ describe("exfiltration", () => {
     const v = await vault()
     await recordScenario(page, typePassword("/evil-spy"), project, {
       outDir: dir,
-      resolveSecret: v.resolver(),
+      ...approving(v),
       knownSecretValues: ["bob@acme.com"],
       timeoutMs: 1500,
     })

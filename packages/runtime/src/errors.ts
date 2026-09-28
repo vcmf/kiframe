@@ -9,6 +9,10 @@ export interface StepRef {
   cleanup?: true | undefined
   /** Set on the action of an interrupt rule's `do`, run within this step (the rule's id). */
   interrupt?: string | undefined
+  /** The preset this action comes from (its secret approvals are the preset's, §3 A1). */
+  preset?: string | undefined
+  /** The list this action is written in, when not `phase` (an `ensure` runs teardown steps). */
+  keyPhase?: "setup" | "steps" | "teardown" | undefined
 }
 
 export type StepErrorReason =
@@ -52,10 +56,19 @@ export class StepError extends Error {
 
 /** Where and into what a secret is about to be typed: what the resolver (the vault) checks. */
 export interface SecretUse {
-  /** The page's origin. */
+  /** The host's id of the project (or org) the approvals belong to. */
+  scope: string
+  /** Which step types it (SECRETS-DESIGN §3 A1): `scene:…`, `preset:…`, `interrupt:…`, `org:…`. */
+  stepKey: string
+  /** The page's origin and pathname. */
   origin: string
-  /** The focused field's kind: an input's `type`, `textarea`, `contenteditable` or `other`. */
-  field: { inputType: string }
+  path: string
+  /** `canonicalTarget` of the step's target. */
+  target: string
+  /** The element the value goes into. */
+  element: { tag: "input" | "textarea"; type: string; label: string | null }
+  /** Typed by an interrupt rule. */
+  interrupt: boolean
 }
 
 /**
@@ -63,6 +76,14 @@ export interface SecretUse {
  * `instanceof` (duplicate modules). Over IPC the host must rethrow it with its code (Electron drops
  * custom properties). Its message is reported, so it must never hold a value.
  */
-export function isSecretRefusal(error: unknown): error is Error {
+export function isSecretRefusal(error: unknown): error is Error & { reason?: string } {
   return error instanceof Error && (error as { code?: unknown }).code === "secret-refused"
+}
+
+/** What an interactive run asks the user when a use has no grant yet (§3 A3). */
+export interface ApprovalRequest {
+  secret: string
+  use: SecretUse
+  /** The element's box on the page (CSS pixels): what the prompt outlines. */
+  box?: { x: number; y: number; width: number; height: number } | undefined
 }

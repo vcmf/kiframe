@@ -24,6 +24,8 @@ import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
 import { clickAtCursor, moveCursorTo, travel, visiblePart } from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
+  assertDragKeepsSecrets,
+  assertKeysKeepSecrets,
   assertSecretOrigin,
   followSecretField,
   prepareSecretWrite,
@@ -118,7 +120,9 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
           )
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
-        if (secret !== undefined) secretWrite = await prepareSecretWrite(ctx, target, step, secret)
+        if (secret !== undefined) {
+          secretWrite = await prepareSecretWrite(ctx, target, step, secret, action.target)
+        }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
         if (ctx.options.recording === true) {
           fieldBox = await target
@@ -136,7 +140,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
         if (secretWrite !== undefined) {
-          await writeSecret(secretWrite, timeout)
+          await writeSecret(ctx, secretWrite, step, timeout)
         } else if (action.instant === true) {
           await page.keyboard.insertText(text)
         } else {
@@ -165,6 +169,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       return
     }
     case "press":
+      await assertKeysKeepSecrets(ctx, step, action.keys)
       await guard(step, () => page.keyboard.press(toPlaywrightKeys(action.keys)))
       ctx.options.onEvent?.({ kind: "key", step, keys: action.keys })
       return
@@ -263,6 +268,7 @@ async function drag(
   step: StepRef,
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
+  await assertDragKeepsSecrets(ctx, step, source)
   const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
   // Playwright's own drag (its actionability and hit checks), several moves: pointer drag
   // libraries ignore the move that starts a drag. The cursor ends where the drop was.
