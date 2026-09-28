@@ -157,3 +157,10 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Refusals over IPC:** Electron drops custom error properties: the host must rethrow a refusal with `code: "secret-refused"` on the runtime's side, or the reason is lost (reported as unavailable).
 - **One vault owner:** a `Vault` keeps its metadata in memory from `open`; two instances (or processes) on one `vault.json` overwrite each other. The desktop app must own it in one process (main) and serve the runtime through `resolver()`; re-reading the file in every update would allow more.
 - **Keychain and metadata out of step:** a value is written to the keychain before its metadata; a disk error on the metadata leaves the new value without its new origin (the old value is gone). Write the metadata first and roll back on failure.
+
+## @kiframe/runtime scrubber and scanner (M1-6)
+- **Iframes and closed shadow roots:** the scan reads the top document and open shadow roots only; a secret shown in an iframe (an embedded account widget) or a closed shadow root isn't blurred.
+- **Scan cost:** every 300 ms while recording, one walk over the visible text (a computed style per text node's parent). Fine for ordinary pages; a huge DOM (a long table) needs a MutationObserver-driven scan (only when the page changed) or a viewport-limited walk.
+- **Hostile pages:** a page can alter what the scan sees (patching `TreeWalker`, drawing text on a canvas). It only hides its own data from the blur, never learns a value; drawn text (canvas, images) needs OCR.
+- **Screenshot race:** a secret shown only between the two scans (appearing after the first and gone before the second) would be in the screenshot unpainted. Take the screenshot from a frozen page (CDP `Emulation.setScriptExecutionDisabled` around it) to close it.
+- **Known values for skipped logins:** `knownSecretValues` has to be filled by the host (the vault's values for the project's secrets); the desktop app wires it (M4).

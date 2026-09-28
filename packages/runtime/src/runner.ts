@@ -10,6 +10,7 @@ import type {
 import { Action, isGrounded, secretRefName } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
 import { isSecretRefusal, StepError, type SecretUse, type StepRef } from "./errors.ts"
+import { scanSecretText } from "./scanner.ts"
 import {
   clickPoint,
   type Box,
@@ -61,6 +62,18 @@ export type RunnerEvent =
       box: Box
       button: "left" | "right"
       count: number
+    }
+  /**
+   * A secret value shown as text on the page (`box`), or gone (no `box`). Recording only. `since`
+   * (epoch ms): when the blur must start, the last scan that didn't see it (fails closed).
+   */
+  | {
+      kind: "secret_text"
+      step: StepRef
+      id: string
+      box?: Box | undefined
+      viewport?: { width: number; height: number } | undefined
+      since?: number | undefined
     }
   /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
   | {
@@ -117,6 +130,11 @@ export interface RunOptions {
    * state saved after they ran, once per batch): they're skipped. See the `preset_done` event.
    */
   skipSessionPresets?: readonly string[]
+  /**
+   * Values of the project's secrets, for scrubbing and the on-screen scan only (never typed): a
+   * scene whose login was skipped still blurs "Logged in as bob@acme.com". Memory only.
+   */
+  knownSecretValues?: readonly string[]
   /**
    * A session preset's steps all ran: the moment to save the context's state (awaited before the
    * setup goes on, so the state has the login and nothing the scene did after it).
@@ -186,7 +204,9 @@ export async function runScenario(
   // step running at that moment.
   let current: StepRef | undefined
   let listenerError: StepError | undefined
-  const secretValues = new Set<string>()
+  const secretValues = new Set<string>(
+    (options.knownSecretValues ?? []).filter((v) => v.trim() !== ""),
+  )
   const onNavigated = (frame: Frame) => {
     if (frame === ctx.page.mainFrame() && current !== undefined) {
       try {
@@ -232,6 +252,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
+    secretText: { shown: new Map(), lastScan: Date.now(), scanning: false },
     clearListenerError: () => (listenerError = undefined),
     throwListenerError: () => {
       const error = listenerError
@@ -247,6 +268,13 @@ export async function runScenario(
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
   await applyHide(ctx, page)
+  // While recording, secrets shown as text are looked for between steps and during them.
+  const scan =
+    options.recording === true
+      ? setInterval(() => {
+          if (current !== undefined) followSecretText(ctx, current).catch(() => undefined)
+        }, TEXT_SCAN_MS)
+      : undefined
   try {
     let failure: Error | undefined
     try {
@@ -342,6 +370,7 @@ export async function runScenario(
     if (teardownFailure !== undefined) throw scrubError(teardownFailure, secretValues)
     if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
   } finally {
+    clearInterval(scan)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)
@@ -377,6 +406,8 @@ interface Ctx {
   setCurrent: (step: StepRef | undefined) => void
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
+  /** Secret values shown as text (recording): what the last scan saw, by region id. */
+  secretText: { shown: Map<string, string>; lastScan: number; scanning: boolean }
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
@@ -616,7 +647,10 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
   await syncPage(ctx, step)
-  if (ctx.options.recording === true) await followSecretFields(ctx, step)
+  if (ctx.options.recording === true) {
+    await followSecretFields(ctx, step)
+    await followSecretText(ctx, step)
+  }
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
 }
@@ -864,6 +898,52 @@ async function followSecretFields(
       box: box ?? undefined,
       viewport,
     })
+  }
+}
+
+/** How often the page is scanned for secret text while recording. */
+const TEXT_SCAN_MS = 300
+
+/**
+ * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`): a region per
+ * occurrence, in document order. A new occurrence's blur starts at the previous scan (it may have
+ * appeared right after it); a failed scan changes nothing. Never fails a step.
+ */
+async function followSecretText(ctx: Ctx, step: StepRef): Promise<void> {
+  const state = ctx.secretText
+  if (state.scanning || ctx.secretValues.size === 0 || ctx.page.isClosed()) return
+  state.scanning = true
+  const started = Date.now()
+  try {
+    const page = ctx.page
+    const boxes = await scanSecretText(page, ctx.secretValues).catch(() => undefined)
+    if (boxes === undefined || page !== ctx.page) return
+    const viewport = await viewportOf(page).catch(() => undefined)
+    const seen = new Set<string>()
+    for (const [k, box] of boxes.entries()) {
+      const id = `text:${k}`
+      const key = `${box.x},${box.y},${box.width},${box.height}`
+      seen.add(id)
+      const before = state.shown.get(id)
+      if (before === key) continue
+      state.shown.set(id, key)
+      ctx.options.onEvent?.({
+        kind: "secret_text",
+        step,
+        id,
+        box,
+        viewport,
+        ...(before === undefined && { since: state.lastScan }),
+      })
+    }
+    for (const id of state.shown.keys()) {
+      if (seen.has(id)) continue
+      state.shown.delete(id)
+      ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
+    }
+    state.lastScan = started
+  } finally {
+    state.scanning = false
   }
 }
 
@@ -2036,9 +2116,11 @@ function urlPath(value: string): string | undefined {
 
 /**
  * Replaces every known secret value in `text` (as-is and in its common encodings: URL-encoded,
- * form-encoded, base64, JSON-escaped) with `[secret]`.
+ * form-encoded, base64, JSON-escaped, HTML-escaped) with `[secret]`, ignoring case. A value split by
+ * whitespace or line breaks (page text across DOM nodes, an accessibility snapshot) is matched too.
  */
 export function scrubSecrets(text: string, values: Iterable<string>): string {
+  const list = [...values]
   const variants = new Set<string>()
   const encode = (f: (s: string) => string, s: string): string | undefined => {
     try {
@@ -2047,7 +2129,7 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       return undefined // a lone surrogate can't be URI-encoded: the raw value is still matched
     }
   }
-  for (const value of values) {
+  for (const value of list) {
     const component = encode(encodeURIComponent, value)
     // WHATWG application/x-www-form-urlencoded (what browsers use for GET forms): also encodes !'()~
     const form = new URLSearchParams({ v: value }).toString().slice(2)
@@ -2068,19 +2150,34 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       encode(encodeURIComponent, base64),
       base64url,
       JSON.stringify(value).slice(1, -1),
+      htmlEscape(value, "&#39;"),
+      htmlEscape(value, "&#x27;"),
     ]) {
       if (v !== undefined && v !== "") variants.add(v)
     }
   }
+  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   // One pass over one alternation of every variant of every secret, longest first: a secret that
   // contains another ("password123", "pass") is replaced whole, and a replacement is never re-scanned
   // (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and over-scrubbing is safe.
   if (variants.size === 0) return text
-  const alternation = [...variants]
-    .sort((a, b) => b.length - a.length)
-    .map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|")
-  return text.replace(new RegExp(alternation, "gi"), "[secret]")
+  const sorted = [...variants].sort((a, b) => b.length - a.length)
+  // Split by whitespace: the raw values only (at least 4 characters, not to eat ordinary words),
+  // each character optionally followed by whitespace. Tried after the exact forms.
+  const split = list
+    .filter((v) => [...v.replace(/\s/g, "")].length >= 4)
+    .map((v) => [...v.replace(/\s/g, "")].map(escape).join("\\s*"))
+  const alternation = [...sorted.map(escape), ...split].join("|")
+  return text.replace(new RegExp(alternation, "giu"), "[secret]")
+}
+
+function htmlEscape(value: string, apostrophe: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, apostrophe)
 }
 
 /** `https://host/path?query#hash` → `https://host/path` (non-URLs are returned as they are). */
