@@ -521,7 +521,17 @@ steps:
     expect(kinds).toEqual(["interrupt_start:cookies:go", "interrupt_end:cookies:go"])
   })
 
-  it("retries a step once when an interrupt appears in the middle of it", async () => {
+  it("doesn't re-run a rule on a dialog that is still fading out", async () => {
+    const events = await runWith(`setup: [{ action: goto, url: "/banner?late&fade" }]
+steps:
+  - { id: wait, action: pause, ms: 600 }
+  - { id: go, action: click, target: { by: role, role: button, name: Continue } }
+`)
+    expect(await page.locator("#s").textContent()).toBe("continued")
+    expect(events.filter((e) => e.kind === "interrupt_start")).toHaveLength(1)
+  })
+
+  it("handles an interrupt that covers the target mid-step, before the press", async () => {
     const events = await runWith(`setup: [{ action: goto, url: "/banner?onmove" }]
 steps: [{ id: go, action: click, target: { by: role, role: button, name: Continue } }]
 `)
