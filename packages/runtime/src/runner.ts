@@ -1,4 +1,4 @@
-import type { ProjectConfig, Scenario } from "@kiframe/schema"
+import { type ProjectConfig, type Scenario, typesSecret } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
@@ -28,6 +28,9 @@ import { runOne } from "./run/step.ts"
  * else the first teardown failure; every other teardown failure is reported as a `teardown_failed`
  * event.
  */
+/** Hide rules already reported as skipped, per context (one warning each). */
+const warnedHideOf = new WeakMap<object, Set<string>>()
+
 export async function runScenario(
   page: Page,
   scenario: Scenario,
@@ -105,6 +108,17 @@ export async function runScenario(
   }
   const detach = (p: Page) => void p.off("framenavigated", onNavigated)
   attach(page)
+  // Whether this run can know a secret value: its own steps, presets or interrupt rules type one,
+  // or the host gave values (§3 A8 then limits the CSS it injects).
+  const strictHide =
+    secretValues.size > 0 ||
+    [
+      ...(scenario.setup ?? []),
+      ...scenario.steps,
+      ...(scenario.teardown ?? []),
+      ...Object.values(project.presets).flatMap((p) => p.steps),
+      ...project.interrupts.map((r) => r.do),
+    ].some((item) => "action" in item && typesSecret(item))
   const ctx: Ctx = {
     page,
     openers: [],
@@ -115,7 +129,7 @@ export async function runScenario(
     cursors: new Map(),
     interrupts: project.interrupts,
     perform: (action, step) => perform(ctx, action, step),
-    hideCss: hideCss(project.hide),
+    hideCss: hideCss(project.hide, strictHide),
     interruptsDone: new WeakMap(),
     inInterrupt: false,
     base,
@@ -148,9 +162,13 @@ export async function runScenario(
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
-  // Hide rules the A8 grammar refuses are skipped (a hide rule is live CSS: it could test a value).
-  for (const s of project.hide) {
-    if (!isSafeSelector(s)) {
+  // Hide rules the A8 grammar refuses are skipped when the run can know a secret (a hide rule is
+  // live CSS: it could test a value), reported once per context.
+  const warned = warnedHideOf.get(page.context()) ?? new Set<string>()
+  warnedHideOf.set(page.context(), warned)
+  for (const s of strictHide ? project.hide : []) {
+    if (!isSafeSelector(s) && !warned.has(s)) {
+      warned.add(s)
       options.onEvent?.({
         kind: "warning",
         message: `hide rule "${s}" is skipped: only simple CSS selectors (tags, #ids, .classes, attributes other than value)`,

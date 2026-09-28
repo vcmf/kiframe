@@ -591,7 +591,7 @@ steps:
       expect(error.message).toMatch(/needs a simple CSS selector/)
     })
 
-    it("skips a hide rule the A8 grammar refuses, with a warning", async () => {
+    it("skips a hide rule the A8 grammar refuses when the run can know a secret, with a warning", async () => {
       const withHide = parseProjectYaml(`version: 1
 target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
@@ -606,6 +606,7 @@ hide: ["#chat", "form:has(input[value^='h']) button"]
         withHide,
         {
           timeoutMs: 1500,
+          knownSecretValues: ["hunter2-secret"],
           onEvent: (e) => events.push(e),
         },
       )
@@ -616,6 +617,62 @@ hide: ["#chat", "form:has(input[value^='h']) button"]
       ).toEqual([expect.stringMatching(/hide rule "form:has/)])
       expect(await page.locator("#chat").evaluate((el) => getComputedStyle(el).display)).toBe(
         "none",
+      )
+    })
+
+    it("keeps every hide rule in a run that can't know a secret", async () => {
+      const withHide = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+hide: ["div:is(#chat)"]
+`)
+      await runScenario(
+        page,
+        scenario(
+          `setup: [{ action: goto, url: /banner }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+        ),
+        withHide,
+        { timeoutMs: 1500 },
+      )
+      expect(await page.locator("#chat").evaluate((el) => getComputedStyle(el).display)).toBe(
+        "none",
+      )
+    })
+
+    it("sets the secret on the approved field even if the page moves focus during the write", async () => {
+      const vault = await vaultWithPassword()
+      await run(
+        `setup: [{ action: goto, url: /focus-thief }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+`,
+        approving(vault, []),
+      )
+      expect(await page.locator("#notes").inputValue()).toBe("")
+      expect(await page.getByLabel("Password").inputValue()).toBe("ahunter2-secret")
+    })
+
+    it("fails an absence check by a partial name under the rule instead of passing it", async () => {
+      const error = await failure(
+        `setup: [{ action: goto, url: /late-profile }, { action: waitFor, until: { visible: { by: css, selector: "td input" } } }]
+steps:
+  - { id: h, action: expect, that: { hidden: { by: text, text: Loading } } }
+`,
+        { knownSecretValues: ["bob@acme.com"] },
+      )
+      expect(error.message).toMatch(/can't check an absence by a partial name/)
+    })
+
+    it("turns exact names off once the written field is hidden (a closed login dialog)", async () => {
+      const vault = await vaultWithPassword()
+      await run(
+        `setup: [{ action: goto, url: /dialog-login }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: in, action: click, target: { by: role, role: button, name: Sign in } }
+  - { id: new, action: click, target: { by: role, role: button, name: New } }
+`,
+        approving(vault, []),
       )
     })
 

@@ -209,8 +209,11 @@ export async function liveWritten(page: Page): Promise<ElementHandle<Element>[]>
     .map((w) => w.handle as ElementHandle<Element>)
 }
 
-/** The rendered text-like fields' values (runs in the page: reads them out; never hidden inputs). */
-function renderedFieldValues(): string[] {
+/**
+ * The page's side of the check (runs in the page): whether a written field is still rendered, and
+ * the rendered text-like fields' values (read out, matched in Node; never hidden inputs).
+ */
+function renderedFields(written: Element[]): { writtenRendered: boolean; values: string[] } {
   const values: string[] = []
   const nonText = new Set([
     "hidden",
@@ -236,20 +239,33 @@ function renderedFieldValues(): string[] {
     }
   }
   visit(document)
-  return values
+  // A written field hidden (a closed login dialog) is in no accessible name: it doesn't count.
+  return { writtenRendered: written.some((e) => e.isConnected && e.checkVisibility()), values }
+}
+
+/** Whether a locator matches a name partially (the only kind the exact-names rule changes). */
+export function isPartialName(locator: {
+  by: string
+  name?: string | undefined
+  exact?: boolean | undefined
+}): boolean {
+  if (locator.exact === true) return false
+  if (locator.by === "role") return locator.name !== undefined
+  return locator.by === "label" || locator.by === "text" || locator.by === "placeholder"
 }
 
 /**
  * §3 A8: whether a field holding a secret is on the page right now (a field a secret was written
- * to, still attached, or a rendered field whose value contains a known value). Called by every
- * polling loop before it builds a locator, so a field that renders mid-step is seen at once.
+ * to, still rendered, or a rendered field whose value contains a known value). Called by every
+ * polling loop before it builds a name locator, so a field that renders mid-step is seen at once.
  * Unsure (the page is navigating): true while values are known (fails closed).
  */
 export async function refreshExactNames(page: Page): Promise<boolean> {
   const state = secretsOf(page.context())
   if (state.values.size === 0) return (state.exactNames = false)
-  if ((await liveWritten(page)).length > 0) return (state.exactNames = true)
-  const values = await page.evaluate(renderedFieldValues).catch(() => undefined)
+  const found = await page.evaluate(renderedFields, await liveWritten(page)).catch(() => undefined)
   return (state.exactNames =
-    values === undefined || values.some((v) => containsKnownValue(state.values, v)))
+    found === undefined ||
+    found.writtenRendered ||
+    found.values.some((v) => containsKnownValue(state.values, v)))
 }

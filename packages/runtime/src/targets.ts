@@ -1,4 +1,4 @@
-import { assertNotProbing, refreshExactNames, secretsOf } from "./secret-state.ts"
+import { assertNotProbing, isPartialName, refreshExactNames, secretsOf } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
@@ -78,6 +78,8 @@ export async function resolveTarget(
     { locator: stripExtras(target), nth },
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
+  // Only a partial name is changed by the exact-names rule: nothing to check otherwise.
+  const partial = candidates.some((c) => isPartialName(c.locator))
   const deadline = Date.now() + timeoutMs
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
@@ -86,7 +88,7 @@ export async function resolveTarget(
     ambiguous = undefined
     // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll: a
     // field that renders mid-step is seen at once.
-    await refreshExactNames(page)
+    if (partial) await refreshExactNames(page)
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator))
       const count = await visible.count().catch((error: unknown) => {

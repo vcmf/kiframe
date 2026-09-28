@@ -140,9 +140,9 @@ async function ensure(
   if (ctx.page.url() === "about:blank") {
     throw new StepError(ref, "ensure-failed", "`ensure` needs a page: add a `goto` before it")
   }
-  const appears = async (timeout: number) => {
+  const appears = async (timeout: number, negative = false) => {
     try {
-      await waitForCondition(ctx, { visible: locator }, timeout, ref, "condition-timeout")
+      await waitForCondition(ctx, { visible: locator }, timeout, ref, "condition-timeout", negative)
       return true
     } catch (error) {
       if (error instanceof StepError && error.reason === "condition-timeout") return false
@@ -151,7 +151,7 @@ async function ensure(
   }
   const leftovers = async () => {
     await guard(ref, () => settle(ctx, false))
-    return appears(ABSENT_GRACE_MS)
+    return appears(ABSENT_GRACE_MS, true)
   }
   if ("present" in condition) {
     if (!(await appears(ctx.timeoutMs))) {

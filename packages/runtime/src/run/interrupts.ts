@@ -10,11 +10,11 @@ import { settle } from "./settle.ts"
 // Interrupt rules (handled off camera, cut from the video) and hide rules (injected CSS).
 
 /** One `display: none` rule per selector: a selector the browser rejects doesn't void the others. */
-export function hideCss(selectors: readonly string[]): string {
-  // The A8 grammar always (§3): a hide rule is live CSS for the whole run, so one testing a value
-  // (`form:has(input[value^=h]) button`) would change what later steps see.
+export function hideCss(selectors: readonly string[], strict: boolean): string {
+  // The A8 grammar when the run can know a secret (§3): a hide rule is live CSS for the whole run,
+  // so one testing a value (`form:has(input[value^=h]) button`) would change what later steps see.
   return selectors
-    .filter(isSafeSelector)
+    .filter((s) => !strict || isSafeSelector(s))
     .map((s) => `${s} { display: none !important; }`)
     .join("\n")
 }
@@ -148,6 +148,7 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
       // that fades in place (opacity 0) never counts as hidden: the wait just ends.
       // (The `do` may have just made a secret known: a `when` refused now (§3 A8) skips the wait.)
       await Promise.resolve()
+        .then(() => refreshExactNames(ctx.page))
         .then(() =>
           whenOf(ctx, rule)
             .first()

@@ -494,7 +494,18 @@ export async function writeSecret(
         `the page moved to ${now.origin}${now.pathname} while the secret was resolved`,
       )
     }
-    await write.input.fill(before + write.value, { timeout, force: true })
+    // Set on the approved element itself (the native setter, then the events a framework listens
+    // to), never typed: `fill` sends the text to whatever has focus, which a page can move.
+    const wanted = before + write.value
+    await write.input.evaluate(setValue, wanted)
+    const landed = await write.input.evaluate((el) => el.value)
+    if (landed !== wanted) {
+      throw new StepError(
+        step,
+        "action-failed",
+        `secret "${write.use.stepKey}": the field didn't take the value`,
+      )
+    }
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
     // A field holding a secret is on the page now: exact names from here (§3 A8).
     secretsOf(ctx.page.context()).exactNames = true
@@ -642,6 +653,16 @@ export async function assertDragKeepsSecrets(
 
 export { secretsOf, type ContextSecrets } from "../secret-state.ts"
 import { containsKnownValue, isSafeSelector, liveWritten, secretsOf } from "../secret-state.ts"
+
+/** Sets a field's value as a user's input would (runs in the page, on the approved element). */
+function setValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  const proto =
+    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  // The prototype's setter: a framework's own (React) tracks the value through it.
+  Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value)
+  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }))
+  el.dispatchEvent(new Event("change", { bubbles: true }))
+}
 
 /** Releases a prepared write that won't happen (the step failed before it). */
 export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {
