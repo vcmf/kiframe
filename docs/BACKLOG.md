@@ -125,4 +125,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Mid-step interrupts beyond clicks:** a covered target is handled inside a click (the probe sees it covered); a `type` into an input a modal covers isn't (no step retry: a retry could repeat an action that already happened).
 - **Hide rules per page, not per run:** the init script stays on the page, so a harness running two projects on one page keeps the first one's hide rules.
 - **Hide in iframes:** the CSS is injected in the top document only; widgets inside iframes (a chat iframe) stay visible unless the iframe element itself is hidden.
+- **A rule that comes back on the same page:** rules run at most once per page (the simplest robust form after three review rounds: a banner faded out in place still matches). A survey that re-appears later on the same page isn't handled again; the step it covers fails. A real "is it still there" test (hit-testing, not visibility) would allow re-running.
+- **Interrupts appearing during a step:** checked at step boundaries and in covered clicks only; a banner appearing during a `pause` or a long `type` is filmed until the next boundary, then cut away abruptly. A watcher during filmed steps (or a crossfade at the cut) would hide it.
+- **Caption freeze and mid-step cuts:** a click that handles an interrupt has a cut inside its span; the clips generator's reading-time freeze counts the full span, so its caption can be shown shorter than its reading time.
+- **Interrupt ref phase:** the `do` action's ref is phase `setup` with the scene step's index; approvals and events name it `interrupt <rule>`, but a host keying on phase + index would point at a setup step. A dedicated phase (see above).
+- **CSP warning coverage:** the hide warning tests the document loaded when hide is applied; a later document with a strict CSP blocks the init-script style silently.
 

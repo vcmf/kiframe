@@ -566,19 +566,22 @@ steps: [{ id: go, action: click, target: { by: role, role: button, name: Continu
     await expect(run).rejects.toThrow(/the interrupt "cookies" couldn't be handled/)
   })
 
-  it("fails loudly on a rule whose `when` is always on the page", async () => {
-    const run = runScenario(
+  it("runs a rule at most once per page, even when its `when` stays", async () => {
+    const events: RunnerEvent[] = []
+    await runScenario(
       page,
       scenario(`setup: [{ action: goto, url: /banner }]
-steps: [{ id: a, action: pause, ms: 1 }]
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
 `),
       rules(`  - id: chat
     when: { text: Chat with us }
     do: { action: press, keys: Escape }
 `),
-      { timeoutMs: 500 },
+      { timeoutMs: 500, onEvent: (e) => events.push(e) },
     )
-    await expect(run).rejects.toThrow(/still showing after its `do`/)
+    expect(events.filter((e) => e.kind === "interrupt_start")).toHaveLength(1)
   })
 
   it("asks for approval before a rule's `do` marked risky", async () => {

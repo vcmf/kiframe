@@ -363,7 +363,7 @@ hide:                            # removed from the frame with injected CSS (dis
 ```
 - **Mechanism (revised):** *not* Playwright's `page.addLocatorHandler()`. That handler fires inside actionability checks, which can be between a `mouse.move()` and a `mouse.down()`, and Playwright warns that the mouse is then left in the wrong position. That's exactly our human-cursor pattern. Instead, **the runtime runs an explicit interrupt check before each step's cursor travel**. If an interrupt matches, it runs its `do`, marks the time span, and **re-plans the cursor path**. The screencast keeps running, and the marked span becomes a **cut** in the `clips` track, so it's invisible in the video.
 - Interrupts that appear **mid-step** (rare) are handled inside a click when its target is found covered, before the press. Steps are never retried (a retry could repeat an action that already happened).
-- After its `do`, a rule's `when` must be gone (a fading dialog is waited for); one still showing fails the step with a message about the rule. A rule's own actions never trigger another interrupt check, and a `do` marked `risky: true` asks for approval like a step.
+- A rule runs **at most once per page** in a run (a dismissed banner may stay in the page, faded out). After its `do`, a fading dialog is waited for briefly, inside the cut. A rule's own actions never trigger another interrupt check, and a `do` marked `risky: true` asks for approval like a step.
 - The agent proposes interrupt and hide rules itself when it hits them during grounding. Rules can be **shared at org level** (a bank of known cookie banners, APPROACHES §10c).
 
 **Keystroke overlay** is a **style** option, `style.keystrokes`:
