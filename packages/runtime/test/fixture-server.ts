@@ -3,6 +3,110 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // The same list, but the drag starts only after 8 px of movement (dnd-kit's distance constraint).
+  "/sortable-8": `<!doctype html><title>Sortable 8</title>
+    <style>li { height: 40px; list-style: none; border-bottom: 1px solid #ccc }</style>
+    <ul id="l" style="width:300px"><li>A</li><li>B</li><li>C</li><li>D</li><li>E</li></ul><p id="s"></p>
+    <script>
+      const list = document.getElementById("l"); let held, from, started = false
+      list.addEventListener("pointerdown", (e) => { held = e.target.closest("li"); from = { x: e.clientX, y: e.clientY }; started = false; list.setPointerCapture(e.pointerId) })
+      list.addEventListener("pointermove", (e) => {
+        if (!held || started) return
+        if (Math.hypot(e.clientX - from.x, e.clientY - from.y) >= 8) { started = true; held.style.display = "none" }
+      })
+      list.addEventListener("pointerup", (e) => {
+        if (!held) return
+        list.releasePointerCapture(e.pointerId)
+        const under = document.elementFromPoint(e.clientX, e.clientY)?.closest("li")
+        held.style.display = ""
+        if (started && under && under !== held) list.insertBefore(held, under)
+        held = undefined
+        document.getElementById("s").textContent = [...list.children].map((li) => li.textContent).join(" ")
+      })
+    </script>`,
+  // A sortable list: pressing an item takes it out of the flow (the rows below shift up); it's
+  // dropped before the row under the pointer.
+  "/sortable": `<!doctype html><title>Sortable</title>
+    <style>li { height: 40px; list-style: none; border-bottom: 1px solid #ccc }</style>
+    <ul id="l" style="width:300px"><li>A</li><li>B</li><li>C</li><li>D</li><li>E</li></ul><p id="s"></p>
+    <script>
+      const list = document.getElementById("l"); let held
+      list.addEventListener("pointerdown", (e) => { held = e.target.closest("li"); held.style.display = "none"; list.setPointerCapture(e.pointerId) })
+      list.addEventListener("pointerup", (e) => {
+        if (!held) return
+        list.releasePointerCapture(e.pointerId)
+        const under = document.elementFromPoint(e.clientX, e.clientY)?.closest("li")
+        held.style.display = ""
+        if (under && under !== held) list.insertBefore(held, under)
+        held = undefined
+        document.getElementById("s").textContent = [...list.children].map((li) => li.textContent).join(" ")
+      })
+    </script>`,
+  // Like dnd-kit: the move that activates a drag doesn't move the element.
+  "/pointer-lib": `<!doctype html><title>Pointer lib</title>
+    <div id="k" role="slider" aria-label="Level" style="position:absolute; left:100px; top:100px; width:40px; height:40px; background:#888"></div>
+    <div id="trash" style="position:absolute; left:500px; top:100px; width:120px; height:80px; background:#fcc">Drop files here</div>
+    <label>Plan <select id="plan2"><option>Keep</option><option value="c">Cancel subscription</option></select></label>
+    <p id="s" style="position:absolute; top:400px"></p>
+    <script>
+      const k = document.getElementById("k"); let down, active = false
+      k.addEventListener("pointerdown", (e) => { down = { x: e.clientX, left: k.offsetLeft }; active = false; k.setPointerCapture(e.pointerId) })
+      k.addEventListener("pointermove", (e) => {
+        if (!down) return
+        if (!active) { active = true; return }
+        k.style.left = (down.left + e.clientX - down.x) + "px"
+      })
+      k.addEventListener("pointerup", () => { down = undefined; document.getElementById("s").textContent = "at " + k.offsetLeft })
+    </script>`,
+  // M1-2: native select, drags (pointer and HTML5), uploads, tabs and popups.
+  "/controls": `<!doctype html><title>Controls</title>
+    <label>Plan <select id="plan"><option value="free">Free</option><option value="pro">Pro plan</option></select></label>
+    <p id="s"></p>
+    <script>document.getElementById("plan").onchange = (e) => document.getElementById("s").textContent = "plan " + e.target.value</script>`,
+  "/drag": `<!doctype html><title>Drag</title>
+    <div id="knob" role="slider" aria-label="Volume" style="position:absolute; left:100px; top:100px; width:40px; height:40px; background:#888"></div>
+    <div id="card" draggable="true" style="position:absolute; left:100px; top:300px; width:120px; height:40px; background:#ccf">Card</div>
+    <div id="zone" style="position:absolute; left:500px; top:300px; width:200px; height:120px; background:#cfc">Done</div>
+    <p id="s" style="position:absolute; top:500px"></p>
+    <script>
+      const knob = document.getElementById("knob"); let grab
+      knob.addEventListener("pointerdown", (e) => { grab = { x: e.clientX - knob.offsetLeft }; knob.setPointerCapture(e.pointerId) })
+      knob.addEventListener("pointermove", (e) => { if (grab) knob.style.left = (e.clientX - grab.x) + "px" })
+      knob.addEventListener("pointerup", () => { grab = undefined; document.getElementById("s").textContent = "knob " + knob.offsetLeft })
+      const zone = document.getElementById("zone")
+      document.getElementById("card").addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", "card"))
+      zone.addEventListener("dragover", (e) => e.preventDefault())
+      zone.addEventListener("drop", (e) => { e.preventDefault(); document.getElementById("s").textContent = "dropped " + e.dataTransfer.getData("text/plain") })
+    </script>`,
+  "/upload": `<!doctype html><title>Upload</title>
+    <label>Attachment <input type="file" id="f"></label>
+    <button id="b">Choose avatar</button><input type="file" id="hidden" style="display:none">
+    <div id="zone" role="button" tabindex="0" style="padding:20px; border:2px dashed #999">Drag &amp; drop files here, or click to browse</div>
+    <label for="hid2">Avatar file</label><input type="file" id="hid2" style="display:none">
+    <p id="s"></p>
+    <script>
+      const show = (e) => document.getElementById("s").textContent = e.target.id + ": " + [...e.target.files].map((f) => f.name).join(",")
+      document.getElementById("f").onchange = show
+      document.getElementById("hidden").onchange = show
+      document.getElementById("hid2").onchange = show
+      document.getElementById("b").onclick = () => document.getElementById("hidden").click()
+      document.getElementById("zone").onclick = () => document.getElementById("hidden").click()
+    </script>`,
+  "/opener": `<!doctype html><title>Opener</title>
+    <label>API key <input id="key"></label>
+    <a href="/popup-report" target="_blank">Open report</a>
+    <button onclick="window.open('/popup-report', 'report', 'width=800,height=600')">Open popup</button>
+    <button onclick="window.open('/quick-close')">Sign in with provider</button>
+    <button onclick="setTimeout(() => window.open('/popup-report'), 800)">Open later</button>
+    <button onclick="window.open('/popup-report'); window.open('/quick-close')">Open two</button>
+    <button onclick="document.getElementById('reset').textContent = 'reset done'">Reset</button><p id="reset"></p>`,
+  // An OAuth popup with a session already: closes itself at once.
+  "/quick-close": `<!doctype html><title>Provider</title><script>window.close()</script>`,
+  // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
+  "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
+    <button onclick="fetch('/').then(() => setTimeout(() => window.close(), 200))">Authorize</button>
+    <label>Code <input id="code" style="position:absolute; left:300px; top:285px; width:200px; height:30px; box-sizing:border-box"></label>
+    <style>@keyframes spin { to { transform: rotate(360deg) } } #spin { width: 40px; height: 40px; background: #888; animation: spin 0.5s linear infinite }</style><div id="spin"></div>`,
   // A drawer that slides in (400 ms) after a click; another "Delete" exists elsewhere on the page.
   "/drawer": `<!doctype html><title>Drawer</title>
     <style>#d { position: fixed; top: 0; right: 0; width: 240px; transform: translateX(100%); transition: transform 400ms }

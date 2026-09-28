@@ -77,18 +77,20 @@ export async function recordScenario(
     mkdirSync(join(outDir, "shots"), { recursive: true })
 
     const viewport = await viewportOf(page)
+    // The viewport rects are normalized against: the driven page's (a popup can have its own size).
+    let current = viewport
     const recordedAt = new Date()
     const t0 = Date.now()
     const at = () => Math.max(0, Date.now() - t0)
     const norm = (x: number, y: number) => ({
-      x: clamp01(x / viewport.width),
-      y: clamp01(y / viewport.height),
+      x: clamp01(x / current.width),
+      y: clamp01(y / current.height),
     })
-    const rect = (b: Box) => ({
-      x: b.x / viewport.width,
-      y: b.y / viewport.height,
-      w: Math.max(0, b.width / viewport.width),
-      h: Math.max(0, b.height / viewport.height),
+    const rect = (b: Box, v: { width: number; height: number } = current) => ({
+      x: b.x / v.width,
+      y: b.y / v.height,
+      w: Math.max(0, b.width / v.width),
+      h: Math.max(0, b.height / v.height),
     })
 
     /** Problems with individual records: kept, never thrown (the runner's callbacks must not throw). */
@@ -113,10 +115,13 @@ export async function recordScenario(
     // Device pixels: a headed window on a high-DPI screen gives frames at viewport × DPR (sharp
     // zooms); headless gives CSS resolution whatever is asked (Phase 0 findings F1, F2).
     // Capped at 3, the most a take records (TakeMeta): a 350% display or browser zoom goes above.
-    const dpr = Math.min(3, await page.evaluate(() => window.devicePixelRatio).catch(() => 1))
-    await page.screencast.start({
-      // Without `size`, frames are scaled down to fit a small default box.
-      size: { width: Math.round(viewport.width * dpr), height: Math.round(viewport.height * dpr) },
+    // Without `size`, frames are scaled down to fit a small default box.
+    const castSize = async (p: Page, v: { width: number; height: number }) => {
+      const dpr = Math.min(3, await p.evaluate(() => window.devicePixelRatio).catch(() => 1))
+      return { width: Math.round(v.width * dpr), height: Math.round(v.height * dpr) }
+    }
+    const castOptions: Parameters<Page["screencast"]["start"]>[0] = {
+      size: await castSize(page, viewport),
       quality: options.quality ?? 85,
       onFrame: ({ data, timestamp }) => {
         // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
@@ -142,7 +147,27 @@ export async function recordScenario(
         lastFrame = data
         for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
       },
-    })
+    }
+    // The page being filmed: the runner may follow a tab or popup (and come back), the capture
+    // follows it on the same clock (frame timestamps are epoch milliseconds whatever the page).
+    let capturing = page
+    await capturing.screencast.start(castOptions)
+    const onPageSwitch = async (next: Page) => {
+      await capturing.screencast.stop().catch(() => undefined)
+      capturing = next
+      // The next step's shot must be of this page, not the last frame of the previous one.
+      lastFrame = undefined
+      // A popup opened at its own size: rects and the capture size follow it (the take warns
+      // about the frame-size change).
+      current = await viewportOf(next).catch(() => current)
+      // A popup that closed right after loading: nothing to film (the runner returns to its
+      // opener at the next step boundary).
+      await next.screencast
+        .start({ ...castOptions, size: await castSize(next, current) })
+        .catch((error: unknown) => {
+          if (!next.isClosed()) throw error
+        })
+    }
 
     // ── events ──
     const events: TakeEvent[] = []
@@ -238,7 +263,8 @@ export async function recordScenario(
             ...base(e.step),
             kind: "sensitive",
             id: e.id,
-            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box),
+            // Normalized in the viewport it was measured in (measured before the capture switched).
+            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
             why: "secret-field",
           })
           break
@@ -246,7 +272,11 @@ export async function recordScenario(
           push({ ...base(e.step), kind: "key", key: e.keys })
           break
         case "target_fallback":
+          break
         case "teardown_failed":
+          // Only the first teardown failure is thrown (Take.teardownError); every other one is
+          // a warning of the take, never silent.
+          warnings.push(`teardown: ${firstLine(e.error)}`)
           break
       }
     }
@@ -266,7 +296,15 @@ export async function recordScenario(
 
     let failure: Error | undefined
     try {
-      await runScenario(page, scenario, project, { ...options, onEvent, recording: true })
+      await runScenario(page, scenario, project, {
+        ...options,
+        onEvent,
+        recording: true,
+        onPageSwitch: async (next) => {
+          await onPageSwitch(next)
+          await options.onPageSwitch?.(next)
+        },
+      })
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
     }
@@ -279,7 +317,7 @@ export async function recordScenario(
       failure = undefined
     }
     stopped = true
-    await page.screencast.stop().catch(() => undefined)
+    await capturing.screencast.stop().catch(() => undefined)
     // Capture time, not disk-flush time.
     const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
 
