@@ -78,6 +78,8 @@ export interface PlanOptions {
   random: () => number
   /** Samples per second. Default 60. */
   fps?: number
+  /** Land a little past the target on long moves, then correct. Default true (never while dragging). */
+  overshoot?: boolean
 }
 
 /**
@@ -107,7 +109,7 @@ export function planPath(from: Point, to: Point, options: PlanOptions): PathSamp
   const c2 = { x: from.x + dx * 0.7 + nx * bend, y: from.y + dy * 0.7 + ny * bend }
 
   // Overshoot on long moves: land a little past the target, then correct.
-  const overshoot = distance > 500 && options.pacing === "natural"
+  const overshoot = distance > 500 && options.pacing === "natural" && options.overshoot !== false
   const past = overshoot
     ? {
         x: to.x + (dx / distance) * (8 + random() * 10),

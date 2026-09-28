@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kiframe/schema"
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
@@ -256,6 +259,221 @@ steps:
 steps: [{ id: t, action: type, target: { by: label, name: Hidden field }, value: abc }]
 `)
     expect(await page.locator("#v").textContent()).toBe("abc")
+  })
+
+  // ─── M1-2: select, drag, upload, tabs and popups ───────────────────────────
+
+  it("selects a native option by label or by value", async () => {
+    await run(`setup: [{ action: goto, url: /controls }]
+steps: [{ id: pick, action: select, target: { by: label, name: Plan }, option: Pro plan }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("plan pro")
+    await run(`setup: [{ action: goto, url: /controls }]
+steps: [{ id: pick, action: select, target: { by: label, name: Plan }, option: pro }, { id: back, action: select, target: { by: label, name: Plan }, option: free }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("plan free")
+  })
+
+  it("drags by an offset on camera, with the button held along the path", async () => {
+    const events = await run(
+      `setup: [{ action: goto, url: /drag }]
+steps: [{ id: slide, action: drag, target: { by: role, role: slider, name: Volume }, to: { dx: 200, dy: 0 } }]
+`,
+    )
+    const left = Number((await page.locator("#s").textContent())?.replace("knob ", ""))
+    expect(Math.abs(left - 300)).toBeLessThan(25)
+    const pressed = events.flatMap((e) => (e.kind === "cursor" ? [e.pressed] : []))
+    expect(pressed.filter(Boolean).length).toBeGreaterThan(1)
+    expect(pressed.at(-1)).toBe(false)
+  })
+
+  it("drags onto another element (HTML5 drag and drop), on and off camera", async () => {
+    for (const yaml of [
+      `steps: [{ id: move, action: drag, target: { by: text, text: Card }, to: { by: text, text: Done } }]`,
+      `setup: [{ action: goto, url: /drag }, { action: drag, target: { by: text, text: Card }, to: { by: text, text: Done } }]\nsteps: [{ id: a, action: pause, ms: 1 }]`,
+    ]) {
+      await page.goto(`${server.url}/drag`)
+      const scene = yaml.startsWith("steps")
+        ? `setup: [{ action: goto, url: /drag }]\n${yaml}\n`
+        : `${yaml}\n`
+      await run(scene)
+      expect(await page.locator("#s").textContent()).toBe("dropped card")
+    }
+  })
+
+  it("uploads a project asset into a file input, or through the chooser a button opens", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-asset-"))
+    const asset = `${"a".repeat(64)}.txt`
+    writeFileSync(join(dir, asset), "hello")
+    const resolveAsset = (file: string) => join(dir, file)
+    await run(
+      `setup: [{ action: goto, url: /upload }]
+steps: [{ id: attach, action: upload, target: { by: label, name: Attachment }, file: ${asset} }]
+`,
+      { resolveAsset },
+    )
+    expect(await page.locator("#s").textContent()).toBe(`f: ${asset}`)
+    await run(
+      `setup: [{ action: goto, url: /upload }]
+steps: [{ id: avatar, action: upload, target: { by: role, role: button, name: Choose avatar }, file: ${asset} }]
+`,
+      { resolveAsset },
+    )
+    expect(await page.locator("#s").textContent()).toBe(`hidden: ${asset}`)
+    const noResolver = await failure(`setup: [{ action: goto, url: /upload }]
+steps: [{ id: attach, action: upload, target: { by: label, name: Attachment }, file: ${asset} }]
+`)
+    expect(noResolver.message).toMatch(/no asset resolver/)
+    // A hidden file input, targeted through its label.
+    await run(
+      `setup: [{ action: goto, url: /upload }]
+steps: [{ id: file, action: upload, target: { by: label, name: Avatar file }, file: ${asset} }]
+`,
+      { resolveAsset },
+    )
+    expect(await page.locator("#s").textContent()).toBe(`hid2: ${asset}`)
+    // A dropzone ("Drag & drop files here") is no risky action, unattended too.
+    await run(
+      `setup: [{ action: goto, url: /upload }]
+steps: [{ id: drop, action: upload, target: { by: role, role: button, name: "Drag & drop files here, or click to browse" }, file: ${asset} }]
+`,
+      { resolveAsset },
+    )
+    expect(await page.locator("#s").textContent()).toBe(`hidden: ${asset}`)
+  })
+
+  it("returns to the opener in the step that closed the popup (with the default settle)", async () => {
+    await run(`overrides: { pacing: { settleMs: 400 } }
+setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: done, action: click, target: { by: role, role: button, name: Done } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
+  it("returns to the opener when a popup closes itself while the step settles", async () => {
+    await run(`overrides: { pacing: { settleMs: 400 } }
+setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: authorize, action: click, target: { by: role, role: button, name: Authorize } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
+  it("runs the teardown on the page the scene started on, not a followed tab", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: tab, action: click, target: { by: role, role: link, name: Open report } }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+teardown: [{ action: click, target: { by: role, role: button, name: Reset } }]
+`)
+    expect(await page.locator("#reset").textContent()).toBe("reset done")
+  })
+
+  it("never follows a popup the last step opened late into the teardown", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps: [{ id: later, action: click, target: { by: role, role: button, name: Open later } }]
+teardown:
+  - { action: pause, ms: 1200 }
+  - { action: click, target: { by: role, role: button, name: Reset } }
+`)
+    expect(await page.locator("#reset").textContent()).toBe("reset done")
+  })
+
+  it("stays put when the last page opened closed at once (never an earlier tab instead)", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: two, action: click, target: { by: role, role: button, name: Open two } }
+  - { id: still, action: expect, that: { visible: { by: role, role: button, name: Open two } } }
+`)
+  })
+
+  it("moves pointer-library drags even with instant pacing (the activating move isn't the only one)", async () => {
+    await run(`setup:
+  - { action: goto, url: /pointer-lib }
+  - { action: drag, target: { by: role, role: slider, name: Level }, to: { dx: 200, dy: 0 } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+    const at = Number((await page.locator("#s").textContent())?.replace("at ", ""))
+    expect(Math.abs(at - 300)).toBeLessThan(25)
+  })
+
+  it("moves pointer-library drags onto an element off camera too (several moves)", async () => {
+    await run(`setup:
+  - { action: goto, url: /pointer-lib }
+  - { action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Drop files here } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+    // The knob started at 100; the zone's centre is around x = 540.
+    const at = Number((await page.locator("#s").textContent())?.replace("at ", ""))
+    expect(at).toBeGreaterThan(400)
+  })
+
+  it("measures the drop target after the drag starts (sortable lists re-lay out on press)", async () => {
+    await run(`setup: [{ action: goto, url: /sortable }]
+steps: [{ id: move, action: drag, target: { by: text, text: A, exact: true }, to: { by: text, text: D, exact: true } }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("B C A D E")
+  })
+
+  it("re-measures after the drag really started, past a library's activation distance (8 px)", async () => {
+    await run(`setup: [{ action: goto, url: /sortable-8 }]
+steps: [{ id: move, action: drag, target: { by: text, text: A, exact: true }, to: { by: text, text: D, exact: true } }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("B C A D E")
+  })
+
+  it("doesn't judge a drag by its drop zone's text ('Drop files here' is no risky action)", async () => {
+    await run(`setup: [{ action: goto, url: /pointer-lib }]
+steps: [{ id: put, action: drag, target: { by: role, role: slider, name: Level }, to: { by: text, text: Drop files here } }]
+`)
+  })
+
+  it("refuses an offset drag that would leave the view (never a shorter drag)", async () => {
+    const error = await failure(`setup: [{ action: goto, url: /drag }]
+steps: [{ id: slide, action: drag, target: { by: role, role: slider, name: Volume }, to: { dx: 5000, dy: 0 } }]
+`)
+    expect(error.message).toMatch(/would leave the view/)
+  })
+
+  it("stays on the opener when a popup closes itself at once (OAuth with a session)", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: sso, action: click, target: { by: role, role: button, name: Sign in with provider } }
+  - { id: still, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
+  it("follows a popup that opens after its step settled, from the next step on", async () => {
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: later, action: click, target: { by: role, role: button, name: Open later } }
+  - { id: wait, action: pause, ms: 1200 }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+`)
+  })
+
+  it("follows a new tab opened by a click, and returns when a popup closes itself", async () => {
+    const switched: string[] = []
+    const events = await run(
+      `setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+  - { id: done, action: click, target: { by: role, role: button, name: Done } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+  - { id: tab, action: click, target: { by: role, role: link, name: Open report } }
+  - { id: in-tab, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+`,
+      { onPageSwitch: (p) => void switched.push(new URL(p.url()).pathname) },
+    )
+    expect(switched).toEqual(["/popup-report", "/opener", "/popup-report"])
+    const navigated = events.flatMap((e) =>
+      e.kind === "navigate" ? [new URL(e.url).pathname] : [],
+    )
+    expect(navigated.filter((p) => p === "/popup-report").length).toBeGreaterThanOrEqual(2)
   })
 
   // ─── P0-9: state (ensure, teardown, session presets, hover) ────────────────

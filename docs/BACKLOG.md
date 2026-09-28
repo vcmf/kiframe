@@ -98,3 +98,21 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Keep the `migrated` flag:** the parse functions drop it; the project store (M1-9) needs it to rewrite upgraded files.
 - **Social-cut presets:** `vertical` / `square` should also tighten the camera and enlarge captions (OBJECT-MODEL §0.5); only the size follows the preset today.
 
+## @kiframe/runtime actions (M1-2)
+- **Popup windows of another size:** tabs share the context viewport, but a `window.open` with its own width/height films at that size: the take then has a frame-size change (only warned, see P0-5). Film popups at the take's size, or letterbox them.
+- **Several pages opened in one step:** the last one opened is followed; the others stay open in the background, undriven.
+- **`hover.hold`:** OBJECT-MODEL lists a hover `hold?`; the common `hold` (a freeze after the step) covers the presentation beat, a hover that keeps the pointer for a duration isn't implemented.
+- **`select` on camera:** the native dropdown isn't in the screencast (the value just changes); a custom overlay could show the options.
+- **Slow popups:** pages are followed at step boundaries. A popup whose first response comes after the opening step settled (a slow OAuth provider) is picked up at the next boundary: the step right after it still runs on the opener. Re-check pending popups while a target is being resolved, or wait briefly after actions that can open one (M1-2 review round 7).
+- **Risky selects (auto-detection):** only `risky: true` gates a `select`: judging options by their words flagged ordinary choices ("Pay yearly", "Invite only"); the submit click is checked anyway.
+- **Nested "continue in a new window":** a popup that opens a tab and closes itself returns to its opener (the tab stays undriven); a step failing mid-close before the teardown leaves no page to clean up on. Prefer the newest open page the closed one opened.
+- **Drag framing after re-layout:** the press rect uses the drop point planned before the drag starts, not the re-measured one.
+- **Uploads and drags without events:** a hidden-input upload and Playwright's fallback drag report no cursor, press or rect (no framing, the clips generator may call the step idle); an opener that opens a tab in the same step its popup closed loses that tab.
+- **Per-page state:** page, tracker, cursor, listeners live in parallel maps saved/restored by `switchPage`: one `Map<Page, PageState>` would replace them. Secret fields are also measured twice on a step that switches pages.
+- **Page-following cleanups:** `ctx.network` could be a getter of the page registry; `reportPress` / the click-event block in `clickAtCursor` share one shape; the teardown's "return to the start page" has no step of its own (events tagged teardown index 0).
+- **Risky drags (auto-detection):** only `risky: true` gates a drag. Judging the drop target by its text flagged ordinary drops ("Drop files here", a column holding a "Remove" card, M1-2 review): it needs the drop target's own label (the control under the drop point), like the click check.
+- **Late hidden file input:** an input that renders after the first check is found only after `find` waited its whole timeout for a visible match: wait for both at once.
+- **Several hidden file inputs:** the hidden-input path needs exactly one match of the primary locator (no `nth`, no fallbacks): use the target resolution with a hidden-allowed mode.
+- **Late file chooser in headed mode:** a chooser that opens after the step's timeout isn't intercepted any more, so the OS dialog shows: keep a listener that cancels it until the step ends.
+- **Drag of long lists:** a drag doesn't auto-scroll the page while held; a drop target off screen fails with "the drop target isn't on screen".
+

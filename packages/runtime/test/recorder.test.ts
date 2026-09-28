@@ -428,6 +428,92 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
   const scenario = (steps: string) =>
     parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: /projects }]\nsteps:\n${steps}`)
 
+  it("keeps filming when the run follows a new tab (one clock across pages)", async () => {
+    // Frames only come on repaint: the opener is static, the new tab is animated. The same
+    // scene without following the tab is the baseline.
+    const record = async (steps: string) => {
+      const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+      const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+      const page = await context.newPage()
+      const take = await recordScenario(
+        page,
+        parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: /opener }]\nsteps:\n${steps}`),
+        project(),
+        { outDir },
+      )
+      await context.close()
+      const probe = JSON.parse(
+        execFileSync(
+          "ffprobe",
+          [
+            "-v",
+            "error",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames",
+            "-of",
+            "json",
+            join(outDir, "frames.webm"),
+          ],
+          { encoding: "utf8" },
+        ),
+      ) as { streams: { nb_read_frames: string }[] }
+      return { take, frames: Number(probe.streams[0]?.nb_read_frames) }
+    }
+    const followed =
+      await record(`  - { id: tab, action: click, target: { by: role, role: link, name: Open report } }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Report } } }
+  - { id: look, action: pause, ms: 800 }
+`)
+    const baseline =
+      await record(`  - { id: stay, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+  - { id: look, action: pause, ms: 800 }
+`)
+    expect(followed.take.meta.outcome.status).toBe("complete")
+    expect(
+      followed.take.events.some((e) => e.kind === "navigate" && e.url.endsWith("/popup-report")),
+    ).toBe(true)
+    expect(followed.frames).toBeGreaterThan(baseline.frames + 5)
+  })
+
+  it("normalizes rects to a popup's own size, and re-blurs the opener's secret right on return", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: key, action: type, target: { by: label, name: API key }, value: "{{secrets.acme.key}}" }
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: code, action: type, target: { by: label, name: Code }, value: "{{secrets.acme.code}}" }
+  - { id: done, action: click, target: { by: role, role: button, name: Done } }
+  - { id: look, action: pause, ms: 300 }
+`),
+      project(),
+      { outDir, resolveSecret: (name) => (name === "acme.key" ? "k-123456" : "c-987654") },
+    )
+    await context.close()
+    const sensitive = take.events.filter(
+      (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive",
+    )
+    // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5).
+    const code = sensitive.find((e) => e.id.includes("acme.code") && e.rect.w > 0)
+    expect(code?.rect.x).toBeCloseTo(300 / 800, 2)
+    expect(code?.rect.y).toBeCloseTo(285 / 600, 2)
+    // Back on the opener (in the "done" step), the API key's blur is back before the next step.
+    const lookStart =
+      take.events.find((e) => e.kind === "step_start" && e.stepId === "look")?.t ?? 0
+    const keyEvents = sensitive.filter((e) => e.id.includes("acme.key"))
+    const goneAt = keyEvents.find((e) => e.rect.w === 0)?.t ?? Infinity
+    const back = keyEvents.find((e) => e.t > goneAt && e.rect.w > 0)
+    expect(back?.t ?? Infinity).toBeLessThanOrEqual(lookStart)
+    // Same field, same opener viewport: the same rect as before the popup (not scaled to 800×600).
+    const before = keyEvents.find((e) => e.rect.w > 0)
+    expect(back?.rect).toEqual(before?.rect)
+  })
+
   it("follows a secret field with its blur when the page scrolls", async () => {
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
