@@ -16,7 +16,10 @@ const pages: Record<string, string> = {
     <p id="jsx"></p><p id="ws">Bob
          Smith</p>
     <div id="chip" style="display:flex"><span>bob@</span><span>acme.com</span></div>
+    <div id="lit"></div>
     <script>
+      // Text directly in a shadow root, like a Lit template.
+      document.getElementById("lit").attachShadow({ mode: "open" }).append("Signed in as bob@acme.com")
       const p = document.getElementById("jsx")
       p.append(document.createTextNode("Bob"), document.createTextNode(" "), document.createTextNode("Smith"))
     </script>`,

@@ -67,7 +67,9 @@ function collect(): Collected {
         continue
       }
       const text = n as Text
-      const parent = text.parentElement
+      // Directly in a shadow root (a Lit template): its host stands for the parent.
+      const root = text.parentNode
+      const parent = text.parentElement ?? (root instanceof ShadowRoot ? root.host : null)
       if (parent === null || text.data.trim() === "") continue
       if (["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "TEXTAREA"].includes(parent.tagName)) continue
       const range = document.createRange()
@@ -159,13 +161,13 @@ export function matchParts(parts: readonly Part[], values: Iterable<string>): Sp
         const at = m.index
         const end = at + m[0].length
         const spans: Span[] = []
-        for (const [k, m] of members.entries()) {
+        for (const [k, member] of members.entries()) {
           const mEnd = k + 1 < members.length ? members[k + 1]!.from : text.length
-          if (m.from >= end || mEnd <= at) continue
+          if (member.from >= end || mEnd <= at) continue
           spans.push({
-            part: m.part,
-            start: Math.max(at, m.from) - m.from,
-            end: Math.min(end, mEnd) - m.from,
+            part: member.part,
+            start: Math.max(at, member.from) - member.from,
+            end: Math.min(end, mEnd) - member.from,
           })
         }
         out.push(spans)
