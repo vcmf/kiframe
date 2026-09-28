@@ -10,11 +10,13 @@ presets:
     steps:
       - { action: goto, url: /auth/login }
       - {
+          id: email,
           action: type,
           target: { by: role, role: textbox, name: Email },
           value: "{{secrets.calcom.username}}",
         }
       - {
+          id: password,
           action: type,
           target: { by: role, role: textbox, name: Password },
           value: "{{secrets.calcom.password}}",
