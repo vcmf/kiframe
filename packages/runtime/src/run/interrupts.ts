@@ -1,7 +1,8 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { isSafeSelector, ProbeRefusal } from "../secret-state.ts"
+import { exactNamesFor, isSafeSelector, ProbeRefusal } from "../secret-state.ts"
+import { pollLocator } from "./conditions.ts"
 import { countUnderRule } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
@@ -79,6 +80,11 @@ async function matchingInterrupt(
   skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
   const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
+  // The exact-names rule (§3 A8) decided once for all the rules.
+  const names = await exactNamesFor(
+    ctx.page,
+    rules.map((r) => whenLocator(r)),
+  )
   const context = ctx.page.context()
   const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
   skippedRulesOf.set(context, skippedRules)
@@ -86,8 +92,12 @@ async function matchingInterrupt(
   const counts = await Promise.all(
     rules.map(async (rule) => {
       try {
-        // Counted under the rule of the moment, a partial match confirmed (§3 A8).
-        return (await countUnderRule(ctx.page, whenLocator(rule))).count ?? 0
+        // Counted under the rule decided once for this check, a partial match confirmed (§3 A8).
+        // A count that fails (an invalid selector) is no match, as it always was.
+        return (
+          (await countUnderRule(ctx.page, whenLocator(rule), names).catch(() => undefined))
+            ?.count ?? 0
+        )
       } catch (error) {
         // A `when` that could probe a known value (§3 A8) never matches while secrets are known:
         // the rule is refused by its selector's form, whatever the value (nothing leaks).
@@ -159,19 +169,13 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
   }
 }
 
-/**
- * Waits (up to 1 s, best effort) for a handled rule's `when` to be gone: ends at once when it can't
- * be checked (exact names on for a partial `when`), or when two polls see it gone.
- */
+/** Waits (up to 1 s, best effort) for a handled rule's `when` to be gone (`pollLocator`). */
 async function waitGone(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Promise<void> {
-  const locator = whenLocator(rule)
-  const deadline = Date.now() + Math.min(ctx.timeoutMs, 1000)
-  let gone = 0
-  while (Date.now() < deadline) {
-    const r = await countUnderRule(ctx.page, locator).catch(() => undefined)
-    if (r === undefined || (r.exact && r.count === 0)) return
-    gone = r.count === 0 && !r.unsure ? gone + 1 : 0
-    if (gone >= 2) return
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
+  await pollLocator(ctx.page, whenLocator(rule), {
+    timeout: Math.min(ctx.timeoutMs, 1000),
+    visible: false,
+    negative: false,
+    bestEffort: true,
+    failed: () => new Error("still there"),
+  }).catch(() => undefined)
 }

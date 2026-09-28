@@ -106,8 +106,9 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       // A secret is resolved at the last moment, once the field it goes into is focused.
       const text = secret === undefined ? action.value : ""
       let secretWrite: SecretWrite | undefined
-      const sensitiveId =
+      const followed =
         secret === undefined ? undefined : followSecretField(ctx, step, secret, target)
+      const sensitiveId = followed?.id
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
       try {
@@ -130,7 +131,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
           if (secret !== undefined) {
             secretWrite = {
               ...(await prepareSecretWrite(ctx, target, step, secret, action.target)),
-              fieldId: sensitiveId,
+              field: followed?.field,
             }
           }
           // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
@@ -181,7 +182,10 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       // End of typing (before the submit, which may navigate or re-lay out the page).
       ctx.options.onEvent?.({ kind: "type", step, secret, box: fieldBox ?? undefined })
       if (action.submit === true) {
-        await guard(step, () => target.press("Enter", { timeout: ctx.timeoutMs }))
+        // After a secret, on the element it was written to (the found locator would re-run its
+        // query with the names of before the write, §3 A8).
+        const on = secretWrite?.input ?? target
+        await guard(step, () => on.press("Enter", { timeout: ctx.timeoutMs }))
         ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
       }
       return

@@ -339,8 +339,8 @@ export function scrubError(error: Error, secrets: Set<string>): Error {
 /** A secret about to be written: the approved element (a handle), the value, and the use. */
 export interface SecretWrite {
   secret: string
-  /** The id of the secret field the blur follows (recording). */
-  fieldId?: string | undefined
+  /** The secret field the blur follows (recording): its entry, not its id (ids can repeat). */
+  field?: Ctx["secretFields"][number] | undefined
   input: ElementHandle<HTMLInputElement | HTMLTextAreaElement>
   value: string
   use: SecretUse
@@ -355,10 +355,12 @@ export function followSecretField(
   step: StepRef,
   secret: string,
   target: Locator,
-): string {
+): { id: string; field: Ctx["secretFields"][number] | undefined } {
   const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}`
-  if (ctx.options.recording === true) ctx.secretFields.push({ id, locator: target, page: ctx.page })
-  return id
+  if (ctx.options.recording !== true) return { id, field: undefined }
+  const field = { id, locator: target, page: ctx.page }
+  ctx.secretFields.push(field)
+  return { id, field }
 }
 
 /**
@@ -531,8 +533,7 @@ export async function writeSecret(
     const landed = await write.input.evaluate((el) => el.value)
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
-    const field = ctx.secretFields.find((f) => f.id === write.fieldId)
-    if (field !== undefined) field.handle = write.input
+    if (write.field !== undefined) write.field.handle = write.input
     if (landed !== wanted) {
       throw new StepError(
         step,
