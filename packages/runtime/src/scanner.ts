@@ -41,7 +41,12 @@ function collect(): Collected {
       if (!display.startsWith("inline") && display !== "contents") break
       at = at.parentElement ?? (at.getRootNode() as ShadowRoot).host ?? null
     }
-    const key = at ?? document.documentElement
+    let key = at ?? document.documentElement
+    // Flex and grid items compute to `block` but read as one line (a name chip, a tag): their
+    // container is the block.
+    while (key.parentElement !== null && /flex|grid/.test(displayOf(key.parentElement))) {
+      key = key.parentElement
+    }
     let id = blocks.get(key)
     if (id === undefined) blocks.set(key, (id = blocks.size))
     return id
@@ -76,6 +81,11 @@ function collect(): Collected {
   }
   walk(document)
   return { parts, nodes }
+}
+
+/** A string as a literal in a regular expression (valid with the `u` flag too). */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 /** A match's span inside one part. */
@@ -126,7 +136,12 @@ function rectsOf(
 
 /** Where `values` occur in `parts`, per block, ignoring case: each match as the spans it covers. */
 export function matchParts(parts: readonly Part[], values: Iterable<string>): Span[][] {
-  const needles = [...new Set([...values].filter((v) => v.trim() !== ""))]
+  // Case-insensitive regexes on the text itself: offsets stay the original string's (lowering the
+  // case can change a string's length: "İ"). Whitespace in a value matches any whitespace, or none
+  // (the browser collapses it; a space between two nodes can be a node of its own, not collected).
+  const needles = [...new Set([...values].filter((v) => v.trim() !== ""))].map(
+    (v) => new RegExp(v.trim().split(/\s+/).map(escapeRegExp).join("\\s*"), "giu"),
+  )
   if (needles.length === 0) return []
   const out: Span[][] = []
   let i = 0
@@ -139,10 +154,7 @@ export function matchParts(parts: readonly Part[], values: Iterable<string>): Sp
       members.push({ part: i, from: text.length })
       text += parts[i]!.text
     }
-    for (const needle of needles) {
-      // A case-insensitive regex on the text itself: offsets stay the original string's (lowering
-      // the case can change a string's length: "İ").
-      const pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu")
+    for (const pattern of needles) {
       for (const m of text.matchAll(pattern)) {
         const at = m.index
         const end = at + m[0].length
@@ -165,9 +177,13 @@ export function matchParts(parts: readonly Part[], values: Iterable<string>): Sp
 
 /**
  * The boxes (viewport CSS pixels) of every visible occurrence of a secret value on the page, in
- * document order. Throws if the page can't be scanned (callers fail closed).
+ * document order; null for an occurrence re-rendered during the scan (unsure). Throws if the page
+ * can't be scanned.
  */
-export async function scanSecretText(page: Page, values: Iterable<string>): Promise<Box[]> {
+export async function scanSecretTextPartly(
+  page: Page,
+  values: Iterable<string>,
+): Promise<(Box | null)[]> {
   const list = [...values]
   if (list.every((v) => v.trim() === "")) return []
   const handle: JSHandle<Collected> = await page.evaluateHandle(collect)
@@ -175,12 +191,17 @@ export async function scanSecretText(page: Page, values: Iterable<string>): Prom
     const parts = await handle.evaluate((c) => c.parts)
     const matches = matchParts(parts, list)
     if (matches.length === 0) return []
-    const boxes = await handle.evaluate(rectsOf, matches)
-    if (boxes.some((b) => b === null)) throw new Error("the page changed during the scan")
-    return boxes as Box[]
+    return await handle.evaluate(rectsOf, matches)
   } finally {
     await handle.dispose().catch(() => undefined)
   }
+}
+
+/** `scanSecretTextPartly`, all or nothing: throws when any occurrence is unsure (fails closed). */
+export async function scanSecretText(page: Page, values: Iterable<string>): Promise<Box[]> {
+  const boxes = await scanSecretTextPartly(page, values)
+  if (boxes.some((b) => b === null)) throw new Error("the page changed during the scan")
+  return boxes as Box[]
 }
 
 /**

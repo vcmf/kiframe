@@ -81,6 +81,12 @@ describe("scanSecretText", () => {
     for (const b of boxes) expect(b.width).toBeGreaterThan(0)
   })
 
+  it("matches values with spaces however they're rendered, and across flex items", async () => {
+    await page.goto(`${server.url}/names`)
+    expect(await scanSecretText(page, ["Bob Smith"])).toHaveLength(2)
+    expect(await scanSecretText(page, [SECRET])).toHaveLength(1)
+  })
+
   it("paints secrets over in the model's screenshot", async () => {
     await page.goto(`${server.url}/whoami`)
     await page.getByText("Hi BOB@ACME.COM").waitFor()

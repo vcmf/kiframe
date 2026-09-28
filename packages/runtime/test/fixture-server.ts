@@ -10,6 +10,16 @@ const pages: Record<string, string> = {
     <input id="f" value="bob@acme.com"><input type="password" value="bob@acme.com">
     <p style="display:none">bob@acme.com</p><p id="late"></p>
     <script>setTimeout(() => document.getElementById("late").textContent = "Hi BOB@ACME.COM", 400)</script>`,
+  // A name rendered like JSX `{first} {last}` (a space node), with collapsed source whitespace, and
+  // an email split across flex items.
+  "/names": `<!doctype html><title>Names</title>
+    <p id="jsx"></p><p id="ws">Bob
+         Smith</p>
+    <div id="chip" style="display:flex"><span>bob@</span><span>acme.com</span></div>
+    <script>
+      const p = document.getElementById("jsx")
+      p.append(document.createTextNode("Bob"), document.createTextNode(" "), document.createTextNode("Smith"))
+    </script>`,
   // The secret re-rendered (removed, then back) twice, and a new occurrence above it.
   "/flicker": `<!doctype html><title>Flicker</title><div id="top"></div><p id="p">Hi bob@acme.com</p>
     <script>
