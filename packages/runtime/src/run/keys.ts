@@ -31,7 +31,7 @@ export function moveCaretToEnd(el: Element) {
 }
 
 /** `Mod` = ⌘ on Mac, Ctrl elsewhere (Playwright's ControlOrMeta). */
-export function modKey(key: string): string {
+function modKey(key: string): string {
   return key === "Mod" ? "ControlOrMeta" : key
 }
 

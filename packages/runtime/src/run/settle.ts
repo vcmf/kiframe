@@ -3,7 +3,7 @@ import type { Ctx } from "./context.ts"
 // Waiting for the page to settle after an action (network and DOM quiet).
 
 /** Upper bound of each settle wait: pages with constant activity (animations, polling) never block. */
-export const SETTLE_MAX_MS = 3000
+const SETTLE_MAX_MS = 3000
 
 /**
  * After an action, wait for the app to settle (docs/OBJECT-MODEL.md §2b): no request in flight and
@@ -23,7 +23,7 @@ export async function settle(ctx: Ctx, onCamera: boolean): Promise<void> {
   }
 }
 
-export async function domQuiet(ctx: Ctx): Promise<void> {
+async function domQuiet(ctx: Ctx): Promise<void> {
   await ctx.page
     .evaluate(
       ({ quiet, max }) =>

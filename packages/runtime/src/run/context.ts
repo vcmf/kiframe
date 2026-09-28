@@ -1,8 +1,8 @@
-import { Action, type ProjectConfig, type Step } from "@kiframe/schema"
+import type { Action, ProjectConfig, Step } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 import { type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
-import { NetworkTracker } from "../network.ts"
+import type { NetworkTracker } from "../network.ts"
 
 // The runner's shared state (Ctx), its options and events, and small helpers every part uses.
 
@@ -140,6 +140,8 @@ export interface Ctx {
   cursors: Map<Page, Point>
   /** The project's interrupt rules (the org's rule bank included, `resolveProjectConfig`). */
   interrupts: ProjectConfig["interrupts"]
+  /** Runs an action (`perform`), for the modules `actions.ts` itself depends on (no import cycle). */
+  perform: (action: AnyAction, step: StepRef) => Promise<void>
   /** CSS hiding the project's `hide` selectors ("" when there are none). */
   hideCss: string
   /** Rules handled on each page: at most once per page and run (a banner fading out in place still matches). */

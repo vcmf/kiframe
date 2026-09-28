@@ -13,6 +13,7 @@ import {
   TEXT_SCAN_MS,
 } from "./run/secrets.ts"
 import { expandSetup, runSetupEntry } from "./run/setup.ts"
+import { perform } from "./run/actions.ts"
 import { runOne } from "./run/step.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
@@ -109,6 +110,7 @@ export async function runScenario(
     trackerOf,
     cursors: new Map(),
     interrupts: project.interrupts,
+    perform: (action, step) => perform(ctx, action, step),
     hideCss: hideCss(project.hide),
     interruptsDone: new WeakMap(),
     inInterrupt: false,

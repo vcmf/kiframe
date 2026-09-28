@@ -185,7 +185,7 @@ export async function clickAtCursor(
  * The click `position` for a point on screen. Playwright measures it from the element's padding
  * box: it adds parseInt(border width), so exactly that is subtracted and the click lands on `at`.
  */
-export async function clickOffset(
+async function clickOffset(
   target: Locator,
   box: { x: number; y: number },
   at: Point,
@@ -205,7 +205,7 @@ export async function clickOffset(
   return { x: at.x - box.x - border.left, y: at.y - box.y - border.top }
 }
 
-export const center = (viewport: { width: number; height: number }): Point => ({
+const center = (viewport: { width: number; height: number }): Point => ({
   x: viewport.width / 2,
   y: viewport.height / 2,
 })
