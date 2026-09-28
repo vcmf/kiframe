@@ -3,7 +3,7 @@ import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@
 import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
-import { escapeRegExp, scanSecretTextPartly, valuePattern } from "../scanner.ts"
+import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { viewportOf } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 
@@ -537,35 +537,10 @@ const chordName = (c: Set<string>) =>
   [...c].sort((a, b) => (a === "shift" ? -1 : b === "shift" ? 1 : a < b ? -1 : 1)).join("+")
 
 /** Whether a text contains a known value (in Node: values never go to the page). */
-function containsKnown(ctx: Ctx, text: string | null | undefined): boolean {
-  if (text === null || text === undefined || text === "") return false
-  // The scanner's matcher (R2): whitespace-tolerant, short values as whole words.
-  for (const v of ctx.secretValues)
-    if (v.trim() !== "" && valuePattern(v, "iu").test(text)) return true
-  return false
-}
+const containsKnown = (ctx: Ctx, text: string | null | undefined) =>
+  containsKnownValue(ctx.secretValues, text)
 
-/** The written elements still in the driven page's current document (a navigation drops them). */
-async function writtenHere(ctx: Ctx): Promise<ElementHandle<Element>[]> {
-  // Closed pages and removed elements are pruned (their handles released): the list stays small.
-  const all = [...ctx.secretWritten]
-  const live = await Promise.all(
-    all.map((w) =>
-      w.page.isClosed()
-        ? Promise.resolve(false)
-        : w.handle.evaluate((e) => e.isConnected).catch(() => false),
-    ),
-  )
-  for (const [i, w] of all.entries()) {
-    if (live[i]) continue
-    const at = ctx.secretWritten.indexOf(w)
-    if (at !== -1) ctx.secretWritten.splice(at, 1)
-    void w.handle.dispose().catch(() => undefined)
-  }
-  return all
-    .filter((w, i) => live[i] && w.page === ctx.page)
-    .map((w) => w.handle as ElementHandle<Element>)
-}
+const writtenHere = (ctx: Ctx) => liveWritten(ctx.page)
 
 /**
  * Where focus is (runs in the page): whether it's in one of the written elements, and the focused
@@ -666,7 +641,7 @@ export async function assertDragKeepsSecrets(
 }
 
 export { secretsOf, type ContextSecrets } from "../secret-state.ts"
-import { isSafeSelector, secretsOf } from "../secret-state.ts"
+import { containsKnownValue, isSafeSelector, liveWritten, secretsOf } from "../secret-state.ts"
 
 /** Releases a prepared write that won't happen (the step failed before it). */
 export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {
@@ -690,37 +665,4 @@ export function assertSecretTarget(target: Target, step: StepRef, secret: string
       `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
     )
   }
-}
-
-/** Whether a field on the page holds a known value (runs in the page: reads the values out). */
-function fieldValues(written: Element[]): { writtenHere: boolean; values: string[] } {
-  const values: string[] = []
-  const visit = (root: Document | ShadowRoot) => {
-    for (const el of root.querySelectorAll("*")) {
-      if (
-        (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) &&
-        el.value !== ""
-      ) {
-        values.push(el.value)
-      }
-      if (el.shadowRoot !== null) visit(el.shadowRoot)
-    }
-  }
-  visit(document)
-  return { writtenHere: written.some((e) => e.isConnected), values }
-}
-
-/**
- * Updates the context's exact-names rule (§3 A8): on while a field holding a secret is on the
- * driven page. Unsure (the page is navigating): on, if values are known (fails closed).
- */
-export async function updateExactNames(ctx: Ctx): Promise<void> {
-  const state = secretsOf(ctx.page.context())
-  if (ctx.secretValues.size === 0) {
-    state.exactNames = false
-    return
-  }
-  const found = await ctx.page.evaluate(fieldValues, await writtenHere(ctx)).catch(() => undefined)
-  state.exactNames =
-    found === undefined || found.writtenHere || found.values.some((v) => containsKnown(ctx, v))
 }

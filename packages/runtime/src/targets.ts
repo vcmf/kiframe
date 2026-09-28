@@ -1,4 +1,4 @@
-import { assertNotProbing, secretsOf } from "./secret-state.ts"
+import { assertNotProbing, refreshExactNames, secretsOf } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
@@ -84,6 +84,9 @@ export async function resolveTarget(
   let ambiguous: string | undefined
   for (;;) {
     ambiguous = undefined
+    // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll: a
+    // field that renders mid-step is seen at once.
+    await refreshExactNames(page)
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator))
       const count = await visible.count().catch((error: unknown) => {

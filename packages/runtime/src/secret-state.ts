@@ -1,4 +1,5 @@
 import type { BrowserContext, ElementHandle, Page } from "playwright"
+import { valuePattern } from "./scanner.ts"
 
 // Secret state per browser context (SECRETS-DESIGN §3 A5, A8), shared by every run on it, and the
 // probing rule every locator goes through (targets.ts). A module of its own: no import cycle.
@@ -169,4 +170,86 @@ export function isSafeSelector(selector: string): boolean {
     return true
   }
   return s !== "" && list("") && i === s.length
+}
+
+/** Whether a text contains a known value (in Node: values never go to the page). */
+export function containsKnownValue(
+  values: Iterable<string>,
+  text: string | null | undefined,
+): boolean {
+  if (text === null || text === undefined || text === "") return false
+  // The scanner's matcher (R2): whitespace-tolerant, short values as whole words.
+  for (const v of values) if (v.trim() !== "" && valuePattern(v, "iu").test(text)) return true
+  return false
+}
+
+/**
+ * The elements secrets were written to that are still in this page's current document. Closed
+ * pages and removed elements are pruned (their handles released): the list stays small, and a
+ * stale handle never makes a check fail.
+ */
+export async function liveWritten(page: Page): Promise<ElementHandle<Element>[]> {
+  const state = secretsOf(page.context())
+  const all = [...state.written]
+  const live = await Promise.all(
+    all.map((w) =>
+      w.page.isClosed()
+        ? Promise.resolve(false)
+        : w.handle.evaluate((e) => e.isConnected).catch(() => false),
+    ),
+  )
+  for (const [i, w] of all.entries()) {
+    if (live[i]) continue
+    const at = state.written.indexOf(w)
+    if (at !== -1) state.written.splice(at, 1)
+    void w.handle.dispose().catch(() => undefined)
+  }
+  return all
+    .filter((w, i) => live[i] && w.page === page)
+    .map((w) => w.handle as ElementHandle<Element>)
+}
+
+/** The rendered text-like fields' values (runs in the page: reads them out; never hidden inputs). */
+function renderedFieldValues(): string[] {
+  const values: string[] = []
+  const nonText = new Set([
+    "hidden",
+    "checkbox",
+    "radio",
+    "submit",
+    "button",
+    "reset",
+    "image",
+    "file",
+    "range",
+    "color",
+  ])
+  const visit = (root: Document | ShadowRoot) => {
+    for (const el of root.querySelectorAll("*")) {
+      const field =
+        (el instanceof HTMLInputElement && !nonText.has(el.type)) ||
+        el instanceof HTMLTextAreaElement
+      if (field && (el as HTMLInputElement).value !== "" && el.checkVisibility()) {
+        values.push((el as HTMLInputElement).value)
+      }
+      if (el.shadowRoot !== null) visit(el.shadowRoot)
+    }
+  }
+  visit(document)
+  return values
+}
+
+/**
+ * §3 A8: whether a field holding a secret is on the page right now (a field a secret was written
+ * to, still attached, or a rendered field whose value contains a known value). Called by every
+ * polling loop before it builds a locator, so a field that renders mid-step is seen at once.
+ * Unsure (the page is navigating): true while values are known (fails closed).
+ */
+export async function refreshExactNames(page: Page): Promise<boolean> {
+  const state = secretsOf(page.context())
+  if (state.values.size === 0) return (state.exactNames = false)
+  if ((await liveWritten(page)).length > 0) return (state.exactNames = true)
+  const values = await page.evaluate(renderedFieldValues).catch(() => undefined)
+  return (state.exactNames =
+    values === undefined || values.some((v) => containsKnownValue(state.values, v)))
 }
