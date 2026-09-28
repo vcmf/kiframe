@@ -131,3 +131,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Interrupt ref phase:** the `do` action's ref is phase `setup` with the scene step's index; approvals and events name it `interrupt <rule>`, but a host keying on phase + index would point at a setup step. A dedicated phase (see above).
 - **CSP warning coverage:** the hide warning tests the document loaded when hide is applied; a later document with a strict CSP blocks the init-script style silently.
 
+## @kiframe/runtime state (M1-4)
+- **Session across batches:** the saved session lives in memory for one batch; every batch logs in again. Keeping it (encrypted, keychain) between batches would cut logins further (M1-7/M1-8 decide where secrets at rest live).
+- **Session validation:** a stale saved session is noticed only when a scene fails (the next one logs in again, the failed one isn't retried). A cheap check after the context is created (the preset's last `waitFor`, say) would catch it before filming.
+- **Several session presets:** one context state holds them all, saved after each. A scene using only some of them still starts with all (harmless for logins to one app; two accounts of one app in one batch aren't supported).
+- **Scoped sandbox pre-approvals:** a sandbox pre-approves teardowns and `ensure` cleanups only. Pre-approving named destructive actions in the scene itself ("may delete projects named *Q4 Launch*", APPROACHES §7.2) needs the approval UI (M2-4).
