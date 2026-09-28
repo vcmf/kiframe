@@ -84,7 +84,8 @@ describe("scanSecretText", () => {
   it("matches values with spaces however they're rendered, and across flex items", async () => {
     await page.goto(`${server.url}/names`)
     expect(await scanSecretText(page, ["Bob Smith"])).toHaveLength(2)
-    expect(await scanSecretText(page, [SECRET])).toHaveLength(1)
+    // The flex chip and the text directly in a shadow root.
+    expect(await scanSecretText(page, [SECRET])).toHaveLength(2)
   })
 
   it("paints secrets over in the model's screenshot", async () => {
@@ -102,6 +103,7 @@ describe("scanSecretText", () => {
 describe("scrubSecrets", () => {
   it("scrubs HTML-escaped values and values split by whitespace", () => {
     expect(scrubSecrets("a&amp;b&lt;c", ["a&b<c"])).toBe("[secret]")
+    expect(scrubSecrets(`value="it's&amp;me"`, ["it's&me"])).toBe(`value="[secret]"`)
     expect(scrubSecrets(`textbox "Email": bob@\n  acme.com`, [SECRET])).toBe(
       `textbox "Email": [secret]`,
     )

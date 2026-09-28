@@ -252,7 +252,14 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
-    secretText: { shown: new Map(), next: 0, lastScan: Date.now(), inflight: undefined },
+    secretText: {
+      shown: new Map(),
+      next: 0,
+      lastScan: Date.now(),
+      runStart: Date.now(),
+      values: 0,
+      inflight: undefined,
+    },
     clearListenerError: () => (listenerError = undefined),
     throwListenerError: () => {
       const error = listenerError
@@ -414,6 +421,9 @@ interface Ctx {
     shown: Map<string, string>
     next: number
     lastScan: number
+    /** When the run started, and how many values the last scan knew. */
+    runStart: number
+    values: number
     inflight: Promise<void> | undefined
   }
   /** Fields a secret was typed into (recording): re-measured after every step. */
@@ -910,8 +920,9 @@ async function followSecretFields(
   }
 }
 
-/** How often the page is scanned for secret text while recording. */
+/** How often the page is scanned for secret text while recording, and how long a scan may take. */
 const TEXT_SCAN_MS = 300
+const SCAN_TIMEOUT_MS = 2000
 
 /**
  * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`). A region is one
@@ -928,11 +939,24 @@ async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): Promise
   }
   const run = async () => {
     const started = Date.now()
-    // Nothing to look for yet: lastScan stays at the run's start, so a first region found once a
-    // value is known is blurred from there (it may have been on screen all along).
+    // A value new to the scan (resolved just now) may have been on screen all along: its first
+    // regions are blurred from the run's start (over-blurring that box is safe).
+    if (ctx.secretValues.size !== state.values) {
+      state.values = ctx.secretValues.size
+      state.lastScan = state.runStart
+    }
     if (ctx.secretValues.size === 0 || ctx.page.isClosed()) return
     const page = ctx.page
-    const boxes = await scanSecretTextPartly(page, ctx.secretValues).catch(() => undefined)
+    // Bounded: a frozen page never hangs the step (or the end of the run) waiting for a scan.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const boxes = await Promise.race([
+      scanSecretTextPartly(page, ctx.secretValues),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), SCAN_TIMEOUT_MS)
+      }),
+    ])
+      .catch(() => undefined)
+      .finally(() => clearTimeout(timer))
     if (boxes === undefined || page !== ctx.page) return
     const viewport = await viewportOf(page).catch(() => undefined)
     const current = new Map<string, Box>()
@@ -943,13 +967,13 @@ async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): Promise
       state.shown.set(key, id)
       ctx.options.onEvent?.({ kind: "secret_text", step, id, box, viewport, since: state.lastScan })
     }
-    // Unsure about one: the others' boxes may be it, re-rendered. End nothing this time.
-    if (boxes.every((b) => b !== null)) {
-      for (const [key, id] of state.shown) {
-        if (current.has(key)) continue
-        state.shown.delete(key)
-        ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
-      }
+    // Unsure about one: the others' boxes may be it, re-rendered. End nothing this time, and the
+    // next scan's new regions are still blurred from before this one.
+    if (boxes.some((b) => b === null)) return
+    for (const [key, id] of state.shown) {
+      if (current.has(key)) continue
+      state.shown.delete(key)
+      ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
     }
     state.lastScan = started
   }
@@ -2164,15 +2188,17 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       JSON.stringify(value).slice(1, -1),
       htmlEscape(value, "&#39;"),
       htmlEscape(value, "&#x27;"),
+      // What serializers actually escape: text (& < >) or attribute values (& ").
+      value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"),
+      value.replace(/&/g, "&amp;").replace(/"/g, "&quot;"),
     ]) {
       if (v !== undefined && v !== "") variants.add(v)
     }
   }
   if (variants.size === 0) return text
-  const escape = escapeRegExp
   // Patterns with the length of the text they can match (a split value: its characters, at least).
   const patterns: { source: string; length: number }[] = [...variants].map((v) => ({
-    source: escape(v),
+    source: escapeRegExp(v),
     length: v.length,
   }))
   // Split by whitespace: the raw values only (at least 4 characters, not to eat ordinary words),
@@ -2180,7 +2206,7 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
   for (const v of list) {
     const chars = [...v.replace(/\s/g, "")]
     if (chars.length >= 4)
-      patterns.push({ source: chars.map(escape).join("\\s*"), length: v.length })
+      patterns.push({ source: chars.map(escapeRegExp).join("\\s*"), length: v.length })
   }
   // One pass over one alternation of every pattern, longest first: a secret that contains another
   // ("bob@acme.com", "bob"), even split by whitespace, is replaced whole, and a replacement is never
