@@ -252,7 +252,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
-    secretText: { shown: new Map(), lastScan: Date.now(), scanning: false },
+    secretText: { shown: new Map(), next: 0, lastScan: Date.now(), inflight: undefined },
     clearListenerError: () => (listenerError = undefined),
     throwListenerError: () => {
       const error = listenerError
@@ -371,6 +371,8 @@ export async function runScenario(
     if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
   } finally {
     clearInterval(scan)
+    // A scan still running reports before the run ends (the recorder writes right after).
+    await ctx.secretText.inflight?.catch(() => undefined)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)
@@ -407,7 +409,13 @@ interface Ctx {
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
   /** Secret values shown as text (recording): what the last scan saw, by region id. */
-  secretText: { shown: Map<string, string>; lastScan: number; scanning: boolean }
+  secretText: {
+    /** Box key → region id. */
+    shown: Map<string, string>
+    next: number
+    lastScan: number
+    inflight: Promise<void> | undefined
+  }
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
@@ -905,46 +913,41 @@ async function followSecretFields(
 const TEXT_SCAN_MS = 300
 
 /**
- * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`): a region per
- * occurrence, in document order. A new occurrence's blur starts at the previous scan (it may have
- * appeared right after it); a failed scan changes nothing. Never fails a step.
+ * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`). A region is one
+ * exact box: it keeps its id while the box stays, and ends when the box is gone. A new box is a new
+ * region (ids are never reused), blurred from the previous scan (it may have appeared right after
+ * it). A failed or unsure scan changes nothing (the blurs stay). Never fails a step.
  */
-async function followSecretText(ctx: Ctx, step: StepRef): Promise<void> {
+function followSecretText(ctx: Ctx, step: StepRef): Promise<void> {
   const state = ctx.secretText
-  if (state.scanning || ctx.secretValues.size === 0 || ctx.page.isClosed()) return
-  state.scanning = true
-  const started = Date.now()
-  try {
+  if (state.inflight !== undefined) return state.inflight
+  const run = async () => {
+    const started = Date.now()
+    // Nothing to look for yet: a later first region is backdated to now, not the run's start.
+    if (ctx.secretValues.size === 0 || ctx.page.isClosed()) {
+      state.lastScan = started
+      return
+    }
     const page = ctx.page
     const boxes = await scanSecretText(page, ctx.secretValues).catch(() => undefined)
     if (boxes === undefined || page !== ctx.page) return
     const viewport = await viewportOf(page).catch(() => undefined)
-    const seen = new Set<string>()
-    for (const [k, box] of boxes.entries()) {
-      const id = `text:${k}`
-      const key = `${box.x},${box.y},${box.width},${box.height}`
-      seen.add(id)
-      const before = state.shown.get(id)
-      if (before === key) continue
-      state.shown.set(id, key)
-      ctx.options.onEvent?.({
-        kind: "secret_text",
-        step,
-        id,
-        box,
-        viewport,
-        ...(before === undefined && { since: state.lastScan }),
-      })
+    const current = new Map(boxes.map((b) => [`${b.x},${b.y},${b.width},${b.height}`, b]))
+    for (const [key, box] of current) {
+      if (state.shown.has(key)) continue
+      const id = `text:${state.next++}`
+      state.shown.set(key, id)
+      ctx.options.onEvent?.({ kind: "secret_text", step, id, box, viewport, since: state.lastScan })
     }
-    for (const id of state.shown.keys()) {
-      if (seen.has(id)) continue
-      state.shown.delete(id)
+    for (const [key, id] of state.shown) {
+      if (current.has(key)) continue
+      state.shown.delete(key)
       ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
     }
     state.lastScan = started
-  } finally {
-    state.scanning = false
   }
+  state.inflight = run().finally(() => (state.inflight = undefined))
+  return state.inflight
 }
 
 /**
@@ -2156,18 +2159,28 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       if (v !== undefined && v !== "") variants.add(v)
     }
   }
-  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  // One pass over one alternation of every variant of every secret, longest first: a secret that
-  // contains another ("password123", "pass") is replaced whole, and a replacement is never re-scanned
-  // (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and over-scrubbing is safe.
   if (variants.size === 0) return text
-  const sorted = [...variants].sort((a, b) => b.length - a.length)
+  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  // Patterns with the length of the text they can match (a split value: its characters, at least).
+  const patterns: { source: string; length: number }[] = [...variants].map((v) => ({
+    source: escape(v),
+    length: v.length,
+  }))
   // Split by whitespace: the raw values only (at least 4 characters, not to eat ordinary words),
-  // each character optionally followed by whitespace. Tried after the exact forms.
-  const split = list
-    .filter((v) => [...v.replace(/\s/g, "")].length >= 4)
-    .map((v) => [...v.replace(/\s/g, "")].map(escape).join("\\s*"))
-  const alternation = [...sorted.map(escape), ...split].join("|")
+  // each character optionally followed by whitespace.
+  for (const v of list) {
+    const chars = [...v.replace(/\s/g, "")]
+    if (chars.length >= 4)
+      patterns.push({ source: chars.map(escape).join("\\s*"), length: v.length })
+  }
+  // One pass over one alternation of every pattern, longest first: a secret that contains another
+  // ("bob@acme.com", "bob"), even split by whitespace, is replaced whole, and a replacement is never
+  // re-scanned (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and
+  // over-scrubbing is safe.
+  const alternation = patterns
+    .sort((a, b) => b.length - a.length)
+    .map((p) => p.source)
+    .join("|")
   return text.replace(new RegExp(alternation, "giu"), "[secret]")
 }
 

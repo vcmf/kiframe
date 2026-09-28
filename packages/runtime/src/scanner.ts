@@ -28,10 +28,16 @@ function collect(): Collected {
   const height = innerHeight
   const onScreen = (r: DOMRect) =>
     r.width > 0 && r.height > 0 && r.right > 0 && r.bottom > 0 && r.left < width && r.top < height
+  const displays = new Map<Element, string>()
+  const displayOf = (el: Element) => {
+    let d = displays.get(el)
+    if (d === undefined) displays.set(el, (d = getComputedStyle(el).display))
+    return d
+  }
   const blockOf = (el: Element): number => {
     let at: Element | null = el
     while (at !== null) {
-      const display = getComputedStyle(at).display
+      const display = displayOf(at)
       if (!display.startsWith("inline") && display !== "contents") break
       at = at.parentElement ?? (at.getRootNode() as ShadowRoot).host ?? null
     }
@@ -91,10 +97,16 @@ function rectsOf(
     let y2 = -Infinity
     for (const s of spans) {
       const node = c.nodes[s.part]
-      if (node === undefined) continue
+      // Re-rendered since it was read (detached, or its text changed): the offsets may be wrong.
+      // Its parent's box if it's still there, else unsure (the whole scan fails closed).
+      if (node === undefined || !node.isConnected) return null
       let rects: DOMRect[]
       if (node instanceof Element) rects = [node.getBoundingClientRect()]
-      else {
+      else if (node.data !== c.parts[s.part]?.text) {
+        const parent = node.parentElement
+        if (parent === null) return null
+        rects = [parent.getBoundingClientRect()]
+      } else {
         const range = document.createRange()
         range.setStart(node, Math.min(s.start, node.length))
         range.setEnd(node, Math.min(s.end, node.length))
@@ -114,9 +126,7 @@ function rectsOf(
 
 /** Where `values` occur in `parts`, per block, ignoring case: each match as the spans it covers. */
 export function matchParts(parts: readonly Part[], values: Iterable<string>): Span[][] {
-  const needles = [
-    ...new Set([...values].filter((v) => v.trim() !== "").map((v) => v.toLowerCase())),
-  ]
+  const needles = [...new Set([...values].filter((v) => v.trim() !== ""))]
   if (needles.length === 0) return []
   const out: Span[][] = []
   let i = 0
@@ -129,14 +139,13 @@ export function matchParts(parts: readonly Part[], values: Iterable<string>): Sp
       members.push({ part: i, from: text.length })
       text += parts[i]!.text
     }
-    const haystack = text.toLowerCase()
     for (const needle of needles) {
-      for (
-        let at = haystack.indexOf(needle);
-        at !== -1;
-        at = haystack.indexOf(needle, at + needle.length)
-      ) {
-        const end = at + needle.length
+      // A case-insensitive regex on the text itself: offsets stay the original string's (lowering
+      // the case can change a string's length: "İ").
+      const pattern = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu")
+      for (const m of text.matchAll(pattern)) {
+        const at = m.index
+        const end = at + m[0].length
         const spans: Span[] = []
         for (const [k, m] of members.entries()) {
           const mEnd = k + 1 < members.length ? members[k + 1]!.from : text.length
@@ -167,7 +176,8 @@ export async function scanSecretText(page: Page, values: Iterable<string>): Prom
     const matches = matchParts(parts, list)
     if (matches.length === 0) return []
     const boxes = await handle.evaluate(rectsOf, matches)
-    return boxes.filter((b): b is Box => b !== null)
+    if (boxes.some((b) => b === null)) throw new Error("the page changed during the scan")
+    return boxes as Box[]
   } finally {
     await handle.dispose().catch(() => undefined)
   }

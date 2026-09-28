@@ -10,6 +10,14 @@ const pages: Record<string, string> = {
     <input id="f" value="bob@acme.com"><input type="password" value="bob@acme.com">
     <p style="display:none">bob@acme.com</p><p id="late"></p>
     <script>setTimeout(() => document.getElementById("late").textContent = "Hi BOB@ACME.COM", 400)</script>`,
+  // The secret re-rendered (removed, then back) twice, and a new occurrence above it.
+  "/flicker": `<!doctype html><title>Flicker</title><div id="top"></div><p id="p">Hi bob@acme.com</p>
+    <script>
+      const p = document.getElementById("p")
+      setTimeout(() => p.remove(), 350)
+      setTimeout(() => document.body.append(p), 700)
+      setTimeout(() => document.getElementById("top").textContent = "bob@acme.com", 1000)
+    </script>`,
   // M1-4: a cookie session. "Sign in" sets it, "Sign out" clears it.
   "/session": `<!doctype html><title>Session</title>
     <p id="who"></p><button id="in">Sign in</button><button id="out">Sign out</button>
