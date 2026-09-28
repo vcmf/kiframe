@@ -24,6 +24,7 @@ import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
 import { clickAtCursor, moveCursorTo, travel, visiblePart } from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
+  abandonSecretWrite,
   assertDragKeepsSecrets,
   assertKeysKeepSecrets,
   assertSecretOrigin,
@@ -104,62 +105,71 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
         secret === undefined ? undefined : followSecretField(ctx, step, secret, target)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
-      await guard(step, async () => {
-        const timeout = ctx.timeoutMs
-        // Same semantics on and off camera: the text is added at the end of the field's content,
-        // unless `clear` empties the field first.
-        if (action.clear === true) await target.fill("", { timeout })
-        await target.focus({ timeout })
-        // The text goes to the focused element: make sure it's the target, never the field focused
-        // before (a secret would land there, on camera).
-        if (!(await target.evaluate(hasFocus, undefined, { timeout }))) {
-          throw new StepError(
+      try {
+        await guard(step, async () => {
+          const timeout = ctx.timeoutMs
+          // Same semantics on and off camera: the text is added at the end of the field's content,
+          // unless `clear` empties the field first.
+          if (action.clear === true) await target.fill("", { timeout })
+          await target.focus({ timeout })
+          // The text goes to the focused element: make sure it's the target, never the field focused
+          // before (a secret would land there, on camera).
+          if (!(await target.evaluate(hasFocus, undefined, { timeout }))) {
+            throw new StepError(
+              step,
+              "action-failed",
+              "target can't take keyboard focus (use a locator for the input itself)",
+            )
+          }
+          await target.evaluate(moveCaretToEnd, undefined, { timeout })
+          if (secret !== undefined) {
+            secretWrite = await prepareSecretWrite(ctx, target, step, secret, action.target)
+          }
+          // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
+          if (ctx.options.recording === true) {
+            fieldBox = await target
+              .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
+              .catch(() => null)
+          }
+          ctx.options.onEvent?.({
+            kind: "type_start",
             step,
-            "action-failed",
-            "target can't take keyboard focus (use a locator for the input itself)",
-          )
-        }
-        await target.evaluate(moveCaretToEnd, undefined, { timeout })
-        if (secret !== undefined) {
-          secretWrite = await prepareSecretWrite(ctx, target, step, secret, action.target)
-        }
-        // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
-        if (ctx.options.recording === true) {
-          fieldBox = await target
-            .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
-            .catch(() => null)
-        }
-        ctx.options.onEvent?.({
-          kind: "type_start",
-          step,
-          secret,
-          sensitiveId,
-          box: fieldBox ?? undefined,
-        })
-        // Checked again right before the text is sent: the page may have navigated while the
-        // secret was being resolved.
-        assertSecretOrigin(ctx, secret, step)
-        if (secretWrite !== undefined) {
-          await writeSecret(ctx, secretWrite, step, timeout)
-        } else if (action.instant === true) {
-          await page.keyboard.insertText(text)
-        } else {
-          // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
-          // caret to the start when the window doesn't have OS focus (headed, Electron).
-          const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
-          if (pacing === "instant") {
-            await page.keyboard.type(text)
+            secret,
+            sensitiveId,
+            box: fieldBox ?? undefined,
+          })
+          // Checked again right before the text is sent: the page may have navigated while the
+          // secret was being resolved.
+          assertSecretOrigin(ctx, secret, step)
+          if (secretWrite !== undefined) {
+            await writeSecret(ctx, secretWrite, step, timeout)
+          } else if (action.instant === true) {
+            await page.keyboard.insertText(text)
           } else {
-            const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
-            // delays[i] is the pause BEFORE character i (word and sentence boundaries).
-            for (const [i, char] of [...text].entries()) {
-              const delay = delays[i] ?? 0
-              if (delay > 0) await sleep(delay)
-              await page.keyboard.type(char)
+            // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
+            // caret to the start when the window doesn't have OS focus (headed, Electron).
+            const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
+            if (pacing === "instant") {
+              await page.keyboard.type(text)
+            } else {
+              const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
+              // delays[i] is the pause BEFORE character i (word and sentence boundaries).
+              for (const [i, char] of [...text].entries()) {
+                const delay = delays[i] ?? 0
+                if (delay > 0) await sleep(delay)
+                await page.keyboard.type(char)
+              }
             }
           }
+        })
+      } catch (error) {
+        // A prepared write the step never made (it failed in between): its handle is released.
+        const written = secretWrite
+        if (written !== undefined && !ctx.secretWritten.some((w) => w.handle === written.input)) {
+          await abandonSecretWrite(written)
         }
-      })
+        throw error
+      }
       // End of typing (before the submit, which may navigate or re-lay out the page).
       ctx.options.onEvent?.({ kind: "type", step, secret, box: fieldBox ?? undefined })
       if (action.submit === true) {

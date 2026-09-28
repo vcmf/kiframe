@@ -50,6 +50,7 @@ steps:
   - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
   - { id: name, action: type, target: { by: label, name: Project name }, value: "Q4 Launch" }
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: away, action: click, target: { by: label, name: Project name } }
   - { id: palette, action: press, keys: Mod+k }
   - { id: create, action: click, target: { by: role, role: button, name: Create } }
   - { id: done, action: waitFor, until: { text: "Project created: Q4 Launch" } }
@@ -83,7 +84,7 @@ steps:
     const meta = TakeMeta.parse(JSON.parse(readFileSync(join(outDir, "meta.json"), "utf8")))
     expect(meta).toEqual(take.meta)
     expect(readdirSync(join(outDir, "shots")).sort()).toEqual(
-      ["create", "done", "name", "open-new", "palette", "pw"].map((s) => `${s}.jpg`),
+      ["away", "create", "done", "name", "open-new", "palette", "pw"].map((s) => `${s}.jpg`),
     )
 
     // One clock: events are ordered and inside the take's duration; frames cover it.

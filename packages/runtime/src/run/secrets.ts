@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util"
 import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@kiframe/schema"
 import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
@@ -314,12 +315,11 @@ export function scrubError(error: Error, secrets: Set<string>): Error {
   return scrubbed
 }
 
-/** A secret about to be written: the approved element (a handle), the value, and where. */
+/** A secret about to be written: the approved element (a handle), the value, and the use. */
 export interface SecretWrite {
   input: ElementHandle<HTMLInputElement | HTMLTextAreaElement>
   value: string
-  origin: string
-  path: string
+  use: SecretUse
 }
 
 /**
@@ -444,6 +444,15 @@ export async function prepareSecretWrite(
   }
   try {
     if (!isGrounded(stepTarget)) throw new StepError(step, "not-grounded", "target not grounded")
+    // Enforced here too, not only by the schema (a scenario built in code skips it): one exact
+    // locator, no fallback or `nth` that could reach another field (§3 A2).
+    if (stepTarget.fallbacks !== undefined || stepTarget.nth !== undefined) {
+      throw new StepError(
+        step,
+        "secret-refused",
+        `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
+      )
+    }
     const url = new URL(ctx.page.url())
     const use: SecretUse = {
       ...approvalKeyOf(ctx, step, secret),
@@ -454,7 +463,7 @@ export async function prepareSecretWrite(
       interrupt: step.interrupt !== undefined,
     }
     const value = await resolveSecret(ctx, secret, step, use, input)
-    return { input, value, origin: use.origin, path: use.path }
+    return { input, value, use }
   } catch (error) {
     await input.dispose().catch(() => undefined)
     throw error
@@ -476,12 +485,18 @@ export async function writeSecret(
 ): Promise<void> {
   try {
     const now = new URL(ctx.page.url())
-    if (now.origin !== write.origin || now.pathname !== write.path) {
+    if (now.origin !== write.use.origin || now.pathname !== write.use.path) {
       throw new StepError(
         step,
         "off-origin",
         `the page moved to ${now.origin}${now.pathname} while the secret was resolved`,
       )
+    }
+    // The element as approved: the approval prompt or the keychain may have taken seconds, and a
+    // "show password" toggle (or the page) may have turned it into a text field meanwhile.
+    const element = await write.input.evaluate(elementInfo, undefined)
+    if (!isDeepStrictEqual(element, write.use.element)) {
+      throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
     }
     const before = await write.input.inputValue({ timeout })
     await write.input.fill(before + write.value, { timeout })
@@ -510,12 +525,27 @@ function chord(keys: string): Set<string> {
   return new Set(keys.split("+").map(part))
 }
 const hasCommand = (c: Set<string>) => c.has("mod") || c.has("control") || c.has("meta")
-const isPaste = (c: Set<string>) =>
-  (hasCommand(c) && c.has("v")) || (c.has("shift") && c.has("insert"))
-const isCopyLike = (c: Set<string>) =>
-  (hasCommand(c) && (c.has("c") || c.has("x") || c.has("a"))) ||
-  (c.has("control") && c.has("insert")) ||
-  (c.has("shift") && c.has("delete"))
+/**
+ * Pastes, in every form: Mod/Ctrl/Meta+V, Shift+Insert, and Ctrl+Y (macOS "yank": what Ctrl+K
+ * "killed" out of a field; on Windows it's redo, refused too while secrets are known).
+ */
+const isPasteLike = (c: Set<string>) =>
+  (hasCommand(c) && (c.has("v") || c.has("y"))) || (c.has("shift") && c.has("insert"))
+/**
+ * The only keys pressed while focus is in a field holding a secret: an allowlist, not a denylist
+ * (copy, cut, select, kill: text-editing commands differ per platform and keep growing).
+ */
+const ALLOWED_IN_SECRET_FIELD = new Set(["enter", "tab", "shift+tab", "escape"])
+const chordName = (c: Set<string>) =>
+  [...c].sort((a, b) => (a === "shift" ? -1 : b === "shift" ? 1 : a < b ? -1 : 1)).join("+")
+
+/** Whether a text contains a known value (in Node: values never go to the page). */
+function containsKnown(ctx: Ctx, text: string | null | undefined): boolean {
+  if (text === null || text === undefined || text === "") return false
+  const lower = text.toLowerCase()
+  for (const v of ctx.secretValues) if (v !== "" && lower.includes(v.toLowerCase())) return true
+  return false
+}
 
 /** The written elements still in the driven page's current document (a navigation drops them). */
 async function writtenHere(ctx: Ctx): Promise<ElementHandle<Element>[]> {
@@ -526,75 +556,94 @@ async function writtenHere(ctx: Ctx): Promise<ElementHandle<Element>[]> {
   return here.filter((_, i) => live[i]).map((w) => w.handle as ElementHandle<Element>)
 }
 
-/** Whether focus or the selection is inside one of these elements (runs in the page). */
-function holdsFocusOrSelection(elements: Element[]): boolean {
-  const inside = (n: Node | null) => {
-    // Across shadow roots, from the node up to the document.
-    for (let at: Node | null = n; at !== null;) {
-      if (elements.includes(at as Element)) return true
-      at = at.parentNode ?? (at instanceof ShadowRoot ? at.host : null)
-    }
-    return false
-  }
+/**
+ * Where focus is (runs in the page): whether it's in one of the written elements, and the focused
+ * field's value and the selected text (page text, read into Node, where it's matched).
+ */
+function focusedText(written: Element[]): {
+  inWritten: boolean
+  value: string | null
+  selection: string
+} {
   let active: Element | null = document.activeElement
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement
-  const selection = getSelection()
-  return (
-    inside(active) || inside(selection?.anchorNode ?? null) || inside(selection?.focusNode ?? null)
-  )
+  let inWritten = false
+  for (let at: Node | null = active; at !== null && !inWritten;) {
+    inWritten = written.includes(at as Element)
+    at = at.parentNode ?? (at instanceof ShadowRoot ? at.host : null)
+  }
+  const value =
+    active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement
+      ? active.value
+      : null
+  return { inWritten, value, selection: getSelection()?.toString() ?? "" }
 }
 
 /**
- * SECRETS-DESIGN §3 A5: while secrets are known, no paste (an app's own "Copy" button may have put
- * a value in the clipboard); no copy, cut or select-all while focus or the selection is in an
- * element a secret was written to.
+ * SECRETS-DESIGN §3 A5. While secrets are known: no paste in any form (an app's own "Copy" button
+ * may have put a value in the clipboard), and, while focus is in a field holding a secret (one it
+ * was written to, or any field whose value or selection contains a known value: a re-mounted
+ * input keeps its value), only Enter, Tab, Shift+Tab and Escape.
  */
 export async function assertKeysKeepSecrets(ctx: Ctx, step: StepRef, keys: string): Promise<void> {
+  if (ctx.secretValues.size === 0) return
   const c = chord(keys)
-  if (isPaste(c) && ctx.secretValues.size > 0) {
+  if (isPasteLike(c)) {
     throw new StepError(
       step,
       "secret-refused",
-      "no paste in a scene that knows a secret: type the text instead",
+      `no paste ("${keys}") in a scene that knows a secret: type the text instead`,
     )
   }
-  if (!isCopyLike(c)) return
+  if (ALLOWED_IN_SECRET_FIELD.has(chordName(c))) return
   const written = await writtenHere(ctx)
-  if (written.length === 0) return
-  const held = await ctx.page.evaluate(holdsFocusOrSelection, written).catch(() => true) // unsure: refused (fails closed)
-  if (held) {
+  const focus = await ctx.page.evaluate(focusedText, written).catch(() => undefined)
+  // Unsure where focus is: refused (fails closed).
+  if (
+    focus === undefined ||
+    focus.inWritten ||
+    containsKnown(ctx, focus.value) ||
+    containsKnown(ctx, focus.selection)
+  ) {
     throw new StepError(
       step,
       "secret-refused",
-      `"${keys}" would copy from a field holding a secret`,
+      `"${keys}" in a field holding a secret: only Enter, Tab or Escape there (click elsewhere first)`,
     )
   }
 }
 
-/** §3 A5: nothing is dragged out of an element a secret was written to. */
+/**
+ * §3 A5: nothing is dragged out of an element holding a secret: one it was written to, or one
+ * containing a field whose value contains a known value (across shadow roots).
+ */
 export async function assertDragKeepsSecrets(
   ctx: Ctx,
   step: StepRef,
   source: Locator,
 ): Promise<void> {
+  if (ctx.secretValues.size === 0) return
   const written = await writtenHere(ctx)
-  if (written.length === 0) return
-  const holds = await source
+  const found = await source
     .evaluate(
-      (src, elements) =>
-        elements.some((e) => {
-          // Across shadow roots: a web component's host holds the input in its shadow root.
-          for (let n: Node | null = e; n !== null;) {
-            if (n === src) return true
-            n = n.parentNode ?? (n instanceof ShadowRoot ? n.host : null)
-          }
-          return false
-        }),
+      (src, elements) => {
+        const values: string[] = []
+        let holds = false
+        const visit = (n: Node) => {
+          if (elements.includes(n as Element)) holds = true
+          if (n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement)
+            values.push(n.value)
+          if (n instanceof Element && n.shadowRoot !== null) n.shadowRoot.childNodes.forEach(visit)
+          n.childNodes.forEach(visit)
+        }
+        visit(src)
+        return { holds, values }
+      },
       written,
       { timeout: ctx.timeoutMs },
     )
-    .catch(() => true)
-  if (holds) {
+    .catch(() => undefined)
+  if (found === undefined || found.holds || found.values.some((v) => containsKnown(ctx, v))) {
     throw new StepError(step, "secret-refused", "this drag would move a field holding a secret")
   }
 }
@@ -603,4 +652,9 @@ export async function assertDragKeepsSecrets(
 export async function releaseSecretWritten(ctx: Ctx): Promise<void> {
   await Promise.all(ctx.secretWritten.map((w) => w.handle.dispose().catch(() => undefined)))
   ctx.secretWritten.length = 0
+}
+
+/** Releases a prepared write that won't happen (the step failed before it). */
+export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {
+  await write?.input.dispose().catch(() => undefined)
 }

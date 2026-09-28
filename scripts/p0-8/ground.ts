@@ -252,6 +252,8 @@ async function runStep(input: unknown): Promise<string> {
     : { version: 1 as const, setup: [setupItem!.data!], steps: [] }
   try {
     await runScenario(page, scenario, quickProject, {
+      scope: "phase0",
+      sceneId: "grounding",
       resolveSecret,
       approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,
@@ -314,6 +316,8 @@ async function replay(yaml: string): Promise<string> {
   const fresh = await context.newPage()
   try {
     await runScenario(fresh, scenario, quickProject, {
+      scope: "phase0",
+      sceneId: "grounding",
       resolveSecret,
       approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,

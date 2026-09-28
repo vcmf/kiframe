@@ -10,7 +10,7 @@ import {
   Locator,
   presetRefs,
   type Scenario,
-  typesSecret,
+  requireSecretStepIds,
 } from "./scenario.ts"
 import { Pacing, RuleName, Viewport } from "./settings.ts"
 
@@ -35,18 +35,8 @@ export const Preset = z.strictObject({
   steps: z
     .array(z.union([Ensure, Action]))
     .min(1)
-    .superRefine((steps, ctx) => {
-      // A preset step typing a secret needs an id: its approval refers to it (SECRETS-DESIGN §3).
-      for (const [i, s] of steps.entries()) {
-        if ("action" in s && typesSecret(s) && s.id === undefined) {
-          ctx.addIssue({
-            code: "custom",
-            message: "a step typing a secret needs an id (its approval refers to it)",
-            path: [i, "id"],
-          })
-        }
-      }
-    }),
+    // A preset step typing a secret needs an id: its approval refers to it (SECRETS-DESIGN §3).
+    .superRefine((steps, ctx) => requireSecretStepIds(steps, [], ctx)),
 })
 export type Preset = z.infer<typeof Preset>
 
