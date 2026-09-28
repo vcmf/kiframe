@@ -22,4 +22,4 @@ pnpm check      # lint + format check + typecheck + tests (same gate as CI)
 | `@kiframe/generators` | Take + scenario → auto composition segments                | keep           |
 | `@kiframe/compositor` | Frame rendering + video export                             | keep           |
 
-"keep" modules graduate to v0. "throwaway" modules (Phase 0 experiments in `scripts/`) are removed one by one when their v0 replacement ships: `record.ts` and `p0-9/` (headed recording, the replay harness) with M6-1/M4, `p0-8/` (the grounding reference) with M2-5/M2-7, `p0-10/` (Electron check) with V1-3, and `lib/` (shared by them) with the last one.
+"keep" modules graduate to v0. "throwaway" modules (Phase 0 experiments in `scripts/`) are removed one by one when their v0 replacement ships: `record.ts` and `p0-9/` (headed recording, the replay harness) with M6-1/M4, `p0-8/` (the grounding reference) with M2-5/M2-7, `p0-10/` (Electron check) with V1-3, `m1-4/` (the batch login check on Cal.com) with M6-1, and `lib/` (shared by them) with the last one.

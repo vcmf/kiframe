@@ -114,6 +114,11 @@ export interface RunOptions {
    * state saved after they ran, once per batch): they're skipped. See the `preset_done` event.
    */
   skipSessionPresets?: readonly string[]
+  /**
+   * A session preset's steps all ran: the moment to save the context's state (awaited before the
+   * setup goes on, so the state has the login and nothing the scene did after it).
+   */
+  onSessionReady?: (preset: string) => void | Promise<void>
 }
 
 type AnyAction = Action | Step
@@ -428,6 +433,14 @@ async function runSetupEntry(
 ): Promise<void> {
   if (entry.kind === "preset_done") {
     ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
+    const ready = ctx.options.onSessionReady
+    if (entry.session && ready !== undefined) {
+      // Named after the preset's last step (markers have no index of their own).
+      const last = setup.slice(0, position).findLast((e) => e.kind !== "preset_done")
+      const index = last !== undefined && "index" in last ? last.index : 0
+      const ref: StepRef = { phase: "setup", index, action: `save session ${entry.name}` }
+      await guard(ref, async () => ready(entry.name))
+    }
     return
   }
   if (entry.kind === "action") {

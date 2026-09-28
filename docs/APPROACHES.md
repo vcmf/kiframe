@@ -180,7 +180,7 @@ Recording creates data on the app ("Q4 Launch" is created on camera), and **ever
 - **Environments** (org-level, §10c) carry a **`sandbox`** flag. On a sandbox environment, the user **pre-approves** destructive actions once (for example "Kiframe may delete projects named *Q4 Launch*"). On other environments, every risky action asks.
 - **`teardown`** block per scene (off-camera, runs after recording): deletes what the scene created. It's pre-approved on sandbox environments, so replays and CI can run unattended.
 - **`ensure`**: the **only** idempotency primitive, and it's declarative, not a condition: `ensure: { absent: <locator> }` or `ensure: { present: <locator> }` in `setup`. The runtime makes the state true (running the scene's teardown if needed) or fails with a clear message. No `if` anywhere else (OBJECT-MODEL §2b).
-- **One login per recording batch:** log in once through the vault, then reuse the Playwright `storageState` (encrypted, in memory or keychain) for all scenes of the batch. Logging in again in every scene would trigger rate limits, "new device" emails and 2FA prompts.
+- **One login per recording batch:** log in once through the vault, then reuse the Playwright `storageState` (encrypted, in memory or keychain) for all scenes of the batch. v0 (M1-4, `recordBatch`): saved in memory when the session preset is done (not at the end of the scene), a fresh context per scene, and a fresh login after a scene that reused the session failed. Logging in again in every scene would trigger rate limits, "new device" emails and 2FA prompts.
 - The user can also just say "the account is already in the right state". The agent checks it with `expect` during grounding.
 
 ### 7.3 Blockers → ask the user (human in the loop)
