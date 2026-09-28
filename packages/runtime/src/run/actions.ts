@@ -1,7 +1,7 @@
 import { isGrounded, secretRefName, type Target } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { secretsOf } from "../secret-state.ts"
+import { isPartialName, refreshExactNames, secretsOf } from "../secret-state.ts"
 import {
   type Box,
   clickPoint,
@@ -400,6 +400,8 @@ async function drag(
 /** The target, if it resolves to exactly one hidden `<input type=file>` (primary locator only). */
 async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
+  // The exact-names rule as the page is now (§3 A8), before the locator is built.
+  if (isPartialName(target)) await refreshExactNames(ctx.page)
   const candidates = toPlaywright(ctx.page, stripExtras(target)).and(
     ctx.page.locator("input[type=file]"),
   )

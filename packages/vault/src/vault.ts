@@ -298,9 +298,10 @@ export class Vault {
    * every grant is removed and a new key is made; each step asks again.
    */
   async resetApprovals(): Promise<void> {
-    this.#key = undefined
+    // The old key goes first, then the cache: a resolve running meanwhile can't re-cache it.
     this.#update((file) => ({ ...file, grants: [] }))
     await this.#backend.delete(GRANT_KEY)
+    this.#key = undefined
   }
 
   /** The grants (all, or one scope's): what the vault UI lists. */

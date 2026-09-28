@@ -324,6 +324,17 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // Moves focus to a Notes box the moment the password's text is selected (fill selects it).
+  "/focus-thief": `<!doctype html><title>Focus thief</title>
+    <label>Password <input id="pw" type="password" value="a"></label><label>Notes <input id="notes"></label>
+    <script>document.addEventListener("selectionchange", () => {
+      const pw = document.getElementById("pw")
+      if (document.activeElement === pw && pw.selectionStart === 0 && pw.selectionEnd === pw.value.length) document.getElementById("notes").focus()
+    })</script>`,
+  // A login in a dialog that closes: the password field stays attached, hidden.
+  "/dialog-login": `<!doctype html><title>Dialog login</title>
+    <dialog open><form method="dialog"><label>Password <input type="password"></label><button>Sign in</button></form></dialog>
+    <button>New project</button>`,
   // A table-layout login: the password box inside a cell (its value is part of the cell's name).
   "/cell-login": `<!doctype html><title>Cell login</title>
     <table><tr><td><input type="password" aria-label="Password"></td></tr></table>
