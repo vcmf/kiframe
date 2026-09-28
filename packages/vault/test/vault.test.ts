@@ -19,7 +19,6 @@ const USE: SecretUse = {
   path: "/login",
   target: '{"by":"label","name":"Password"}',
   element: { tag: "input", type: "password", label: "Password" },
-  interrupt: false,
 }
 const open = () => {
   const path = join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault", "vault.json")
@@ -37,7 +36,7 @@ const refusal = async (p: Promise<unknown>) => {
 const approved = async () => {
   const o = open()
   await o.vault.request(form, provide("hunter2-secret"))
-  o.vault.approve("acme.password", USE)
+  await o.vault.approve("acme.password", USE)
   return o
 }
 
@@ -123,7 +122,6 @@ describe("Vault: grants", () => {
       [{ target: '{"by":"label","name":"Comment"}' }, "no-grant"],
       [{ element: { tag: "input", type: "password", label: "New password" } }, "no-grant"],
       [{ element: { tag: "input", type: "text", label: "Password" } }, "kind"],
-      [{ interrupt: true }, "invalid-use"],
     ]
     for (const [change, reason] of cases) {
       expect(
@@ -142,7 +140,7 @@ describe("Vault: grants", () => {
       path: "/projects/8123/settings",
       element: { tag: "input" as const, type: "text", label: "API key" },
     }
-    vault.approve("acme.key", use)
+    await vault.approve("acme.key", use)
     expect(vault.grants()[0]?.pathPattern).toBe("/projects/*/settings")
     expect(await vault.resolve("acme.key", { ...use, path: "/projects/8177/settings" })).toBe("k")
     expect(
@@ -157,16 +155,15 @@ describe("Vault: grants", () => {
       ...USE,
       element: { tag: "textarea" as const, type: "textarea", label: "Bio" },
     }
-    vault.approve("acme.user", textarea)
+    await vault.approve("acme.user", textarea)
     expect(await refusal(vault.resolve("acme.user", textarea))).toBe("kind")
     // Interrupt rules only type passwords.
     const inInterrupt = {
       ...USE,
       stepKey: "interrupt:relogin",
-      interrupt: true,
       element: { tag: "input" as const, type: "email", label: "Email" },
     }
-    vault.approve("acme.user", inInterrupt)
+    await vault.approve("acme.user", inInterrupt)
     expect(await refusal(vault.resolve("acme.user", inInterrupt))).toBe("kind")
   })
 
@@ -174,7 +171,7 @@ describe("Vault: grants", () => {
     const { vault } = await approved()
     vault.revoke(USE.scope, USE.stepKey, "acme.password")
     expect(await refusal(vault.resolve("acme.password", USE))).toBe("no-grant")
-    vault.approve("acme.password", USE)
+    await vault.approve("acme.password", USE)
     await vault.remove("acme.password")
     expect(vault.grants()).toEqual([])
   })
@@ -203,8 +200,8 @@ describe("Vault: grants, round 1 review", () => {
   it("an interrupt rule's grant covers every path on its origin", async () => {
     const { vault } = open()
     await vault.request(form, provide("v"))
-    const use = { ...USE, stepKey: "interrupt:relogin", interrupt: true }
-    vault.approve("acme.password", use)
+    const use = { ...USE, stepKey: "interrupt:relogin" }
+    await vault.approve("acme.password", use)
     expect(await vault.resolve("acme.password", { ...use, path: "/dashboard/settings" })).toBe("v")
   })
 
@@ -212,8 +209,8 @@ describe("Vault: grants, round 1 review", () => {
     const { vault } = open()
     await vault.request(form, provide("v"))
     await vault.request({ ...form, origin: "https://app.acme.com" }, provide("v"))
-    vault.approve("acme.password", USE)
-    vault.approve("acme.password", { ...USE, origin: "https://app.acme.com" })
+    await vault.approve("acme.password", USE)
+    await vault.approve("acme.password", { ...USE, origin: "https://app.acme.com" })
     expect(await vault.resolve("acme.password", USE)).toBe("v")
     expect(await vault.resolve("acme.password", { ...USE, origin: "https://app.acme.com" })).toBe(
       "v",
@@ -251,6 +248,33 @@ describe("Vault: grants, round 1 review", () => {
       }),
     )
     expect(Vault.open(old, memoryBackend()).list()).toMatchObject([{ name: "acme.password" }])
+  })
+})
+
+describe("Vault: grants, round 3 review", () => {
+  it("never stores a secret value from the page in a grant (path, label)", async () => {
+    const { vault, path } = open()
+    await vault.request({ ...form, name: "acme.user", kind: "username" }, provide("bob@acme.com"))
+    await vault.request(form, provide("hunter2-secret"))
+    const use = {
+      ...USE,
+      path: "/invite/bob%40acme.com/accept",
+      element: { tag: "input" as const, type: "password", label: "Password for bob@acme.com" },
+    }
+    const grant = await vault.approve("acme.password", use)
+    expect(grant.pathPattern).toBe("/invite/*/accept")
+    expect(grant.element.label).toBe("Password for [secret]")
+    expect(readFileSync(path, "utf8")).not.toMatch(/bob@acme|bob%40acme/)
+    expect(await vault.resolve("acme.password", use)).toBe("hunter2-secret")
+  })
+
+  it("keeps a grant per page for one step (a preset landing on /en/login and /fr/login)", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    await vault.approve("acme.password", { ...USE, path: "/en/login" })
+    await vault.approve("acme.password", { ...USE, path: "/fr/login" })
+    expect(await vault.resolve("acme.password", { ...USE, path: "/en/login" })).toBe("v")
+    expect(await vault.resolve("acme.password", { ...USE, path: "/fr/login" })).toBe("v")
   })
 })
 

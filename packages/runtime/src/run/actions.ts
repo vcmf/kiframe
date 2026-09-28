@@ -25,6 +25,7 @@ import { clickAtCursor, moveCursorTo, travel, visiblePart } from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
   abandonSecretWrite,
+  assertSecretTarget,
   assertDragKeepsSecrets,
   assertKeysKeepSecrets,
   assertSecretOrigin,
@@ -95,8 +96,11 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       return
     }
     case "type": {
-      const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
+      // Before anything touches the page (`find`, `clear`): a secret step's target is one exact
+      // locator (the schema says so; a scenario built in code skips the schema).
+      if (secret !== undefined) assertSecretTarget(action.target, step, secret)
+      const target = await find(ctx, action.target, step)
       assertSecretOrigin(ctx, secret, step)
       // A secret is resolved at the last moment, once the field it goes into is focused.
       const text = secret === undefined ? action.value : ""

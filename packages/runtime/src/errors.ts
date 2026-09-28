@@ -25,6 +25,8 @@ export type StepErrorReason =
   | "risky-not-approved"
   | "secret-unavailable"
   | "secret-refused"
+  /** The user declined the approval of a secret step: the scene is `blocked` (§3 A3). */
+  | "secret-declined"
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"
@@ -67,8 +69,6 @@ export interface SecretUse {
   target: string
   /** The element the value goes into. */
   element: { tag: "input" | "textarea"; type: string; label: string | null }
-  /** Typed by an interrupt rule. */
-  interrupt: boolean
 }
 
 /**

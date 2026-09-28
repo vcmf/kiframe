@@ -152,15 +152,23 @@ steps:
         timeoutMs: 1500,
         scope: "project-1",
         resolveSecret: vault.resolver(),
-        requestApproval: (request: ApprovalRequest) => {
+        requestApproval: async (request: ApprovalRequest) => {
           asked.push(request.use.stepKey)
-          vault.approve(request.secret, request.use)
+          await vault.approve(request.secret, request.use)
           return true
         },
       },
     )
     expect(results.map((r) => r.ok)).toEqual([true, true])
     expect(asked).toEqual(["scene:scene-0/steps/pw", "scene:scene-1/steps/pw"])
+  })
+})
+
+describe("recordBatch contexts", () => {
+  it("never gives the page clipboard permissions", async () => {
+    await expect(
+      recordBatch(browser, [], project(), { context: { permissions: ["clipboard-read"] } }),
+    ).rejects.toThrow(/never get clipboard permissions/)
   })
 })
 

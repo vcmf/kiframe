@@ -181,3 +181,5 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Exported grants for CI:** grants are per machine; a CI machine can't type a secret until the user exports named grants to it (§3 A4).
 - **OS clipboard in headed runs:** the host clears it when a context ends (§3 A5, M4); the runtime never reads or writes it.
 - **Phase 0 scripts bypass grants:** `scripts/lib/secrets.ts` resolves from the user's own `.env`, ignoring the use: the scripts are throwaway harnesses (removed with M6-1/M4), never the product path.
+- **Clipboard permissions on a caller's context:** `recordBatch` refuses contexts with clipboard permissions; `runScenario` on a page the host created can't check (Playwright can't list granted permissions). The desktop app creates every context itself (M4): make it the only path.
+- **Masking values in grants:** a path segment or label containing any of the vault's values is masked (`*`, `[secret]`) in grants and matched the same way; a value that is a common word (a username "admin") masks those segments and labels too (safe: the grant is broader on that segment only).

@@ -315,6 +315,12 @@ const pages: Record<string, string> = {
     <label>Age <input type="number"></label>
     <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
     <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
+  // A field whose aria-labelledby and aria-label disagree (the accessible name is the labelledby).
+  "/labelled": `<!doctype html><title>Labelled</title>
+    <span id="cc">Card number</span><input type="text" aria-labelledby="cc" aria-label="Password">`,
+  // A field holding a secret's value, and one holding a longer word that merely contains it.
+  "/words": `<!doctype html><title>Words</title>
+    <label>Search <input id="search" value="administrators"></label><label>User <input id="user" value="admin"></label>`,
   // Re-mounts the password input (a framework re-render): the new node keeps the value and focus.
   "/remount": `<!doctype html><title>Remount</title>
     <label>Password <input id="pw" type="password"></label><label>Email <input id="email"></label>
