@@ -9,9 +9,9 @@ import type {
   Target,
 } from "@kiframe/schema"
 import { Action, isGrounded, secretRefName } from "@kiframe/schema"
-import { SecretRefusal, type SecretUse } from "@kiframe/vault"
+import { isDeepStrictEqual } from "node:util"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
-import { StepError, type StepRef } from "./errors.ts"
+import { isSecretRefusal, StepError, type SecretUse, type StepRef } from "./errors.ts"
 import {
   clickPoint,
   type Box,
@@ -1059,12 +1059,12 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       return
     }
     case "type": {
-      const target = await find(ctx, action.target, step)
+      const { locator: target, binding } = await findTarget(ctx, action.target, step)
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
       // A secret is resolved at the last moment, once the field it goes into is focused.
       let text = secret === undefined ? action.value : ""
-      let secretOrigin: string | undefined
+      let secretField: ReturnType<typeof focusedField> | undefined
       const sensitiveId =
         secret === undefined
           ? undefined
@@ -1083,18 +1083,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         await target.focus({ timeout })
         // The text goes to the focused element: make sure it's the target, never the field focused
         // before (a secret would land there, on camera).
-        const focused = await target.evaluate(
-          (el) => {
-            // In shadow DOM, document.activeElement is the host: ask the element's own root.
-            const root = el.getRootNode()
-            const active =
-              root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
-            return active !== null && (el === active || el.contains(active))
-          },
-          undefined,
-          { timeout },
-        )
-        if (!focused) {
+        if (!(await target.evaluate(hasFocus, undefined, { timeout }))) {
           throw new StepError(
             step,
             "action-failed",
@@ -1105,11 +1094,10 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         if (secret !== undefined) {
           // The element that receives the text (the target, or the input inside it) is what the
           // vault binds the secret to.
-          const field = await target.evaluate(focusedField, undefined, { timeout })
-          secretOrigin = new URL(page.url()).origin
+          secretField = await target.evaluate(focusedField, undefined, { timeout })
           text = await resolveSecret(ctx, secret, step, {
-            origin: secretOrigin,
-            field: { ...bindingOf(action.target), ...field },
+            origin: new URL(page.url()).origin,
+            field: { ...binding, ...secretField },
           })
         }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
@@ -1128,12 +1116,22 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
-        if (secretOrigin !== undefined && new URL(page.url()).origin !== secretOrigin) {
-          throw new StepError(
-            step,
-            "off-origin",
-            `the page left ${secretOrigin} while secret "${secret}" was resolved`,
-          )
+        if (secretField !== undefined) {
+          // And still into the field the vault approved: focus may have moved while it resolved
+          // (a keychain prompt, an autofocus script), and the text goes to the focused element.
+          const still =
+            (await target.evaluate(hasFocus, undefined, { timeout })) &&
+            isDeepStrictEqual(
+              await target.evaluate(focusedField, undefined, { timeout }),
+              secretField,
+            )
+          if (!still) {
+            throw new StepError(
+              step,
+              "action-failed",
+              `the field lost focus while secret "${secret}" was resolved`,
+            )
+          }
         }
         if (action.instant === true || secret !== undefined) {
           await page.keyboard.insertText(text)
@@ -1472,6 +1470,15 @@ function timeoutOf(ctx: Ctx, stepTimeout: number | undefined): number {
 }
 
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
+  return (await findTarget(ctx, target, step)).locator
+}
+
+/** `find`, and which of the target's locators matched (the primary one or a fallback), with `nth`. */
+async function findTarget(
+  ctx: Ctx,
+  target: Target,
+  step: StepRef,
+): Promise<{ locator: Locator; binding: { locator: LocatorSpec; nth?: number } }> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) throw new StepError(step, result.reason, result.detail)
   if (result.fallbackIndex !== undefined) {
@@ -1479,7 +1486,15 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   }
   // Auto-scroll into view (smooth, human-like scrolling comes with P0-4).
   await guard(step, () => result.locator.scrollIntoViewIfNeeded({ timeout: ctx.timeoutMs }))
-  return result.locator
+  // `nth` belongs to the primary locator only. Normalized: `exact: false` and `nth: 0` on a
+  // unique match are the defaults, so the same field is described the same way.
+  const nth = result.fallbackIndex === undefined && isGrounded(target) ? target.nth : undefined
+  const { exact, ...rest } = result.used as LocatorSpec & { exact?: boolean }
+  const locator = (exact === true ? { ...rest, exact } : rest) as LocatorSpec
+  return {
+    locator: result.locator,
+    binding: { locator, ...(nth !== undefined && nth > 0 && { nth }) },
+  }
 }
 
 async function resolveSecret(
@@ -1502,7 +1517,9 @@ async function resolveSecret(
   } catch (error) {
     // The vault's refusals say why (origin, field) and never hold a value; any other error's
     // message could contain one: never included.
-    if (error instanceof SecretRefusal) throw new StepError(step, "secret-refused", error.message)
+    if (isSecretRefusal(error)) {
+      throw new StepError(step, "secret-refused", firstLine(error.message))
+    }
     throw new StepError(step, "secret-unavailable", `secret "${name}" is unavailable`)
   }
 }
@@ -2104,11 +2121,12 @@ function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef)
   }
 }
 
-/** The part of a target that identifies a field: its locator and `nth`, not its healing metadata. */
-function bindingOf(target: Target): { locator: LocatorSpec; nth?: number } {
-  if (!isGrounded(target)) throw new Error("an ungrounded target can't take a secret")
-  const { intent: _i, fallbacks: _f, fingerprint: _p, nth, ...locator } = target
-  return { locator, ...(nth !== undefined && { nth }) }
+/** Whether the element, or an element inside it, has keyboard focus (runs in the page). */
+function hasFocus(el: Element): boolean {
+  // In shadow DOM, document.activeElement is the host: ask the element's own root.
+  const root = el.getRootNode()
+  const active = root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
+  return active !== null && (el === active || el.contains(active))
 }
 
 /** What the focused element is (runs in the page): the part of a vault field binding it knows. */

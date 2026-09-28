@@ -19,6 +19,8 @@ import {
 
 /** A refused resolution. Its message names the secret and the reason, never a value. */
 export class SecretRefusal extends Error {
+  /** What the runtime recognizes (not `instanceof`: it may come over IPC). */
+  readonly code = "secret-refused"
   constructor(message: string) {
     super(message)
     this.name = "SecretRefusal"
@@ -88,11 +90,14 @@ export class Vault {
     const name = SecretName.parse(form.name)
     const kind = SecretKind.parse(form.kind)
     const origin = Origin.parse(form.origin)
-    const existing = this.#find(name)
     // A secret's kind is the user's, not the agent's to change (a password never becomes `text`).
-    if (existing !== undefined && existing.kind !== kind) {
-      throw new Error(`secret "${name}" is a ${existing.kind}, not a ${kind}`)
+    const checkKind = () => {
+      const existing = this.#find(name)
+      if (existing !== undefined && existing.kind !== kind) {
+        throw new Error(`secret "${name}" is a ${existing.kind}, not a ${kind}`)
+      }
     }
+    checkKind()
     // Checked before asking: the user never types a value the vault then can't record.
     const updated = (secrets: readonly SecretMeta[]) => {
       const old = secrets.find((s) => s.name === name)
@@ -109,6 +114,10 @@ export class Vault {
     VaultFile.parse({ version: 1, secrets: updated(this.#secrets) })
     const value = await ask({ name, kind, origin, reason: form.reason.slice(0, 500) })
     if (value === undefined || value === "") return "declined"
+    // Again on the latest metadata (another request may have run while the user typed), before
+    // the old value is replaced.
+    checkKind()
+    VaultFile.parse({ version: 1, secrets: updated(this.#secrets) })
     await this.#backend.set(name, value)
     this.#update(updated)
     return "provided"
@@ -135,6 +144,14 @@ export class Vault {
     const value = await this.#backend.get(name)
     if (value === undefined || value === "") {
       throw new SecretRefusal(`secret "${name}" has no value on this machine`)
+    }
+    // Checked again after the wait: a concurrent first use may have bound another field.
+    const latest = this.#find(name)
+    if (latest === undefined || !latest.origins.includes(use.origin)) {
+      throw new SecretRefusal(`secret "${name}" changed while it was resolved`)
+    }
+    if (latest.field !== undefined && !isDeepStrictEqual(latest.field, field)) {
+      throw new SecretRefusal(`secret "${name}" is bound to another field`)
     }
     // Bound at first use (the latest metadata: another call may have bound it meanwhile).
     this.#update((secrets) =>
