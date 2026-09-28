@@ -15,7 +15,12 @@ const pages: Record<string, string> = {
         d.id = "cookies"; d.setAttribute("role", "dialog"); d.setAttribute("aria-label", "Cookie preferences")
         d.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.5)"
         d.innerHTML = "<button>Accept all</button>"
-        d.querySelector("button").onclick = () => d.remove()
+        d.querySelector("button").onclick = () => {
+          // ?fade: the dialog fades out for 400 ms, still in the page (no clicks through it).
+          if (!location.search.includes("fade")) return d.remove()
+          d.style.transition = "opacity 0.4s"; d.style.opacity = "0"; d.style.pointerEvents = "none"
+          setTimeout(() => d.remove(), 400)
+        }
         document.body.append(d)
       }
       if (location.search.includes("late")) setTimeout(dialog, 300)

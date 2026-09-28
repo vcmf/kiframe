@@ -552,21 +552,7 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   await handleInterrupts(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
-  try {
-    await perform(ctx, action, step)
-  } catch (error) {
-    // An interrupt that appeared mid-step (it covered the target): handled, then the step runs
-    // once more. Only for failures before the action had an effect (not found, covered, not
-    // actionable). A refused risky click asks again on the retry.
-    const beforeEffect =
-      error instanceof StepError &&
-      (error.reason === "target-not-found" ||
-        // Covered: the risky check couldn't see the target (nothing was clicked).
-        error.reason === "risky-not-approved" ||
-        (error.reason === "action-failed" && /Timeout \d+ms exceeded/.test(error.detail)))
-    if (!beforeEffect || !(await handleInterrupts(ctx, step))) throw error
-    await perform(ctx, action, step)
-  }
+  await perform(ctx, action, step)
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
@@ -576,6 +562,11 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   if (ctx.options.recording === true) await followSecretFields(ctx, step)
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
+}
+
+/** Playwright's own "Timeout …ms exceeded" on an action (nothing else is): a StepError's detail. */
+function isActionTimeout(error: StepError): boolean {
+  return /Timeout \d+ms exceeded/.test(error.detail)
 }
 
 /** One `display: none` rule per selector: a selector the browser rejects doesn't void the others. */
@@ -594,35 +585,49 @@ async function applyHide(ctx: Ctx, page: Page): Promise<void> {
   if (ctx.hideCss === "") return
   const applied = hiddenOn.get(page) ?? new Set<string>()
   if (applied.has(ctx.hideCss)) return
-  applied.add(ctx.hideCss)
-  hiddenOn.set(page, applied)
-  await page
-    .addInitScript((css: string) => {
+  try {
+    await page.addInitScript((css: string) => {
+      // As early as the document exists: server-rendered hidden elements are never painted.
       const add = () => {
         const style = document.createElement("style")
         style.textContent = css
         ;(document.head ?? document.documentElement).append(style)
       }
-      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add)
-      else add()
+      if (document.documentElement !== null) add()
+      else {
+        new MutationObserver((_, observer) => {
+          if (document.documentElement === null) return
+          observer.disconnect()
+          add()
+        }).observe(document, { childList: true })
+      }
     }, ctx.hideCss)
-    .catch(() => undefined)
+    // Marked only once it worked: a failure is retried at the next switch.
+    applied.add(ctx.hideCss)
+    hiddenOn.set(page, applied)
+  } catch {
+    // the current document still gets the style below
+  }
   await page.addStyleTag({ content: ctx.hideCss }).catch(() => undefined)
 }
 
-/** The first interrupt rule whose `when` is visible right now (no waiting). */
+/** The first rule (in order, not in `skip`) whose `when` is visible right now (no waiting). */
 async function matchingInterrupt(
   ctx: Ctx,
+  skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
-  for (const rule of ctx.interrupts) {
-    const when =
-      "by" in rule.when ? toPlaywright(ctx.page, rule.when) : ctx.page.getByText(rule.when.text)
-    const visible = await visibleOnly(when)
-      .count()
-      .catch(() => 0)
-    if (visible > 0) return rule
-  }
-  return undefined
+  const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
+  // One round trip for all rules, not one per rule (an org rule bank can be long).
+  const counts = await Promise.all(
+    rules.map((rule) => {
+      const when =
+        "by" in rule.when ? toPlaywright(ctx.page, rule.when) : ctx.page.getByText(rule.when.text)
+      return visibleOnly(when)
+        .count()
+        .catch(() => 0)
+    }),
+  )
+  return rules.find((_, i) => (counts[i] ?? 0) > 0)
 }
 
 /**
@@ -633,10 +638,12 @@ async function matchingInterrupt(
  */
 async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<boolean> {
   if (ctx.interrupts.length === 0 || ctx.page.isClosed()) return false
-  let handled = false
+  // A rule handled once isn't run again in the same check: its dialog may still be fading out.
+  const done = new Set<string>()
   for (let round = 0; round < 3; round++) {
-    const rule = await matchingInterrupt(ctx)
+    const rule = await matchingInterrupt(ctx, done)
     if (rule === undefined) break
+    done.add(rule.id)
     ctx.options.onEvent?.({ kind: "interrupt_start", step, rule: rule.id })
     // Off camera: no human pacing, no settle beat (the span is cut anyway).
     const ref: StepRef = { phase: "setup", index: step.index, action: `interrupt ${rule.id}` }
@@ -644,20 +651,19 @@ async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<boolean> {
       await perform(ctx, rule.do, ref)
       await guard(ref, () => settle(ctx, false))
     } catch (error) {
+      // Its own reason kept (a refused approval stays `risky-not-approved`).
+      const reason = error instanceof StepError ? error.reason : "action-failed"
       const detail = error instanceof StepError ? error.detail : firstLine(error)
       throw new StepError(
         step,
-        "action-failed",
+        reason,
         `the interrupt "${rule.id}" couldn't be handled: ${detail}`,
-        {
-          cause: error,
-        },
+        { cause: error },
       )
     }
     ctx.options.onEvent?.({ kind: "interrupt_end", step, rule: rule.id })
-    handled = true
   }
-  return handled
+  return done.size > 0
 }
 
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
@@ -816,7 +822,7 @@ async function explainOffScreen(
     if (
       !(error instanceof StepError) ||
       error.reason !== "action-failed" ||
-      !/Timeout \d+ms exceeded/.test(error.detail)
+      !isActionTimeout(error)
     ) {
       throw error
     }
@@ -1718,6 +1724,18 @@ async function clickAtCursor(
     target.evaluate(pointProbe, [p.x, p.y, true, false, token] as ProbeArgs, { timeout: left() })
   await guard(step, async () => {
     let probe = point === undefined ? undefined : await probeAt(point)
+    // Covered at our point: an interrupt that just appeared (a modal) is handled first, off camera,
+    // before any approval and before the press: nothing has happened yet. Then aim again.
+    if (
+      point !== undefined &&
+      probe !== undefined &&
+      !probe.hits &&
+      (await handleInterrupts(ctx, step))
+    ) {
+      point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
+      deadline = Date.now() + ctx.timeoutMs
+      probe = await probeAt(point)
+    }
     if (point !== undefined && probe !== undefined && !probe.hits) {
       point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
       deadline = Date.now() + ctx.timeoutMs // the corrective travel doesn't count either
