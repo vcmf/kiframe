@@ -3,6 +3,24 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // M1-3: a chat widget to hide, a cookie dialog that shows up late, one that shows on first move.
+  "/banner": `<!doctype html><title>Banner</title>
+    <div id="chat" style="position:fixed; right:10px; bottom:10px">Chat with us</div>
+    <button id="go">Continue</button><p id="s"></p>
+    <script>
+      document.getElementById("go").onclick = () => document.getElementById("s").textContent = "continued"
+      const dialog = () => {
+        if (document.getElementById("cookies")) return
+        const d = document.createElement("div")
+        d.id = "cookies"; d.setAttribute("role", "dialog"); d.setAttribute("aria-label", "Cookie preferences")
+        d.style.cssText = "position:fixed; inset:0; background:rgba(0,0,0,.5)"
+        d.innerHTML = "<button>Accept all</button>"
+        d.querySelector("button").onclick = () => d.remove()
+        document.body.append(d)
+      }
+      if (location.search.includes("late")) setTimeout(dialog, 300)
+      if (location.search.includes("onmove")) addEventListener("mousemove", dialog, { once: true })
+    </script>`,
   // The same list, but the drag starts only after 8 px of movement (dnd-kit's distance constraint).
   "/sortable-8": `<!doctype html><title>Sortable 8</title>
     <style>li { height: 40px; list-style: none; border-bottom: 1px solid #ccc }</style>
