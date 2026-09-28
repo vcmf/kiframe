@@ -205,7 +205,7 @@ export async function runScenario(
     cursors: new Map(),
     interrupts: project.interrupts,
     hideCss: hideCss(project.hide),
-    interruptsDone: new Set(),
+    interruptsDone: new WeakMap(),
     inInterrupt: false,
     base,
     settleMs,
@@ -346,8 +346,8 @@ interface Ctx {
   interrupts: ProjectConfig["interrupts"]
   /** CSS hiding the project's `hide` selectors ("" when there are none). */
   hideCss: string
-  /** Rules handled during the current step: not run again while their dialog fades out. */
-  interruptsDone: Set<string>
+  /** Rules handled on each page: at most once per page and run (a banner fading out in place still matches). */
+  interruptsDone: WeakMap<Page, Set<string>>
   /** True while a rule's `do` runs: its own actions never start another interrupt check. */
   inInterrupt: boolean
   setCurrent: (step: StepRef | undefined) => void
@@ -558,7 +558,6 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   await syncPage(ctx, step)
   // Cookie banners, "What's new" modals…: handled off camera between steps (cut from the video).
   // Not before a navigation: the page it would clear is about to be replaced.
-  ctx.interruptsDone = new Set()
   if (action.action !== "goto") await handleInterrupts(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
@@ -597,19 +596,22 @@ async function applyHide(ctx: Ctx, page: Page): Promise<void> {
   if (applied.has(ctx.hideCss)) return
   try {
     await page.addInitScript((css: string) => {
-      // As early as the document exists: server-rendered hidden elements are never painted.
+      // The top document only (not third-party iframes), in its <head> as soon as it exists:
+      // server-rendered hidden elements are never painted, and the tree a hydrating app compares
+      // against only gains a <style> in <head>, like an extension's.
+      if (window !== window.top) return
       const add = () => {
         const style = document.createElement("style")
         style.textContent = css
-        ;(document.head ?? document.documentElement).append(style)
+        document.head.append(style)
       }
-      if (document.documentElement !== null) add()
+      if (document.head !== null) add()
       else {
         new MutationObserver((_, observer) => {
-          if (document.documentElement === null) return
+          if (document.head === null) return
           observer.disconnect()
           add()
-        }).observe(document, { childList: true })
+        }).observe(document, { childList: true, subtree: true })
       }
     }, ctx.hideCss)
     // Marked only once it worked: a failure is retried at the next switch.
@@ -619,20 +621,21 @@ async function applyHide(ctx: Ctx, page: Page): Promise<void> {
     // the current document still gets the style below
   }
   await page.addStyleTag({ content: ctx.hideCss }).catch(() => {
-    // A Content-Security-Policy without inline styles blocks it: say so, never film them silently.
+    // Typically a Content-Security-Policy without inline styles: say so, never film them silently.
+    if (page.isClosed()) return
     ctx.options.onEvent?.({
       kind: "warning",
       message:
-        "the `hide` rules couldn't be applied on this page (its security policy blocks inline styles): hidden elements may be filmed",
+        "the `hide` rules couldn't be applied on a page (a security policy blocking inline styles?): hidden elements may be filmed",
     })
   })
 }
 
 /** The visible elements matching a rule's `when`. */
 function whenOf(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Locator {
-  const when =
-    "by" in rule.when ? toPlaywright(ctx.page, rule.when) : ctx.page.getByText(rule.when.text)
-  return visibleOnly(when)
+  return visibleOnly(
+    toPlaywright(ctx.page, "by" in rule.when ? rule.when : { by: "text", text: rule.when.text }),
+  )
 }
 
 /** The first rule (in order, not in `skip`) whose `when` is visible right now (no waiting). */
@@ -656,19 +659,18 @@ async function matchingInterrupt(
  * The explicit interrupt check (OBJECT-MODEL §2b), not Playwright's locator handlers (they fire
  * between a mouse move and a press). Each matching rule's `do` runs off camera; the span is marked
  * (interrupt_start / _end) so the generators cut it. Up to 3 in a row (a banner, then a modal).
- * Returns whether any was handled.
+ * A rule runs at most once per page: a dismissed banner may stay in the page, faded out.
  */
-async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<boolean> {
+async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
   // A rule's own click never checks again (a modal over its button would loop forever).
-  if (ctx.inInterrupt || ctx.interrupts.length === 0 || ctx.page.isClosed()) return false
-  // A rule handled once in this step isn't run again: its dialog may still be fading out.
-  const done = ctx.interruptsDone
-  let handled = false
+  if (ctx.inInterrupt || ctx.interrupts.length === 0 || ctx.page.isClosed()) return
+  const page = ctx.page
+  const done = ctx.interruptsDone.get(page) ?? new Set<string>()
+  ctx.interruptsDone.set(page, done)
   for (let round = 0; round < 3; round++) {
     const rule = await matchingInterrupt(ctx, done)
     if (rule === undefined) break
     done.add(rule.id)
-    handled = true
     ctx.options.onEvent?.({ kind: "interrupt_start", step, rule: rule.id })
     // Off camera: no human pacing, no settle beat (the span is cut anyway).
     const ref: StepRef = {
@@ -679,25 +681,17 @@ async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<boolean> {
     }
     ctx.inInterrupt = true
     try {
-      if ("risky" in rule.do && rule.do.risky === true) {
+      if (rule.do.risky === true) {
         await requireApproval(ctx, ref, "risky step needs approval")
       }
       await perform(ctx, rule.do, ref)
       await guard(ref, () => settle(ctx, false))
-      // Gone before the step goes on: a dialog fading out still covers the page. One that stays
-      // means the rule is wrong (a `when` that is always on the page, a `do` that doesn't close it).
-      const gone = await whenOf(ctx, rule)
+      // Best effort, inside the cut: a dialog fading out is gone before the step is filmed. One
+      // that fades in place (opacity 0) never counts as hidden: the wait just ends.
+      await whenOf(ctx, rule)
         .first()
-        .waitFor({ state: "hidden", timeout: ctx.timeoutMs })
-        .then(() => true)
-        .catch(() => ctx.page.isClosed())
-      if (!gone) {
-        throw new StepError(
-          ref,
-          "action-failed",
-          "it's still showing after its `do`: check the rule's `when` (not something always on the page) and `do`",
-        )
-      }
+        .waitFor({ state: "hidden", timeout: Math.min(ctx.timeoutMs, 1000) })
+        .catch(() => undefined)
     } catch (error) {
       // Its own reason kept (a refused approval stays `risky-not-approved`).
       const reason = error instanceof StepError ? error.reason : "action-failed"
@@ -713,7 +707,6 @@ async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<boolean> {
     }
     ctx.options.onEvent?.({ kind: "interrupt_end", step, rule: rule.id })
   }
-  return handled
 }
 
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
@@ -872,8 +865,8 @@ async function explainOffScreen(
     if (
       !(error instanceof StepError) ||
       error.reason !== "action-failed" ||
-      // An interrupt rule's failure is about that rule, not this target.
-      error.step.interrupt !== undefined ||
+      // An interrupt rule's failure inside this step is about that rule, not this target.
+      error.step.interrupt !== step.interrupt ||
       !isActionTimeout(error)
     ) {
       throw error
