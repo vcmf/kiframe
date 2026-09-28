@@ -528,6 +528,43 @@ steps:
       )
     })
 
+    it("needs a simple CSS selector on a secret step even before any value is known", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(
+        into(`{ by: css, selector: "input[type=password]:not([value^='h'])" }`),
+        approving(vault, []),
+      )
+      expect(error.message).toMatch(/needs a simple CSS selector/)
+    })
+
+    it("skips a hide rule the A8 grammar refuses, with a warning", async () => {
+      const withHide = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+hide: ["#chat", "form:has(input[value^='h']) button"]
+`)
+      const events: RunnerEvent[] = []
+      await runScenario(
+        page,
+        scenario(
+          `setup: [{ action: goto, url: /banner }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n`,
+        ),
+        withHide,
+        {
+          timeoutMs: 1500,
+          onEvent: (e) => events.push(e),
+        },
+      )
+      expect(
+        events
+          .filter((e) => e.kind === "warning")
+          .map((e) => (e.kind === "warning" ? e.message : "")),
+      ).toEqual([expect.stringMatching(/hide rule "form:has/)])
+      expect(await page.locator("#chat").evaluate((el) => getComputedStyle(el).display)).toBe(
+        "none",
+      )
+    })
+
     it("refuses a secret step without the host's scene id (never a shared default)", async () => {
       const vault = await vaultWithPassword()
       const error = await failure(into(password), {

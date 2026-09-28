@@ -198,6 +198,7 @@ export class Vault {
     if (!parsed.success) throw new SecretRefusal("invalid-use", `secret "${name}": invalid use`)
     const u = parsed.data
     const hash = await this.#hasher()
+    const hashedPath = hashPattern(u.path, hash)
     const check = () => {
       const meta = this.#find(name)
       if (meta === undefined) {
@@ -215,8 +216,11 @@ export class Vault {
           `secret "${name}" is a ${meta.kind}: it doesn't go into ${u.element.tag === "input" ? `an input of type ${u.element.type}` : "a textarea"}`,
         )
       }
-      if (this.#grantFor(name, u, hash) === undefined) {
-        throw new SecretRefusal("no-grant", `secret "${name}": ${this.#whyNoGrant(name, u, hash)}`)
+      if (this.#grantFor(name, u, hash, hashedPath) === undefined) {
+        throw new SecretRefusal(
+          "no-grant",
+          `secret "${name}": ${this.#whyNoGrant(name, u, hashedPath)}`,
+        )
       }
     }
     check()
@@ -282,6 +286,16 @@ export class Vault {
     return grant
   }
 
+  /**
+   * The user's action when the approvals' key is lost (a keychain reset, a restored vault.json):
+   * every grant is removed and a new key is made; each step asks again.
+   */
+  async resetApprovals(): Promise<void> {
+    this.#key = undefined
+    this.#update((file) => ({ ...file, grants: [] }))
+    await this.#backend.delete(GRANT_KEY)
+  }
+
   /** The grants (all, or one scope's): what the vault UI lists. */
   grants(scope?: string): Grant[] {
     return structuredClone(
@@ -314,7 +328,7 @@ export class Vault {
   }
 
   /** What stopped a use matching (§3 A4: the user must tell "never approved" from "changed"). */
-  #whyNoGrant(name: string, u: SecretUse, hash: (s: string) => string): string {
+  #whyNoGrant(name: string, u: SecretUse, hashedPath: string): string {
     const mine = this.#grants.filter(
       (g) => g.secret === name && g.scope === u.scope && g.stepKey === u.stepKey,
     )
@@ -324,11 +338,7 @@ export class Vault {
     if (!onOrigin.some((g) => g.target === u.target)) {
       return "approved for another target: the step's target changed (healed or re-grounded)"
     }
-    if (
-      !onOrigin.some(
-        (g) => g.target === u.target && pathMatches(g.pathPattern, hashPattern(u.path, hash)),
-      )
-    ) {
+    if (!onOrigin.some((g) => g.target === u.target && pathMatches(g.pathPattern, hashedPath))) {
       return "approved on other pages, not this one"
     }
     return "approved for another field: the element's type or label changed"
@@ -345,7 +355,7 @@ export class Vault {
       if (this.#grants.length > 0) {
         throw new SecretRefusal(
           "no-grant",
-          "the key of the vault's approvals is missing from the keychain: approve the steps again",
+          "the key of the vault's approvals is missing from the keychain: reset the approvals in the vault, then approve the steps again",
         )
       }
       const key = randomBytes(32).toString("hex")
@@ -364,7 +374,12 @@ export class Vault {
     return (text) => createHmac("sha256", key).update(text).digest("hex")
   }
 
-  #grantFor(name: string, u: SecretUse, hash: (s: string) => string): Grant | undefined {
+  #grantFor(
+    name: string,
+    u: SecretUse,
+    hash: (s: string) => string,
+    hashedPath: string,
+  ): Grant | undefined {
     const element = { ...u.element, label: u.element.label === null ? null : hash(u.element.label) }
     return this.#grants.find(
       (g) =>
@@ -373,7 +388,7 @@ export class Vault {
         g.stepKey === u.stepKey &&
         g.origin === u.origin &&
         g.target === u.target &&
-        pathMatches(g.pathPattern, hashPattern(u.path, hash)) &&
+        pathMatches(g.pathPattern, hashedPath) &&
         isDeepStrictEqual(g.element, element),
     )
   }

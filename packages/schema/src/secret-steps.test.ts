@@ -55,3 +55,17 @@ presets:
     ).not.toThrow()
   })
 })
+
+describe("role locators", () => {
+  it("are ARIA role names only: nothing else reaches Playwright's selector", () => {
+    const step = (role: string) =>
+      scenario(
+        `steps:\n  - { id: a, action: click, target: { by: role, role: "${role}", name: Save } }`,
+      )
+    expect(step("button")).not.toThrow()
+    expect(step("menuitemcheckbox")).not.toThrow()
+    for (const role of ["main >> input", "xpath=//input", "Button", "button[name=x]"]) {
+      expect(step(role), role).toThrow(/ARIA role/)
+    }
+  })
+})

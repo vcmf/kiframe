@@ -309,6 +309,15 @@ describe("Vault: the grants' hash key", () => {
     expect(await reopened.resolve("acme.password", { ...USE, path: "/fr/login" })).toBe("v")
   })
 
+  it("is reset by the user's action: grants gone, a new key, steps ask again", async () => {
+    const { vault, backend } = await approved()
+    backend.values.delete("#grant-hash-key")
+    await vault.resetApprovals()
+    expect(vault.grants()).toEqual([])
+    await vault.approve("acme.password", USE)
+    expect(await vault.resolve("acme.password", USE)).toBe("hunter2-secret")
+  })
+
   it("is never replaced silently while grants exist: a lost key asks to approve again", async () => {
     const { vault, path, backend } = await approved()
     backend.values.delete("#grant-hash-key")
