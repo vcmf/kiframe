@@ -334,19 +334,33 @@ interrupts:
     it("refuses every spelling of paste and copy (aliases, code names, left/right keys)", async () => {
       const vault = await vaultWithPassword()
       const options = approving(vault, [])
-      for (const keys of ["ControlOrMeta+v", "Control+KeyV", "ControlLeft+v", "Meta+V"]) {
+      for (const keys of [
+        "ControlOrMeta+v",
+        "Control+KeyV",
+        "ControlLeft+v",
+        "Meta+V",
+        "Control+y",
+      ]) {
         const error = await failure(
           into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
           options,
         )
         expect(error.message, keys).toMatch(/no paste/)
       }
-      for (const keys of ["ControlOrMeta+a", "Control+KeyC", "MetaRight+x"]) {
+      // An allowlist in the field: copy, select, and macOS kill (Ctrl+K) or Mod+Insert all refused.
+      for (const keys of [
+        "ControlOrMeta+a",
+        "Control+KeyC",
+        "MetaRight+x",
+        "Control+k",
+        "Mod+Insert",
+        "Shift+Home",
+      ]) {
         const error = await failure(
           into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
           options,
         )
-        expect(error.message, keys).toMatch(/would copy/)
+        expect(error.message, keys).toMatch(/in a field holding a secret/)
       }
     })
 
@@ -361,6 +375,49 @@ interrupts:
         approving(vault, []),
       )
       expect(error.message).toMatch(/would move a field holding a secret/)
+    })
+
+    it("refuses the write when the field changed during the approval (a show-password toggle)", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(into(password), {
+        ...scope,
+        resolveSecret: vault.resolver(),
+        requestApproval: async (request: ApprovalRequest) => {
+          vault.approve(request.secret, request.use)
+          await page
+            .getByLabel("Password input")
+            .evaluate((el) => ((el as HTMLInputElement).type = "text"))
+          return true
+        },
+      })
+      expect(error.message).toMatch(/field changed/)
+      expect(await page.getByLabel("Password input").inputValue()).toBe("")
+    })
+
+    it("keeps refusing copy from a re-mounted field that holds the secret", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(
+        `setup: [{ action: goto, url: /remount }]
+steps:
+  - { id: pw, action: type, target: { by: css, selector: "#pw" }, value: "{{secrets.acme.password}}" }
+  - { id: wait, action: pause, ms: 200 }
+  - { id: k, action: press, keys: "Mod+a" }
+`,
+        approving(vault, []),
+      )
+      expect(error.message).toMatch(/in a field holding a secret/)
+    })
+
+    it("refuses fallbacks on a secret step even when the schema was skipped", async () => {
+      const vault = await vaultWithPassword()
+      const built = scenario(into(password))
+      const step = built.steps[0] as { target: object }
+      step.target = { ...step.target, fallbacks: [{ by: "label", name: "Email" }] }
+      const error = await runScenario(page, built, project, {
+        ...approving(vault, []),
+        timeoutMs: 1500,
+      }).catch((e: unknown) => e)
+      expect(String(error)).toMatch(/can't have fallbacks or nth/)
     })
 
     it("refuses a secret step without the host's scene id (never a shared default)", async () => {
@@ -387,7 +444,7 @@ interrupts:
           into(password, "/login-form", `  - { id: k, action: press, keys: "${keys}" }\n`),
           options,
         )
-        expect(error.message, keys).toMatch(/would copy from a field holding a secret/)
+        expect(error.message, keys).toMatch(/in a field holding a secret/)
       }
       // Elsewhere, select-all still works.
       await run(

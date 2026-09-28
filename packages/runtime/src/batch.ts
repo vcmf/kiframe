@@ -33,11 +33,13 @@ export interface BatchScene {
   scenario: Scenario
   /** The scene's take directory (see `RecordOptions.outDir`). */
   outDir: string
+  /** The host's id for this scene: the approval keys of its own secret steps (never shared). */
+  sceneId: string
 }
 
 export interface BatchOptions extends Omit<
   RecordOptions,
-  "outDir" | "skipSessionPresets" | "onSessionReady" | "sessionLandings"
+  "outDir" | "skipSessionPresets" | "onSessionReady" | "sessionLandings" | "sceneId"
 > {
   /**
    * The environment the batch runs against: risky steps go through its `approvalPolicy`, with
@@ -107,6 +109,7 @@ export async function recordBatch(
       const take = await recordScenario(page, scene.scenario, project, {
         ...record,
         outDir: scene.outDir,
+        sceneId: scene.sceneId,
         skipSessionPresets: reuse ? uses : [],
         sessionLandings: landings,
         onSessionReady: async (preset, at) => {

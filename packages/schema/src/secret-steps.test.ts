@@ -34,16 +34,16 @@ presets:
     expect(project(`{ id: pw, ${typeSecret("").slice(2)}`)).not.toThrow()
   })
 
-  it("need one exact grounded target: no fallbacks, no nth, no intent-only target", () => {
+  it("need one exact target: no fallbacks, no nth (a draft's intent-only target is fine)", () => {
     const step = (target: string) =>
       scenario(
         `steps:\n  - { id: pw, action: type, target: ${target}, value: "{{secrets.acme.password}}" }`,
       )
     expect(step("{ by: label, name: Password, fallbacks: [{ by: label, name: Pass }] }")).toThrow(
-      /one exact grounded target/,
+      /one exact target/,
     )
-    expect(step("{ by: label, name: Password, nth: 0 }")).toThrow(/one exact grounded target/)
-    expect(step(`{ intent: "the password" }`)).toThrow(/one exact grounded target/)
+    expect(step("{ by: label, name: Password, nth: 0 }")).toThrow(/one exact target/)
+    expect(step(`{ intent: "the password" }`)).not.toThrow()
     expect(step(`{ by: label, name: Password, intent: "the password" }`)).not.toThrow()
   })
 

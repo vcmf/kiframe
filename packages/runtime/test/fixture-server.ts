@@ -315,6 +315,15 @@ const pages: Record<string, string> = {
     <label>Age <input type="number"></label>
     <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
     <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
+  // Re-mounts the password input (a framework re-render): the new node keeps the value and focus.
+  "/remount": `<!doctype html><title>Remount</title>
+    <label>Password <input id="pw" type="password"></label><label>Email <input id="email"></label>
+    <script>
+      document.getElementById("pw").addEventListener("input", (e) => setTimeout(() => {
+        const old = e.target, n = old.cloneNode()
+        n.value = old.value; n.removeAttribute("id"); old.replaceWith(n); n.focus()
+      }, 50), { once: true })
+    </script>`,
   // A password field inside a web component's shadow root.
   "/shadow-login": `<!doctype html><title>Shadow login</title>
     <pw-field id="host"></pw-field><label>Email <input id="email"></label>

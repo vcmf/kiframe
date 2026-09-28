@@ -4,7 +4,13 @@ import { join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { approvalPolicy, recordBatch, type RunnerEvent } from "../src/index.ts"
+import { memoryBackend, Vault } from "@kiframe/vault"
+import {
+  approvalPolicy,
+  type ApprovalRequest,
+  recordBatch,
+  type RunnerEvent,
+} from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -52,6 +58,7 @@ describe("recordBatch", () => {
       steps.map((s, i) => ({
         scenario: typeof s === "string" ? scene(s) : scene(...s),
         outDir: join(dir, `take-${i}`),
+        sceneId: `scene-${i}`,
       })),
       project(),
       {
@@ -113,6 +120,47 @@ describe("recordBatch", () => {
     const { results, logins } = await run([signedIn, missing, signedIn])
     expect(results.map((r) => r.ok)).toEqual([true, false, true])
     expect(logins).toBe(2)
+  })
+})
+
+describe("recordBatch and secret approvals", () => {
+  it("keys each scene's secret steps by its own scene id: one approval never serves another", async () => {
+    const vault = Vault.open(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    await vault.request(
+      { name: "acme.password", kind: "password", origin: new URL(server.url).origin, reason: "t" },
+      () => Promise.resolve("hunter2-secret"),
+    )
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-batch-"))
+    const typing = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`)
+    const asked: string[] = []
+    const results = await recordBatch(
+      browser,
+      [0, 1].map((i) => ({
+        scenario: typing,
+        outDir: join(dir, `take-${i}`),
+        sceneId: `scene-${i}`,
+      })),
+      project(),
+      {
+        timeoutMs: 1500,
+        scope: "project-1",
+        resolveSecret: vault.resolver(),
+        requestApproval: (request: ApprovalRequest) => {
+          asked.push(request.use.stepKey)
+          vault.approve(request.secret, request.use)
+          return true
+        },
+      },
+    )
+    expect(results.map((r) => r.ok)).toEqual([true, true])
+    expect(asked).toEqual(["scene:scene-0/steps/pw", "scene:scene-1/steps/pw"])
   })
 })
 

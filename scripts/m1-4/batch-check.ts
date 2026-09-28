@@ -40,11 +40,11 @@ try {
     Array.from({ length: count }, (_, i) => ({
       scenario,
       outDir: join(values.out!, `scene-${i + 1}`),
+      sceneId: `scene-${i + 1}`,
     })),
     project,
     {
       scope: "phase0",
-      sceneId: "batch-check",
       resolveSecret: envSecretResolver(["calcom.username", "calcom.password"]),
       timeoutMs: 15000,
       onEvent: (e) => {

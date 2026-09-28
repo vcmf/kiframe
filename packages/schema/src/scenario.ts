@@ -248,27 +248,47 @@ const scrollHasExactlyOneMode = (s: {
 }) => s.action !== "scroll" || [s.to, s.by, s.until].filter((v) => v !== undefined).length === 1
 const scrollModeError = { message: "scroll needs exactly one of `to`, `by` or `until`" }
 
-/**
- * A step typing a secret targets exactly one element, as the user approved it (SECRETS-DESIGN §3
- * A2): a grounded locator with no fallbacks and no `nth` (either could reach another field).
- */
-const secretTargetIsExact = (s: { action: string; value?: unknown; target?: unknown }) =>
-  s.action !== "type" ||
-  typeof s.value !== "string" ||
-  secretRefName(s.value) === undefined ||
-  (typeof s.target === "object" &&
-    s.target !== null &&
-    "by" in s.target &&
-    !("fallbacks" in s.target && s.target.fallbacks !== undefined) &&
-    !("nth" in s.target && s.target.nth !== undefined))
-const secretTargetError = {
-  message: "a step typing a secret needs one exact grounded target: no fallbacks, no `nth`",
-  path: ["target"],
-}
-
 /** Whether an action types a secret (its step then needs an id: approvals are keyed by it). */
 export function typesSecret(a: { action: string; value?: unknown }): boolean {
   return a.action === "type" && typeof a.value === "string" && secretRefName(a.value) !== undefined
+}
+
+/**
+ * A step typing a secret targets exactly one element, as the user approved it (SECRETS-DESIGN §3
+ * A2): no fallbacks and no `nth` (either could reach another field). A draft's intent-only target
+ * is fine: it's grounded (and approved) before it can run.
+ */
+const secretTargetIsExact = (s: { action: string; value?: unknown; target?: unknown }) => {
+  if (!typesSecret(s) || typeof s.target !== "object" || s.target === null) return true
+  const t = s.target as { fallbacks?: unknown; nth?: unknown }
+  return t.fallbacks === undefined && t.nth === undefined
+}
+const secretTargetError = {
+  message: "a step typing a secret needs one exact target: no fallbacks, no `nth`",
+  path: ["target"],
+}
+
+/** Issues for off-camera items typing a secret without an id (their approvals refer to it). */
+export function requireSecretStepIds(
+  items: readonly unknown[],
+  path: readonly (string | number)[],
+  ctx: z.RefinementCtx,
+): void {
+  for (const [i, item] of items.entries()) {
+    if (
+      typeof item === "object" &&
+      item !== null &&
+      "action" in item &&
+      typesSecret(item as { action: string; value?: unknown }) &&
+      (item as { id?: unknown }).id === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a step typing a secret needs an id (its approval refers to it)",
+        path: [...path, i, "id"],
+      })
+    }
+  }
 }
 
 /** Off-camera fields (setup, teardown, presets): IDs are optional there. */
@@ -379,20 +399,8 @@ const ScenarioBase = z
   })
   .superRefine((s, ctx) => {
     // Off-camera steps typing a secret need an id too: approvals are keyed by it (§3 A1).
-    for (const [phase, items] of [
-      ["setup", s.setup ?? []],
-      ["teardown", s.teardown ?? []],
-    ] as const) {
-      for (const [i, item] of items.entries()) {
-        if ("action" in item && typesSecret(item) && item.id === undefined) {
-          ctx.addIssue({
-            code: "custom",
-            message: "a step typing a secret needs an id (its approval refers to it)",
-            path: [phase, i, "id"],
-          })
-        }
-      }
-    }
+    requireSecretStepIds(s.setup ?? [], ["setup"], ctx)
+    requireSecretStepIds(s.teardown ?? [], ["teardown"], ctx)
     // IDs are unique across setup, steps and teardown, so anchors are never ambiguous.
     // (Preset step ids are checked against these by `checkScenarioAgainstProject`.)
     const claims = claimIds(s.setup, ["setup"], ctx)
