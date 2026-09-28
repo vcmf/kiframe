@@ -4,6 +4,15 @@ import type { AddressInfo } from "node:net"
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
   // M1-3: a chat widget to hide, a cookie dialog that shows up late, one that shows on first move.
+  // M1-4: a cookie session. "Sign in" sets it, "Sign out" clears it.
+  "/session": `<!doctype html><title>Session</title>
+    <p id="who"></p><button id="in">Sign in</button><button id="out">Sign out</button>
+    <script>
+      const show = () => document.getElementById("who").textContent = document.cookie.includes("session=1") ? "Signed in" : "Signed out"
+      document.getElementById("in").onclick = () => { document.cookie = "session=1; path=/"; show() }
+      document.getElementById("out").onclick = () => { document.cookie = "session=; path=/; max-age=0"; show() }
+      show()
+    </script>`,
   "/banner": `<!doctype html><title>Banner</title>
     <div id="chat" style="position:fixed; right:10px; bottom:10px">Chat with us</div>
     <button id="go">Continue</button><p id="s"></p>
