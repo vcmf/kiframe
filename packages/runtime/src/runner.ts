@@ -9,7 +9,7 @@ import type {
 } from "@kiframe/schema"
 import { Action, isGrounded, secretRefName } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
-import { StepError, type StepRef } from "./errors.ts"
+import { isSecretRefusal, StepError, type SecretUse, type StepRef } from "./errors.ts"
 import {
   clickPoint,
   type Box,
@@ -89,8 +89,12 @@ export type RunnerEvent =
   | { kind: "preset_done"; name: string; session: boolean }
 
 export interface RunOptions {
-  /** Resolves a secret NAME to its value, at the moment of the fill. Throw if unavailable. */
-  resolveSecret?: (name: string) => string | Promise<string>
+  /**
+   * Resolves a secret NAME to its value, at the moment of the fill, for this use (the page's origin,
+   * the focused field): the vault's resolver (`Vault.resolver`). Throw if unavailable or refused (a
+   * `SecretRefusal`'s message is reported; any other error's never is).
+   */
+  resolveSecret?: (name: string, use: SecretUse) => string | Promise<string>
   /** Resolves an `upload` step's project asset (`<sha256>.<ext>`) to a file path. */
   resolveAsset?: (file: string) => string | Promise<string>
   /**
@@ -1056,7 +1060,9 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
       assertSecretOrigin(ctx, secret, step)
-      const text = secret === undefined ? action.value : await resolveSecret(ctx, secret, step)
+      // A secret is resolved at the last moment, once the field it goes into is focused.
+      let text = secret === undefined ? action.value : ""
+      let secretField: string | undefined
       const sensitiveId =
         secret === undefined
           ? undefined
@@ -1075,18 +1081,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         await target.focus({ timeout })
         // The text goes to the focused element: make sure it's the target, never the field focused
         // before (a secret would land there, on camera).
-        const focused = await target.evaluate(
-          (el) => {
-            // In shadow DOM, document.activeElement is the host: ask the element's own root.
-            const root = el.getRootNode()
-            const active =
-              root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
-            return active !== null && (el === active || el.contains(active))
-          },
-          undefined,
-          { timeout },
-        )
-        if (!focused) {
+        if (!(await target.evaluate(hasFocus, undefined, { timeout }))) {
           throw new StepError(
             step,
             "action-failed",
@@ -1094,6 +1089,23 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           )
         }
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
+        if (secret !== undefined) {
+          // A secret goes into the target itself (or the input in its shadow root), never into
+          // another field inside it: the one focused before could be a visible text box.
+          const field = await target.evaluate(secretFieldOf, undefined, { timeout })
+          if (field === null) {
+            throw new StepError(
+              step,
+              "action-failed",
+              `secret "${secret}" goes into an input itself: use a locator for the field, not a container`,
+            )
+          }
+          secretField = field
+          text = await resolveSecret(ctx, secret, step, {
+            origin: new URL(page.url()).origin,
+            field: { inputType: field },
+          })
+        }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
         if (ctx.options.recording === true) {
           fieldBox = await target
@@ -1110,6 +1122,17 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
+        if (secretField !== undefined) {
+          // And still into the field the vault approved: focus may have moved while it resolved
+          // (a keychain prompt, an autofocus script), and the text goes to the focused element.
+          if ((await target.evaluate(secretFieldOf, undefined, { timeout })) !== secretField) {
+            throw new StepError(
+              step,
+              "action-failed",
+              `the field lost focus while secret "${secret}" was resolved`,
+            )
+          }
+        }
         if (action.instant === true || secret !== undefined) {
           await page.keyboard.insertText(text)
         } else {
@@ -1457,7 +1480,12 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   return result.locator
 }
 
-async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<string> {
+async function resolveSecret(
+  ctx: Ctx,
+  name: string,
+  step: StepRef,
+  use: SecretUse,
+): Promise<string> {
   if (ctx.options.resolveSecret === undefined) {
     throw new StepError(
       step,
@@ -1466,11 +1494,15 @@ async function resolveSecret(ctx: Ctx, name: string, step: StepRef): Promise<str
     )
   }
   try {
-    const value = await ctx.options.resolveSecret(name)
+    const value = await ctx.options.resolveSecret(name, use)
     if (value !== "") ctx.secretValues.add(value)
     return value
-  } catch {
-    // Never include the resolver's error: its message could contain the value.
+  } catch (error) {
+    // The vault's refusals say why (origin, field) and never hold a value; any other error's
+    // message could contain one: never included.
+    if (isSecretRefusal(error)) {
+      throw new StepError(step, "secret-refused", firstLine(error.message))
+    }
     throw new StepError(step, "secret-unavailable", `secret "${name}" is unavailable`)
   }
 }
@@ -2065,10 +2097,34 @@ export function pathOnly(url: string): string {
 function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef) {
   if (secret === undefined) return
   const origin = new URL(ctx.page.url()).origin
-  // Per-secret origin binding comes with the vault (APPROACHES §7.4).
+  // Always the project's origin, whatever the resolver: the vault then checks the secret's own
+  // origins (a secret for another origin, an SSO page, is refused here; BACKLOG).
   if (origin !== ctx.base.origin) {
     throw new StepError(step, "off-origin", `refusing to type secret "${secret}" on ${origin}`)
   }
+}
+
+/** Whether the element, or an element inside it, has keyboard focus (runs in the page). */
+function hasFocus(el: Element): boolean {
+  // In shadow DOM, document.activeElement is the host: ask the element's own root.
+  const root = el.getRootNode()
+  const active = root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
+  return active !== null && (el === active || el.contains(active))
+}
+
+/**
+ * The kind of field a secret would be typed into (runs in the page): the target itself must be
+ * focused (a web component: its host, then the focused element in its shadow root). Null otherwise.
+ */
+function secretFieldOf(el: Element): string | null {
+  const root = el.getRootNode()
+  const active = root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
+  if (active !== el) return null
+  let inner: Element = el
+  while (inner.shadowRoot?.activeElement) inner = inner.shadowRoot.activeElement
+  if (inner instanceof HTMLInputElement) return inner.type
+  if (inner instanceof HTMLTextAreaElement) return "textarea"
+  return inner instanceof HTMLElement && inner.isContentEditable ? "contenteditable" : "other"
 }
 
 /**

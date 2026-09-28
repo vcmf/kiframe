@@ -5,6 +5,7 @@ import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kifram
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { runScenario, StepError, type RunnerEvent } from "../src/index.ts"
+import { memoryBackend, Vault } from "@kiframe/vault"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -143,6 +144,60 @@ steps:
     expect(await page.getByLabel("Password").inputValue()).toBe("hunter2-secret")
     expect(JSON.stringify(events)).not.toContain("hunter2-secret")
     expect(events.find((e) => e.kind === "type")).toMatchObject({ secret: "acme.password" })
+  })
+
+  it("types a vault secret only into the field it's bound to, on its origin", async () => {
+    const vault = Vault.open(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    const origin = new URL(server.url).origin
+    await vault.request({ name: "acme.password", kind: "password", origin, reason: "log in" }, () =>
+      Promise.resolve("hunter2-secret"),
+    )
+    const into = (target: string) => `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: ${target}, value: "{{secrets.acme.password}}" }
+`
+    const password = "{ by: label, name: Password input }"
+    await run(into(password), { resolveSecret: vault.resolver() })
+    expect(await page.getByLabel("Password input").inputValue()).toBe("hunter2-secret")
+    expect(vault.list()[0]?.field).toMatchObject({ inputType: "password" })
+    // The same secret into another same-origin field: refused, nothing typed.
+    const error = await failure(into("{ by: label, name: Email }"), {
+      resolveSecret: vault.resolver(),
+    })
+    expect(error.reason).toBe("secret-refused")
+    expect(error.message).toMatch(/only goes into a password field/)
+    expect(await page.getByLabel("Email").inputValue()).toBe("")
+    // A fallback that matches another field is judged by what it matched, not the primary locator.
+    const viaFallback = await failure(
+      into("{ by: label, name: Nope, fallbacks: [{ by: label, name: Email }] }"),
+      { resolveSecret: vault.resolver() },
+    )
+    expect(viaFallback.reason).toBe("secret-refused")
+    // Healing metadata isn't part of the binding: a re-grounded target on the same field is fine.
+    await run(into(`{ by: label, name: Password input, intent: "the password" }`), {
+      resolveSecret: vault.resolver(),
+    })
+  })
+
+  it("never types a secret into a field that took focus while it was resolved", async () => {
+    const error = await failure(
+      `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`,
+      {
+        resolveSecret: async () => {
+          await page.getByLabel("Email").focus()
+          return "hunter2-secret"
+        },
+      },
+    )
+    expect(error.message).toMatch(/lost focus/)
+    expect(await page.getByLabel("Email").inputValue()).toBe("")
+    expect(await page.getByLabel("Password input").inputValue()).toBe("")
   })
 
   it("fails clearly when a secret is unavailable, without leaking the resolver's error", async () => {
@@ -1136,11 +1191,11 @@ teardown:
       `steps:
   - { id: go, action: goto, url: /login-form }
   - { id: email, action: type, target: { by: label, name: Email }, value: bob@acme.com }
-  - { id: pw, action: type, target: { by: css, selector: .password-field }, value: "{{secrets.acme.password}}" }
+  - { id: pw, action: type, target: { by: css, selector: body }, value: "{{secrets.acme.password}}" }
 `,
       { resolveSecret: () => "hunter2" },
     )
-    expect(error.message).toMatch(/can't take keyboard focus/)
+    expect(error.message).toMatch(/can't take keyboard focus|goes into an input itself/)
     expect(await page.getByLabel("Email").inputValue()).toBe("bob@acme.com")
   })
 
