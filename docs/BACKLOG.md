@@ -133,6 +133,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## @kiframe/runtime state (M1-4)
 - **Session across batches:** the saved session lives in memory for one batch; every batch logs in again. Keeping it (encrypted, keychain) between batches would cut logins further (M1-7/M1-8 decide where secrets at rest live).
-- **Session validation:** a stale saved session is noticed only when a scene fails (the next one logs in again, the failed one isn't retried). A cheap check after the context is created (the preset's last `waitFor`, say) would catch it before filming.
+- **Session validation:** a stale saved session is noticed only when a scene fails (the next one logs in again, the failed one isn't retried). A scene that signs out on camera revokes the server session behind the saved state, so the next scene fails too. A cheap check after the context is created (the preset's last `waitFor`, say) would catch it before filming.
 - **Several session presets:** one context state holds them all, saved after each. A scene using only some of them still starts with all (harmless for logins to one app; two accounts of one app in one batch aren't supported).
 - **Scoped sandbox pre-approvals:** a sandbox pre-approves teardowns and `ensure` cleanups only. Pre-approving named destructive actions in the scene itself ("may delete projects named *Q4 Launch*", APPROACHES §7.2) needs the approval UI (M2-4).
+- **Session landing URL:** a skipped login goes back to the path and query it ended on; a query carrying a one-time token would be replayed (and appear in navigate events until M1-6 scrubs navigate URLs).

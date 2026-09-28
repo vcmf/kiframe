@@ -1,5 +1,4 @@
 import type {
-  Action,
   Condition,
   Ensure,
   ProjectConfig,
@@ -8,7 +7,7 @@ import type {
   Step,
   Target,
 } from "@kiframe/schema"
-import { isGrounded, secretRefName } from "@kiframe/schema"
+import { Action, isGrounded, secretRefName } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import {
@@ -118,7 +117,12 @@ export interface RunOptions {
    * A session preset's steps all ran: the moment to save the context's state (awaited before the
    * setup goes on, so the state has the login and nothing the scene did after it).
    */
-  onSessionReady?: (preset: string) => void | Promise<void>
+  onSessionReady?: (preset: string, page: Page) => void | Promise<void>
+  /**
+   * Where each skipped session preset ended (a path of the target app): the setup goes there in
+   * its place, since a later setup step may rely on that page.
+   */
+  sessionLandings?: Readonly<Record<string, string>>
 }
 
 type AnyAction = Action | Step
@@ -141,7 +145,12 @@ export async function runScenario(
   // Static config errors (unknown preset) fail BEFORE anything runs or is
   // attached to the page, and don't trigger teardown: nothing was created, and teardown could delete
   // pre-existing data.
-  const setup = expandSetup(scenario.setup ?? [], project, options.skipSessionPresets ?? [])
+  const setup = expandSetup(
+    scenario.setup ?? [],
+    project,
+    options.skipSessionPresets ?? [],
+    options.sessionLandings ?? {},
+  )
   const base = new URL(project.target.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
@@ -383,7 +392,7 @@ type PresetOrigin = { name: string; session: boolean }
 type SetupEntry =
   | { kind: "action"; index: number; action: Action; preset?: PresetOrigin }
   | { kind: "ensure"; index: number; ensure: Ensure["ensure"] }
-  | ({ kind: "preset_done" } & PresetOrigin)
+  | ({ kind: "preset_done"; index: number } & PresetOrigin)
 
 /**
  * Inlines presets into setup, and drops session presets the page already has (`skipSessionPresets`).
@@ -393,6 +402,7 @@ function expandSetup(
   items: readonly SetupItem[],
   project: ProjectConfig,
   skip: readonly string[],
+  landings: Readonly<Record<string, string>>,
 ): SetupEntry[] {
   const out: SetupEntry[] = []
   // Setup indexes count actions and ensures only (`preset_done` is a marker, not a step).
@@ -405,8 +415,16 @@ function expandSetup(
         ? project.presets[item.preset]
         : undefined
       if (preset === undefined) throw invalid(`unknown preset "${item.preset}"`)
-      if (preset.session && skip.includes(item.preset)) continue
       const from = { name: item.preset, session: preset.session }
+      if (preset.session && skip.includes(item.preset)) {
+        // Its state is kept, not its page: back where it ended (a setup may rely on that page).
+        const landing = Object.hasOwn(landings, item.preset) ? landings[item.preset] : undefined
+        const goto =
+          landing === undefined ? undefined : Action.safeParse({ action: "goto", url: landing })
+        if (goto?.success === true)
+          out.push({ kind: "action", index: n++, action: goto.data, preset: from })
+        continue
+      }
       for (const s of preset.steps) {
         out.push(
           "ensure" in s
@@ -414,7 +432,7 @@ function expandSetup(
             : { kind: "action", index: n++, action: s, preset: from },
         )
       }
-      out.push({ kind: "preset_done", ...from })
+      out.push({ kind: "preset_done", index: n - 1, ...from })
     } else if ("ensure" in item) {
       out.push({ kind: "ensure", index: n++, ensure: item.ensure })
     } else {
@@ -435,11 +453,13 @@ async function runSetupEntry(
     ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
     const ready = ctx.options.onSessionReady
     if (entry.session && ready !== undefined) {
-      // Named after the preset's last step (markers have no index of their own).
-      const last = setup.slice(0, position).findLast((e) => e.kind !== "preset_done")
-      const index = last !== undefined && "index" in last ? last.index : 0
-      const ref: StepRef = { phase: "setup", index, action: `save session ${entry.name}` }
-      await guard(ref, async () => ready(entry.name))
+      // Named after the preset's last step.
+      const ref: StepRef = {
+        phase: "setup",
+        index: Math.max(0, entry.index),
+        action: `save session ${entry.name}`,
+      }
+      await guard(ref, async () => ready(entry.name, ctx.page))
     }
     return
   }
@@ -526,18 +546,19 @@ async function ensure(
         ? [e.action]
         : [],
     )
-    const stages: [string, readonly Action[]][] = [
-      [`removing ${what} (teardown)`, teardown],
-      ["returning to the setup page", replay],
+    // Labels tell them apart: only the teardown's (`ensure: …`) is a cleanup a sandbox pre-approves.
+    const stages: [string, string, readonly Action[]][] = [
+      [`removing ${what} (teardown)`, "ensure", teardown],
+      ["returning to the setup page", "ensure (back)", replay],
     ]
-    for (const [stage, actions] of stages) {
+    for (const [stage, label, actions] of stages) {
       for (const [i, action] of actions.entries()) {
         try {
           await runOne(ctx, action, {
             phase: "setup",
             index,
             stepId: action.id,
-            action: `ensure: ${action.action}`,
+            action: `${label}: ${action.action}`,
           })
         } catch (error) {
           ctx.clearListenerError()

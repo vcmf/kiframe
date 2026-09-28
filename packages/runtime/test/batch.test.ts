@@ -31,9 +31,9 @@ presets:
       - { action: click, target: { by: role, role: button, name: Sign in } }
 `)
 
-const scene = (steps: string) =>
+const scene = (steps: string, setup = "[{ preset: login }, { action: goto, url: /session }]") =>
   parseScenarioYaml(`version: 1
-setup: [{ preset: login }, { action: goto, url: /session }]
+setup: ${setup}
 steps:
 ${steps}`)
 
@@ -41,12 +41,15 @@ const signedIn = `  - { id: check, action: expect, that: { visible: { by: text, 
 const signOut = `  - { id: out, action: click, target: { by: role, role: button, name: Sign out } }\n`
 
 describe("recordBatch", () => {
-  const run = async (steps: string[]) => {
+  const run = async (steps: (string | [string, string])[]) => {
     const dir = mkdtempSync(join(tmpdir(), "kiframe-batch-"))
     const logins: number[] = []
     const results = await recordBatch(
       browser,
-      steps.map((s, i) => ({ scenario: scene(s), outDir: join(dir, `take-${i}`) })),
+      steps.map((s, i) => ({
+        scenario: typeof s === "string" ? scene(s) : scene(...s),
+        outDir: join(dir, `take-${i}`),
+      })),
       project(),
       {
         timeoutMs: 1500,
@@ -71,6 +74,27 @@ describe("recordBatch", () => {
     expect(logins).toBe(1)
   })
 
+  it("goes back to the page a skipped login ended on", async () => {
+    // No goto after the preset: the scene relies on the page the login left it on.
+    const { results, logins } = await run([
+      [signedIn, "[{ preset: login }]"],
+      [signedIn, "[{ preset: login }]"],
+    ])
+    expect(results.map((r) => r.ok)).toEqual([true, true])
+    expect(logins).toBe(1)
+  })
+
+  it("gives the session only to scenes that use it", async () => {
+    const signedOut = `  - { id: out, action: expect, that: { visible: { by: text, text: Signed out, exact: true } } }\n`
+    const { results, logins } = await run([
+      signedIn,
+      [signedOut, "[{ action: goto, url: /session }]"],
+      signedIn,
+    ])
+    expect(results.map((r) => r.ok)).toEqual([true, true, true])
+    expect(logins).toBe(1)
+  })
+
   it("logs in again after a scene that reused the session failed", async () => {
     const missing = `  - { id: nope, action: click, target: { by: role, role: button, name: Missing } }\n`
     const { results, logins } = await run([signedIn, missing, signedIn])
@@ -91,6 +115,8 @@ describe("approvalPolicy", () => {
     expect(await policy(cleanup)).toBe(true)
     expect(await policy(step)).toBe(false)
     expect(await policy(interrupt)).toBe(false)
+    // `ensure` going back through the setup isn't a cleanup: a risky setup step still asks.
+    expect(await policy({ ...cleanup, action: "ensure (back): click" })).toBe(false)
   })
 
   it("asks for everything elsewhere, and refuses without a way to ask", async () => {
