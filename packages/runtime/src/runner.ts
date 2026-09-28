@@ -1,4 +1,4 @@
-import { type ProjectConfig, type Scenario, typesSecret } from "@kiframe/schema"
+import type { ProjectConfig, Scenario } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
@@ -22,15 +22,15 @@ import { runOne } from "./run/step.ts"
 // expanded, session presets skipped when the page already has their state, `ensure`), steps,
 // teardown.
 
+/** Hide rules already reported as skipped, per context (one warning each). */
+const warnedHideOf = new WeakMap<object, Set<string>>()
+
 /**
  * Runs a scenario. Throws a `StepError` naming the failing step. Teardown always runs, best effort:
  * every teardown step is attempted even if some fail. The error thrown is the first step failure,
  * else the first teardown failure; every other teardown failure is reported as a `teardown_failed`
  * event.
  */
-/** Hide rules already reported as skipped, per context (one warning each). */
-const warnedHideOf = new WeakMap<object, Set<string>>()
-
 export async function runScenario(
   page: Page,
   scenario: Scenario,
@@ -108,17 +108,6 @@ export async function runScenario(
   }
   const detach = (p: Page) => void p.off("framenavigated", onNavigated)
   attach(page)
-  // Whether this run can know a secret value: its own steps, presets or interrupt rules type one,
-  // or the host gave values (§3 A8 then limits the CSS it injects).
-  const strictHide =
-    secretValues.size > 0 ||
-    [
-      ...(scenario.setup ?? []),
-      ...scenario.steps,
-      ...(scenario.teardown ?? []),
-      ...Object.values(project.presets).flatMap((p) => p.steps),
-      ...project.interrupts.map((r) => r.do),
-    ].some((item) => "action" in item && typesSecret(item))
   const ctx: Ctx = {
     page,
     openers: [],
@@ -129,7 +118,7 @@ export async function runScenario(
     cursors: new Map(),
     interrupts: project.interrupts,
     perform: (action, step) => perform(ctx, action, step),
-    hideCss: hideCss(project.hide, strictHide),
+    hideCss: hideCss(project.hide),
     interruptsDone: new WeakMap(),
     inInterrupt: false,
     base,
@@ -162,11 +151,11 @@ export async function runScenario(
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
-  // Hide rules the A8 grammar refuses are skipped when the run can know a secret (a hide rule is
-  // live CSS: it could test a value), reported once per context.
+  // Hide rules the A8 grammar refuses are skipped (a hide rule is live CSS for the whole page: it
+  // could test a value a later run knows), reported once per context.
   const warned = warnedHideOf.get(page.context()) ?? new Set<string>()
   warnedHideOf.set(page.context(), warned)
-  for (const s of strictHide ? project.hide : []) {
+  for (const s of project.hide) {
     if (!isSafeSelector(s) && !warned.has(s)) {
       warned.add(s)
       options.onEvent?.({

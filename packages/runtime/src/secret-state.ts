@@ -61,8 +61,49 @@ const PSEUDOS = new Set([
 ])
 const NTH_PSEUDOS = new Set(["nth-child", "nth-of-type"])
 const ATTRIBUTE_OPS = ["~=", "|=", "^=", "$=", "*=", "="]
+/**
+ * Attribute names a selector may test: an allowlist of ones that never mirror what a user typed
+ * (frameworks copy a field's value into `value`, `ng-reflect-model`, `aria-valuetext`…).
+ */
+const ATTRIBUTES = new Set([
+  "id",
+  "class",
+  "name",
+  "type",
+  "role",
+  "for",
+  "href",
+  "src",
+  "alt",
+  "title",
+  "placeholder",
+  "lang",
+  "dir",
+  "disabled",
+  "checked",
+  "selected",
+  "readonly",
+  "required",
+  "hidden",
+  "open",
+  "tabindex",
+  "data-testid",
+  "data-test",
+  "data-test-id",
+  "data-qa",
+  "data-cy",
+  "data-state",
+])
+const allowedAttribute = (name: string) => {
+  const n = name.toLowerCase()
+  return ATTRIBUTES.has(n) || (n.startsWith("aria-") && !n.includes("value"))
+}
 
-/** The allowlisted CSS subset of A8 (a tiny recursive-descent parser). Exported for its tests. */
+/**
+ * The allowlisted CSS subset of A8 (a tiny recursive-descent parser). Exported for its tests.
+ * Escapes only inside class and id names (`.md\\:hidden`); `*`; `:has(…)` and `:not(…)` with the
+ * same grammar inside.
+ */
 export function isSafeSelector(selector: string): boolean {
   const s = selector.trim()
   let i = 0
@@ -77,6 +118,21 @@ export function isSafeSelector(selector: string): boolean {
     if (m === null) return undefined
     i += m[0].length
     return m[0]
+  }
+  /** A class or id name: identifier characters and CSS escapes (never an attribute name). */
+  const escapedIdent = (): boolean => {
+    const start = i
+    for (;;) {
+      const c = peek()
+      if (/[a-zA-Z0-9_-]/.test(c)) i++
+      else if (c === "\\") {
+        const next = s[i + 1] ?? ""
+        if (next === "" || /[\n\r\f]/.test(next)) return false
+        const hex = /^[0-9a-fA-F]{1,6}\s?/.exec(s.slice(i + 1))
+        i += 1 + (hex !== null ? hex[0].length : 1)
+      } else break
+    }
+    return i > start
   }
   const attributeValue = (): boolean => {
     const q = peek()
@@ -94,7 +150,7 @@ export function isSafeSelector(selector: string): boolean {
     i++ // [
     ws()
     const name = ident()
-    if (name === undefined || name.toLowerCase().includes("value")) return false
+    if (name === undefined || !allowedAttribute(name)) return false
     ws()
     if (peek() === "]") return (i++, true)
     const op = ATTRIBUTE_OPS.find((o) => s.startsWith(o, i))
@@ -118,17 +174,21 @@ export function isSafeSelector(selector: string): boolean {
       i = end + 1
       return true
     }
-    if (name === "not") {
+    if (name === "not" || name === "has") {
       if (peek() !== "(") return false
       i++
-      if (!list(")")) return false
+      // `:has` takes relative selectors (`:has(> .banner)`).
+      if (!list(")", name === "has")) return false
       return peek() === ")" && (i++, true)
     }
     return false
   }
   const compound = (): boolean => {
     let parts = 0
-    if (/[a-zA-Z_-]/.test(peek())) {
+    if (peek() === "*") {
+      i++
+      parts++
+    } else if (/[a-zA-Z_-]/.test(peek())) {
       if (ident() === undefined) return false
       parts++
     }
@@ -136,7 +196,7 @@ export function isSafeSelector(selector: string): boolean {
       const c = peek()
       if (c === "#" || c === ".") {
         i++
-        if (ident() === undefined) return false
+        if (!escapedIdent()) return false
       } else if (c === "[") {
         if (!attribute()) return false
       } else if (c === ":") {
@@ -146,7 +206,11 @@ export function isSafeSelector(selector: string): boolean {
     }
     return parts > 0
   }
-  const complex = (end: string): boolean => {
+  const complex = (end: string, relative: boolean): boolean => {
+    if (relative && /[>+~]/.test(peek())) {
+      i++
+      ws()
+    }
     if (!compound()) return false
     for (;;) {
       const spaced = ws()
@@ -159,13 +223,13 @@ export function isSafeSelector(selector: string): boolean {
       if (!compound()) return false
     }
   }
-  const list = (end: string): boolean => {
+  const list = (end: string, relative = false): boolean => {
     ws()
-    if (!complex(end)) return false
+    if (!complex(end, relative)) return false
     while (peek() === ",") {
       i++
       ws()
-      if (!complex(end)) return false
+      if (!complex(end, relative)) return false
     }
     return true
   }
@@ -254,18 +318,24 @@ export function isPartialName(locator: {
   return locator.by === "label" || locator.by === "text" || locator.by === "placeholder"
 }
 
+/** The exact-names decision of the moment: `unsure` when the page couldn't be read (navigating). */
+export interface ExactNames {
+  exact: boolean
+  unsure: boolean
+}
+
 /**
  * §3 A8: whether a field holding a secret is on the page right now (a field a secret was written
- * to, still rendered, or a rendered field whose value contains a known value). Called by every
- * polling loop before it builds a name locator, so a field that renders mid-step is seen at once.
- * Unsure (the page is navigating): true while values are known (fails closed).
+ * to, still rendered, or a rendered field whose value contains a known value). Unsure (the page is
+ * navigating): exact while values are known (fails closed), and `unsure` so a caller can poll
+ * again rather than conclude.
  */
-export async function refreshExactNames(page: Page): Promise<boolean> {
+export async function refreshExactNames(page: Page): Promise<ExactNames> {
   const state = secretsOf(page.context())
-  if (state.values.size === 0) return (state.exactNames = false)
+  if (state.values.size === 0) return { exact: (state.exactNames = false), unsure: false }
   const found = await page.evaluate(renderedFields, await liveWritten(page)).catch(() => undefined)
-  return (state.exactNames =
-    found === undefined ||
-    found.writtenRendered ||
-    found.values.some((v) => containsKnownValue(state.values, v)))
+  if (found === undefined) return { exact: (state.exactNames = true), unsure: true }
+  const exact =
+    found.writtenRendered || found.values.some((v) => containsKnownValue(state.values, v))
+  return { exact: (state.exactNames = exact), unsure: false }
 }

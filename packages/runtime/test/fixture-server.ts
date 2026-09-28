@@ -324,6 +324,9 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // Truncates what's typed to 4 characters (a JS maxlength).
+  "/truncating": `<!doctype html><title>Truncating</title><label>Password <input id="pw" type="password"></label>
+    <script>document.getElementById("pw").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 4) })</script>`,
   // Moves focus to a Notes box the moment the password's text is selected (fill selects it).
   "/focus-thief": `<!doctype html><title>Focus thief</title>
     <label>Password <input id="pw" type="password" value="a"></label><label>Notes <input id="notes"></label>

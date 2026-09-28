@@ -37,9 +37,17 @@ export async function waitForCondition(
       const partial = isPartialName(locator)
       const deadline = Date.now() + timeout
       for (;;) {
-        const exact = partial && (await refreshExactNames(page))
+        const rule = partial ? await refreshExactNames(page) : { exact: false, unsure: false }
+        const exact = rule.exact
         // An absence can't be checked by a partial name under the rule: a longer name no longer
-        // matches, and "gone" would be a false pass (a leftover row, a spinner still there).
+        // matches, and "gone" would be a false pass (a leftover row, a spinner still there). Unsure
+        // (the page is navigating): poll again rather than conclude either way.
+        if (rule.unsure && (negative || !wantVisible)) {
+          if (Date.now() >= deadline)
+            throw new StepError(step, reason, `${what} (after ${timeout} ms)`)
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          continue
+        }
         if (exact && (negative || !wantVisible)) {
           throw new StepError(
             step,
@@ -47,7 +55,7 @@ export async function waitForCondition(
             `${what}: can't check an absence by a partial name${exactHint}`,
           )
         }
-        const count = await visibleOnly(toPlaywright(page, locator))
+        const count = await visibleOnly(toPlaywright(page, locator, exact))
           .count()
           .catch((error: unknown) => {
             // A navigation replaced the page mid-poll: poll again on the new one. Anything else

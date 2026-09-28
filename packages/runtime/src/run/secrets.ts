@@ -362,6 +362,14 @@ function approvalKeyOf(
   }
   if (scope === undefined || scope === "") throw missing("project scope")
   if (step.interrupt !== undefined) return { scope, stepKey: `interrupt:${step.interrupt}` }
+  // Approvals are keyed by the step's id (the schema requires one; a scenario built in code may not).
+  if (step.stepId === undefined || step.stepId === "") {
+    throw new StepError(
+      step,
+      "secret-refused",
+      `secret "${secret}": a step typing a secret needs an id`,
+    )
+  }
   if (step.preset !== undefined)
     return { scope, stepKey: `preset:${step.preset}/${step.stepId ?? ""}` }
   if (sceneId === undefined || sceneId === "") throw missing("scene id")
@@ -499,6 +507,9 @@ export async function writeSecret(
     const wanted = before + write.value
     await write.input.evaluate(setValue, wanted)
     const landed = await write.input.evaluate((el) => el.value)
+    // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
+    ctx.secretWritten.push({ page: ctx.page, handle: write.input })
+    secretsOf(ctx.page.context()).exactNames = true
     if (landed !== wanted) {
       throw new StepError(
         step,
@@ -506,11 +517,11 @@ export async function writeSecret(
         `secret "${write.use.stepKey}": the field didn't take the value`,
       )
     }
-    ctx.secretWritten.push({ page: ctx.page, handle: write.input })
-    // A field holding a secret is on the page now: exact names from here (§3 A8).
-    secretsOf(ctx.page.context()).exactNames = true
   } catch (error) {
-    await write.input.dispose().catch(() => undefined)
+    // Released unless it's followed as a field holding a secret.
+    if (!ctx.secretWritten.some((w) => w.handle === write.input)) {
+      await write.input.dispose().catch(() => undefined)
+    }
     throw error
   }
 }

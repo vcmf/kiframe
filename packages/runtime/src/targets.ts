@@ -1,12 +1,19 @@
-import { assertNotProbing, isPartialName, refreshExactNames, secretsOf } from "./secret-state.ts"
+import { assertNotProbing, isPartialName, refreshExactNames } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 
-/** Builds the Playwright locator for one schema locator (roles, labels, text first; CSS last). */
-export function toPlaywright(page: Page, locator: SchemaLocator): Locator {
-  // Exact names while a field holding a secret is on the page (SECRETS-DESIGN §3 A8).
-  const forced = secretsOf(page.context()).exactNames
+/**
+ * The Playwright locator for a schema locator, with the exact-names rule of the moment (SECRETS-
+ * DESIGN §3 A8): refreshed now, so no caller can build one with a stale decision.
+ */
+export async function locatorFor(page: Page, locator: SchemaLocator): Promise<Locator> {
+  const exact = isPartialName(locator) ? (await refreshExactNames(page)).exact : false
+  return toPlaywright(page, locator, exact)
+}
+
+/** Builds the Playwright locator; `forced`: exact names (A8), decided by the caller just now. */
+export function toPlaywright(page: Page, locator: SchemaLocator, forced: boolean): Locator {
   const exact = (own: boolean | undefined) =>
     forced ? { exact: true } : own !== undefined ? { exact: own } : {}
   switch (locator.by) {
@@ -88,9 +95,9 @@ export async function resolveTarget(
     ambiguous = undefined
     // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll: a
     // field that renders mid-step is seen at once.
-    if (partial) await refreshExactNames(page)
+    const exact = partial ? (await refreshExactNames(page)).exact : false
     for (const [i, candidate] of candidates.entries()) {
-      const visible = visibleOnly(toPlaywright(page, candidate.locator))
+      const visible = visibleOnly(toPlaywright(page, candidate.locator, exact))
       const count = await visible.count().catch((error: unknown) => {
         // A navigation (client-side redirect…) replaced the page mid-poll: retry on the new one.
         if (isNavigationError(error)) return 0
