@@ -302,7 +302,13 @@ export async function runScenario(
     }
     let teardownFailure: StepError | undefined = returnFailure
     for (const [index, action] of (ensureFailed ? [] : (scenario.teardown ?? [])).entries()) {
-      const ref: StepRef = { phase: "teardown", index, stepId: action.id, action: action.action }
+      const ref: StepRef = {
+        phase: "teardown",
+        index,
+        stepId: action.id,
+        action: action.action,
+        cleanup: true,
+      }
       try {
         await runOne(ctx, action, ref)
       } catch (error) {
@@ -459,6 +465,9 @@ async function runSetupEntry(
         index: Math.max(0, entry.index),
         action: `save session ${entry.name}`,
       }
+      // On the page the login ended on: back from an OAuth popup that closed, settled (its
+      // callback's cookies set). A preset should end with a `waitFor` on the app's page.
+      await syncPage(ctx, ref)
       await guard(ref, async () => ready(entry.name, ctx.page))
     }
     return
@@ -546,7 +555,7 @@ async function ensure(
         ? [e.action]
         : [],
     )
-    // Labels tell them apart: only the teardown's (`ensure: …`) is a cleanup a sandbox pre-approves.
+    // Only the teardown is a cleanup (a sandbox may pre-approve it); going back replays the setup.
     const stages: [string, string, readonly Action[]][] = [
       [`removing ${what} (teardown)`, "ensure", teardown],
       ["returning to the setup page", "ensure (back)", replay],
@@ -559,6 +568,7 @@ async function ensure(
             index,
             stepId: action.id,
             action: `${label}: ${action.action}`,
+            ...(actions === teardown && { cleanup: true as const }),
           })
         } catch (error) {
           ctx.clearListenerError()

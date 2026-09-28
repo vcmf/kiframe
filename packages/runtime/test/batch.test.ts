@@ -29,6 +29,9 @@ presets:
     steps:
       - { action: goto, url: /session }
       - { action: click, target: { by: role, role: button, name: Sign in } }
+  other:
+    session: true
+    steps: [{ action: goto, url: /session }]
 `)
 
 const scene = (steps: string, setup = "[{ preset: login }, { action: goto, url: /session }]") =>
@@ -95,6 +98,16 @@ describe("recordBatch", () => {
     expect(logins).toBe(1)
   })
 
+  it("doesn't reuse a session another scene's fresh login replaced", async () => {
+    const { results, logins } = await run([
+      signedIn,
+      [`  - { id: a, action: pause, ms: 1 }\n`, "[{ preset: other }]"],
+      signedIn,
+    ])
+    expect(results.map((r) => r.ok)).toEqual([true, true, true])
+    expect(logins).toBe(3)
+  })
+
   it("logs in again after a scene that reused the session failed", async () => {
     const missing = `  - { id: nope, action: click, target: { by: role, role: button, name: Missing } }\n`
     const { results, logins } = await run([signedIn, missing, signedIn])
@@ -104,8 +117,13 @@ describe("recordBatch", () => {
 })
 
 describe("approvalPolicy", () => {
-  const teardown = { phase: "teardown" as const, index: 0, action: "click" }
-  const cleanup = { phase: "setup" as const, index: 2, action: "ensure: click" }
+  const teardown = { phase: "teardown" as const, index: 0, action: "click", cleanup: true as const }
+  const cleanup = {
+    phase: "setup" as const,
+    index: 2,
+    action: "ensure: click",
+    cleanup: true as const,
+  }
   const step = { phase: "steps" as const, index: 0, action: "click" }
   const interrupt = { ...teardown, interrupt: "cookies" }
 
@@ -116,7 +134,7 @@ describe("approvalPolicy", () => {
     expect(await policy(step)).toBe(false)
     expect(await policy(interrupt)).toBe(false)
     // `ensure` going back through the setup isn't a cleanup: a risky setup step still asks.
-    expect(await policy({ ...cleanup, action: "ensure (back): click" })).toBe(false)
+    expect(await policy({ phase: "setup", index: 2, action: "ensure (back): click" })).toBe(false)
   })
 
   it("asks for everything elsewhere, and refuses without a way to ask", async () => {

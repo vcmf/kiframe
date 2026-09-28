@@ -9,9 +9,9 @@ import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
 // scenes using them start from it, skipping them.
 
 /**
- * The approval policy of an environment: a risky teardown step (and an `ensure`'s teardown, labelled
- * `ensure: …`) is pre-approved where the org allows it (a sandbox's `preApproveTeardown`);
- * everything else goes to `ask`, and without `ask` it's refused.
+ * The approval policy of an environment: a risky cleanup (a teardown step, or the teardown an
+ * `ensure` runs: `StepRef.cleanup`) is pre-approved where the org allows it (a sandbox's
+ * `preApproveTeardown`); everything else goes to `ask`, and without `ask` it's refused.
  */
 export function approvalPolicy(
   environment: Pick<ResolvedEnvironment, "sandbox" | "preApproveTeardown">,
@@ -19,10 +19,7 @@ export function approvalPolicy(
 ): (step: StepRef) => boolean | Promise<boolean> {
   const teardownApproved = environment.sandbox && environment.preApproveTeardown
   return (step) => {
-    const cleanup =
-      step.interrupt === undefined &&
-      (step.phase === "teardown" || (step.phase === "setup" && step.action.startsWith("ensure: ")))
-    if (teardownApproved && cleanup) return true
+    if (teardownApproved && step.cleanup === true && step.interrupt === undefined) return true
     return ask?.(step) ?? false
   }
 }
@@ -37,6 +34,11 @@ export interface BatchOptions extends Omit<
   RecordOptions,
   "outDir" | "skipSessionPresets" | "onSessionReady" | "sessionLandings"
 > {
+  /**
+   * The environment the batch runs against: risky steps go through its `approvalPolicy`, with
+   * `approveRisky` as the way to ask.
+   */
+  environment?: Pick<ResolvedEnvironment, "sandbox" | "preApproveTeardown">
   /** For every scene's context. Default: the project's viewport and device scale factor. */
   context?: Omit<BrowserContextOptions, "storageState">
   /** Called with each scene's result, as soon as it's known. Must not throw. */
@@ -66,7 +68,10 @@ export async function recordBatch(
   project: ProjectConfig,
   options: BatchOptions = {},
 ): Promise<BatchResult[]> {
-  const { context: contextOptions, onScene, ...record } = options
+  const { context: contextOptions, onScene, environment, ...record } = options
+  if (environment !== undefined) {
+    record.approveRisky = approvalPolicy(environment, options.approveRisky)
+  }
   const origin = new URL(project.target.url).origin
   let state: BrowserContextOptions["storageState"]
   const ready = new Set<string>()
@@ -75,7 +80,13 @@ export async function recordBatch(
   for (const [index, scene] of scenes.entries()) {
     const uses = sessionPresetsOf(scene.scenario, project)
     // Only a scene using the saved session starts from it (a signed-out scene stays signed out).
-    const reuse = state !== undefined && uses.length > 0 && uses.every((p) => ready.has(p))
+    // And only with a page to go back to for each (the setup may rely on it).
+    const reuse =
+      state !== undefined &&
+      uses.length > 0 &&
+      uses.every((p) => ready.has(p) && Object.hasOwn(landings, p))
+    const saved = reuse ? state : undefined
+    const savedHere = new Set<string>()
     let context: BrowserContext | undefined
     let result: BatchResult
     try {
@@ -86,7 +97,7 @@ export async function recordBatch(
         },
         deviceScaleFactor: project.target.viewport.deviceScaleFactor,
         ...contextOptions,
-        ...(reuse && state !== undefined && { storageState: state }),
+        ...(saved !== undefined && { storageState: saved }),
       })
       const current = context
       const page = await current.newPage()
@@ -97,6 +108,12 @@ export async function recordBatch(
         sessionLandings: landings,
         onSessionReady: async (preset, at) => {
           state = await current.storageState({ indexedDB: true })
+          // A fresh context's state holds only what this scene logged into: sessions saved by
+          // earlier scenes aren't in it any more.
+          if (!reuse && !savedHere.has(preset)) {
+            for (const p of ready) if (!savedHere.has(p)) ready.delete(p)
+          }
+          savedHere.add(preset)
           ready.add(preset)
           const url = new URL(at.url())
           if (url.origin === origin) landings[preset] = `${url.pathname}${url.search}`
