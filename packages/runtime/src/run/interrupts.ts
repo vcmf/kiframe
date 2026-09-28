@@ -1,7 +1,7 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { isSafeSelector, ProbeRefusal } from "../secret-state.ts"
+import { isSafeSelector, ProbeRefusal, refreshExactNames } from "../secret-state.ts"
 import { toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
@@ -83,6 +83,8 @@ async function matchingInterrupt(
   skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
   const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
+  // The exact-names rule (§3 A8) as the page is now, for the rules' `when`s.
+  await refreshExactNames(ctx.page)
   const context = ctx.page.context()
   const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
   skippedRulesOf.set(context, skippedRules)

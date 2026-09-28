@@ -483,6 +483,29 @@ ${extra}`
       )
     })
 
+    it("sees a secret field that renders during a step: no partial-name probe of it", async () => {
+      const probe = (name: string) => `setup: [{ action: goto, url: /late-profile }]
+steps:
+  - { id: w, action: waitFor, until: { visible: { by: role, role: cell, name: "${name}" } }, timeout: 2000 }
+`
+      const options = { knownSecretValues: ["bob@acme.com"] }
+      // "bob" is part of the cell's name only through the input's value: never matched partially.
+      const error = await failure(probe("bob"), options)
+      expect(error.message).toMatch(
+        /names match exactly while a field holding a secret is on the page/,
+      )
+    })
+
+    it("doesn't turn exact names on for a hidden input holding a known value", async () => {
+      await run(
+        `setup: [{ action: goto, url: /hidden-user }]
+steps:
+  - { id: s, action: click, target: { by: role, role: button, name: Save } }
+`,
+        { knownSecretValues: ["bob@acme.com"] },
+      )
+    })
+
     it("says a declined approval is a decline (the scene is blocked, not refused)", async () => {
       const vault = await vaultWithPassword()
       const declined = await failure(into(password), {

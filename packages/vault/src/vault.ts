@@ -24,7 +24,14 @@ import {
 
 /** Why a resolution was refused: `no-grant` is the one a user's approval can fix. */
 export type RefusalReason =
-  "unknown-secret" | "no-value" | "origin" | "kind" | "no-grant" | "invalid-use"
+  | "unknown-secret"
+  | "no-value"
+  | "origin"
+  | "kind"
+  | "no-grant"
+  | "invalid-use"
+  /** The key of the approvals is gone: the user resets them (`resetApprovals`); asking can't help. */
+  | "key-lost"
 
 /** A refused resolution. Its message names the secret and the reason, never a value. */
 export class SecretRefusal extends Error {
@@ -354,7 +361,7 @@ export class Vault {
       // invalidate them all (every use would read as "approved for another field").
       if (this.#grants.length > 0) {
         throw new SecretRefusal(
-          "no-grant",
+          "key-lost",
           "the key of the vault's approvals is missing from the keychain: reset the approvals in the vault, then approve the steps again",
         )
       }

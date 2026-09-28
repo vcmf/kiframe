@@ -1,6 +1,7 @@
 import type { Condition } from "@kiframe/schema"
+import type { Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { ProbeRefusal, secretsOf } from "../secret-state.ts"
+import { ProbeRefusal, refreshExactNames, secretsOf } from "../secret-state.ts"
 import { describeLocator, toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
@@ -18,8 +19,29 @@ export async function waitForCondition(
 ) {
   const { page } = ctx
   const what = describeCondition(condition)
+  // While secrets are known, a locator is rebuilt at every poll with the exact-names rule of the
+  // moment (§3 A8): one built once would keep partial matching after a secret field renders.
+  const strict = secretsOf(page.context()).values.size > 0
+  const locate = (): Locator | undefined => {
+    if ("visible" in condition) return toPlaywright(page, condition.visible)
+    if ("hidden" in condition) return toPlaywright(page, condition.hidden)
+    if ("text" in condition) return toPlaywright(page, { by: "text", text: condition.text })
+    return undefined
+  }
   try {
-    if ("visible" in condition) {
+    if (strict && locate() !== undefined) {
+      const wantVisible = !("hidden" in condition)
+      const deadline = Date.now() + timeout
+      for (;;) {
+        await refreshExactNames(page)
+        const count = await visibleOnly(locate() as Locator)
+          .count()
+          .catch(() => 0)
+        if (count > 0 === wantVisible) break
+        if (Date.now() >= deadline) throw new ConditionTimeout()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+    } else if ("visible" in condition) {
       // Any VISIBLE match counts (a hidden template of the same element doesn't block).
       await visibleOnly(toPlaywright(page, condition.visible))
         .first()
@@ -30,9 +52,7 @@ export async function waitForCondition(
         .first()
         .waitFor({ state: "detached", timeout })
     } else if ("text" in condition) {
-      // Exact while a field holding a secret is on the page (§3 A8).
-      const exact = secretsOf(page.context()).exactNames
-      await visibleOnly(page.getByText(condition.text, exact ? { exact: true } : {}))
+      await visibleOnly(toPlaywright(page, { by: "text", text: condition.text }))
         .first()
         .waitFor({ state: "visible", timeout })
     } else if ("url" in condition) {
@@ -48,7 +68,12 @@ export async function waitForCondition(
       cause instanceof ConditionTimeout ||
       (cause instanceof Error && cause.name === "TimeoutError")
     ) {
-      throw new StepError(step, reason, `${what} (after ${timeout} ms)`)
+      // Say it when the exact-names rule (§3 A8) was on: a partial name no longer matches.
+      const exact = secretsOf(page.context()).exactNames && !("url" in condition)
+      const hint = exact
+        ? " (names match exactly while a field holding a secret is on the page)"
+        : ""
+      throw new StepError(step, reason, `${what} (after ${timeout} ms)${hint}`)
     }
     if (cause instanceof ProbeRefusal) throw new StepError(step, "secret-refused", cause.message)
     throw new StepError(step, "action-failed", firstLine(cause), { cause })

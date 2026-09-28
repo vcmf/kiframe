@@ -318,6 +318,12 @@ const pages: Record<string, string> = {
   // A field whose aria-labelledby and aria-label disagree (the accessible name is the labelledby).
   "/labelled": `<!doctype html><title>Labelled</title>
     <span id="cc">Card number</span><input type="text" aria-labelledby="cc" aria-label="Password">`,
+  // A profile page that renders its data late (a fetch after load): a known value in a cell's input.
+  "/late-profile": `<!doctype html><title>Late profile</title><table><tr id="row"></tr></table>
+    <script>setTimeout(() => { document.getElementById("row").innerHTML = '<td><input value="bob@acme.com"></td>' }, 800)</script>`,
+  // A page keeping the username in a hidden input (never part of an accessible name).
+  "/hidden-user": `<!doctype html><title>Hidden user</title>
+    <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
   // A table-layout login: the password box inside a cell (its value is part of the cell's name).
   "/cell-login": `<!doctype html><title>Cell login</title>
     <table><tr><td><input type="password" aria-label="Password"></td></tr></table>
