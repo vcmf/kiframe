@@ -107,7 +107,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       const text = secret === undefined ? action.value : ""
       let secretWrite: SecretWrite | undefined
       const sensitiveId =
-        secret === undefined ? undefined : followSecretField(ctx, step, secret, target)
+        secret === undefined ? undefined : followSecretField(ctx, step, secret, action.target)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
       try {

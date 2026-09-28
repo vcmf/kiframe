@@ -660,7 +660,7 @@ steps:
 `,
         { knownSecretValues: ["bob@acme.com"] },
       )
-      expect(error.message).toMatch(/couldn't check it by a partial name/)
+      expect(error.message).toMatch(/couldn't check the absence of .*: a partial name/)
     })
 
     it("keeps polling an absence until the secret field is gone, then checks it", async () => {
@@ -692,6 +692,27 @@ steps: [{ id: a, action: pause, ms: 1 }]
       )
       // Found (late) instead of passing as absent: no teardown to remove it.
       expect(error.message).toMatch(/must be absent before filming/)
+    })
+
+    it("never passes an ensure-absent when a secret field renders with the leftover", async () => {
+      const error = await failure(
+        `setup:
+  - { action: goto, url: /late-both }
+  - ensure: { absent: { by: text, text: Q4 } }
+teardown: [{ action: pause, ms: 1 }]
+steps: [{ id: a, action: pause, ms: 1 }]
+`,
+        { knownSecretValues: ["bob@acme.com"] },
+      )
+      expect(error.reason).toBe("secret-refused")
+    })
+
+    it("sees an absence on a page still loading a subresource", async () => {
+      await run(`setup: [{ action: goto, url: /to-slow-img }]
+steps:
+  - { id: open, action: click, target: { by: role, role: link, name: Open } }
+  - { id: h, action: waitFor, until: { hidden: { by: css, selector: "#sp" } }, timeout: 2000 }
+`)
     })
 
     it("never passes an ensure-absent it couldn't check (unreadable page)", async () => {

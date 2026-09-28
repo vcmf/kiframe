@@ -1,4 +1,4 @@
-import { assertNotProbing, exactNamesFor } from "./secret-state.ts"
+import { assertNotProbing, exactNamesFor, isPartialName } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
@@ -124,6 +124,15 @@ export async function resolveTarget(
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
         ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
+        break
+      }
+      // A partial match is confirmed: a field holding a secret may have rendered between the
+      // rule's check and the count (§3 A8); then the poll starts again with exact names.
+      if (
+        !exact &&
+        isPartialName(candidate.locator) &&
+        (await exactNamesFor(page, [candidate.locator])).exact
+      ) {
         break
       }
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
