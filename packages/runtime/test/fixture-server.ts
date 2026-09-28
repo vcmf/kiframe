@@ -324,6 +324,13 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // A login form that goes away after 400 ms, its "Signing in" text after 800 ms.
+  "/signing-in": `<!doctype html><title>Signing in</title>
+    <form id="f"><input value="bob@acme.com"></form><p id="s">Signing in to Acme</p>
+    <script>setTimeout(() => document.getElementById("f").remove(), 400); setTimeout(() => document.getElementById("s").remove(), 800)</script>`,
+  // A page the exact-names check can't read (its in-page API broken), with a leftover heading.
+  "/unreadable": `<!doctype html><title>Unreadable</title><input value="bob@acme.com"><h1>Q4 Launch</h1>
+    <script>delete Element.prototype.checkVisibility; Element.prototype.checkVisibility = undefined</script>`,
   // Truncates what's typed to 4 characters (a JS maxlength).
   "/truncating": `<!doctype html><title>Truncating</title><label>Password <input id="pw" type="password"></label>
     <script>document.getElementById("pw").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 4) })</script>`,

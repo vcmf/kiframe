@@ -1,7 +1,6 @@
 import { isGrounded, secretRefName, type Target } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { secretsOf } from "../secret-state.ts"
 import {
   type Box,
   clickPoint,
@@ -495,7 +494,7 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
   if (!result.ok) {
     // Names are exact while a field holding a secret is on the page (§3 A8): say so.
-    const exact = secretsOf(ctx.page.context()).exactNames && result.reason === "target-not-found"
+    const exact = result.exact && result.reason === "target-not-found"
     const hint = exact ? " (names match exactly while a field holding a secret is on the page)" : ""
     throw new StepError(step, result.reason, result.detail + hint)
   }
@@ -596,17 +595,22 @@ async function scrollUntil(
   let lastDirection = 0
   let reversals = 0
   let reportedFallback = false
+  // Whether names were exact at the last poll (§3 A8): the errors say so.
+  let exact = false
+  const hint = () =>
+    exact ? " (names match exactly while a field holding a secret is on the page)" : ""
   for (;;) {
     const left = deadline - Date.now()
     if (left <= 0) {
       throw new StepError(
         step,
         "target-not-found",
-        `target not on screen after scrolling for ${ctx.timeoutMs} ms`,
+        `target not on screen after scrolling for ${ctx.timeoutMs} ms${hint()}`,
       )
     }
     // One polling round per page (no waiting): the scroll itself is what makes the target appear.
     const result = await guard(step, () => resolveTarget(ctx.page, until, 0))
+    exact = result.exact
     if (result.ok && result.fallbackIndex !== undefined && !reportedFallback) {
       reportedFallback = true
       ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
@@ -655,7 +659,7 @@ async function scrollUntil(
       throw new StepError(
         step,
         "target-not-found",
-        "scrolled until the end, target never appeared on screen",
+        `scrolled until the end, target never appeared on screen${hint()}`,
       )
     }
     lazyRetry = false

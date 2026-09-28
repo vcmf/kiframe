@@ -1,8 +1,8 @@
 import type { ProjectConfig } from "@kiframe/schema"
-import type { Locator, Page } from "playwright"
+import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import { isPartialName, isSafeSelector, ProbeRefusal, refreshExactNames } from "../secret-state.ts"
-import { locatorFor, toPlaywright, visibleOnly } from "../targets.ts"
+import { toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
 import { settle } from "./settle.ts"
@@ -10,13 +10,14 @@ import { settle } from "./settle.ts"
 // Interrupt rules (handled off camera, cut from the video) and hide rules (injected CSS).
 
 /** One `display: none` rule per selector: a selector the browser rejects doesn't void the others. */
-export function hideCss(selectors: readonly string[]): string {
+export function hideCss(selectors: readonly string[]): { css: string; skipped: string[] } {
   // The A8 grammar always (§3): a hide rule is live CSS for the whole page, and a later run on it
   // may know a secret (`form:has(input[value^=h]) button` would change what later steps see).
-  return selectors
-    .filter(isSafeSelector)
-    .map((s) => `${s} { display: none !important; }`)
-    .join("\n")
+  const kept = selectors.filter(isSafeSelector)
+  return {
+    css: kept.map((s) => `${s} { display: none !important; }`).join("\n"),
+    skipped: selectors.filter((s) => !kept.includes(s)),
+  }
 }
 
 /** Pages already hiding a given CSS (a harness may run many scenarios on one page). */
@@ -67,11 +68,6 @@ export async function applyHide(ctx: Ctx, page: Page): Promise<void> {
   })
 }
 
-/** The visible elements matching a rule's `when`, with the exact-names rule of the moment (A8). */
-async function whenOf(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Promise<Locator> {
-  return visibleOnly(await locatorFor(ctx.page, whenLocator(rule)))
-}
-
 const whenLocator = (rule: ProjectConfig["interrupts"][number]) =>
   "by" in rule.when ? rule.when : { by: "text" as const, text: rule.when.text }
 
@@ -84,6 +80,10 @@ async function matchingInterrupt(
   skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
   const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
+  // The exact-names rule (§3 A8) decided once for all the rules, as the page is now.
+  const names = rules.some((r) => isPartialName(whenLocator(r)))
+    ? await refreshExactNames(ctx.page)
+    : { exact: false, unsure: false }
   const context = ctx.page.context()
   const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
   skippedRulesOf.set(context, skippedRules)
@@ -91,7 +91,8 @@ async function matchingInterrupt(
   const counts = await Promise.all(
     rules.map(async (rule) => {
       try {
-        return await (await whenOf(ctx, rule)).count().catch(() => 0)
+        const when = visibleOnly(toPlaywright(ctx.page, whenLocator(rule), names.exact))
+        return await when.count().catch(() => 0)
       } catch (error) {
         // A `when` that could probe a known value (§3 A8) never matches while secrets are known:
         // the rule is refused by its selector's form, whatever the value (nothing leaks).

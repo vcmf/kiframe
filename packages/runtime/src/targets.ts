@@ -51,9 +51,21 @@ export function describeLocator(locator: SchemaLocator): string {
   }
 }
 
+/** `exact`: whether names were matched exactly at the last poll (SECRETS-DESIGN §3 A8). */
 export type ResolveResult =
-  | { ok: true; locator: Locator; used: SchemaLocator; fallbackIndex: number | undefined }
-  | { ok: false; reason: "not-grounded" | "target-not-found" | "target-ambiguous"; detail: string }
+  | {
+      ok: true
+      locator: Locator
+      used: SchemaLocator
+      fallbackIndex: number | undefined
+      exact: boolean
+    }
+  | {
+      ok: false
+      reason: "not-grounded" | "target-not-found" | "target-ambiguous"
+      detail: string
+      exact: boolean
+    }
 
 /** Only the elements that are actually rendered: hidden duplicates (a display:none mobile menu…) don't count. */
 export function visibleOnly(locator: Locator): Locator {
@@ -75,6 +87,7 @@ export async function resolveTarget(
   if (!isGrounded(target)) {
     return {
       ok: false,
+      exact: false,
       reason: "not-grounded",
       detail: `target not grounded yet — intent "${target.intent}"`,
     }
@@ -87,6 +100,7 @@ export async function resolveTarget(
   ]
   // Only a partial name is changed by the exact-names rule: nothing to check otherwise.
   const partial = candidates.some((c) => isPartialName(c.locator))
+  let exact: boolean
   const deadline = Date.now() + timeoutMs
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
@@ -95,7 +109,7 @@ export async function resolveTarget(
     ambiguous = undefined
     // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll: a
     // field that renders mid-step is seen at once.
-    const exact = partial ? (await refreshExactNames(page)).exact : false
+    exact = partial ? (await refreshExactNames(page)).exact : false
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator, exact))
       const count = await visible.count().catch((error: unknown) => {
@@ -112,6 +126,7 @@ export async function resolveTarget(
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       return {
         ok: true,
+        exact,
         locator,
         used: candidate.locator,
         fallbackIndex: i === 0 ? undefined : i - 1,
@@ -120,9 +135,16 @@ export async function resolveTarget(
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  if (ambiguous !== undefined) return { ok: false, reason: "target-ambiguous", detail: ambiguous }
+  if (ambiguous !== undefined) {
+    return { ok: false, reason: "target-ambiguous", detail: ambiguous, exact }
+  }
   const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
-  return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
+  return {
+    ok: false,
+    reason: "target-not-found",
+    detail: `target not found — tried ${tried}`,
+    exact,
+  }
 }
 
 /** The locator part of a grounded target, without the healing metadata. */

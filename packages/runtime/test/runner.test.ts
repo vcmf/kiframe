@@ -660,7 +660,30 @@ steps:
 `,
         { knownSecretValues: ["bob@acme.com"] },
       )
-      expect(error.message).toMatch(/can't check an absence by a partial name/)
+      expect(error.message).toMatch(/couldn't check an absence by a partial name/)
+    })
+
+    it("keeps polling an absence until the secret field is gone, then checks it", async () => {
+      await run(
+        `setup: [{ action: goto, url: /signing-in }]
+steps:
+  - { id: h, action: expect, that: { hidden: { by: text, text: Signing in } } }
+`,
+        { knownSecretValues: ["bob@acme.com"] },
+      )
+    })
+
+    it("never passes an ensure-absent it couldn't check (unreadable page)", async () => {
+      const error = await failure(
+        `setup:
+  - { action: goto, url: /unreadable }
+  - ensure: { absent: { by: role, role: heading, name: Q4 } }
+teardown: [{ action: pause, ms: 1 }]
+steps: [{ id: a, action: pause, ms: 1 }]
+`,
+        { knownSecretValues: ["bob@acme.com"] },
+      )
+      expect(error.reason).toBe("secret-refused")
     })
 
     it("turns exact names off once the written field is hidden (a closed login dialog)", async () => {

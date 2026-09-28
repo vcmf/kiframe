@@ -8,12 +8,6 @@ import { valuePattern } from "./scanner.ts"
 export interface ContextSecrets {
   values: Set<string>
   written: { page: Page; handle: ElementHandle }[]
-  /**
-   * A field holding a secret is on the driven page (§3 A8): role, label, text and placeholder
-   * locators then match their names exactly (an accessible name can include a nested input's
-   * value). Updated at every step boundary.
-   */
-  exactNames: boolean
 }
 const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
 
@@ -23,8 +17,7 @@ const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
  */
 export function secretsOf(context: BrowserContext): ContextSecrets {
   let state = contextSecrets.get(context)
-  if (state === undefined)
-    contextSecrets.set(context, (state = { values: new Set(), written: [], exactNames: false }))
+  if (state === undefined) contextSecrets.set(context, (state = { values: new Set(), written: [] }))
   return state
 }
 
@@ -45,10 +38,14 @@ export function assertNotProbing(context: BrowserContext, selector: string): voi
   if (secretsOf(context).values.size === 0) return
   if (!isSafeSelector(selector)) {
     throw new ProbeRefusal(
-      "only simple CSS selectors while a secret is known (tags, #ids, .classes, attributes other than value)",
+      `only simple CSS selectors while a secret is known: ${SAFE_SELECTOR_RULES}`,
     )
   }
 }
+
+/** The A8 grammar in words, for every message that refuses a selector. */
+export const SAFE_SELECTOR_RULES =
+  "tags, *, #ids, .classes, the attributes id, class, name, type, role, for, href, src, alt, title, placeholder, the boolean states, aria-* (not aria-value*) and data-testid/-test/-qa/-cy/-state, the combinators, and :not(), :has(), :nth-child() and a few states"
 
 const PSEUDOS = new Set([
   "first-child",
@@ -332,10 +329,10 @@ export interface ExactNames {
  */
 export async function refreshExactNames(page: Page): Promise<ExactNames> {
   const state = secretsOf(page.context())
-  if (state.values.size === 0) return { exact: (state.exactNames = false), unsure: false }
+  if (state.values.size === 0) return { exact: false, unsure: false }
   const found = await page.evaluate(renderedFields, await liveWritten(page)).catch(() => undefined)
-  if (found === undefined) return { exact: (state.exactNames = true), unsure: true }
+  if (found === undefined) return { exact: true, unsure: true }
   const exact =
     found.writtenRendered || found.values.some((v) => containsKnownValue(state.values, v))
-  return { exact: (state.exactNames = exact), unsure: false }
+  return { exact, unsure: false }
 }
