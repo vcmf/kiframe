@@ -80,6 +80,10 @@ export type RunnerEvent =
   | { kind: "target_fallback"; step: StepRef; fallbackIndex: number }
   /** Teardown failed after a step had already failed: the step's error is the one thrown. */
   | { kind: "teardown_failed"; error: StepError }
+  /** An interrupt rule matched before a step (or when a step failed) and is being handled. */
+  | { kind: "interrupt_start"; step: StepRef; rule: string }
+  /** It's handled: the span since interrupt_start is cut from the video. */
+  | { kind: "interrupt_end"; step: StepRef; rule: string }
   /** A preset's steps all ran: for a session preset, the moment to save the context's state. */
   | { kind: "preset_done"; name: string; session: boolean }
 
@@ -197,6 +201,8 @@ export async function runScenario(
     detach,
     trackerOf,
     cursors: new Map(),
+    interrupts: project.interrupts,
+    hideCss: hideCss(project.hide),
     base,
     settleMs,
     options,
@@ -218,6 +224,7 @@ export async function runScenario(
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
+  await applyHide(ctx, page)
   try {
     let failure: Error | undefined
     try {
@@ -331,6 +338,10 @@ interface Ctx {
   trackerOf: (page: Page) => NetworkTracker
   /** Where the cursor was on each page the run left. */
   cursors: Map<Page, Point>
+  /** The project's interrupt rules (the org's rule bank included, `resolveProjectConfig`). */
+  interrupts: ProjectConfig["interrupts"]
+  /** CSS hiding the project's `hide` selectors ("" when there are none). */
+  hideCss: string
   setCurrent: (step: StepRef | undefined) => void
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>
@@ -537,9 +548,25 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   ctx.setCurrent(step)
   // Before step_start: the step's storyboard shot (taken at step_start) is of the page it acts on.
   await syncPage(ctx, step)
+  // Cookie banners, "What's new" modals…: handled off camera between steps (cut from the video).
+  await handleInterrupts(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
-  await perform(ctx, action, step)
+  try {
+    await perform(ctx, action, step)
+  } catch (error) {
+    // An interrupt that appeared mid-step (it covered the target): handled, then the step runs
+    // once more. Only for failures before the action had an effect (not found, covered, not
+    // actionable). A refused risky click asks again on the retry.
+    const beforeEffect =
+      error instanceof StepError &&
+      (error.reason === "target-not-found" ||
+        // Covered: the risky check couldn't see the target (nothing was clicked).
+        error.reason === "risky-not-approved" ||
+        (error.reason === "action-failed" && /Timeout \d+ms exceeded/.test(error.detail)))
+    if (!beforeEffect || !(await handleInterrupts(ctx, step))) throw error
+    await perform(ctx, action, step)
+  }
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
   if (!["pause", "expect", "waitFor"].includes(action.action)) {
@@ -549,6 +576,88 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   if (ctx.options.recording === true) await followSecretFields(ctx, step)
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
+}
+
+/** One `display: none` rule per selector: a selector the browser rejects doesn't void the others. */
+function hideCss(selectors: readonly string[]): string {
+  return selectors.map((s) => `${s} { display: none !important; }`).join("\n")
+}
+
+/** Pages already hiding a given CSS (a harness may run many scenarios on one page). */
+const hiddenOn = new WeakMap<Page, Set<string>>()
+
+/**
+ * Hides the project's `hide` selectors on a page: in the current document and in every later one
+ * (an init script adds the style at each navigation). Off camera and on: they're never filmed.
+ */
+async function applyHide(ctx: Ctx, page: Page): Promise<void> {
+  if (ctx.hideCss === "") return
+  const applied = hiddenOn.get(page) ?? new Set<string>()
+  if (applied.has(ctx.hideCss)) return
+  applied.add(ctx.hideCss)
+  hiddenOn.set(page, applied)
+  await page
+    .addInitScript((css: string) => {
+      const add = () => {
+        const style = document.createElement("style")
+        style.textContent = css
+        ;(document.head ?? document.documentElement).append(style)
+      }
+      if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", add)
+      else add()
+    }, ctx.hideCss)
+    .catch(() => undefined)
+  await page.addStyleTag({ content: ctx.hideCss }).catch(() => undefined)
+}
+
+/** The first interrupt rule whose `when` is visible right now (no waiting). */
+async function matchingInterrupt(
+  ctx: Ctx,
+): Promise<ProjectConfig["interrupts"][number] | undefined> {
+  for (const rule of ctx.interrupts) {
+    const when =
+      "by" in rule.when ? toPlaywright(ctx.page, rule.when) : ctx.page.getByText(rule.when.text)
+    const visible = await visibleOnly(when)
+      .count()
+      .catch(() => 0)
+    if (visible > 0) return rule
+  }
+  return undefined
+}
+
+/**
+ * The explicit interrupt check (OBJECT-MODEL §2b), not Playwright's locator handlers (they fire
+ * between a mouse move and a press). Each matching rule's `do` runs off camera; the span is marked
+ * (interrupt_start / _end) so the generators cut it. Up to 3 in a row (a banner, then a modal).
+ * Returns whether any was handled.
+ */
+async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<boolean> {
+  if (ctx.interrupts.length === 0 || ctx.page.isClosed()) return false
+  let handled = false
+  for (let round = 0; round < 3; round++) {
+    const rule = await matchingInterrupt(ctx)
+    if (rule === undefined) break
+    ctx.options.onEvent?.({ kind: "interrupt_start", step, rule: rule.id })
+    // Off camera: no human pacing, no settle beat (the span is cut anyway).
+    const ref: StepRef = { phase: "setup", index: step.index, action: `interrupt ${rule.id}` }
+    try {
+      await perform(ctx, rule.do, ref)
+      await guard(ref, () => settle(ctx, false))
+    } catch (error) {
+      const detail = error instanceof StepError ? error.detail : firstLine(error)
+      throw new StepError(
+        step,
+        "action-failed",
+        `the interrupt "${rule.id}" couldn't be handled: ${detail}`,
+        {
+          cause: error,
+        },
+      )
+    }
+    ctx.options.onEvent?.({ kind: "interrupt_end", step, rule: rule.id })
+    handled = true
+  }
+  return handled
 }
 
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
@@ -561,6 +670,7 @@ async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.page = next
   ctx.network = ctx.trackerOf(next)
   ctx.attach(next)
+  await applyHide(ctx, next)
   ctx.cursor = ctx.cursors.get(next)
   // This page's secret fields are measured BEFORE the capture moves here (its first frame is
   // already covered); the other pages' blurs end only AFTER the capture left them.

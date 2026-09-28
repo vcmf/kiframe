@@ -476,6 +476,59 @@ steps:
     expect(navigated.filter((p) => p === "/popup-report").length).toBeGreaterThanOrEqual(2)
   })
 
+  // ─── M1-3: interrupts and hide ──────────────────────────────────────────────
+
+  const withRules = () =>
+    parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+hide: ["#chat"]
+interrupts:
+  - id: cookies
+    when: { by: role, role: dialog, name: Cookie preferences }
+    do: { action: click, target: { by: role, role: button, name: Accept all } }
+`)
+  const runWith = async (yaml: string) => {
+    const events: RunnerEvent[] = []
+    await runScenario(page, scenario(yaml), withRules(), {
+      timeoutMs: 1500,
+      onEvent: (e) => events.push(e),
+    })
+    return events
+  }
+
+  it("hides the project's `hide` selectors, after navigations too", async () => {
+    await runWith(`setup: [{ action: goto, url: /banner }]
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: again, action: goto, url: /banner }
+`)
+    expect(await page.locator("#chat").evaluate((el) => getComputedStyle(el).display)).toBe("none")
+  })
+
+  it("handles an interrupt off camera before the step it would block", async () => {
+    const events = await runWith(`setup: [{ action: goto, url: "/banner?late" }]
+steps:
+  - { id: wait, action: pause, ms: 600 }
+  - { id: go, action: click, target: { by: role, role: button, name: Continue } }
+`)
+    expect(await page.locator("#s").textContent()).toBe("continued")
+    const kinds = events.flatMap((e) =>
+      e.kind === "interrupt_start" || e.kind === "interrupt_end"
+        ? [`${e.kind}:${e.rule}:${e.step.stepId}`]
+        : [],
+    )
+    expect(kinds).toEqual(["interrupt_start:cookies:go", "interrupt_end:cookies:go"])
+  })
+
+  it("retries a step once when an interrupt appears in the middle of it", async () => {
+    const events = await runWith(`setup: [{ action: goto, url: "/banner?onmove" }]
+steps: [{ id: go, action: click, target: { by: role, role: button, name: Continue } }]
+`)
+    expect(await page.locator("#s").textContent()).toBe("continued")
+    expect(events.some((e) => e.kind === "interrupt_end")).toBe(true)
+  })
+
   // ─── P0-9: state (ensure, teardown, session presets, hover) ────────────────
 
   const boardScene = (teardown = true) => `setup:
