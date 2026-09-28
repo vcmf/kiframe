@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util"
 import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@kiframe/schema"
-import type { BrowserContext, ElementHandle, Locator, Page } from "playwright"
+import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
@@ -482,8 +482,10 @@ export async function writeSecret(
       throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
     }
     const before = await write.input.inputValue({ timeout })
-    // The page's URL last (a `pushState` doesn't detach the handle): nothing awaits between it and
-    // the write but the write itself.
+    // Actionable first, so `fill` doesn't wait itself: then the page's URL last (a `pushState`
+    // doesn't detach the handle), and nothing awaits between it and the write but the write.
+    await write.input.waitForElementState("visible", { timeout })
+    await write.input.waitForElementState("editable", { timeout })
     const now = new URL(ctx.page.url())
     if (now.origin !== write.use.origin || now.pathname !== write.use.path) {
       throw new StepError(
@@ -492,7 +494,7 @@ export async function writeSecret(
         `the page moved to ${now.origin}${now.pathname} while the secret was resolved`,
       )
     }
-    await write.input.fill(before + write.value, { timeout })
+    await write.input.fill(before + write.value, { timeout, force: true })
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
   } catch (error) {
     await write.input.dispose().catch(() => undefined)
@@ -549,11 +551,24 @@ function containsKnown(ctx: Ctx, text: string | null | undefined): boolean {
 
 /** The written elements still in the driven page's current document (a navigation drops them). */
 async function writtenHere(ctx: Ctx): Promise<ElementHandle<Element>[]> {
-  const here = ctx.secretWritten.filter((w) => w.page === ctx.page)
+  // Closed pages and removed elements are pruned (their handles released): the list stays small.
+  const all = [...ctx.secretWritten]
   const live = await Promise.all(
-    here.map((w) => w.handle.evaluate((e) => e.isConnected).catch(() => false)),
+    all.map((w) =>
+      w.page.isClosed()
+        ? Promise.resolve(false)
+        : w.handle.evaluate((e) => e.isConnected).catch(() => false),
+    ),
   )
-  return here.filter((_, i) => live[i]).map((w) => w.handle as ElementHandle<Element>)
+  for (const [i, w] of all.entries()) {
+    if (live[i]) continue
+    const at = ctx.secretWritten.indexOf(w)
+    if (at !== -1) ctx.secretWritten.splice(at, 1)
+    void w.handle.dispose().catch(() => undefined)
+  }
+  return all
+    .filter((w, i) => live[i] && w.page === ctx.page)
+    .map((w) => w.handle as ElementHandle<Element>)
 }
 
 /**
@@ -596,8 +611,14 @@ export async function assertKeysKeepSecrets(ctx: Ctx, step: StepRef, keys: strin
     )
   }
   if (ALLOWED_IN_SECRET_FIELD.has(chordName(c))) return
-  const written = await writtenHere(ctx)
-  const focus = await ctx.page.evaluate(focusedText, written).catch(() => undefined)
+  const read = async () => ctx.page.evaluate(focusedText, await writtenHere(ctx))
+  // A navigation committing (execution context destroyed): once more on the new document.
+  const focus = await read().catch(async () => {
+    await ctx.page
+      .waitForLoadState("domcontentloaded", { timeout: ctx.timeoutMs })
+      .catch(() => undefined)
+    return read().catch(() => undefined)
+  })
   // Unsure where focus is: refused (fails closed).
   if (
     focus === undefined ||
@@ -648,22 +669,7 @@ export async function assertDragKeepsSecrets(
   }
 }
 
-/** What a browser context's runs know about secrets: values, and the elements they went into. */
-export interface ContextSecrets {
-  values: Set<string>
-  written: { page: Page; handle: ElementHandle }[]
-}
-const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
-
-/**
- * The secret state of a browser context (SECRETS-DESIGN §3 A5: "while secrets are known in a
- * context"): shared by every run on it, gone with it (its handles die with the context).
- */
-export function secretsOf(context: BrowserContext): ContextSecrets {
-  let state = contextSecrets.get(context)
-  if (state === undefined) contextSecrets.set(context, (state = { values: new Set(), written: [] }))
-  return state
-}
+export { secretsOf, type ContextSecrets } from "../secret-state.ts"
 
 /** Releases a prepared write that won't happen (the step failed before it). */
 export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {

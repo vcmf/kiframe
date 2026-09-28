@@ -3,6 +3,7 @@ import type { ElementHandle, Locator, Page } from "playwright"
 import { type ApprovalRequest, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
 import type { NetworkTracker } from "../network.ts"
+import { ProbeRefusal } from "../secret-state.ts"
 
 // The runner's shared state (Ctx), its options and events, and small helpers every part uses.
 
@@ -222,6 +223,7 @@ export async function guard<T>(step: StepRef, fn: () => Promise<T>): Promise<T> 
     return await fn()
   } catch (cause) {
     if (cause instanceof StepError) throw cause
+    if (cause instanceof ProbeRefusal) throw new StepError(step, "secret-refused", cause.message)
     throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
 }

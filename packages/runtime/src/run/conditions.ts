@@ -1,5 +1,6 @@
 import type { Condition } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
+import { ProbeRefusal } from "../secret-state.ts"
 import { describeLocator, toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
@@ -47,6 +48,7 @@ export async function waitForCondition(
     ) {
       throw new StepError(step, reason, `${what} (after ${timeout} ms)`)
     }
+    if (cause instanceof ProbeRefusal) throw new StepError(step, "secret-refused", cause.message)
     throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
 }
