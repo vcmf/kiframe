@@ -326,6 +326,8 @@ export function pointProbe(
 export async function countUnderRule(
   page: Page,
   locator: SchemaLocator,
+  /** The rule already decided for this poll (several locators counted at once). */
+  decided?: { exact: boolean; unsure: boolean },
 ): Promise<{ count: number | undefined; exact: boolean; unsure: boolean }> {
   const countWith = (exact: boolean) =>
     visibleOnly(toPlaywright(page, locator, exact))
@@ -334,7 +336,7 @@ export async function countUnderRule(
         if (isNavigationError(error)) return undefined
         throw error
       })
-  const names = await exactNamesFor(page, [locator])
+  const names = decided ?? (await exactNamesFor(page, [locator]))
   let { exact, unsure } = names
   let count = await countWith(exact)
   if (count !== undefined && count > 0 && !exact && isPartialName(locator)) {

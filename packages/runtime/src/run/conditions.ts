@@ -37,21 +37,25 @@ export async function waitForCondition(
         visible: !("hidden" in condition),
         negative,
         failed: (why, waited) =>
-          why === "blocked-exact" || why === "blocked-unreadable"
+          why === "blocked-exact"
             ? new StepError(
                 step,
                 "secret-refused",
-                `couldn't check the absence of ${describeLocator(locator)}: ${
-                  why === "blocked-exact"
-                    ? `a partial name${EXACT_NAMES_HINT}`
-                    : "the page couldn't be read (navigating)"
-                }`,
+                `couldn't check the absence of ${describeLocator(locator)} by a partial name${EXACT_NAMES_HINT}`,
               )
-            : new StepError(
-                step,
-                reason,
-                `${what} (after ${waited} ms)${why === "timeout-exact" ? EXACT_NAMES_HINT : ""}`,
-              ),
+            : why === "blocked-unreadable"
+              ? // Nothing to do with secrets, and never the timeout reason: `ensure: absent` would
+                // read a timeout as "not there".
+                new StepError(
+                  step,
+                  "action-failed",
+                  `couldn't confirm the absence of ${describeLocator(locator)}: the page kept changing (after ${waited} ms)`,
+                )
+              : new StepError(
+                  step,
+                  reason,
+                  `${what} (after ${waited} ms)${why === "timeout-exact" ? EXACT_NAMES_HINT : ""}`,
+                ),
       })
     } else if ("url" in condition) {
       const expected = new URL(condition.url, ctx.base)
@@ -135,6 +139,8 @@ export async function pollLocator(
     timeout: number
     visible: boolean
     negative: boolean
+    /** Stop at once, without concluding, when a poll is blocked by exact names (a wait, not a check). */
+    bestEffort?: boolean
     failed: (
       why: "timeout" | "timeout-exact" | "blocked-exact" | "blocked-unreadable",
       waited: number,
@@ -167,6 +173,7 @@ export async function pollLocator(
             ? "blocked-unreadable"
             : "clear"
     if (last === "seen" && (o.visible || o.negative)) return
+    if (o.bestEffort === true && last === "blocked-exact") return
     if (last === "clear" && absence) {
       clears = clearOn !== undefined && clearOn === doc ? clears + 1 : 1
       clearOn = doc

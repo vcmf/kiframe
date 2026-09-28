@@ -660,7 +660,7 @@ steps:
 `,
         { knownSecretValues: ["bob@acme.com"] },
       )
-      expect(error.message).toMatch(/couldn't check the absence of .*: a partial name/)
+      expect(error.message).toMatch(/couldn't check the absence of .* by a partial name/)
     })
 
     it("keeps polling an absence until the secret field is gone, then checks it", async () => {
@@ -758,6 +758,39 @@ steps:
 `)
     })
 
+    it("skips an interrupt rule whose selector the browser rejects (no secret known)", async () => {
+      const withRule = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+interrupts:
+  - id: bad
+    when: { by: css, selector: "div:contains(Accept)" }
+    do: { action: press, keys: Escape }
+`)
+      await runScenario(
+        page,
+        scenario(`setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: a, action: click, target: { by: label, name: Email } }
+`),
+        withRule,
+        { timeoutMs: 1500 },
+      )
+    })
+
+    it("submits a secret on the element it was written to", async () => {
+      const vault = await vaultWithPassword()
+      const events: RunnerEvent[] = []
+      await run(
+        `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: ${password}, value: "{{secrets.acme.password}}", submit: true }
+`,
+        { ...approving(vault, []), onEvent: (e) => events.push(e) },
+      )
+      expect(events.some((e) => e.kind === "key" && e.keys === "Enter")).toBe(true)
+    })
+
     it("never passes an ensure-absent it couldn't check (unreadable page)", async () => {
       const error = await failure(
         `setup:
@@ -768,7 +801,9 @@ steps: [{ id: a, action: pause, ms: 1 }]
 `,
         { knownSecretValues: ["bob@acme.com"] },
       )
-      expect(error.reason).toBe("secret-refused")
+      // Not a secrets refusal (nothing to do with names), and never the timeout that means "absent".
+      expect(error.reason).toBe("action-failed")
+      expect(error.message).toMatch(/couldn't confirm the absence/)
     })
 
     it("turns exact names off once the written field is hidden (a closed login dialog)", async () => {
