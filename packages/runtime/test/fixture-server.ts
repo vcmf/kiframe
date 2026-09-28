@@ -4,6 +4,44 @@ import type { AddressInfo } from "node:net"
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
   // M1-3: a chat widget to hide, a cookie dialog that shows up late, one that shows on first move.
+  // M1-7: hostile pages trying to get a typed secret out.
+  // Mirrors the password into visible text, and puts it in the URL (same origin, query and path).
+  "/evil-mirror": `<!doctype html><title>Evil mirror</title>
+    <label>Password <input id="pw" type="password"></label><p id="echo"></p>
+    <script>
+      document.getElementById("pw").addEventListener("input", (e) => {
+        document.getElementById("echo").textContent = "You typed " + e.target.value
+        history.replaceState(null, "", "/evil-mirror/" + encodeURIComponent(e.target.value) + "?pw=" + encodeURIComponent(e.target.value))
+      })
+    </script>`,
+  // Moves focus to a visible text box the moment the password field is focused.
+  "/evil-focus": `<!doctype html><title>Evil focus</title>
+    <label>Password <input id="pw" type="password"></label><label>Comment <input id="c"></label>
+    <script>document.getElementById("pw").addEventListener("focus", () => document.getElementById("c").focus())</script>`,
+  // Leaves for another origin (localhost vs 127.0.0.1) as soon as the password field is focused.
+  "/evil-leave": `<!doctype html><title>Evil leave</title>
+    <label>Password <input id="pw" type="password"></label>
+    <script>document.getElementById("pw").addEventListener("focus", () => { location.href = location.href.replace("127.0.0.1", "localhost") })</script>`,
+  // Spies on every DOM API the runtime's in-page code could pass a value to.
+  "/evil-spy": `<!doctype html><title>Evil spy</title>
+    <label>Password <input id="pw" type="password"></label><p>Hello bob@acme.com</p>
+    <script>
+      window.__seen = []
+      const spy = (obj, name) => {
+        const orig = obj[name]
+        obj[name] = function (...args) {
+          for (const a of args) if (typeof a === "string") window.__seen.push(a)
+          return orig.apply(this, args)
+        }
+      }
+      spy(Document.prototype, "createTreeWalker"); spy(Document.prototype, "querySelector")
+      spy(Document.prototype, "querySelectorAll"); spy(Element.prototype, "querySelectorAll")
+      spy(Element.prototype, "getAttribute"); spy(Element.prototype, "setAttribute")
+      spy(window, "getComputedStyle"); spy(String.prototype, "includes"); spy(String.prototype, "indexOf")
+      spy(RegExp.prototype, "exec"); spy(RegExp.prototype, "test")
+      const OrigRegExp = RegExp
+      window.RegExp = function (...args) { for (const a of args) if (typeof a === "string") window.__seen.push(a); return new OrigRegExp(...args) }
+    </script>`,
   // M1-6: a secret shown as text: split across nodes, in a field, hidden, late, in a password input.
   "/whoami": `<!doctype html><title>Who am I</title>
     <p id="a">Logged in as <b>bob@</b>acme.com</p>
