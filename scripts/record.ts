@@ -56,6 +56,9 @@ try {
     deviceScaleFactor: dpr,
   })
   const take = await recordScenario(page, scenario, project, {
+    // Approvals are the host's (SECRETS-DESIGN §3); the .env resolver here ignores them.
+    scope: "phase0",
+    sceneId: values.scenario,
     outDir: values.out,
     resolveSecret,
     ...(values.assets !== undefined && {

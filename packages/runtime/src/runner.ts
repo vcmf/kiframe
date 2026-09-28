@@ -11,6 +11,7 @@ import {
   scrubError,
   scrubSecrets,
   TEXT_SCAN_MS,
+  releaseSecretWritten,
 } from "./run/secrets.ts"
 import { expandSetup, runSetupEntry } from "./run/setup.ts"
 import { perform } from "./run/actions.ts"
@@ -250,6 +251,7 @@ export async function runScenario(
     clearInterval(scan)
     // A scan still running reports before the run ends (the recorder writes right after).
     await ctx.secretText.inflight?.catch(() => undefined)
+    await releaseSecretWritten(ctx)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)

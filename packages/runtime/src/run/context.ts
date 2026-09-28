@@ -84,7 +84,10 @@ export interface RunOptions {
   requestApproval?: (request: ApprovalRequest) => boolean | Promise<boolean>
   /** The host's id of the project folder: the scope of its approvals. Never read from project.json. */
   scope?: string
-  /** This scene's id, for the approval keys of its own steps. */
+  /**
+   * The host's id for this scene (kept outside the project; a deleted scene's replacement gets a
+   * new one, even if the agent reuses its ids): the approval keys of the scene's own steps.
+   */
   sceneId?: string
   /** The org interrupt rules this run's config kept from the org (their approvals are the org's). */
   orgInterrupts?: { orgId: string; ruleIds: readonly string[] }

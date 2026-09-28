@@ -67,6 +67,8 @@ try {
     }
     try {
       const take = await recordScenario(page, scene, project, {
+        scope: "phase0",
+        sceneId: values.scenario,
         outDir: join(values.out, `run-${run}`),
         skipSessionPresets: [...sessions],
         // A sandbox app: the scene's risky teardown (delete) is pre-approved (APPROACHES §7.2).

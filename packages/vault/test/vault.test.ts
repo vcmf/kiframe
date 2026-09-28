@@ -199,6 +199,61 @@ describe("Vault: grants", () => {
   })
 })
 
+describe("Vault: grants, round 1 review", () => {
+  it("an interrupt rule's grant covers every path on its origin", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    const use = { ...USE, stepKey: "interrupt:relogin", interrupt: true }
+    vault.approve("acme.password", use)
+    expect(await vault.resolve("acme.password", { ...use, path: "/dashboard/settings" })).toBe("v")
+  })
+
+  it("keeps one grant per origin for the same step (staging and prod)", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    await vault.request({ ...form, origin: "https://app.acme.com" }, provide("v"))
+    vault.approve("acme.password", USE)
+    vault.approve("acme.password", { ...USE, origin: "https://app.acme.com" })
+    expect(await vault.resolve("acme.password", USE)).toBe("v")
+    expect(await vault.resolve("acme.password", { ...USE, origin: "https://app.acme.com" })).toBe(
+      "v",
+    )
+  })
+
+  it("says which part of a grant stopped matching", async () => {
+    const { vault } = await approved()
+    const message = (change: Partial<SecretUse>) =>
+      vault.resolve("acme.password", { ...USE, ...change }).catch((e: unknown) => String(e))
+    expect(await message({ stepKey: "preset:login/other" })).toMatch(/isn't approved for this step/)
+    expect(await message({ target: '{"by":"label","name":"Pass"}' })).toMatch(/target changed/)
+    expect(await message({ path: "/elsewhere" })).toMatch(/other pages/)
+    expect(await message({ element: { tag: "input", type: "password", label: "Pass" } })).toMatch(
+      /type or label changed/,
+    )
+  })
+
+  it("opens an M1-5 file (field bindings are dropped, not an unreadable vault)", () => {
+    const { path } = open()
+    const old = join(path, "..", "..", "m15.json")
+    writeFileSync(
+      old,
+      JSON.stringify({
+        version: 1,
+        secrets: [
+          {
+            name: "acme.password",
+            kind: "password",
+            origins: [ORIGIN],
+            field: { inputType: "password" },
+            updatedAt: new Date().toISOString(),
+          },
+        ],
+      }),
+    )
+    expect(Vault.open(old, memoryBackend()).list()).toMatchObject([{ name: "acme.password" }])
+  })
+})
+
 describe("path patterns", () => {
   it("masks ids and matches one segment per `*`", () => {
     expect(pathPatternOf("/projects/8123/items/3f2a1c9e-1b2c-4d5e-8f90-123456789abc")).toBe(

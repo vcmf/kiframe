@@ -73,8 +73,9 @@ export interface SecretUse {
 
 /**
  * A resolver's refusal (the vault's `SecretRefusal`): any error with `code: "secret-refused"`, not
- * `instanceof` (duplicate modules). Over IPC the host must rethrow it with its code (Electron drops
- * custom properties). Its message is reported, so it must never hold a value.
+ * `instanceof` (duplicate modules). Over IPC the host must rethrow it with its `code` and `reason`
+ * (Electron drops custom properties; without `reason: "no-grant"` an interactive run can't ask).
+ * Its message is reported, so it must never hold a value.
  */
 export function isSecretRefusal(error: unknown): error is Error & { reason?: string } {
   return error instanceof Error && (error as { code?: unknown }).code === "secret-refused"

@@ -339,16 +339,33 @@ export function followSecretField(
   return id
 }
 
-/** The approval key of the step an action belongs to (SECRETS-DESIGN §3 A1). */
-function stepKeyOf(ctx: Ctx, step: StepRef): string {
-  if (step.interrupt !== undefined) {
-    const org = ctx.options.orgInterrupts
-    return org !== undefined && org.ruleIds.includes(step.interrupt)
-      ? `org:${org.orgId}/interrupt:${step.interrupt}`
-      : `interrupt:${step.interrupt}`
+/**
+ * The approvals a step's secret use falls under (SECRETS-DESIGN §3 A1): its scope (the host's
+ * project id; the org, for an org interrupt rule) and its step key. The scene part is the host's
+ * id for the scene (a deleted scene's replacement gets another one, even with the same ids).
+ * Without the host's ids the use is refused: never a shared default.
+ */
+function approvalKeyOf(
+  ctx: Ctx,
+  step: StepRef,
+  secret: string,
+): { scope: string; stepKey: string } {
+  const { scope, sceneId, orgInterrupts: org } = ctx.options
+  const missing = (what: string) =>
+    new StepError(
+      step,
+      "secret-refused",
+      `secret "${secret}": no ${what} from the host (approvals need it)`,
+    )
+  if (step.interrupt !== undefined && org !== undefined && org.ruleIds.includes(step.interrupt)) {
+    return { scope: `org:${org.orgId}`, stepKey: `org:${org.orgId}/interrupt:${step.interrupt}` }
   }
-  if (step.preset !== undefined) return `preset:${step.preset}/${step.stepId ?? ""}`
-  return `scene:${ctx.options.sceneId ?? "scene"}/${step.keyPhase ?? step.phase}/${step.stepId ?? ""}`
+  if (scope === undefined || scope === "") throw missing("project scope")
+  if (step.interrupt !== undefined) return { scope, stepKey: `interrupt:${step.interrupt}` }
+  if (step.preset !== undefined)
+    return { scope, stepKey: `preset:${step.preset}/${step.stepId ?? ""}` }
+  if (sceneId === undefined || sceneId === "") throw missing("scene id")
+  return { scope, stepKey: `scene:${sceneId}/${step.keyPhase ?? step.phase}/${step.stepId ?? ""}` }
 }
 
 /**
@@ -429,8 +446,7 @@ export async function prepareSecretWrite(
     if (!isGrounded(stepTarget)) throw new StepError(step, "not-grounded", "target not grounded")
     const url = new URL(ctx.page.url())
     const use: SecretUse = {
-      scope: ctx.options.scope ?? "",
-      stepKey: stepKeyOf(ctx, step),
+      ...approvalKeyOf(ctx, step, secret),
       origin: url.origin,
       path: url.pathname,
       target: grantedTarget(ctx, step, stepTarget),
@@ -476,9 +492,22 @@ export async function writeSecret(
   }
 }
 
-/** A shortcut as a set of lowercased parts ("Mod+Shift+V" → mod, shift, v). */
+/**
+ * A shortcut as a set of normalized parts ("ControlOrMeta+Shift+KeyV" → mod, shift, v): every
+ * spelling Playwright accepts for a key (aliases, left/right variants, `Key…` code names) is the
+ * same part, so no spelling slips past the refusals.
+ */
 function chord(keys: string): Set<string> {
-  return new Set(keys.split("+").map((k) => k.trim().toLowerCase()))
+  const part = (raw: string) => {
+    let k = raw.trim().toLowerCase()
+    if (k === "controlormeta" || k === "cmdorctrl" || k === "commandorcontrol") return "mod"
+    k = k.replace(/(left|right)$/, "")
+    if (k === "ctrl") return "control"
+    if (k === "cmd" || k === "command" || k === "os") return "meta"
+    if (/^key[a-z]$/.test(k)) return k.slice(3)
+    return k
+  }
+  return new Set(keys.split("+").map(part))
 }
 const hasCommand = (c: Set<string>) => c.has("mod") || c.has("control") || c.has("meta")
 const isPaste = (c: Set<string>) =>
@@ -499,7 +528,14 @@ async function writtenHere(ctx: Ctx): Promise<ElementHandle<Element>[]> {
 
 /** Whether focus or the selection is inside one of these elements (runs in the page). */
 function holdsFocusOrSelection(elements: Element[]): boolean {
-  const inside = (n: Node | null) => n !== null && elements.some((e) => e === n || e.contains(n))
+  const inside = (n: Node | null) => {
+    // Across shadow roots, from the node up to the document.
+    for (let at: Node | null = n; at !== null;) {
+      if (elements.includes(at as Element)) return true
+      at = at.parentNode ?? (at instanceof ShadowRoot ? at.host : null)
+    }
+    return false
+  }
   let active: Element | null = document.activeElement
   while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement
   const selection = getSelection()
@@ -544,11 +580,27 @@ export async function assertDragKeepsSecrets(
   const written = await writtenHere(ctx)
   if (written.length === 0) return
   const holds = await source
-    .evaluate((src, elements) => elements.some((e) => src === e || src.contains(e)), written, {
-      timeout: ctx.timeoutMs,
-    })
+    .evaluate(
+      (src, elements) =>
+        elements.some((e) => {
+          // Across shadow roots: a web component's host holds the input in its shadow root.
+          for (let n: Node | null = e; n !== null;) {
+            if (n === src) return true
+            n = n.parentNode ?? (n instanceof ShadowRoot ? n.host : null)
+          }
+          return false
+        }),
+      written,
+      { timeout: ctx.timeoutMs },
+    )
     .catch(() => true)
   if (holds) {
     throw new StepError(step, "secret-refused", "this drag would move a field holding a secret")
   }
+}
+
+/** Releases the handles to the elements secrets were written to (the run is over). */
+export async function releaseSecretWritten(ctx: Ctx): Promise<void> {
+  await Promise.all(ctx.secretWritten.map((w) => w.handle.dispose().catch(() => undefined)))
+  ctx.secretWritten.length = 0
 }
