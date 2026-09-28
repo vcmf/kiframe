@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
+import { isDeepStrictEqual } from "node:util"
 import { SecretName } from "@kiframe/schema"
 import type { SecretBackend } from "./backend.ts"
 import {
@@ -43,24 +44,10 @@ export interface SecretForm {
 /** The host's native form: the value the user typed, or undefined if they declined. */
 export type AskUser = (form: SecretForm) => Promise<string | undefined>
 
-/** Stable JSON (sorted keys): two bindings are the same field iff their canonical forms are equal. */
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`
-  }
-  return JSON.stringify(value)
-}
-
 export class Vault {
   readonly #path: string
   readonly #backend: SecretBackend
   #secrets: SecretMeta[]
-  /** Writes one after another (a crash mid-write leaves the previous file, never a torn one). */
-  #writing: Promise<void> = Promise.resolve()
 
   private constructor(path: string, backend: SecretBackend, secrets: SecretMeta[]) {
     this.#path = path
@@ -101,20 +88,29 @@ export class Vault {
     const name = SecretName.parse(form.name)
     const kind = SecretKind.parse(form.kind)
     const origin = Origin.parse(form.origin)
+    const existing = this.#find(name)
+    // A secret's kind is the user's, not the agent's to change (a password never becomes `text`).
+    if (existing !== undefined && existing.kind !== kind) {
+      throw new Error(`secret "${name}" is a ${existing.kind}, not a ${kind}`)
+    }
+    // Checked before asking: the user never types a value the vault then can't record.
+    const updated = (secrets: readonly SecretMeta[]) => {
+      const old = secrets.find((s) => s.name === name)
+      // A new value keeps its field binding: it's the same login, just another password.
+      const meta: SecretMeta = {
+        name,
+        kind,
+        origins: old === undefined ? [origin] : [...new Set([...old.origins, origin])],
+        ...(old?.field !== undefined && { field: old.field }),
+        updatedAt: new Date().toISOString(),
+      }
+      return [...secrets.filter((s) => s.name !== name), meta]
+    }
+    VaultFile.parse({ version: 1, secrets: updated(this.#secrets) })
     const value = await ask({ name, kind, origin, reason: form.reason.slice(0, 500) })
     if (value === undefined || value === "") return "declined"
     await this.#backend.set(name, value)
-    const old = this.#find(name)
-    const origins = old === undefined ? [origin] : [...new Set([...old.origins, origin])]
-    // A new value keeps its field binding: it's the same login, just another password.
-    const meta: SecretMeta = {
-      name,
-      kind,
-      origins,
-      ...(old?.field !== undefined && { field: old.field }),
-      updatedAt: new Date().toISOString(),
-    }
-    await this.#save([...this.#secrets.filter((s) => s.name !== name), meta])
+    this.#update(updated)
     return "provided"
   }
 
@@ -128,8 +124,10 @@ export class Vault {
     if (!meta.origins.includes(use.origin)) {
       throw new SecretRefusal(`secret "${name}" isn't allowed on ${use.origin}`)
     }
-    const field = FieldBinding.parse(use.field)
-    if (meta.field !== undefined && canonical(meta.field) !== canonical(field)) {
+    const parsed = FieldBinding.safeParse(use.field)
+    if (!parsed.success) throw new SecretRefusal(`secret "${name}": the field can't be identified`)
+    const field = parsed.data
+    if (meta.field !== undefined && !isDeepStrictEqual(meta.field, field)) {
       throw new SecretRefusal(
         `secret "${name}" is bound to another field: the user can unbind it in the vault if the form changed`,
       )
@@ -138,9 +136,10 @@ export class Vault {
     if (value === undefined || value === "") {
       throw new SecretRefusal(`secret "${name}" has no value on this machine`)
     }
-    if (meta.field === undefined) {
-      await this.#save(this.#secrets.map((s) => (s.name === name ? { ...s, field } : s)))
-    }
+    // Bound at first use (the latest metadata: another call may have bound it meanwhile).
+    this.#update((secrets) =>
+      secrets.map((s) => (s.name === name && s.field === undefined ? { ...s, field } : s)),
+    )
     return value
   }
 
@@ -150,9 +149,9 @@ export class Vault {
   }
 
   /** The user's action (never an agent tool): the next use binds the field again. */
-  async unbind(name: string): Promise<void> {
-    await this.#save(
-      this.#secrets.map((s) => {
+  unbind(name: string): void {
+    this.#update((secrets) =>
+      secrets.map((s) => {
         if (s.name !== name) return s
         const { field: _, ...rest } = s
         return rest
@@ -163,24 +162,24 @@ export class Vault {
   /** Removes a secret: its value from the keychain, its metadata from the vault. */
   async remove(name: string): Promise<void> {
     await this.#backend.delete(name)
-    await this.#save(this.#secrets.filter((s) => s.name !== name))
+    this.#update((secrets) => secrets.filter((s) => s.name !== name))
   }
 
   #find(name: string): SecretMeta | undefined {
     return this.#secrets.find((s) => s.name === name)
   }
 
-  async #save(secrets: SecretMeta[]): Promise<void> {
-    const file: VaultFile = VaultFile.parse({ version: 1, secrets })
-    const write = this.#writing.then(() => {
-      mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 })
-      const tmp = `${this.#path}.${process.pid}.tmp`
-      writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600 })
-      chmodSync(tmp, 0o600)
-      renameSync(tmp, this.#path)
-    })
-    this.#writing = write.catch(() => undefined)
-    await write
+  /**
+   * Applies a change to the LATEST metadata and writes it, synchronously: no other call can run in
+   * between, so no update is lost. Atomic on disk (a crash leaves the previous file).
+   */
+  #update(change: (secrets: readonly SecretMeta[]) => SecretMeta[]): void {
+    const file: VaultFile = VaultFile.parse({ version: 1, secrets: change(this.#secrets) })
+    mkdirSync(dirname(this.#path), { recursive: true, mode: 0o700 })
+    const tmp = `${this.#path}.${process.pid}.tmp`
+    writeFileSync(tmp, JSON.stringify(file, null, 2) + "\n", { mode: 0o600 })
+    chmodSync(tmp, 0o600)
+    renameSync(tmp, this.#path)
     this.#secrets = file.secrets
   }
 }

@@ -1,4 +1,5 @@
 import type {
+  Locator as LocatorSpec,
   Condition,
   Ensure,
   ProjectConfig,
@@ -1108,7 +1109,7 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
           secretOrigin = new URL(page.url()).origin
           text = await resolveSecret(ctx, secret, step, {
             origin: secretOrigin,
-            field: { target: action.target, ...field },
+            field: { ...bindingOf(action.target), ...field },
           })
         }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
@@ -2096,10 +2097,18 @@ export function pathOnly(url: string): string {
 function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef) {
   if (secret === undefined) return
   const origin = new URL(ctx.page.url()).origin
-  // Per-secret origin binding comes with the vault (APPROACHES §7.4).
+  // Always the project's origin, whatever the resolver: the vault then checks the secret's own
+  // origins (a secret for another origin, an SSO page, is refused here; BACKLOG).
   if (origin !== ctx.base.origin) {
     throw new StepError(step, "off-origin", `refusing to type secret "${secret}" on ${origin}`)
   }
+}
+
+/** The part of a target that identifies a field: its locator and `nth`, not its healing metadata. */
+function bindingOf(target: Target): { locator: LocatorSpec; nth?: number } {
+  if (!isGrounded(target)) throw new Error("an ungrounded target can't take a secret")
+  const { intent: _i, fallbacks: _f, fingerprint: _p, nth, ...locator } = target
+  return { locator, ...(nth !== undefined && { nth }) }
 }
 
 /** What the focused element is (runs in the page): the part of a vault field binding it knows. */
@@ -2108,8 +2117,9 @@ function focusedField(el: Element): { inputType: string | null; autocomplete: st
   const active =
     (root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null) ?? el
   return {
-    inputType: active instanceof HTMLInputElement ? active.type : null,
-    autocomplete: active.getAttribute("autocomplete"),
+    inputType: active instanceof HTMLInputElement ? active.type.slice(0, 40) : null,
+    // A random anti-autofill value can be long: the start is enough to tell fields apart.
+    autocomplete: active.getAttribute("autocomplete")?.slice(0, 200) ?? null,
   }
 }
 
