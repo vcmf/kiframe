@@ -8,7 +8,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
-import { hardenedLaunchOptions, recordScenario, type RunnerEvent } from "@kiframe/runtime"
+import { recordScenario, type RunnerEvent } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium, type BrowserContextOptions } from "playwright"
 
@@ -45,7 +45,7 @@ for (const d of dirty) {
 }
 mkdirSync(values.out, { recursive: true })
 
-const browser = await chromium.launch(hardenedLaunchOptions({ headless: !values.headed }))
+const browser = await chromium.launch({ headless: !values.headed })
 let storageState: BrowserContextOptions["storageState"]
 const sessions = new Set<string>()
 const report: Record<string, unknown>[] = []

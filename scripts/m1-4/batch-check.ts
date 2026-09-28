@@ -4,7 +4,7 @@
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
-import { hardenedLaunchOptions, recordBatch } from "@kiframe/runtime"
+import { recordBatch } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
@@ -32,7 +32,7 @@ steps:
   - { id: bookings, action: goto, url: /bookings/upcoming }
   - { id: seen, action: expect, that: { url: /bookings } }
 `)
-const browser = await chromium.launch(hardenedLaunchOptions({ headless: !values.headed }))
+const browser = await chromium.launch({ headless: !values.headed })
 let logins = 0
 try {
   const results = await recordBatch(

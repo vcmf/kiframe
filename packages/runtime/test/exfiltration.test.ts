@@ -1,23 +1,21 @@
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kiframe/schema"
 import { memoryBackend, Vault } from "@kiframe/vault"
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import {
-  hardenedLaunchOptions,
-  recordScenario,
-  runScenario,
-  screenshotForModel,
-  StepError,
-} from "../src/index.ts"
+import { PNG } from "pngjs"
+import { recordScenario, runScenario, screenshotForModel, StepError } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 // The vault's exfiltration suite (APPROACHES §7.4, M1-7): hostile pages try to get a typed secret
 // out through the take, the reports, another field, another origin or the runtime's own page code.
 
-const SECRET = "hunter2-Very-secret"
+// URL-special characters: its encoded forms differ from it (a space, a slash, an ampersand).
+const SECRET = "hunter2 Very/secret&!"
+const TMP = mkdtempSync(join(tmpdir(), "kiframe-exfil-"))
+const tmp = (name: string) => mkdtempSync(join(TMP, `${name}-`))
 let server: Awaited<ReturnType<typeof startFixtureServer>>
 let browser: Browser
 let page: Page
@@ -25,7 +23,7 @@ let project: ProjectConfig
 
 beforeAll(async () => {
   server = await startFixtureServer()
-  browser = await chromium.launch(hardenedLaunchOptions())
+  browser = await chromium.launch()
   project = parseProjectYaml(`version: 1
 target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
@@ -34,6 +32,8 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 afterAll(async () => {
   await browser.close()
   await server.close()
+  // Raw takes hold unblurred frames of the test secret: never left behind.
+  rmSync(TMP, { recursive: true, force: true })
 })
 beforeEach(async () => {
   const context = await browser.newContext({ viewport: { width: 800, height: 600 } })
@@ -62,7 +62,7 @@ const vault = async () => {
 }
 
 const take = async (path: string) => {
-  const dir = join(mkdtempSync(join(tmpdir(), "kiframe-exfil-")), "take")
+  const dir = join(tmp("take"), "take")
   const v = await vault()
   return recordScenario(page, typePassword(path), project, {
     outDir: dir,
@@ -75,20 +75,43 @@ describe("exfiltration", () => {
   it("a page mirroring the secret into text and its URL: blurred, never in the take", async () => {
     const t = await take("/evil-mirror")
     expect(await page.locator("#echo").textContent()).toContain(SECRET)
-    const events = JSON.stringify(t.events)
-    for (const variant of [SECRET, encodeURIComponent(SECRET), SECRET.toLowerCase()]) {
-      expect(events.toLowerCase()).not.toContain(variant.toLowerCase())
-    }
     expect(t.events.some((e) => e.kind === "sensitive" && e.why === "secret-text")).toBe(true)
-    expect(JSON.stringify(t.warnings)).not.toContain(SECRET)
+    // Every text file the take wrote (events, cursor, meta, warnings), in every encoding the page
+    // used (its path and its query).
+    const variants = [
+      SECRET,
+      encodeURIComponent(SECRET),
+      new URLSearchParams({ v: SECRET }).toString().slice(2),
+      "hunter2",
+    ].map((v) => v.toLowerCase())
+    for (const file of readdirSync(t.dir)) {
+      const path = join(t.dir, file)
+      if (statSync(path).isDirectory() || !/\.(json|jsonl)$/.test(file)) continue
+      const content = readFileSync(path, "utf8").toLowerCase()
+      for (const v of variants) expect(content, file).not.toContain(v)
+    }
   })
 
   it("the model's screenshot of that page has the mirrored secret painted over", async () => {
     await page.goto(`${server.url}/evil-mirror`)
     await page.locator("#pw").fill(SECRET)
-    const before = await page.screenshot({ type: "png" })
-    const shot = await screenshotForModel(page, [SECRET])
-    expect(shot.equals(before)).toBe(false)
+    const echo = await page.locator("#echo").evaluate((el) => {
+      // The mirrored secret's own box (after "You typed "), not the whole paragraph.
+      const range = document.createRange()
+      const text = el.firstChild as Text
+      range.setStart(text, "You typed ".length)
+      range.setEnd(text, text.length)
+      const r = range.getBoundingClientRect()
+      return { x: r.x, y: r.y, width: r.width, height: r.height }
+    })
+    const png = PNG.sync.read(await screenshotForModel(page, [SECRET]))
+    // Every pixel of the secret's box is painted over.
+    for (let y = Math.ceil(echo.y); y < Math.floor(echo.y + echo.height); y++) {
+      for (let x = Math.ceil(echo.x); x < Math.floor(echo.x + echo.width); x++) {
+        const i = (y * png.width + x) * 4
+        expect([png.data[i], png.data[i + 1], png.data[i + 2]]).toEqual([40, 40, 40])
+      }
+    }
   })
 
   it("a page moving focus to another field: nothing typed anywhere", async () => {
@@ -108,15 +131,15 @@ describe("exfiltration", () => {
       resolveSecret: v.resolver(),
       timeoutMs: 1500,
     }).catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(StepError)
-    expect(String(error)).not.toContain(SECRET)
-    // It did leave: the field on the other origin is empty.
-    expect(new URL(page.url()).hostname).toBe("localhost")
+    // Whenever the page left (before or after the checks), the write went to the approved element
+    // or nowhere: never into the other origin's field.
+    await page.waitForURL(/localhost/)
     expect(await page.locator("#pw").inputValue()).toBe("")
+    expect(String(error)).not.toContain("hunter2")
   })
 
   it("the runtime's in-page code never hands the page a secret value", async () => {
-    const dir = join(mkdtempSync(join(tmpdir(), "kiframe-exfil-")), "take")
+    const dir = join(tmp("take"), "take")
     const v = await vault()
     await recordScenario(page, typePassword("/evil-spy"), project, {
       outDir: dir,
@@ -146,20 +169,17 @@ describe("exfiltration", () => {
 })
 
 describe("hardening", () => {
-  it("never starts a Playwright trace (traces record fill arguments in plain text)", async () => {
-    const { readdirSync, readFileSync } = await import("node:fs")
-    const src = join(import.meta.dirname, "..", "src")
-    for (const file of readdirSync(src)) {
-      expect(readFileSync(join(src, file), "utf8")).not.toMatch(/\.tracing\b/)
-    }
-  })
-
-  it("merges its flags into the caller's --disable-features", () => {
-    const { args } = hardenedLaunchOptions({ args: ["--disable-features=Foo", "--mute-audio"] })
-    const features = args?.filter((a) => a.startsWith("--disable-features=")) ?? []
-    expect(features).toHaveLength(1)
-    expect(features[0]).toContain("Foo")
-    expect(features[0]).toContain("PasswordLeakDetection")
-    expect(args).toContain("--mute-audio")
+  it("never touches Playwright's trace API (traces record fill arguments in plain text)", () => {
+    const root = join(import.meta.dirname, "..", "..", "..")
+    const sources = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
+        const path = join(dir, d.name)
+        if (d.isDirectory()) return d.name === "node_modules" ? [] : sources(path)
+        return /\.(ts|tsx|js|mjs)$/.test(d.name) ? [path] : []
+      })
+    const dirs = ["packages", "apps", "scripts"].map((d) => join(root, d))
+    const files = dirs.flatMap((d) => sources(d)).filter((f) => !/[/\\]test[/\\]|\.test\./.test(f))
+    expect(files.length).toBeGreaterThan(10)
+    for (const file of files) expect(readFileSync(file, "utf8"), file).not.toMatch(/tracing/)
   })
 })
