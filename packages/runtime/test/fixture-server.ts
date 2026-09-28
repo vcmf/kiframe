@@ -3,6 +3,27 @@ import type { AddressInfo } from "node:net"
 
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
+  // The same list, but the drag starts only after 8 px of movement (dnd-kit's distance constraint).
+  "/sortable-8": `<!doctype html><title>Sortable 8</title>
+    <style>li { height: 40px; list-style: none; border-bottom: 1px solid #ccc }</style>
+    <ul id="l" style="width:300px"><li>A</li><li>B</li><li>C</li><li>D</li><li>E</li></ul><p id="s"></p>
+    <script>
+      const list = document.getElementById("l"); let held, from, started = false
+      list.addEventListener("pointerdown", (e) => { held = e.target.closest("li"); from = { x: e.clientX, y: e.clientY }; started = false; list.setPointerCapture(e.pointerId) })
+      list.addEventListener("pointermove", (e) => {
+        if (!held || started) return
+        if (Math.hypot(e.clientX - from.x, e.clientY - from.y) >= 8) { started = true; held.style.display = "none" }
+      })
+      list.addEventListener("pointerup", (e) => {
+        if (!held) return
+        list.releasePointerCapture(e.pointerId)
+        const under = document.elementFromPoint(e.clientX, e.clientY)?.closest("li")
+        held.style.display = ""
+        if (started && under && under !== held) list.insertBefore(held, under)
+        held = undefined
+        document.getElementById("s").textContent = [...list.children].map((li) => li.textContent).join(" ")
+      })
+    </script>`,
   // A sortable list: pressing an item takes it out of the flow (the rows below shift up); it's
   // dropped before the row under the pointer.
   "/sortable": `<!doctype html><title>Sortable</title>
