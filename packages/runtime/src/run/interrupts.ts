@@ -1,7 +1,7 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { ProbeRefusal } from "../secret-state.ts"
+import { isSafeSelector, ProbeRefusal } from "../secret-state.ts"
 import { toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
@@ -11,7 +11,12 @@ import { settle } from "./settle.ts"
 
 /** One `display: none` rule per selector: a selector the browser rejects doesn't void the others. */
 export function hideCss(selectors: readonly string[]): string {
-  return selectors.map((s) => `${s} { display: none !important; }`).join("\n")
+  // The A8 grammar always (§3): a hide rule is live CSS for the whole run, so one testing a value
+  // (`form:has(input[value^=h]) button`) would change what later steps see.
+  return selectors
+    .filter(isSafeSelector)
+    .map((s) => `${s} { display: none !important; }`)
+    .join("\n")
 }
 
 /** Pages already hiding a given CSS (a harness may run many scenarios on one page). */
@@ -70,11 +75,17 @@ function whenOf(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Locator {
 }
 
 /** The first rule (in order, not in `skip`) whose `when` is visible right now (no waiting). */
+/** Rules already reported as skipped (§3 A8), per context: one warning each, not one per step. */
+const skippedRulesOf = new WeakMap<object, Set<string>>()
+
 async function matchingInterrupt(
   ctx: Ctx,
   skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
   const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
+  const context = ctx.page.context()
+  const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
+  skippedRulesOf.set(context, skippedRules)
   // All rules queried at once, not one after another (an org rule bank can be long).
   const counts = await Promise.all(
     rules.map((rule) => {
@@ -86,10 +97,13 @@ async function matchingInterrupt(
         // A `when` that could probe a known value (§3 A8) never matches while secrets are known:
         // the rule is refused by its selector's form, whatever the value (nothing leaks).
         if (!(error instanceof ProbeRefusal)) throw error
-        ctx.options.onEvent?.({
-          kind: "warning",
-          message: `interrupt rule "${rule.id}" is skipped: ${error.message}`,
-        })
+        if (!skippedRules.has(rule.id)) {
+          skippedRules.add(rule.id)
+          ctx.options.onEvent?.({
+            kind: "warning",
+            message: `interrupt rule "${rule.id}" is skipped: ${error.message}`,
+          })
+        }
         return Promise.resolve(0)
       }
     }),

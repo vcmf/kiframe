@@ -2,6 +2,7 @@ import type { ProjectConfig, Scenario } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
+import { isSafeSelector } from "./secret-state.ts"
 import { type Ctx, firstLine, MIN_TIMEOUT_MS, type RunOptions } from "./run/context.ts"
 import { applyHide, hideCss } from "./run/interrupts.ts"
 import { switchPage } from "./run/pages.ts"
@@ -146,6 +147,15 @@ export async function runScenario(
     },
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
+  }
+  // Hide rules the A8 grammar refuses are skipped (a hide rule is live CSS: it could test a value).
+  for (const s of project.hide) {
+    if (!isSafeSelector(s)) {
+      options.onEvent?.({
+        kind: "warning",
+        message: `hide rule "${s}" is skipped: only simple CSS selectors (tags, #ids, .classes, attributes other than value)`,
+      })
+    }
   }
   await applyHide(ctx, page)
   // While recording, secrets shown as text are looked for between steps and during them.

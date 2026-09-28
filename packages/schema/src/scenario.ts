@@ -18,7 +18,8 @@ import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from ".
 
 const RoleLocator = z.strictObject({
   by: z.literal("role"),
-  role: z.string().min(1),
+  /** An ARIA role name (lowercase letters): nothing else reaches Playwright's selector. */
+  role: z.string().regex(/^[a-z]{2,40}$/, "an ARIA role name (button, textbox, menuitemcheckbox…)"),
   name: z.string().optional(),
   exact: z.boolean().optional(),
 })

@@ -7,6 +7,8 @@ import type { Locator, Page } from "playwright"
 export function toPlaywright(page: Page, locator: SchemaLocator): Locator {
   switch (locator.by) {
     case "role":
+      // Spliced into Playwright's selector unescaped: only a role name, never selector syntax.
+      if (!/^[a-z]{2,40}$/.test(locator.role)) throw new Error(`not an ARIA role: ${locator.role}`)
       return page.getByRole(locator.role as Parameters<Page["getByRole"]>[0], {
         ...(locator.name !== undefined && { name: locator.name }),
         ...(locator.exact !== undefined && { exact: locator.exact }),

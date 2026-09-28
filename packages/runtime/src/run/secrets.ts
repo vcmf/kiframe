@@ -475,17 +475,17 @@ export async function writeSecret(
   timeout: number,
 ): Promise<void> {
   try {
+    const before = await write.input.inputValue({ timeout })
+    // Actionable first, so `fill` doesn't wait itself: then the page's URL last (a `pushState`
+    // doesn't detach the handle), and nothing awaits between it and the write but the write.
+    await write.input.waitForElementState("visible", { timeout })
+    await write.input.waitForElementState("editable", { timeout })
     // The element as approved: the approval prompt or the keychain may have taken seconds, and a
     // "show password" toggle (or the page) may have turned it into a text field meanwhile.
     const element = await write.input.evaluate(elementInfo, undefined)
     if (!isDeepStrictEqual(element, write.use.element)) {
       throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
     }
-    const before = await write.input.inputValue({ timeout })
-    // Actionable first, so `fill` doesn't wait itself: then the page's URL last (a `pushState`
-    // doesn't detach the handle), and nothing awaits between it and the write but the write.
-    await write.input.waitForElementState("visible", { timeout })
-    await write.input.waitForElementState("editable", { timeout })
     const now = new URL(ctx.page.url())
     if (now.origin !== write.use.origin || now.pathname !== write.use.path) {
       throw new StepError(
@@ -664,6 +664,7 @@ export async function assertDragKeepsSecrets(
 }
 
 export { secretsOf, type ContextSecrets } from "../secret-state.ts"
+import { isSafeSelector } from "../secret-state.ts"
 
 /** Releases a prepared write that won't happen (the step failed before it). */
 export async function abandonSecretWrite(write: SecretWrite | undefined): Promise<void> {
@@ -672,6 +673,14 @@ export async function abandonSecretWrite(write: SecretWrite | undefined): Promis
 
 /** A secret step's target has no fallbacks and no `nth` (§3 A2). */
 export function assertSecretTarget(target: Target, step: StepRef, secret: string): void {
+  // Its locator is re-run after the write (to follow the field's blur): always the A8 grammar.
+  if (isGrounded(target) && target.by === "css" && !isSafeSelector(target.selector)) {
+    throw new StepError(
+      step,
+      "secret-refused",
+      `secret "${secret}": a step typing a secret needs a simple CSS selector (tags, #ids, .classes, attributes other than value)`,
+    )
+  }
   if (isGrounded(target) && (target.fallbacks !== undefined || target.nth !== undefined)) {
     throw new StepError(
       step,
