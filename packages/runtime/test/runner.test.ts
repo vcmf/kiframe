@@ -5,6 +5,7 @@ import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kifram
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { runScenario, StepError, type RunnerEvent } from "../src/index.ts"
+import { memoryBackend, Vault } from "@kiframe/vault"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -143,6 +144,33 @@ steps:
     expect(await page.getByLabel("Password").inputValue()).toBe("hunter2-secret")
     expect(JSON.stringify(events)).not.toContain("hunter2-secret")
     expect(events.find((e) => e.kind === "type")).toMatchObject({ secret: "acme.password" })
+  })
+
+  it("types a vault secret only into the field it's bound to, on its origin", async () => {
+    const vault = Vault.open(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    const origin = new URL(server.url).origin
+    await vault.request({ name: "acme.password", kind: "password", origin, reason: "log in" }, () =>
+      Promise.resolve("hunter2-secret"),
+    )
+    const into = (target: string) => `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: ${target}, value: "{{secrets.acme.password}}" }
+`
+    const password = "{ by: label, name: Password input }"
+    await run(into(password), { resolveSecret: vault.resolver() })
+    expect(await page.getByLabel("Password input").inputValue()).toBe("hunter2-secret")
+    expect(vault.list()[0]?.field).toMatchObject({ inputType: "password" })
+    // The same secret into another same-origin field: refused, nothing typed.
+    const error = await failure(into("{ by: label, name: Email }"), {
+      resolveSecret: vault.resolver(),
+    })
+    expect(error.reason).toBe("secret-refused")
+    expect(error.message).toMatch(/bound to another field/)
+    expect(await page.getByLabel("Email").inputValue()).toBe("")
+    await run(into(password), { resolveSecret: vault.resolver() })
   })
 
   it("fails clearly when a secret is unavailable, without leaking the resolver's error", async () => {

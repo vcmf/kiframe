@@ -1,5 +1,5 @@
 {
-  "name": "@kiframe/runtime",
+  "name": "@kiframe/vault",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,10 +11,7 @@
   },
   "dependencies": {
     "@kiframe/schema": "workspace:*",
-    "playwright": "1.63.0",
-    "@kiframe/vault": "workspace:*"
-  },
-  "devDependencies": {
-    "@kiframe/generators": "workspace:*"
+    "@napi-rs/keyring": "2.1.0",
+    "zod": "^4.6.5"
   }
 }
