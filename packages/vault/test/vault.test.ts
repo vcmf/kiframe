@@ -6,7 +6,7 @@ import { memoryBackend, SecretRefusal, Vault, type FieldBinding } from "../src/i
 
 const ORIGIN = "https://staging.acme.com"
 const PASSWORD_FIELD: FieldBinding = {
-  target: { by: "label", name: "Password" },
+  locator: { by: "label", name: "Password" },
   inputType: "password",
   autocomplete: "current-password",
 }
@@ -69,7 +69,11 @@ describe("Vault", () => {
       vault.resolve("acme.password", { origin: "https://evil.com", field: PASSWORD_FIELD }),
       vault.resolve("acme.password", {
         origin: ORIGIN,
-        field: { target: { by: "label", name: "Search" }, inputType: "search", autocomplete: null },
+        field: {
+          locator: { by: "label", name: "Search" },
+          inputType: "search",
+          autocomplete: null,
+        },
       }),
       vault.resolve("acme.password", {
         origin: ORIGIN,
@@ -90,8 +94,8 @@ describe("Vault", () => {
     await vault.resolve("acme.password", { origin: ORIGIN, field: PASSWORD_FIELD })
     await vault.request(form, provide("new-value"))
     expect(vault.list()[0]?.field).toEqual(PASSWORD_FIELD)
-    await vault.unbind("acme.password")
-    const moved = { ...PASSWORD_FIELD, target: { by: "label" as const, name: "Passcode" } }
+    vault.unbind("acme.password")
+    const moved = { ...PASSWORD_FIELD, locator: { by: "label" as const, name: "Passcode" } }
     expect(await vault.resolve("acme.password", { origin: ORIGIN, field: moved })).toBe("new-value")
   })
 
@@ -112,6 +116,53 @@ describe("Vault", () => {
     await expect(
       vault.resolve("acme.password", { origin: ORIGIN, field: PASSWORD_FIELD }),
     ).rejects.toThrow(/no value on this machine/)
+  })
+
+  it("loses no update when a resolve binds during a pending request", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    let answer: (v: string) => void = () => undefined
+    const pending = vault.request(
+      { ...form, name: "acme.username", kind: "username" },
+      () => new Promise<string>((resolve) => (answer = resolve)),
+    )
+    await vault.resolve("acme.password", { origin: ORIGIN, field: PASSWORD_FIELD })
+    answer("bob")
+    await pending
+    const list = vault.list()
+    expect(list.find((s) => s.name === "acme.password")?.field).toEqual(PASSWORD_FIELD)
+    expect(list.find((s) => s.name === "acme.username")).toBeDefined()
+  })
+
+  it("never changes a secret's kind, nor asks for a value it can't record", async () => {
+    const { vault, backend } = open()
+    await vault.request(form, provide("old"))
+    await expect(vault.request({ ...form, kind: "text" }, provide("x"))).rejects.toThrow(
+      /is a password/,
+    )
+    for (let i = 1; i < 20; i++)
+      await vault.request({ ...form, origin: `https://o${i}.acme.com` }, provide("old"))
+    let asked = false
+    await expect(
+      vault.request(
+        { ...form, origin: "https://o21.acme.com" },
+        () => ((asked = true), Promise.resolve("new")),
+      ),
+    ).rejects.toThrow()
+    expect(asked).toBe(false)
+    expect(backend.values.get("acme.password")).toBe("old")
+  })
+
+  it("refuses, as a refusal, a field it can't identify", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    const error = await vault
+      .resolve("acme.password", {
+        origin: ORIGIN,
+        field: { ...PASSWORD_FIELD, autocomplete: "x".repeat(500) },
+      })
+      .catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(SecretRefusal)
   })
 
   it("never resets a metadata file it can't read", () => {

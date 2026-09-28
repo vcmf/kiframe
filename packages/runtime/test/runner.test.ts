@@ -170,7 +170,10 @@ steps:
     expect(error.reason).toBe("secret-refused")
     expect(error.message).toMatch(/bound to another field/)
     expect(await page.getByLabel("Email").inputValue()).toBe("")
-    await run(into(password), { resolveSecret: vault.resolver() })
+    // Healing metadata isn't part of the binding: a re-grounded target on the same field is fine.
+    await run(into(`{ by: label, name: Password input, intent: "the password" }`), {
+      resolveSecret: vault.resolver(),
+    })
   })
 
   it("fails clearly when a secret is unavailable, without leaking the resolver's error", async () => {
