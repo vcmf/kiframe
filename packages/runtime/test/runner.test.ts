@@ -332,6 +332,14 @@ steps: [{ id: file, action: upload, target: { by: label, name: Avatar file }, fi
       { resolveAsset },
     )
     expect(await page.locator("#s").textContent()).toBe(`hid2: ${asset}`)
+    // A dropzone ("Drag & drop files here") is no risky action, unattended too.
+    await run(
+      `setup: [{ action: goto, url: /upload }]
+steps: [{ id: drop, action: upload, target: { by: role, role: button, name: "Drag & drop files here, or click to browse" }, file: ${asset} }]
+`,
+      { resolveAsset },
+    )
+    expect(await page.locator("#s").textContent()).toBe(`hidden: ${asset}`)
   })
 
   it("returns to the opener in the step that closed the popup (with the default settle)", async () => {
