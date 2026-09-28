@@ -20,6 +20,7 @@ export type StepErrorReason =
   | "off-origin"
   | "risky-not-approved"
   | "secret-unavailable"
+  | "secret-refused"
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"
@@ -47,4 +48,21 @@ export class StepError extends Error {
     this.reason = reason
     this.detail = detail
   }
+}
+
+/** Where and into what a secret is about to be typed: what the resolver (the vault) checks. */
+export interface SecretUse {
+  /** The page's origin. */
+  origin: string
+  /** The focused field's kind: an input's `type`, `textarea`, `contenteditable` or `other`. */
+  field: { inputType: string }
+}
+
+/**
+ * A resolver's refusal (the vault's `SecretRefusal`): any error with `code: "secret-refused"`, not
+ * `instanceof` (duplicate modules). Over IPC the host must rethrow it with its code (Electron drops
+ * custom properties). Its message is reported, so it must never hold a value.
+ */
+export function isSecretRefusal(error: unknown): error is Error {
+  return error instanceof Error && (error as { code?: unknown }).code === "secret-refused"
 }
