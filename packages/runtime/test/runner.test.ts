@@ -168,7 +168,7 @@ steps:
       resolveSecret: vault.resolver(),
     })
     expect(error.reason).toBe("secret-refused")
-    expect(error.message).toMatch(/bound to another field/)
+    expect(error.message).toMatch(/only goes into a password field/)
     expect(await page.getByLabel("Email").inputValue()).toBe("")
     // A fallback that matches another field is judged by what it matched, not the primary locator.
     const viaFallback = await failure(
@@ -1191,11 +1191,11 @@ teardown:
       `steps:
   - { id: go, action: goto, url: /login-form }
   - { id: email, action: type, target: { by: label, name: Email }, value: bob@acme.com }
-  - { id: pw, action: type, target: { by: css, selector: .password-field }, value: "{{secrets.acme.password}}" }
+  - { id: pw, action: type, target: { by: css, selector: body }, value: "{{secrets.acme.password}}" }
 `,
       { resolveSecret: () => "hunter2" },
     )
-    expect(error.message).toMatch(/can't take keyboard focus/)
+    expect(error.message).toMatch(/can't take keyboard focus|goes into an input itself/)
     expect(await page.getByLabel("Email").inputValue()).toBe("bob@acme.com")
   })
 

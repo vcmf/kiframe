@@ -5,11 +5,7 @@ import { describe, expect, it } from "vitest"
 import { memoryBackend, SecretRefusal, Vault, type FieldBinding } from "../src/index.ts"
 
 const ORIGIN = "https://staging.acme.com"
-const PASSWORD_FIELD: FieldBinding = {
-  locator: { by: "label", name: "Password" },
-  inputType: "password",
-  autocomplete: "current-password",
-}
+const PASSWORD_FIELD: FieldBinding = { inputType: "password" }
 const open = () => {
   const path = join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault", "vault.json")
   const backend = memoryBackend()
@@ -69,11 +65,7 @@ describe("Vault", () => {
       vault.resolve("acme.password", { origin: "https://evil.com", field: PASSWORD_FIELD }),
       vault.resolve("acme.password", {
         origin: ORIGIN,
-        field: {
-          locator: { by: "label", name: "Search" },
-          inputType: "search",
-          autocomplete: null,
-        },
+        field: { inputType: "search" },
       }),
       vault.resolve("acme.password", {
         origin: ORIGIN,
@@ -88,15 +80,28 @@ describe("Vault", () => {
     }
   })
 
-  it("lets the user unbind a field, keeps the binding when the value changes", async () => {
+  it("binds the field kind at first use; the user can unbind it", async () => {
     const { vault } = open()
-    await vault.request(form, provide("old-value"))
-    await vault.resolve("acme.password", { origin: ORIGIN, field: PASSWORD_FIELD })
-    await vault.request(form, provide("new-value"))
-    expect(vault.list()[0]?.field).toEqual(PASSWORD_FIELD)
-    vault.unbind("acme.password")
-    const moved = { ...PASSWORD_FIELD, locator: { by: "label" as const, name: "Passcode" } }
-    expect(await vault.resolve("acme.password", { origin: ORIGIN, field: moved })).toBe("new-value")
+    const user = { ...form, name: "acme.username", kind: "username" }
+    await vault.request(user, provide("old-value"))
+    await vault.resolve("acme.username", { origin: ORIGIN, field: { inputType: "email" } })
+    await vault.request(user, provide("new-value"))
+    expect(vault.list()[0]?.field).toEqual({ inputType: "email" })
+    await expect(
+      vault.resolve("acme.username", { origin: ORIGIN, field: { inputType: "textarea" } }),
+    ).rejects.toThrow(/bound to another field/)
+    vault.unbind("acme.username")
+    expect(
+      await vault.resolve("acme.username", { origin: ORIGIN, field: { inputType: "text" } }),
+    ).toBe("new-value")
+  })
+
+  it("types a password only into a password field, even at first use", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    await expect(
+      vault.resolve("acme.password", { origin: ORIGIN, field: { inputType: "text" } }),
+    ).rejects.toThrow(/only goes into a password field/)
   })
 
   it("adds a requested origin, and removes a secret everywhere", async () => {
@@ -159,7 +164,7 @@ describe("Vault", () => {
     const error = await vault
       .resolve("acme.password", {
         origin: ORIGIN,
-        field: { ...PASSWORD_FIELD, autocomplete: "x".repeat(500) },
+        field: { inputType: "x".repeat(500) },
       })
       .catch((e: unknown) => e)
     expect(error).toBeInstanceOf(SecretRefusal)
@@ -167,15 +172,10 @@ describe("Vault", () => {
 
   it("gives the value to one of two concurrent first uses only", async () => {
     const { vault } = open()
-    await vault.request(form, provide("v"))
-    const search = {
-      locator: { by: "label" as const, name: "Search" },
-      inputType: "search",
-      autocomplete: null,
-    }
+    await vault.request({ ...form, name: "acme.username", kind: "username" }, provide("v"))
     const results = await Promise.allSettled([
-      vault.resolve("acme.password", { origin: ORIGIN, field: PASSWORD_FIELD }),
-      vault.resolve("acme.password", { origin: ORIGIN, field: search }),
+      vault.resolve("acme.username", { origin: ORIGIN, field: { inputType: "email" } }),
+      vault.resolve("acme.username", { origin: ORIGIN, field: { inputType: "search" } }),
     ])
     expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected"])
   })
