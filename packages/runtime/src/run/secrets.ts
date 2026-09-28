@@ -6,6 +6,12 @@ import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { viewportOf } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
+import {
+  containsKnownValue,
+  isSafeSelector,
+  liveWritten,
+  SAFE_SELECTOR_RULES,
+} from "../secret-state.ts"
 
 // Everything about secret values: resolution, origin checks, the scrubber, field tracking and the text scan.
 
@@ -317,6 +323,7 @@ export function scrubError(error: Error, secrets: Set<string>): Error {
 
 /** A secret about to be written: the approved element (a handle), the value, and the use. */
 export interface SecretWrite {
+  secret: string
   input: ElementHandle<HTMLInputElement | HTMLTextAreaElement>
   value: string
   use: SecretUse
@@ -462,7 +469,7 @@ export async function prepareSecretWrite(
       element: await input.evaluate(elementInfo),
     }
     const value = await resolveSecret(ctx, secret, step, use, input)
-    return { input, value, use }
+    return { secret, input, value, use }
   } catch (error) {
     await input.dispose().catch(() => undefined)
     throw error
@@ -509,12 +516,11 @@ export async function writeSecret(
     const landed = await write.input.evaluate((el) => el.value)
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
-    secretsOf(ctx.page.context()).exactNames = true
     if (landed !== wanted) {
       throw new StepError(
         step,
         "action-failed",
-        `secret "${write.use.stepKey}": the field didn't take the value`,
+        `secret "${write.secret}": the field didn't take the value`,
       )
     }
   } catch (error) {
@@ -662,9 +668,6 @@ export async function assertDragKeepsSecrets(
   }
 }
 
-export { secretsOf, type ContextSecrets } from "../secret-state.ts"
-import { containsKnownValue, isSafeSelector, liveWritten, secretsOf } from "../secret-state.ts"
-
 /** Sets a field's value as a user's input would (runs in the page, on the approved element). */
 function setValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
   const proto =
@@ -687,7 +690,7 @@ export function assertSecretTarget(target: Target, step: StepRef, secret: string
     throw new StepError(
       step,
       "secret-refused",
-      `secret "${secret}": a step typing a secret needs a simple CSS selector (tags, #ids, .classes, attributes other than value)`,
+      `secret "${secret}": a step typing a secret needs a simple CSS selector (${SAFE_SELECTOR_RULES})`,
     )
   }
   if (isGrounded(target) && (target.fallbacks !== undefined || target.nth !== undefined)) {

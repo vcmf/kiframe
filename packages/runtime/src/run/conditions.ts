@@ -36,39 +36,41 @@ export async function waitForCondition(
       const wantVisible = !("hidden" in condition)
       const partial = isPartialName(locator)
       const deadline = Date.now() + timeout
+      const absence = negative || !wantVisible
+      // Whether the last poll couldn't conclude an absence (exact names on, or the page unreadable).
+      let blocked = false
       for (;;) {
         const rule = partial ? await refreshExactNames(page) : { exact: false, unsure: false }
-        const exact = rule.exact
-        // An absence can't be checked by a partial name under the rule: a longer name no longer
-        // matches, and "gone" would be a false pass (a leftover row, a spinner still there). Unsure
-        // (the page is navigating): poll again rather than conclude either way.
-        if (rule.unsure && (negative || !wantVisible)) {
-          if (Date.now() >= deadline)
-            throw new StepError(step, reason, `${what} (after ${timeout} ms)`)
-          await new Promise((resolve) => setTimeout(resolve, 100))
-          continue
+        // An absence can't be concluded by a partial name under the rule (a longer name no longer
+        // matching isn't "gone"), nor on a page that can't be read: poll again, until the field
+        // holding the secret is gone (after the submit) or the deadline.
+        blocked = absence && (rule.exact || rule.unsure)
+        if (!blocked) {
+          const count = await visibleOnly(toPlaywright(page, locator, rule.exact))
+            .count()
+            .catch((error: unknown) => {
+              // A navigation replaced the page mid-poll: poll again on the new one. Anything
+              // else is a real failure (never read as "met").
+              if (isNavigationError(error)) return undefined
+              throw error
+            })
+          if (count !== undefined && count > 0 === wantVisible) return
+          if (count === undefined && absence) blocked = true
         }
-        if (exact && (negative || !wantVisible)) {
-          throw new StepError(
-            step,
-            "secret-refused",
-            `${what}: can't check an absence by a partial name${exactHint}`,
-          )
-        }
-        const count = await visibleOnly(toPlaywright(page, locator, exact))
-          .count()
-          .catch((error: unknown) => {
-            // A navigation replaced the page mid-poll: poll again on the new one. Anything else
-            // is a real failure (never read as "met").
-            if (isNavigationError(error)) return undefined
-            throw error
-          })
-        if (count !== undefined && count > 0 === wantVisible) return
         if (Date.now() >= deadline) {
+          // Never a timeout for an absence that couldn't be checked: `ensure: absent` would read
+          // a timeout as "not there".
+          if (blocked) {
+            throw new StepError(
+              step,
+              "secret-refused",
+              `${what}: couldn't check an absence by a partial name${exactHint}`,
+            )
+          }
           throw new StepError(
             step,
             reason,
-            `${what} (after ${timeout} ms)${exact ? exactHint : ""}`,
+            `${what} (after ${timeout} ms)${rule.exact ? exactHint : ""}`,
           )
         }
         await new Promise((resolve) => setTimeout(resolve, 100))

@@ -287,7 +287,12 @@ async function snapshot(within?: unknown): Promise<string> {
       const issue = parsed.error.issues[0]
       return `invalid \`within\` locator: ${formatIssue(issue)}`
     }
-    root = visibleOnly(await locatorFor(page, parsed.data)).first()
+    try {
+      root = visibleOnly(await locatorFor(page, parsed.data)).first()
+    } catch (e) {
+      // A selector the secrets rules refuse (SECRETS-DESIGN §3 A8): the model gets the reason.
+      return `refused \`within\` locator: ${String(e)}`
+    }
   }
   const text = await root
     .ariaSnapshot({ timeout: 5000 })

@@ -2,7 +2,7 @@ import type { ProjectConfig, Scenario } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
-import { isSafeSelector } from "./secret-state.ts"
+import { SAFE_SELECTOR_RULES, secretsOf } from "./secret-state.ts"
 import { type Ctx, firstLine, MIN_TIMEOUT_MS, type RunOptions } from "./run/context.ts"
 import { applyHide, hideCss } from "./run/interrupts.ts"
 import { switchPage } from "./run/pages.ts"
@@ -12,7 +12,6 @@ import {
   scrubError,
   scrubSecrets,
   TEXT_SCAN_MS,
-  secretsOf,
 } from "./run/secrets.ts"
 import { expandSetup, runSetupEntry } from "./run/setup.ts"
 import { perform } from "./run/actions.ts"
@@ -108,6 +107,7 @@ export async function runScenario(
   }
   const detach = (p: Page) => void p.off("framenavigated", onNavigated)
   attach(page)
+  const hide = hideCss(project.hide)
   const ctx: Ctx = {
     page,
     openers: [],
@@ -118,7 +118,7 @@ export async function runScenario(
     cursors: new Map(),
     interrupts: project.interrupts,
     perform: (action, step) => perform(ctx, action, step),
-    hideCss: hideCss(project.hide),
+    hideCss: hide.css,
     interruptsDone: new WeakMap(),
     inInterrupt: false,
     base,
@@ -155,15 +155,15 @@ export async function runScenario(
   // could test a value a later run knows), reported once per context.
   const warned = warnedHideOf.get(page.context()) ?? new Set<string>()
   warnedHideOf.set(page.context(), warned)
-  for (const s of project.hide) {
-    if (!isSafeSelector(s) && !warned.has(s)) {
-      warned.add(s)
-      options.onEvent?.({
-        kind: "warning",
-        message: `hide rule "${s}" is skipped: only simple CSS selectors (tags, #ids, .classes, attributes other than value)`,
-      })
-    }
+  for (const s of hide.skipped) {
+    if (warned.has(s)) continue
+    warned.add(s)
+    options.onEvent?.({
+      kind: "warning",
+      message: `hide rule "${s}" is skipped: only simple CSS selectors (${SAFE_SELECTOR_RULES})`,
+    })
   }
+
   await applyHide(ctx, page)
   // While recording, secrets shown as text are looked for between steps and during them.
   const scan =
