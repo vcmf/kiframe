@@ -243,6 +243,7 @@ export async function runScenario(
     // The teardown cleans the app where the scene started, not a tab or popup it followed, and
     // never follows a page the scene opened late.
     ctx.opened.length = 0
+    let returnFailure: StepError | undefined
     const root = ctx.openers[0]
     if (
       !ensureFailed &&
@@ -260,17 +261,21 @@ export async function runScenario(
           error instanceof StepError
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
-        try {
-          options.onEvent?.({
-            kind: "teardown_failed",
-            error: scrubError(stepError, secretValues) as StepError,
-          })
-        } catch {
-          // reporting must never stop the cleanup
+        // The first teardown failure is thrown when nothing failed before; later ones are events.
+        if (failure === undefined && returnFailure === undefined) returnFailure = stepError
+        else {
+          try {
+            options.onEvent?.({
+              kind: "teardown_failed",
+              error: scrubError(stepError, secretValues) as StepError,
+            })
+          } catch {
+            // reporting must never stop the cleanup
+          }
         }
       }
     }
-    let teardownFailure: StepError | undefined
+    let teardownFailure: StepError | undefined = returnFailure
     for (const [index, action] of (ensureFailed ? [] : (scenario.teardown ?? [])).entries()) {
       const ref: StepRef = { phase: "teardown", index, stepId: action.id, action: action.action }
       try {
@@ -1028,8 +1033,9 @@ async function drag(
   // Playwright's own drag (its actionability and hit checks), several moves: pointer drag
   // libraries ignore the move that starts a drag. The cursor ends where the drop was.
   const platformDrag = async (to: Locator) => {
-    const box = await to.boundingBox({ timeout: ctx.timeoutMs }).catch(() => null)
     await guard(step, () => source.dragTo(to, { timeout: ctx.timeoutMs, steps: 5 }))
+    // Measured after: dragTo may have scrolled the target into view.
+    const box = await to.boundingBox({ timeout: 300 }).catch(() => null)
     if (box !== null) ctx.cursor = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
   }
   // Filmed (even with instant pacing: the cursor and the press are still reported), or not.
@@ -1094,14 +1100,27 @@ async function drag(
   emit(start, true)
   let released = false
   try {
-    // A small first move: drag libraries start the drag on it, and may re-lay out (the source
-    // leaves the list, a placeholder appears). The drop point is measured after that.
-    const nudge = { x: Math.min(viewport.width - 1, start.x + 4), y: start.y }
+    // A first move past the libraries' activation thresholds (react-beautiful-dnd 5 px, dnd-kit
+    // often 8 px), toward the drop: the drag starts on it and may re-lay out (the source leaves the
+    // list, a placeholder appears). The drop point is measured after that.
+    const dist = Math.max(1, Math.hypot(planned.x - start.x, planned.y - start.y))
+    const step12 = Math.min(12, dist)
+    const nudge = {
+      x: Math.min(
+        viewport.width - 1,
+        Math.max(0, start.x + ((planned.x - start.x) / dist) * step12),
+      ),
+      y: Math.min(
+        viewport.height - 1,
+        Math.max(0, start.y + ((planned.y - start.y) / dist) * step12),
+      ),
+    }
     await guard(step, () => ctx.page.mouse.move(nudge.x, nudge.y))
     emit(nudge, true)
     const to = dest === undefined ? planned : await dropPoint()
     const path = planPath(nudge, to, {
-      pacing: ctx.pacing.cursor,
+      // Off camera (an offset drag in setup / teardown): instant, like any off-camera move.
+      pacing: onCamera ? ctx.pacing.cursor : "instant",
       targetWidth: 40,
       viewport,
       random: seededRandom(`${seedOf(step)}:drag`),
@@ -1114,8 +1133,12 @@ async function drag(
     released = true
     emit(to, false)
   } finally {
-    // Never leave the button held (the next steps would drag too).
-    if (!released) await ctx.page.mouse.up().catch(() => undefined)
+    // Never leave the button held (the next steps would drag too); Escape first cancels the drag
+    // in most libraries, so a failed drag doesn't drop where the cursor happens to be.
+    if (!released) {
+      await ctx.page.keyboard.press("Escape").catch(() => undefined)
+      await ctx.page.mouse.up().catch(() => undefined)
+    }
   }
 }
 
