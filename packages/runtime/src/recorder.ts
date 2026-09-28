@@ -272,7 +272,11 @@ export async function recordScenario(
           push({ ...base(e.step), kind: "key", key: e.keys })
           break
         case "target_fallback":
+          break
         case "teardown_failed":
+          // Only the first teardown failure is thrown (Take.teardownError); every other one is
+          // a warning of the take, never silent.
+          warnings.push(`teardown: ${firstLine(e.error)}`)
           break
       }
     }
