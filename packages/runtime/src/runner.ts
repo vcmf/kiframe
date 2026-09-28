@@ -262,7 +262,7 @@ export async function runScenario(
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
         // The first teardown failure is thrown when nothing failed before; later ones are events.
-        if (failure === undefined && returnFailure === undefined) returnFailure = stepError
+        if (failure === undefined) returnFailure = stepError
         else {
           try {
             options.onEvent?.({
@@ -1208,11 +1208,14 @@ async function upload(
   })
   let picked: FileChooser | undefined
   try {
-    await clickAtCursor(ctx, target, step, {
-      action: "click",
-      target: action.target,
-      ...(action.risky !== undefined && { risky: action.risky }),
-    })
+    // An upload isn't a risky action by itself (a dropzone says "drop"): only `risky: true` gates it.
+    await explainOffScreen(ctx, target, step, () =>
+      clickAtCursor(ctx, target, step, {
+        action: "click",
+        target: action.target,
+        risky: action.risky ?? false,
+      }),
+    )
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => resolve(undefined), ctx.timeoutMs)

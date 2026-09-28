@@ -81,6 +81,7 @@ const pages: Record<string, string> = {
   "/upload": `<!doctype html><title>Upload</title>
     <label>Attachment <input type="file" id="f"></label>
     <button id="b">Choose avatar</button><input type="file" id="hidden" style="display:none">
+    <div id="zone" role="button" tabindex="0" style="padding:20px; border:2px dashed #999">Drag &amp; drop files here, or click to browse</div>
     <label for="hid2">Avatar file</label><input type="file" id="hid2" style="display:none">
     <p id="s"></p>
     <script>
@@ -89,6 +90,7 @@ const pages: Record<string, string> = {
       document.getElementById("hidden").onchange = show
       document.getElementById("hid2").onchange = show
       document.getElementById("b").onclick = () => document.getElementById("hidden").click()
+      document.getElementById("zone").onclick = () => document.getElementById("hidden").click()
     </script>`,
   "/opener": `<!doctype html><title>Opener</title>
     <label>API key <input id="key"></label>
