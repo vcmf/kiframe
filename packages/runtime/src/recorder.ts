@@ -257,6 +257,18 @@ export async function recordScenario(
           }
           break
         }
+        case "secret_text":
+          push({
+            ...base(e.step),
+            // Backdated to the last scan that didn't see it: no frame shows it unblurred. (Its end
+            // needs no margin: the compositor keeps a mask past it for the capture's lag.)
+            ...(e.since !== undefined && { t: Math.max(0, e.since - t0) }),
+            kind: "sensitive",
+            id: e.id,
+            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
+            why: "secret-text",
+          })
+          break
         case "secret_field":
           // The blur follows the field: a new rect where it is now. A field that's gone (no box)
           // shows nothing: an empty rect ends its blur.
@@ -342,6 +354,9 @@ export async function recordScenario(
     try {
       await Promise.all(pendingWrites)
       if (writeError !== undefined) throw writeError
+      // In time order: a secret-text region is reported backdated (stable: same-time events keep
+      // their order).
+      events.sort((a, b) => a.t - b.t)
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
       writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))
       if (frames.length === 0) throw new Error("no frames were captured (the page never painted?)")

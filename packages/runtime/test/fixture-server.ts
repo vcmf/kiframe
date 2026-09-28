@@ -4,6 +4,33 @@ import type { AddressInfo } from "node:net"
 // A tiny local "target app" for runtime tests: a few pages with forms, a list and a dialog.
 const pages: Record<string, string> = {
   // M1-3: a chat widget to hide, a cookie dialog that shows up late, one that shows on first move.
+  // M1-6: a secret shown as text: split across nodes, in a field, hidden, late, in a password input.
+  "/whoami": `<!doctype html><title>Who am I</title>
+    <p id="a">Logged in as <b>bob@</b>acme.com</p>
+    <input id="f" value="bob@acme.com"><input type="password" value="bob@acme.com">
+    <p style="display:none">bob@acme.com</p><p id="late"></p>
+    <script>setTimeout(() => document.getElementById("late").textContent = "Hi BOB@ACME.COM", 400)</script>`,
+  // A name rendered like JSX `{first} {last}` (a space node), with collapsed source whitespace, and
+  // an email split across flex items.
+  "/names": `<!doctype html><title>Names</title>
+    <p id="jsx"></p><p id="ws">Bob
+         Smith</p>
+    <div id="chip" style="display:flex"><span>bob@</span><span>acme.com</span></div>
+    <div id="lit"></div>
+    <script>
+      // Text directly in a shadow root, like a Lit template.
+      document.getElementById("lit").attachShadow({ mode: "open" }).append("Signed in as bob@acme.com")
+      const p = document.getElementById("jsx")
+      p.append(document.createTextNode("Bob"), document.createTextNode(" "), document.createTextNode("Smith"))
+    </script>`,
+  // The secret re-rendered (removed, then back) twice, and a new occurrence above it.
+  "/flicker": `<!doctype html><title>Flicker</title><div id="top"></div><p id="p">Hi bob@acme.com</p>
+    <script>
+      const p = document.getElementById("p")
+      setTimeout(() => p.remove(), 350)
+      setTimeout(() => document.body.append(p), 700)
+      setTimeout(() => document.getElementById("top").textContent = "bob@acme.com", 1000)
+    </script>`,
   // M1-4: a cookie session. "Sign in" sets it, "Sign out" clears it.
   "/session": `<!doctype html><title>Session</title>
     <p id="who"></p><button id="in">Sign in</button><button id="out">Sign out</button>
