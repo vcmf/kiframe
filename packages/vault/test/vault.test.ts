@@ -296,6 +296,30 @@ describe("Vault: grants, round 3 review", () => {
   })
 })
 
+describe("Vault: the grants' hash key", () => {
+  it("is one key for concurrent first uses, kept across reopening", async () => {
+    const { vault, path, backend } = open()
+    await vault.request(form, provide("v"))
+    await Promise.all([
+      vault.approve("acme.password", USE),
+      vault.approve("acme.password", { ...USE, path: "/fr/login" }),
+    ])
+    const reopened = Vault.open(path, backend)
+    expect(await reopened.resolve("acme.password", USE)).toBe("v")
+    expect(await reopened.resolve("acme.password", { ...USE, path: "/fr/login" })).toBe("v")
+  })
+
+  it("is never replaced silently while grants exist: a lost key asks to approve again", async () => {
+    const { vault, path, backend } = await approved()
+    backend.values.delete("#grant-hash-key")
+    const error = await Vault.open(path, backend)
+      .resolve("acme.password", USE)
+      .catch((e: unknown) => e)
+    expect(String(error)).toMatch(/key of the vault's approvals is missing/)
+    expect(vault.grants()).toHaveLength(1)
+  })
+})
+
 describe("path patterns", () => {
   it("masks ids and matches one segment per `*`", () => {
     expect(pathPatternOf("/projects/8123/items/3f2a1c9e-1b2c-4d5e-8f90-123456789abc")).toBe(

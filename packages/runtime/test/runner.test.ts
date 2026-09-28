@@ -441,6 +441,17 @@ steps:
       expect(error.message).toMatch(/in a field holding a secret/)
     })
 
+    it("sees a known value re-flowed by whitespace in a focused field", async () => {
+      const error = await failure(
+        `setup: [{ action: goto, url: /reflowed }, { action: click, target: { by: css, selector: "#bio" } }]
+steps:
+  - { id: k, action: press, keys: "Mod+a" }
+`,
+        { knownSecretValues: ["Bob Smith"] },
+      )
+      expect(error.message).toMatch(/in a field holding a secret/)
+    })
+
     it("says a declined approval is a decline (the scene is blocked, not refused)", async () => {
       const vault = await vaultWithPassword()
       const declined = await failure(into(password), {

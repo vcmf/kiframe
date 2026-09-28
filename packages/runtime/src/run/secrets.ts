@@ -3,7 +3,7 @@ import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@
 import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
-import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
+import { escapeRegExp, scanSecretTextPartly, valuePattern } from "../scanner.ts"
 import { viewportOf } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 
@@ -537,15 +537,9 @@ const chordName = (c: Set<string>) =>
 /** Whether a text contains a known value (in Node: values never go to the page). */
 function containsKnown(ctx: Ctx, text: string | null | undefined): boolean {
   if (text === null || text === undefined || text === "") return false
-  const lower = text.toLowerCase()
-  for (const v of ctx.secretValues) {
-    if (v.trim() === "") continue
-    // A short value (a username "admin") as a whole word only, like the scanner (R2).
-    if (v.length < 6) {
-      if (new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(v)}(?![\\p{L}\\p{N}])`, "iu").test(text))
-        return true
-    } else if (lower.includes(v.toLowerCase())) return true
-  }
+  // The scanner's matcher (R2): whitespace-tolerant, short values as whole words.
+  for (const v of ctx.secretValues)
+    if (v.trim() !== "" && valuePattern(v, "iu").test(text)) return true
   return false
 }
 

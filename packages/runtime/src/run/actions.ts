@@ -427,7 +427,7 @@ async function upload(
   }
   const file = await guard(step, async () => resolver(action.file))
   // A file input is often hidden behind a styled button: `setInputFiles` works on it anyway.
-  const hidden = await hiddenFileInput(ctx, action.target)
+  const hidden = await guard(step, () => hiddenFileInput(ctx, action.target))
   if (hidden !== undefined) {
     await guard(step, () => hidden.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return
@@ -437,7 +437,8 @@ async function upload(
     target = await find(ctx, action.target, step)
   } catch (error) {
     // Nothing visible: the hidden input may have rendered late (checked once more now).
-    const late = await hiddenFileInput(ctx, action.target)
+    // A refusal there (§3 A8) mustn't hide the real error.
+    const late = await hiddenFileInput(ctx, action.target).catch(() => undefined)
     if (late === undefined) throw error
     await guard(step, () => late.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return

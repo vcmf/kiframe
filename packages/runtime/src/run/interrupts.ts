@@ -130,9 +130,13 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
       await guard(ref, () => settle(ctx, false))
       // Best effort, inside the cut: a dialog fading out is gone before the step is filmed. One
       // that fades in place (opacity 0) never counts as hidden: the wait just ends.
-      await whenOf(ctx, rule)
-        .first()
-        .waitFor({ state: "hidden", timeout: Math.min(ctx.timeoutMs, 1000) })
+      // (The `do` may have just made a secret known: a `when` refused now (§3 A8) skips the wait.)
+      await Promise.resolve()
+        .then(() =>
+          whenOf(ctx, rule)
+            .first()
+            .waitFor({ state: "hidden", timeout: Math.min(ctx.timeoutMs, 1000) }),
+        )
         .catch(() => undefined)
     } catch (error) {
       // Its own reason kept (a refused approval stays `risky-not-approved`).

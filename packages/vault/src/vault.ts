@@ -74,21 +74,6 @@ function hashPattern(pattern: string, hash: (s: string) => string): string {
     .join("/")
 }
 
-/** Whether a pathname matches a stored (hashed) pattern: the same rules as `pathMatches`. */
-function hashedPathMatches(stored: string, pathname: string, hash: (s: string) => string): boolean {
-  if (stored === "*") return true
-  const want = stored.split("/")
-  const got = pathname.split("/")
-  return (
-    want.length === got.length &&
-    want.every((w, i) => {
-      const g = got[i] ?? ""
-      if (w === "*") return g !== ""
-      return w === "" ? g === "" : g !== "" && w === hash(g)
-    })
-  )
-}
-
 /** A path's default pattern (§3 A1): numeric, UUID and long hex segments become `*`. */
 export function pathPatternOf(pathname: string): string {
   return pathname
@@ -130,7 +115,7 @@ export class Vault {
   readonly #backend: SecretBackend
   #secrets: SecretMeta[]
   #grants: Grant[]
-  #key: string | undefined
+  #key: Promise<string> | undefined
 
   private constructor(path: string, backend: SecretBackend, file: VaultFile) {
     this.#path = path
@@ -340,7 +325,9 @@ export class Vault {
       return "approved for another target: the step's target changed (healed or re-grounded)"
     }
     if (
-      !onOrigin.some((g) => g.target === u.target && hashedPathMatches(g.pathPattern, u.path, hash))
+      !onOrigin.some(
+        (g) => g.target === u.target && pathMatches(g.pathPattern, hashPattern(u.path, hash)),
+      )
     ) {
       return "approved on other pages, not this one"
     }
@@ -348,14 +335,27 @@ export class Vault {
   }
 
   /** The key of the grants' hashes (in the keychain, created on first use; kept in memory). */
-  async #hashKey(): Promise<string> {
-    if (this.#key !== undefined) return this.#key
-    let key = await this.#backend.get(GRANT_KEY)
-    if (key === undefined || !/^[0-9a-f]{64}$/.test(key)) {
-      key = randomBytes(32).toString("hex")
+  #hashKey(): Promise<string> {
+    // One promise for every caller: concurrent first uses share one key.
+    this.#key ??= (async () => {
+      const stored = await this.#backend.get(GRANT_KEY)
+      if (stored !== undefined && /^[0-9a-f]{64}$/.test(stored)) return stored
+      // A new key only for a vault with no grants yet: with grants, a lost key would silently
+      // invalidate them all (every use would read as "approved for another field").
+      if (this.#grants.length > 0) {
+        throw new SecretRefusal(
+          "no-grant",
+          "the key of the vault's approvals is missing from the keychain: approve the steps again",
+        )
+      }
+      const key = randomBytes(32).toString("hex")
       await this.#backend.set(GRANT_KEY, key)
-    }
-    return (this.#key = key)
+      return key
+    })().catch((error: unknown) => {
+      this.#key = undefined
+      throw error
+    })
+    return this.#key
   }
 
   /** Page-derived text as it's stored and compared: its keyed hash. */
@@ -373,7 +373,7 @@ export class Vault {
         g.stepKey === u.stepKey &&
         g.origin === u.origin &&
         g.target === u.target &&
-        hashedPathMatches(g.pathPattern, u.path, hash) &&
+        pathMatches(g.pathPattern, hashPattern(u.path, hash)) &&
         isDeepStrictEqual(g.element, element),
     )
   }
