@@ -116,3 +116,18 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Late file chooser in headed mode:** a chooser that opens after the step's timeout isn't intercepted any more, so the OS dialog shows: keep a listener that cancels it until the step ends.
 - **Drag of long lists:** a drag doesn't auto-scroll the page while held; a drop target off screen fails with "the drop target isn't on screen".
 
+## @kiframe/runtime interrupts and hide (M1-3)
+- **`ensure` and interrupts:** an `ensure` check doesn't run the interrupt check first; a banner over the list can hide what `ensure: absent` looks for (it then passes). Run the check at the start of `ensure` too.
+- **Stacked interrupts:** rules are tried in config order, not stacking order. A cookie banner (rule 1) under a "What's new" modal (rule 2) fails the step: rule 1's button is covered. Try the next matching rule when a `do` fails, then come back to the first.
+- **Interrupt check cost:** one locator count per rule, before every step and on every covered click. For a long org rule bank, one combined `or()` count for the common no-match case, then find the rule.
+- **Hide under a strict CSP:** a `style-src` without inline styles blocks the injected style (a take warning says so). Use a constructable stylesheet (`adoptedStyleSheets`) or the context's `bypassCSP` where Kiframe creates the context.
+- **Interrupt actions' events:** the `do` action runs with an off-camera ref (phase `setup`): its cursor samples and click events land inside the cut span, tagged setup. Harmless for the video; a dedicated phase would be cleaner for the timeline editor.
+- **Mid-step interrupts beyond clicks:** a covered target is handled inside a click (the probe sees it covered); a `type` into an input a modal covers isn't (no step retry: a retry could repeat an action that already happened).
+- **Hide rules per page, not per run:** the init script stays on the page, so a harness running two projects on one page keeps the first one's hide rules.
+- **Hide in iframes:** the CSS is injected in the top document only; widgets inside iframes (a chat iframe) stay visible unless the iframe element itself is hidden.
+- **A rule that comes back on the same page:** rules run at most once per page (the simplest robust form after three review rounds: a banner faded out in place still matches). A survey that re-appears later on the same page isn't handled again; the step it covers fails. A real "is it still there" test (hit-testing, not visibility) would allow re-running.
+- **Interrupts appearing during a step:** checked at step boundaries and in covered clicks only; a banner appearing during a `pause` or a long `type` is filmed until the next boundary, then cut away abruptly. A watcher during filmed steps (or a crossfade at the cut) would hide it.
+- **Caption freeze and mid-step cuts:** a click that handles an interrupt has a cut inside its span; the clips generator's reading-time freeze counts the full span, so its caption can be shown shorter than its reading time.
+- **Interrupt ref phase:** the `do` action's ref is phase `setup` with the scene step's index; approvals and events name it `interrupt <rule>`, but a host keying on phase + index would point at a setup step. A dedicated phase (see above).
+- **CSP warning coverage:** the hide warning tests the document loaded when hide is applied; a later document with a strict CSP blocks the init-script style silently.
+

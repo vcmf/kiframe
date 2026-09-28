@@ -18,6 +18,7 @@ import {
   TakeEvent,
   TakeMeta,
 } from "@kiframe/schema"
+import { generate } from "@kiframe/generators"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { pathOnly, recordScenario, scrubSecrets } from "../src/index.ts"
@@ -512,6 +513,40 @@ steps:
     // Same field, same opener viewport: the same rect as before the popup (not scaled to 800×600).
     const before = keyEvents.find((e) => e.rect.w > 0)
     expect(back?.rect).toEqual(before?.rect)
+  })
+
+  it("marks a handled interrupt as a span that the generators cut", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const withRules = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+interrupts:
+  - id: cookies
+    when: { by: role, role: dialog, name: Cookie preferences }
+    do: { action: click, target: { by: role, role: button, name: Accept all } }
+`)
+    const scene = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: "/banner?late" }]
+steps:
+  - { id: wait, action: pause, ms: 600 }
+  - { id: go, action: click, target: { by: role, role: button, name: Continue } }
+`)
+    const take = await recordScenario(page, scene, withRules, { outDir })
+    await context.close()
+    const interrupt = take.events.find((e) => e.kind === "interrupt")
+    expect(interrupt).toMatchObject({
+      kind: "interrupt",
+      rule: "cookies",
+      phase: "steps",
+      stepId: "go",
+    })
+    expect(interrupt?.kind === "interrupt" && interrupt.until > interrupt.t).toBe(true)
+    const { composition } = generate(withRules, scene, take)
+    expect(composition.tracks.clips.some((c) => c.mode === "cut" && c.reason === "interrupt")).toBe(
+      true,
+    )
   })
 
   it("follows a secret field with its blur when the page scrolls", async () => {
