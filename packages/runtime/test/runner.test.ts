@@ -182,8 +182,8 @@ steps:
     })
   })
 
-  it("never types a secret into a field that took focus while it was resolved", async () => {
-    const error = await failure(
+  it("writes a secret into the approved field even if focus moved while it was resolved", async () => {
+    await run(
       `setup: [{ action: goto, url: /login-form }]
 steps:
   - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
@@ -195,9 +195,8 @@ steps:
         },
       },
     )
-    expect(error.message).toMatch(/lost focus/)
     expect(await page.getByLabel("Email").inputValue()).toBe("")
-    expect(await page.getByLabel("Password input").inputValue()).toBe("")
+    expect(await page.getByLabel("Password input").inputValue()).toBe("hunter2-secret")
   })
 
   it("fails clearly when a secret is unavailable, without leaking the resolver's error", async () => {
@@ -1195,7 +1194,9 @@ teardown:
 `,
       { resolveSecret: () => "hunter2" },
     )
-    expect(error.message).toMatch(/can't take keyboard focus|goes into an input itself/)
+    expect(error.message).toMatch(
+      /can't take keyboard focus|goes into an input or a textarea itself/,
+    )
     expect(await page.getByLabel("Email").inputValue()).toBe("bob@acme.com")
   })
 

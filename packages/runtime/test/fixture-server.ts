@@ -39,6 +39,11 @@ const pages: Record<string, string> = {
       spy(Element.prototype, "getAttribute"); spy(Element.prototype, "setAttribute")
       spy(window, "getComputedStyle"); spy(String.prototype, "includes"); spy(String.prototype, "indexOf")
       spy(RegExp.prototype, "exec"); spy(RegExp.prototype, "test")
+      spy(Element.prototype, "matches"); spy(Element.prototype, "closest"); spy(Node.prototype, "contains")
+      spy(Document.prototype, "createRange"); spy(Range.prototype, "setStart"); spy(Range.prototype, "setEnd")
+      spy(String.prototype, "startsWith"); spy(String.prototype, "endsWith"); spy(Array.prototype, "includes")
+      spy(Array.prototype, "indexOf"); spy(String.prototype, "replace"); spy(String.prototype, "split")
+      spy(JSON, "parse"); spy(window, "atob"); spy(window, "btoa")
       const OrigRegExp = RegExp
       window.RegExp = function (...args) { for (const a of args) if (typeof a === "string") window.__seen.push(a); return new OrigRegExp(...args) }
     </script>`,

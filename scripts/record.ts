@@ -4,7 +4,7 @@
 import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
-import { hardenedLaunchOptions, recordScenario } from "@kiframe/runtime"
+import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
@@ -48,7 +48,7 @@ if (!Number.isFinite(dpr) || dpr <= 0 || dpr > 3) {
   process.exit(2)
 }
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
-const browser = await chromium.launch(hardenedLaunchOptions({ headless: !values.headed }))
+const browser = await chromium.launch({ headless: !values.headed })
 try {
   // Headed on a high-DPI screen: frames at device resolution (Phase 0 finding F2).
   const page = await browser.newPage({
