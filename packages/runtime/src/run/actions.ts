@@ -1,6 +1,7 @@
 import { isGrounded, secretRefName, type Target } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
+import { EXACT_NAMES_HINT } from "../secret-state.ts"
 import {
   type Box,
   clickPoint,
@@ -495,7 +496,7 @@ async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   if (!result.ok) {
     // Names are exact while a field holding a secret is on the page (§3 A8): say so.
     const exact = result.exact && result.reason === "target-not-found"
-    const hint = exact ? " (names match exactly while a field holding a secret is on the page)" : ""
+    const hint = exact ? EXACT_NAMES_HINT : ""
     throw new StepError(step, result.reason, result.detail + hint)
   }
   if (result.fallbackIndex !== undefined) {
@@ -597,8 +598,7 @@ async function scrollUntil(
   let reportedFallback = false
   // Whether names were exact at the last poll (§3 A8): the errors say so.
   let exact = false
-  const hint = () =>
-    exact ? " (names match exactly while a field holding a secret is on the page)" : ""
+  const hint = () => (exact ? EXACT_NAMES_HINT : "")
   for (;;) {
     const left = deadline - Date.now()
     if (left <= 0) {

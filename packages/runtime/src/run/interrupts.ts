@@ -1,7 +1,7 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { isPartialName, isSafeSelector, ProbeRefusal, refreshExactNames } from "../secret-state.ts"
+import { exactNamesFor, isSafeSelector, ProbeRefusal } from "../secret-state.ts"
 import { toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { requireApproval } from "./risky.ts"
@@ -13,11 +13,10 @@ import { settle } from "./settle.ts"
 export function hideCss(selectors: readonly string[]): { css: string; skipped: string[] } {
   // The A8 grammar always (§3): a hide rule is live CSS for the whole page, and a later run on it
   // may know a secret (`form:has(input[value^=h]) button` would change what later steps see).
-  const kept = selectors.filter(isSafeSelector)
-  return {
-    css: kept.map((s) => `${s} { display: none !important; }`).join("\n"),
-    skipped: selectors.filter((s) => !kept.includes(s)),
-  }
+  const kept: string[] = []
+  const skipped: string[] = []
+  for (const s of selectors) (isSafeSelector(s) ? kept : skipped).push(s)
+  return { css: kept.map((s) => `${s} { display: none !important; }`).join("\n"), skipped }
 }
 
 /** Pages already hiding a given CSS (a harness may run many scenarios on one page). */
@@ -81,9 +80,10 @@ async function matchingInterrupt(
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
   const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
   // The exact-names rule (§3 A8) decided once for all the rules, as the page is now.
-  const names = rules.some((r) => isPartialName(whenLocator(r)))
-    ? await refreshExactNames(ctx.page)
-    : { exact: false, unsure: false }
+  const names = await exactNamesFor(
+    ctx.page,
+    rules.map((r) => whenLocator(r)),
+  )
   const context = ctx.page.context()
   const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
   skippedRulesOf.set(context, skippedRules)
@@ -167,10 +167,9 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
 /** Waits (up to 1 s, best effort) for a handled rule's `when` to be gone. */
 async function waitGone(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Promise<void> {
   const locator = whenLocator(rule)
-  const partial = isPartialName(locator)
   const deadline = Date.now() + Math.min(ctx.timeoutMs, 1000)
   while (Date.now() < deadline) {
-    const names = partial ? await refreshExactNames(ctx.page) : { exact: false, unsure: false }
+    const names = await exactNamesFor(ctx.page, [locator])
     if (names.exact && !names.unsure) return
     const count = await Promise.resolve()
       .then(() => visibleOnly(toPlaywright(ctx.page, locator, names.exact)).count())
