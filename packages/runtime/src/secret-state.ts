@@ -7,6 +7,12 @@ import type { BrowserContext, ElementHandle, Page } from "playwright"
 export interface ContextSecrets {
   values: Set<string>
   written: { page: Page; handle: ElementHandle }[]
+  /**
+   * A field holding a secret is on the driven page (§3 A8): role, label, text and placeholder
+   * locators then match their names exactly (an accessible name can include a nested input's
+   * value). Updated at every step boundary.
+   */
+  exactNames: boolean
 }
 const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
 
@@ -16,7 +22,8 @@ const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
  */
 export function secretsOf(context: BrowserContext): ContextSecrets {
   let state = contextSecrets.get(context)
-  if (state === undefined) contextSecrets.set(context, (state = { values: new Set(), written: [] }))
+  if (state === undefined)
+    contextSecrets.set(context, (state = { values: new Set(), written: [], exactNames: false }))
   return state
 }
 

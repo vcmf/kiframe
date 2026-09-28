@@ -1,28 +1,27 @@
-import { assertNotProbing } from "./secret-state.ts"
+import { assertNotProbing, secretsOf } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 
 /** Builds the Playwright locator for one schema locator (roles, labels, text first; CSS last). */
 export function toPlaywright(page: Page, locator: SchemaLocator): Locator {
+  // Exact names while a field holding a secret is on the page (SECRETS-DESIGN §3 A8).
+  const forced = secretsOf(page.context()).exactNames
+  const exact = (own: boolean | undefined) =>
+    forced ? { exact: true } : own !== undefined ? { exact: own } : {}
   switch (locator.by) {
     case "role":
       // Spliced into Playwright's selector unescaped: only a role name, never selector syntax.
       if (!/^[a-z]{2,40}$/.test(locator.role)) throw new Error(`not an ARIA role: ${locator.role}`)
       return page.getByRole(locator.role as Parameters<Page["getByRole"]>[0], {
-        ...(locator.name !== undefined && { name: locator.name }),
-        ...(locator.exact !== undefined && { exact: locator.exact }),
+        ...(locator.name !== undefined && { name: locator.name, ...exact(locator.exact) }),
       })
     case "label":
-      return page.getByLabel(locator.name, {
-        ...(locator.exact !== undefined && { exact: locator.exact }),
-      })
+      return page.getByLabel(locator.name, exact(locator.exact))
     case "text":
-      return page.getByText(locator.text, {
-        ...(locator.exact !== undefined && { exact: locator.exact }),
-      })
+      return page.getByText(locator.text, exact(locator.exact))
     case "placeholder":
-      return page.getByPlaceholder(locator.text)
+      return page.getByPlaceholder(locator.text, exact(undefined))
     case "css":
       assertNotProbing(page.context(), locator.selector)
       return page.locator(locator.selector)

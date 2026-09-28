@@ -318,6 +318,10 @@ const pages: Record<string, string> = {
   // A field whose aria-labelledby and aria-label disagree (the accessible name is the labelledby).
   "/labelled": `<!doctype html><title>Labelled</title>
     <span id="cc">Card number</span><input type="text" aria-labelledby="cc" aria-label="Password">`,
+  // A table-layout login: the password box inside a cell (its value is part of the cell's name).
+  "/cell-login": `<!doctype html><title>Cell login</title>
+    <table><tr><td><input type="password" aria-label="Password"></td></tr></table>
+    <button id="go" onclick="document.querySelector('table').remove()">Sign in to Acme</button>`,
   // A textarea holding a known value re-flowed over two lines.
   "/reflowed": `<!doctype html><title>Reflowed</title><textarea id="bio">Bob
 Smith</textarea>`,

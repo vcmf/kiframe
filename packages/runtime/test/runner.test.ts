@@ -452,6 +452,37 @@ steps:
       expect(error.message).toMatch(/in a field holding a secret/)
     })
 
+    it("matches names exactly while a field holding a secret is on the page (§3 A8)", async () => {
+      const vault = await vaultWithPassword()
+      const options = approving(vault, [])
+      const flow = (extra: string) => `setup: [{ action: goto, url: /cell-login }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+${extra}`
+      // The cell's name holds the password: a partial name can't probe it.
+      const probe = await failure(
+        flow(
+          `  - { id: p, action: expect, that: { visible: { by: role, role: cell, name: hunter } } }\n`,
+        ),
+        options,
+      )
+      expect(probe.reason).toBe("expectation-failed")
+      // A partial button name isn't found either, and the error says why; the exact one works.
+      const partial = await failure(
+        flow(`  - { id: go, action: click, target: { by: role, role: button, name: Sign in } }\n`),
+        options,
+      )
+      expect(partial.message).toMatch(
+        /names match exactly while a field holding a secret is on the page/,
+      )
+      await run(
+        flow(`  - { id: go, action: click, target: { by: role, role: button, name: Sign in to Acme } }
+  - { id: after, action: click, target: { by: role, role: button, name: Sign in } }
+`),
+        options,
+      )
+    })
+
     it("says a declined approval is a decline (the scene is blocked, not refused)", async () => {
       const vault = await vaultWithPassword()
       const declined = await failure(into(password), {
