@@ -1,6 +1,6 @@
 import type { Condition } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
-import { isPartialName, ProbeRefusal, refreshExactNames } from "../secret-state.ts"
+import { EXACT_NAMES_HINT, exactNamesFor, ProbeRefusal } from "../secret-state.ts"
 import { describeLocator, isNavigationError, toPlaywright, visibleOnly } from "../targets.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
@@ -20,7 +20,7 @@ export async function waitForCondition(
 ) {
   const { page } = ctx
   const what = describeCondition(condition)
-  const exactHint = " (names match exactly while a field holding a secret is on the page)"
+  const exactHint = EXACT_NAMES_HINT
   const locator =
     "visible" in condition
       ? condition.visible
@@ -34,18 +34,25 @@ export async function waitForCondition(
       // One polling loop: the locator is rebuilt at every poll with the exact-names rule of the
       // moment (§3 A8; a no-op while no value is known).
       const wantVisible = !("hidden" in condition)
-      const partial = isPartialName(locator)
-      const deadline = Date.now() + timeout
       const absence = negative || !wantVisible
-      // Whether the last poll couldn't conclude an absence (exact names on, or the page unreadable).
-      let blocked = false
+      const started = Date.now()
+      let deadline = started + timeout
+      // Whether any poll could look (exact names off, the page readable), and when the first did:
+      // an absence's grace runs from there (the wait for a secret field to go doesn't eat it).
+      let firstLook: number | undefined
+      // An absence counts only when seen twice in a row on the same, fully loaded document: mid-
+      // navigation, `count()` reads 0 on a page being replaced.
+      let zeroOn: string | undefined
       for (;;) {
-        const rule = partial ? await refreshExactNames(page) : { exact: false, unsure: false }
-        // An absence can't be concluded by a partial name under the rule (a longer name no longer
-        // matching isn't "gone"), nor on a page that can't be read: poll again, until the field
-        // holding the secret is gone (after the submit) or the deadline.
-        blocked = absence && (rule.exact || rule.unsure)
+        const rule = await exactNamesFor(page, [locator])
+        const blocked = absence && (rule.exact || rule.unsure)
         if (!blocked) {
+          if (firstLook === undefined) {
+            firstLook = Date.now()
+            // Bounded: at most one more timeout past the step's own.
+            if (absence)
+              deadline = Math.min(Math.max(deadline, firstLook + timeout), started + 2 * timeout)
+          }
           const count = await visibleOnly(toPlaywright(page, locator, rule.exact))
             .count()
             .catch((error: unknown) => {
@@ -54,17 +61,23 @@ export async function waitForCondition(
               if (isNavigationError(error)) return undefined
               throw error
             })
-          if (count !== undefined && count > 0 === wantVisible) return
-          if (count === undefined && absence) blocked = true
-        }
+          if (count !== undefined && count > 0 && wantVisible) return
+          if (count === 0 && !wantVisible) {
+            const doc = await page
+              .evaluate(() => (document.readyState === "complete" ? location.href : undefined))
+              .catch(() => undefined)
+            if (doc !== undefined && doc === zeroOn) return
+            zeroOn = doc
+          } else zeroOn = undefined
+        } else zeroOn = undefined
         if (Date.now() >= deadline) {
-          // Never a timeout for an absence that couldn't be checked: `ensure: absent` would read
-          // a timeout as "not there".
-          if (blocked) {
+          // Never a timeout for an absence no poll could check: `ensure: absent` would read a
+          // timeout as "not there".
+          if (absence && firstLook === undefined) {
             throw new StepError(
               step,
               "secret-refused",
-              `${what}: couldn't check an absence by a partial name${exactHint}`,
+              `${describeAbsence(locator)}: couldn't check it by a partial name${exactHint}`,
             )
           }
           throw new StepError(
@@ -94,6 +107,10 @@ export async function waitForCondition(
     if (cause instanceof ProbeRefusal) throw new StepError(step, "secret-refused", cause.message)
     throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
+}
+
+function describeAbsence(locator: Parameters<typeof describeLocator>[0]): string {
+  return `the absence of ${describeLocator(locator)}`
 }
 
 function describeCondition(condition: Condition): string {

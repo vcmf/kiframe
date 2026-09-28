@@ -1,4 +1,4 @@
-import { assertNotProbing, isPartialName, refreshExactNames } from "./secret-state.ts"
+import { assertNotProbing, exactNamesFor } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
@@ -8,8 +8,7 @@ import type { Locator, Page } from "playwright"
  * DESIGN §3 A8): refreshed now, so no caller can build one with a stale decision.
  */
 export async function locatorFor(page: Page, locator: SchemaLocator): Promise<Locator> {
-  const exact = isPartialName(locator) ? (await refreshExactNames(page)).exact : false
-  return toPlaywright(page, locator, exact)
+  return toPlaywright(page, locator, (await exactNamesFor(page, [locator])).exact)
 }
 
 /** Builds the Playwright locator; `forced`: exact names (A8), decided by the caller just now. */
@@ -98,8 +97,6 @@ export async function resolveTarget(
     { locator: stripExtras(target), nth },
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
-  // Only a partial name is changed by the exact-names rule: nothing to check otherwise.
-  const partial = candidates.some((c) => isPartialName(c.locator))
   let exact: boolean
   const deadline = Date.now() + timeoutMs
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
@@ -109,7 +106,13 @@ export async function resolveTarget(
     ambiguous = undefined
     // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll: a
     // field that renders mid-step is seen at once.
-    exact = partial ? (await refreshExactNames(page)).exact : false
+    // (Only a partial name is changed by the rule: no check otherwise.)
+    exact = (
+      await exactNamesFor(
+        page,
+        candidates.map((c) => c.locator),
+      )
+    ).exact
     for (const [i, candidate] of candidates.entries()) {
       const visible = visibleOnly(toPlaywright(page, candidate.locator, exact))
       const count = await visible.count().catch((error: unknown) => {

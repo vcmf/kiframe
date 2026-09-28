@@ -324,6 +324,13 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // Shows a leftover row, then navigates (after 300 ms) to a page served late that shows it too.
+  "/nav-a": `<!doctype html><title>Nav A</title><p>Leftover row</p>
+    <script>setTimeout(() => { location.href = "/nav-b?delay=400" }, 300)</script>`,
+  "/nav-b": `<!doctype html><title>Nav B</title><p>Leftover row</p>`,
+  // A secret field removed after 1200 ms, a leftover item added 300 ms later (a late list).
+  "/late-leftover": `<!doctype html><title>Late leftover</title><input id="u" value="bob@acme.com"><ul id="l"></ul>
+    <script>setTimeout(() => document.getElementById("u").remove(), 1200); setTimeout(() => { document.getElementById("l").innerHTML = "<li>Q4 Launch</li>" }, 1500)</script>`,
   // A login form that goes away after 400 ms, its "Signing in" text after 800 ms.
   "/signing-in": `<!doctype html><title>Signing in</title>
     <form id="f"><input value="bob@acme.com"></form><p id="s">Signing in to Acme</p>
@@ -530,6 +537,15 @@ export async function startFixtureServer(): Promise<{ url: string; close: () => 
       return
     }
     const body = pages[path] ?? (path.startsWith("/projects/") ? pages["/projects"] : undefined)
+    // `?delay=ms`: the page is served late (a slow navigation).
+    const delay = Number(new URL(req.url ?? "/", "http://x").searchParams.get("delay") ?? 0)
+    if (delay > 0 && body !== undefined) {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "text/html" })
+        res.end(body)
+      }, delay)
+      return
+    }
     res.writeHead(body === undefined ? 404 : 200, { "content-type": "text/html" })
     res.end(body ?? "not found")
   })

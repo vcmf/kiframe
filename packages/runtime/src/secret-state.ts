@@ -336,3 +336,15 @@ export async function refreshExactNames(page: Page): Promise<ExactNames> {
     found.writtenRendered || found.values.some((v) => containsKnownValue(state.values, v))
   return { exact, unsure: false }
 }
+
+/** The hint every error adds when the exact-names rule (§3 A8) was on. */
+export const EXACT_NAMES_HINT =
+  " (names match exactly while a field holding a secret is on the page)"
+
+/** The exact-names decision for some locators: a refresh only if one of them has a partial name. */
+export async function exactNamesFor(
+  page: Page,
+  locators: readonly Parameters<typeof isPartialName>[0][],
+): Promise<ExactNames> {
+  return locators.some(isPartialName) ? refreshExactNames(page) : { exact: false, unsure: false }
+}

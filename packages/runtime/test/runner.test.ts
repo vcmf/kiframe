@@ -660,7 +660,7 @@ steps:
 `,
         { knownSecretValues: ["bob@acme.com"] },
       )
-      expect(error.message).toMatch(/couldn't check an absence by a partial name/)
+      expect(error.message).toMatch(/couldn't check it by a partial name/)
     })
 
     it("keeps polling an absence until the secret field is gone, then checks it", async () => {
@@ -671,6 +671,27 @@ steps:
 `,
         { knownSecretValues: ["bob@acme.com"] },
       )
+    })
+
+    it("never reads a page being replaced as an absence (navigation mid-check)", async () => {
+      const error = await failure(`setup: [{ action: goto, url: /nav-a }]
+steps:
+  - { id: h, action: waitFor, until: { hidden: { by: text, text: Leftover } }, timeout: 2000 }
+`)
+      expect(error.reason).toBe("condition-timeout")
+    })
+
+    it("gives an ensure-absent its full grace after the secret field goes", async () => {
+      const error = await failure(
+        `setup:
+  - { action: goto, url: /late-leftover }
+  - ensure: { absent: { by: text, text: Q4 } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`,
+        { knownSecretValues: ["bob@acme.com"] },
+      )
+      // Found (late) instead of passing as absent: no teardown to remove it.
+      expect(error.message).toMatch(/must be absent before filming/)
     })
 
     it("never passes an ensure-absent it couldn't check (unreadable page)", async () => {
