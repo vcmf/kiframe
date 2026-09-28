@@ -148,14 +148,18 @@ describe("exfiltration", () => {
       ...approving(v),
       timeoutMs: 1500,
     }).catch((e: unknown) => e)
-    // Whenever the page left (before or after the checks), the write went to the approved element
-    // or nowhere: never into the other origin's field.
+    // The page left as soon as the field was focused: the run fails (the focus check, or the
+    // origin and path checked right before the write), nothing reaches the other origin.
+    expect(error).toBeInstanceOf(StepError)
     await page.waitForURL(/localhost/)
     expect(await page.locator("#pw").inputValue()).toBe("")
     expect(String(error)).not.toContain("hunter2")
   })
 
-  it("the runtime's in-page code never hands the page a secret value", async () => {
+  // The value does enter page JS once, by design: set on the approved element through its own value
+  // setter (SECRETS-DESIGN §3 A2); the page owns that field. Everything else the runtime runs in
+  // the page (scans, checks, probes) never takes a value.
+  it("the runtime's in-page code never hands the page a secret value, but through the approved field", async () => {
     const dir = join(tmp("take"), "take")
     const v = await vault()
     await recordScenario(page, typePassword("/evil-spy"), project, {

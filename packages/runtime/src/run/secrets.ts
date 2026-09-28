@@ -356,7 +356,8 @@ export function followSecretField(
   secret: string,
   target: Locator,
 ): { id: string; field: Ctx["secretFields"][number] | undefined } {
-  const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}`
+  // Unique per write (an `ensure` replays several steps under one index): one region per field.
+  const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}:${ctx.secretFields.length}`
   if (ctx.options.recording !== true) return { id, field: undefined }
   const field = { id, locator: target, page: ctx.page }
   ctx.secretFields.push(field)

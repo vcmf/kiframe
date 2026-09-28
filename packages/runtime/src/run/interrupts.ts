@@ -94,10 +94,13 @@ async function matchingInterrupt(
       try {
         // Counted under the rule decided once for this check, a partial match confirmed (§3 A8).
         // A count that fails (an invalid selector) is no match, as it always was.
-        return (
-          (await countUnderRule(ctx.page, whenLocator(rule), names).catch(() => undefined))
-            ?.count ?? 0
+        const counted = await countUnderRule(ctx.page, whenLocator(rule), names).catch(
+          (error: unknown) => {
+            if (error instanceof ProbeRefusal) throw error
+            return undefined
+          },
         )
+        return counted?.count ?? 0
       } catch (error) {
         // A `when` that could probe a known value (§3 A8) never matches while secrets are known:
         // the rule is refused by its selector's form, whatever the value (nothing leaks).

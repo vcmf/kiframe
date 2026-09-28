@@ -121,18 +121,20 @@ export async function resolveTarget(
         throw error
       })
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
-      if (candidate.nth === undefined && count > 1) {
-        // Stop here: falling through to a fallback could act on a different element.
-        ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
-        break
-      }
-      // A partial match is confirmed: a field holding a secret may have rendered between the
-      // rule's check and the count (§3 A8); then the poll starts again with exact names.
+      // Any partial-name result (one match, or several: ambiguous) is confirmed first: a field
+      // holding a secret may have rendered between the rule's check and the count (§3 A8); then
+      // the poll starts again with exact names.
       if (
         !exact &&
         isPartialName(candidate.locator) &&
         (await exactNamesFor(page, [candidate.locator])).exact
       ) {
+        exact = true
+        break
+      }
+      if (candidate.nth === undefined && count > 1) {
+        // Stop here: falling through to a fallback could act on a different element.
+        ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
         break
       }
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)

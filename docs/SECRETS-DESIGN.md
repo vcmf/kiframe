@@ -53,7 +53,7 @@ Why a redesign: M1-5 and M1-6 each needed three severe review rounds. Secret han
 ## 4. Ownership
 
 - **`@kiframe/vault`:** values (keychain), metadata, grants, `list`, `request`, `grant` / `revoke` (host only), `resolve(name, use)` enforcing A1, A2 and A6.
-- **`runtime/secrets`** (new module, the runner's only secret code): the known values, the write (A2), the A5 refusals, the scrubber (I3), field tracking and the text scanner (R1–R8), and the region events. The runner calls it at hooks (step start, before an action, after the action, step end, page switch, run end); nothing else in the runner sees a value.
+- **`runtime/run/secrets`** (the runner's secret code): the write (A2), the A5 refusals, the scrubber (I3), field tracking and the text scanner (R1–R8), and the region events. **`runtime/secret-state`**: the per-context state (known values, written elements) and the A8 rules (the CSS grammar, the exact-names decision, `countUnderRule` in `targets`). Values also pass, without being read, through the runner (adding the host's known values), the batch (carrying them to the next scene) and the type action (holding a prepared write). Every locator is built through `locatorFor` / `countUnderRule`; `toPlaywright` takes the decision explicitly.
 - **Recorder:** writes the region events as they come (with their own time bounds, §5). **Generators and compositor:** secret regions become masks at render time, straight from the take (not stored in `composition.json`: the composition can only add masks); the compositor applies each region's own `from`/`until`, with no timing rules of its own.
 - **Host (desktop app, M4):** approval prompts, the vault UI, the project id, and the scene's complete known values (R6).
 
