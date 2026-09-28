@@ -260,7 +260,8 @@ export async function recordScenario(
         case "secret_text":
           push({
             ...base(e.step),
-            // Backdated to the last scan that didn't see it: no frame shows it unblurred.
+            // Backdated to the last scan that didn't see it: no frame shows it unblurred. (Its end
+            // needs no margin: the compositor keeps a mask past it for the capture's lag.)
             ...(e.since !== undefined && { t: Math.max(0, e.since - t0) }),
             kind: "sensitive",
             id: e.id,

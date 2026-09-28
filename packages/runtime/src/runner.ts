@@ -10,7 +10,7 @@ import type {
 import { Action, isGrounded, secretRefName } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Frame, Locator, Page } from "playwright"
 import { isSecretRefusal, StepError, type SecretUse, type StepRef } from "./errors.ts"
-import { scanSecretText } from "./scanner.ts"
+import { escapeRegExp, scanSecretTextPartly } from "./scanner.ts"
 import {
   clickPoint,
   type Box,
@@ -657,7 +657,8 @@ async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void>
   await syncPage(ctx, step)
   if (ctx.options.recording === true) {
     await followSecretFields(ctx, step)
-    await followSecretText(ctx, step)
+    // The page as the step left it: not a scan that started earlier in the step.
+    await followSecretText(ctx, step, true)
   }
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })
@@ -916,38 +917,46 @@ const TEXT_SCAN_MS = 300
  * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`). A region is one
  * exact box: it keeps its id while the box stays, and ends when the box is gone. A new box is a new
  * region (ids are never reused), blurred from the previous scan (it may have appeared right after
- * it). A failed or unsure scan changes nothing (the blurs stay). Never fails a step.
+ * it). An unsure occurrence (re-rendered mid-scan) ends nothing that scan; a failed scan changes
+ * nothing. `fresh`: a scan that starts now (a running one read the page earlier). Never fails.
  */
-function followSecretText(ctx: Ctx, step: StepRef): Promise<void> {
+async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): Promise<void> {
   const state = ctx.secretText
-  if (state.inflight !== undefined) return state.inflight
+  if (state.inflight !== undefined) {
+    await state.inflight
+    if (!fresh) return
+  }
   const run = async () => {
     const started = Date.now()
-    // Nothing to look for yet: a later first region is backdated to now, not the run's start.
-    if (ctx.secretValues.size === 0 || ctx.page.isClosed()) {
-      state.lastScan = started
-      return
-    }
+    // Nothing to look for yet: lastScan stays at the run's start, so a first region found once a
+    // value is known is blurred from there (it may have been on screen all along).
+    if (ctx.secretValues.size === 0 || ctx.page.isClosed()) return
     const page = ctx.page
-    const boxes = await scanSecretText(page, ctx.secretValues).catch(() => undefined)
+    const boxes = await scanSecretTextPartly(page, ctx.secretValues).catch(() => undefined)
     if (boxes === undefined || page !== ctx.page) return
     const viewport = await viewportOf(page).catch(() => undefined)
-    const current = new Map(boxes.map((b) => [`${b.x},${b.y},${b.width},${b.height}`, b]))
+    const current = new Map<string, Box>()
+    for (const b of boxes) if (b !== null) current.set(`${b.x},${b.y},${b.width},${b.height}`, b)
     for (const [key, box] of current) {
       if (state.shown.has(key)) continue
       const id = `text:${state.next++}`
       state.shown.set(key, id)
       ctx.options.onEvent?.({ kind: "secret_text", step, id, box, viewport, since: state.lastScan })
     }
-    for (const [key, id] of state.shown) {
-      if (current.has(key)) continue
-      state.shown.delete(key)
-      ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
+    // Unsure about one: the others' boxes may be it, re-rendered. End nothing this time.
+    if (boxes.every((b) => b !== null)) {
+      for (const [key, id] of state.shown) {
+        if (current.has(key)) continue
+        state.shown.delete(key)
+        ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
+      }
     }
     state.lastScan = started
   }
-  state.inflight = run().finally(() => (state.inflight = undefined))
-  return state.inflight
+  state.inflight = run()
+    .catch(() => undefined)
+    .finally(() => (state.inflight = undefined))
+  await state.inflight
 }
 
 /**
@@ -2160,7 +2169,7 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
     }
   }
   if (variants.size === 0) return text
-  const escape = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const escape = escapeRegExp
   // Patterns with the length of the text they can match (a split value: its characters, at least).
   const patterns: { source: string; length: number }[] = [...variants].map((v) => ({
     source: escape(v),
