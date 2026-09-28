@@ -107,7 +107,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       const text = secret === undefined ? action.value : ""
       let secretWrite: SecretWrite | undefined
       const sensitiveId =
-        secret === undefined ? undefined : followSecretField(ctx, step, secret, action.target)
+        secret === undefined ? undefined : followSecretField(ctx, step, secret, target)
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
       try {
@@ -128,7 +128,10 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
           }
           await target.evaluate(moveCaretToEnd, undefined, { timeout })
           if (secret !== undefined) {
-            secretWrite = await prepareSecretWrite(ctx, target, step, secret, action.target)
+            secretWrite = {
+              ...(await prepareSecretWrite(ctx, target, step, secret, action.target)),
+              fieldId: sensitiveId,
+            }
           }
           // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
           if (ctx.options.recording === true) {

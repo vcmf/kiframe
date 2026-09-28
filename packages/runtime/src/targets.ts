@@ -316,3 +316,33 @@ export function pointProbe(
     .trim()
   return { hits, label, sameAsMarked }
 }
+
+/**
+ * A locator's visible matches under the exact-names rule of the moment (SECRETS-DESIGN §3 A8): the
+ * rule checked, the locator counted, and a partial match confirmed by a second check (a field
+ * holding a secret may render in between: then only an exact match counts). `count` is undefined
+ * when a navigation replaced the page mid-count. The one way every check counts a locator.
+ */
+export async function countUnderRule(
+  page: Page,
+  locator: SchemaLocator,
+): Promise<{ count: number | undefined; exact: boolean; unsure: boolean }> {
+  const countWith = (exact: boolean) =>
+    visibleOnly(toPlaywright(page, locator, exact))
+      .count()
+      .catch((error: unknown) => {
+        if (isNavigationError(error)) return undefined
+        throw error
+      })
+  const names = await exactNamesFor(page, [locator])
+  let { exact, unsure } = names
+  let count = await countWith(exact)
+  if (count !== undefined && count > 0 && !exact && isPartialName(locator)) {
+    const again = await exactNamesFor(page, [locator])
+    if (again.exact) {
+      ;({ exact, unsure } = again)
+      count = await countWith(true)
+    }
+  }
+  return { count, exact, unsure }
+}

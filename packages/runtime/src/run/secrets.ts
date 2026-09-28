@@ -4,7 +4,7 @@ import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
-import { locatorFor, stripExtras, viewportOf } from "../targets.ts"
+import { viewportOf } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import {
   containsKnownValue,
@@ -34,9 +34,7 @@ export async function followSecretFields(
   // and comes back if the run returns to that page.
   const measured = await Promise.all(
     fields.map((field) =>
-      field.page === ctx.page
-        ? locatorFor(field.page, field.target).then(measureField, () => "unknown" as const)
-        : Promise.resolve(null),
+      field.page === ctx.page ? measureSecretField(field) : Promise.resolve(null),
     ),
   )
   const viewport = await viewportOf(ctx.page).catch(() => undefined)
@@ -123,6 +121,21 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     .catch(() => undefined)
     .finally(() => (state.inflight = undefined))
   await state.inflight
+}
+
+/**
+ * Where a secret field is now: the written element itself while it's in the page (its handle), else
+ * the target as the type step found it (a re-mounted field).
+ */
+async function measureSecretField(
+  field: Ctx["secretFields"][number],
+): Promise<Box | null | "unknown"> {
+  const handle = field.handle
+  if (handle !== undefined) {
+    const connected = await handle.evaluate((e) => e.isConnected).catch(() => false)
+    if (connected) return (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
+  }
+  return measureField(field.locator)
 }
 
 /**
@@ -326,6 +339,8 @@ export function scrubError(error: Error, secrets: Set<string>): Error {
 /** A secret about to be written: the approved element (a handle), the value, and the use. */
 export interface SecretWrite {
   secret: string
+  /** The id of the secret field the blur follows (recording). */
+  fieldId?: string | undefined
   input: ElementHandle<HTMLInputElement | HTMLTextAreaElement>
   value: string
   use: SecretUse
@@ -335,12 +350,14 @@ export interface SecretWrite {
  * Follows a field a secret is typed into until the end of the take (recording): its blur rect
  * moves with it. Returns the id of its sensitive region.
  */
-export function followSecretField(ctx: Ctx, step: StepRef, secret: string, target: Target): string {
+export function followSecretField(
+  ctx: Ctx,
+  step: StepRef,
+  secret: string,
+  target: Locator,
+): string {
   const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}`
-  if (ctx.options.recording === true) {
-    if (isGrounded(target))
-      ctx.secretFields.push({ id, target: stripExtras(target), page: ctx.page })
-  }
+  if (ctx.options.recording === true) ctx.secretFields.push({ id, locator: target, page: ctx.page })
   return id
 }
 
@@ -514,6 +531,8 @@ export async function writeSecret(
     const landed = await write.input.evaluate((el) => el.value)
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
+    const field = ctx.secretFields.find((f) => f.id === write.fieldId)
+    if (field !== undefined) field.handle = write.input
     if (landed !== wanted) {
       throw new StepError(
         step,
