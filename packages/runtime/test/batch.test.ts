@@ -193,6 +193,25 @@ steps:
   })
 })
 
+describe("recordBatch scene ids", () => {
+  it("refuses two scenes sharing an id, or an id that isn't one", async () => {
+    const s = scene(signedIn)
+    await expect(
+      recordBatch(
+        browser,
+        [
+          { scenario: s, outDir: "/tmp/a", sceneId: "same" },
+          { scenario: s, outDir: "/tmp/b", sceneId: "same" },
+        ],
+        project(),
+      ),
+    ).rejects.toThrow(/share the id "same"/)
+    await expect(
+      recordBatch(browser, [{ scenario: s, outDir: "/tmp/a", sceneId: "a/b.yaml" }], project()),
+    ).rejects.toThrow(/isn't a scene id/)
+  })
+})
+
 describe("recordBatch contexts", () => {
   it("never gives the page clipboard permissions", async () => {
     await expect(

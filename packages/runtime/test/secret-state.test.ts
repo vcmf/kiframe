@@ -34,6 +34,7 @@ describe("isSafeSelector", () => {
     ":is(#intercom-container, .crisp-client)",
     ":where(li):nth-last-child(2)",
     "p:empty",
+    "button[aria-label='Close'i]",
     "[aria-expanded=true]",
     "[data-testid=row-1]",
     "div[contenteditable='true']",

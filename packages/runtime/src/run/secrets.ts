@@ -442,7 +442,7 @@ type ElementInfo = { tag: "input" | "textarea"; type: string; label: string | nu
 function fieldWrite(
   el: HTMLInputElement | HTMLTextAreaElement,
   arg: { expected?: ElementInfo; value?: string },
-): { info: ElementInfo; written: boolean; landed?: string } {
+): { info: ElementInfo; written: boolean } {
   const text = (s: string | null | undefined) => {
     const t = s?.replace(/\s+/g, " ").trim().slice(0, 200)
     return t === undefined || t === "" ? null : t
@@ -470,8 +470,9 @@ function fieldWrite(
       : { tag: "textarea", type: "textarea", label }
   const { expected, value } = arg
   if (expected === undefined || value === undefined) return { info, written: false }
-  if (info.tag !== expected.tag || info.type !== expected.type || info.label !== expected.label) {
-    return { info, written: false }
+  // Every key of the approved info (a key added to ElementInfo is compared too).
+  for (const key of Object.keys(expected) as (keyof ElementInfo)[]) {
+    if (info[key] !== expected[key]) return { info, written: false }
   }
   const proto =
     el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
@@ -479,7 +480,7 @@ function fieldWrite(
   Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value)
   el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }))
   el.dispatchEvent(new Event("change", { bubbles: true }))
-  return { info, written: true, landed: el.value }
+  return { info, written: true }
 }
 
 /**
@@ -565,7 +566,9 @@ export async function writeSecret(
     if (!result.written) {
       throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
     }
-    const landed = result.landed
+    // Read back in a later turn: a framework that resets or reformats the field in its own
+    // microtask or frame (Vue's nextTick, Lit's update) is caught.
+    const landed = await write.input.evaluate((el) => el.value)
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
     if (write.field !== undefined) write.field.handle = write.input

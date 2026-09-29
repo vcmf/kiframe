@@ -3,6 +3,7 @@ import {
   type ProjectConfig,
   type ResolvedEnvironment,
   type Scenario,
+  SceneId,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
@@ -77,6 +78,16 @@ export async function recordBatch(
   options: BatchOptions = {},
 ): Promise<BatchResult[]> {
   const { context: contextOptions, onScene, environment, ...record } = options
+  // Each scene's own approval keys (§3 A1): scene ids valid and never shared in a batch.
+  const ids = new Set<string>()
+  for (const scene of scenes) {
+    if (!SceneId.safeParse(scene.sceneId).success) {
+      throw new Error(`scene id "${scene.sceneId}" isn't a scene id (kebab-case)`)
+    }
+    if (ids.has(scene.sceneId))
+      throw new Error(`two scenes of the batch share the id "${scene.sceneId}"`)
+    ids.add(scene.sceneId)
+  }
   // Never clipboard access for the page (SECRETS-DESIGN §3 A5).
   const clipboard = (contextOptions?.permissions ?? []).filter((p) => p.startsWith("clipboard"))
   if (clipboard.length > 0) {
