@@ -602,13 +602,10 @@ steps:
     )
     await context.close()
     const sensitive = take.events.filter((e) => e.kind === "sensitive")
-    // One region, ended after the goto (plus the capture lag), well before the end of the take.
+    // One region with one box: ended once, after the goto (at the first frame after the read that
+    // found it gone; this static page draws none, so the last one is held: T4), never back.
     expect(sensitive).toHaveLength(1)
-    const away = take.events.find((e) => e.kind === "step_end" && e.stepId === "away")?.t ?? 0
-    expect(sensitive[0]?.kind === "sensitive" && sensitive[0].until).toBeLessThanOrEqual(away + 600)
-    expect(sensitive[0]?.kind === "sensitive" && sensitive[0].until).toBeLessThan(
-      take.meta.durationMs,
-    )
+    expect(sensitive[0]?.kind === "sensitive" && sensitive[0].boxes).toHaveLength(1)
     expect(Date.now() - started).toBeLessThan(15_000)
   })
 

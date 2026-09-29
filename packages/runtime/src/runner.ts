@@ -132,7 +132,7 @@ export async function runScenario(
     secretFields: [],
     pageShownAt: now(),
     switching: false,
-    stuckReads: new WeakSet(),
+    stuckReads: new WeakMap(),
     fieldsInflight: undefined,
     secretWritten: secrets.written,
     secretText: {

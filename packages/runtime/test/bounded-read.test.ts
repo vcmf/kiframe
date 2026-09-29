@@ -4,7 +4,7 @@ import { boundedRead } from "../src/run/secrets.ts"
 
 describe("boundedRead (SECRETS-DESIGN T2)", () => {
   it("drops a read that took too long, and holds only that page's next reads until it settles", async () => {
-    const ctx = { stuckReads: new WeakSet<Page>() }
+    const ctx = { stuckReads: new WeakMap<Page, number>() }
     const a = {} as Page
     const b = {} as Page
     let release: () => void = () => undefined
