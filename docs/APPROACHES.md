@@ -237,6 +237,13 @@ The chat never contains secret values. If a user pastes one there anyway, we det
 - **While recording**, the scan runs at every step boundary and every 300 ms; each occurrence is a `sensitive` region (`secret-text`) that follows it and ends when it's gone. A new one is **backdated to the previous scan** (no frame shows it unblurred), and to the run's start for a value that just became known; an unsure scan (a re-render mid-scan) ends nothing. Scans are bounded (2 s). Values come from the secrets resolved in the run plus `knownSecretValues` (the project's secrets, for a scene whose login was skipped).
 - **Model screenshots** (`screenshotForModel`): scanned before and after the screenshot, the union painted over in Node; a page that can't be scanned gives no screenshot.
 
+#### v0 hardening (M1-7)
+- **Ephemeral contexts:** every scene runs in a fresh `browser.newContext()` (`recordBatch`), off the record: nothing a run typed (no saved password, no autofill entry) outlives its context but the batch's in-memory session. No extra Chromium flags: the ones that exist are no-ops or onboarding-only, and adding a `--disable-features` replaces Playwright's own.
+- **Written to the approved element:** a secret is written with `fill` on a handle to the input the vault approved (its current value kept, like typing), never sent to whatever has focus. A navigation between the checks and the write detaches the handle: nothing is written anywhere. Secrets go only into an input or a textarea.
+- **No traces:** no source file in `packages/`, `apps/` or `scripts/` touches Playwright's trace API (a test fails if one does).
+- **No `evaluate`:** v0 has no JavaScript step at all (stricter than "setup only, with confirmation"): the schema rejects it, and a secret reference anywhere but a `type` value is rejected too.
+- **Exfiltration suite** (`packages/runtime/test/exfiltration.test.ts`): hostile pages that mirror the typed secret into text and into their URL (the text blurred and painted over in the model's screenshot, pixel by pixel; no encoding of it in any file of the take), move focus to another field when the password field is focused (nothing typed), leave for another origin on focus (nothing typed there), and spy on the DOM and string APIs the runtime's page code calls (string arguments only: no value ever passed). The test secret has URL-special characters, so its encodings differ. Run with `pnpm test`.
+
 #### Secret kinds
 - v0: `password`, `username`, `api_key`, generic `text`, `session` (saved `storageState`).
 - Later: `totp_seed` (the vault generates the current 2FA code at fill time).

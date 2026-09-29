@@ -1178,7 +1178,9 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
       assertSecretOrigin(ctx, secret, step)
       // A secret is resolved at the last moment, once the field it goes into is focused.
       let text = secret === undefined ? action.value : ""
-      let secretField: string | undefined
+      // The very element a secret goes into: a handle is bound to its document, so a navigation
+      // (another origin, another page) can't swap it between the checks and the write.
+      let secretInput: ElementHandle<HTMLInputElement | HTMLTextAreaElement> | undefined
       const sensitiveId =
         secret === undefined
           ? undefined
@@ -1207,19 +1209,27 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         await target.evaluate(moveCaretToEnd, undefined, { timeout })
         if (secret !== undefined) {
           // A secret goes into the target itself (or the input in its shadow root), never into
-          // another field inside it: the one focused before could be a visible text box.
-          const field = await target.evaluate(secretFieldOf, undefined, { timeout })
-          if (field === null) {
+          // another field inside it: the one focused before could be a visible text box. Only an
+          // input or a textarea (a value it can be written to as a whole).
+          const input = await target.evaluateHandle(secretInputOf, undefined, { timeout })
+          const element = input.asElement() as ElementHandle<
+            HTMLInputElement | HTMLTextAreaElement
+          > | null
+          if (element === null) {
+            await input.dispose()
             throw new StepError(
               step,
               "action-failed",
-              `secret "${secret}" goes into an input itself: use a locator for the field, not a container`,
+              `secret "${secret}" goes into an input or a textarea itself: use a locator for the field, not a container`,
             )
           }
-          secretField = field
+          secretInput = element
+          const inputType = await element.evaluate((el) =>
+            el instanceof HTMLInputElement ? el.type : "textarea",
+          )
           text = await resolveSecret(ctx, secret, step, {
             origin: new URL(page.url()).origin,
-            field: { inputType: field },
+            field: { inputType },
           })
         }
         // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
@@ -1238,18 +1248,19 @@ async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void
         // Checked again right before the text is sent: the page may have navigated while the
         // secret was being resolved.
         assertSecretOrigin(ctx, secret, step)
-        if (secretField !== undefined) {
-          // And still into the field the vault approved: focus may have moved while it resolved
-          // (a keychain prompt, an autofocus script), and the text goes to the focused element.
-          if ((await target.evaluate(secretFieldOf, undefined, { timeout })) !== secretField) {
-            throw new StepError(
-              step,
-              "action-failed",
-              `the field lost focus while secret "${secret}" was resolved`,
-            )
+        if (secretInput !== undefined) {
+          // Written into the approved element itself, not to whatever has focus now (focus may
+          // have moved while the vault resolved it: a keychain prompt, an autofocus script). A
+          // handle whose document was replaced throws: nothing is written anywhere. Appended to
+          // what the field holds, like typing.
+          const input = secretInput
+          try {
+            const before = await input.inputValue({ timeout })
+            await input.fill(before + text, { timeout })
+          } finally {
+            await input.dispose().catch(() => undefined)
           }
-        }
-        if (action.instant === true || secret !== undefined) {
+        } else if (action.instant === true) {
           await page.keyboard.insertText(text)
         } else {
           // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
@@ -2258,18 +2269,16 @@ function hasFocus(el: Element): boolean {
 }
 
 /**
- * The kind of field a secret would be typed into (runs in the page): the target itself must be
+ * The input or textarea a secret would be written to (runs in the page): the target itself must be
  * focused (a web component: its host, then the focused element in its shadow root). Null otherwise.
  */
-function secretFieldOf(el: Element): string | null {
+function secretInputOf(el: Element): HTMLInputElement | HTMLTextAreaElement | null {
   const root = el.getRootNode()
   const active = root instanceof ShadowRoot || root instanceof Document ? root.activeElement : null
   if (active !== el) return null
   let inner: Element = el
   while (inner.shadowRoot?.activeElement) inner = inner.shadowRoot.activeElement
-  if (inner instanceof HTMLInputElement) return inner.type
-  if (inner instanceof HTMLTextAreaElement) return "textarea"
-  return inner instanceof HTMLElement && inner.isContentEditable ? "contenteditable" : "other"
+  return inner instanceof HTMLInputElement || inner instanceof HTMLTextAreaElement ? inner : null
 }
 
 /**
