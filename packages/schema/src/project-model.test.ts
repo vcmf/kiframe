@@ -288,6 +288,7 @@ describe("settings layers", () => {
             session: true,
             steps: [
               {
+                id: "token",
                 action: "type",
                 target: { by: "label", name: "Token" },
                 value: "{{secrets.acme.token}}",

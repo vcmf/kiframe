@@ -85,6 +85,20 @@ function collect(): Collected {
   return { parts, nodes }
 }
 
+/**
+ * How a secret value is found in text (SECRETS-DESIGN §5 R2), by the scanner and by the runtime's
+ * checks alike: case-insensitive; whitespace in the value matches any whitespace or none (the
+ * browser collapses it; a space can be a node of its own); a value under 6 characters only as a
+ * whole word (a username "admin" isn't in "administrators").
+ */
+export function valuePattern(value: string, flags = "giu"): RegExp {
+  const body = value.trim().split(/\s+/).map(escapeRegExp).join("\\s*")
+  return new RegExp(
+    value.trim().length < 6 ? `(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])` : body,
+    flags,
+  )
+}
+
 /** A string as a literal in a regular expression (valid with the `u` flag too). */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -141,8 +155,8 @@ export function matchParts(parts: readonly Part[], values: Iterable<string>): Sp
   // Case-insensitive regexes on the text itself: offsets stay the original string's (lowering the
   // case can change a string's length: "İ"). Whitespace in a value matches any whitespace, or none
   // (the browser collapses it; a space between two nodes can be a node of its own, not collected).
-  const needles = [...new Set([...values].filter((v) => v.trim() !== ""))].map(
-    (v) => new RegExp(v.trim().split(/\s+/).map(escapeRegExp).join("\\s*"), "giu"),
+  const needles = [...new Set([...values].filter((v) => v.trim() !== ""))].map((v) =>
+    valuePattern(v),
   )
   if (needles.length === 0) return []
   const out: Span[][] = []

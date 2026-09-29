@@ -11,7 +11,10 @@ export function loadDotEnv(): void {
 
 export const envName = (secret: string) => secret.toUpperCase().replace(/[^A-Z0-9]/g, "_")
 
-/** A resolver for the runner: throws (never returns "") when a secret isn't provided. */
+/**
+ * A resolver for the runner: throws (never returns "") when a secret isn't provided. It ignores the
+ * use: no grants (SECRETS-DESIGN §3) here, the user's own `.env` for throwaway harnesses only.
+ */
 export function envSecretResolver(names: readonly string[]): (name: string) => string {
   return (name) => {
     const value = process.env[envName(name)]

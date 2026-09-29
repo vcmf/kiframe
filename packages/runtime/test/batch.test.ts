@@ -4,7 +4,13 @@ import { join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { approvalPolicy, recordBatch, type RunnerEvent } from "../src/index.ts"
+import { memoryBackend, Vault } from "@kiframe/vault"
+import {
+  approvalPolicy,
+  type ApprovalRequest,
+  recordBatch,
+  type RunnerEvent,
+} from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -52,6 +58,7 @@ describe("recordBatch", () => {
       steps.map((s, i) => ({
         scenario: typeof s === "string" ? scene(s) : scene(...s),
         outDir: join(dir, `take-${i}`),
+        sceneId: `scene-${i}`,
       })),
       project(),
       {
@@ -113,6 +120,109 @@ describe("recordBatch", () => {
     const { results, logins } = await run([signedIn, missing, signedIn])
     expect(results.map((r) => r.ok)).toEqual([true, false, true])
     expect(logins).toBe(2)
+  })
+})
+
+describe("recordBatch and secret approvals", () => {
+  it("keys each scene's secret steps by its own scene id: one approval never serves another", async () => {
+    const vault = Vault.open(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    await vault.request(
+      { name: "acme.password", kind: "password", origin: new URL(server.url).origin, reason: "t" },
+      () => Promise.resolve("hunter2-secret"),
+    )
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-batch-"))
+    const typing = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`)
+    const asked: string[] = []
+    const results = await recordBatch(
+      browser,
+      [0, 1].map((i) => ({
+        scenario: typing,
+        outDir: join(dir, `take-${i}`),
+        sceneId: `scene-${i}`,
+      })),
+      project(),
+      {
+        timeoutMs: 1500,
+        scope: "project-1",
+        resolveSecret: vault.resolver(),
+        requestApproval: async (request: ApprovalRequest) => {
+          asked.push(request.use.stepKey)
+          await vault.approve(request.secret, request.use)
+          return true
+        },
+      },
+    )
+    expect(results.map((r) => r.ok)).toEqual([true, true])
+    expect(asked).toEqual(["scene:scene-0/steps/pw", "scene:scene-1/steps/pw"])
+  })
+})
+
+describe("recordBatch known values", () => {
+  it("carries the values a scene resolved to the next scenes (paste refused there too)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-batch-"))
+    const typing = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`)
+    const pasting = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: e, action: click, target: { by: label, name: Email } }
+  - { id: k, action: press, keys: "Mod+v" }
+`)
+    const results = await recordBatch(
+      browser,
+      [
+        { scenario: typing, outDir: join(dir, "a"), sceneId: "a" },
+        { scenario: pasting, outDir: join(dir, "b"), sceneId: "b" },
+      ],
+      project(),
+      { timeoutMs: 1500, scope: "project-1", resolveSecret: () => "hunter2-secret" },
+    )
+    expect(results[0]?.ok).toBe(true)
+    expect(results[1]?.ok).toBe(false)
+    expect(String(results[1]?.ok === false ? results[1].error : "")).toMatch(/no paste/)
+  })
+})
+
+describe("recordBatch scene ids", () => {
+  it("fails a scene with an invalid id or an earlier scene's, not the batch", async () => {
+    const s = scene(signedIn)
+    const results = await recordBatch(
+      browser,
+      [
+        { scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "same" },
+        { scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "same" },
+        { scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "other" },
+      ],
+      project(),
+    )
+    expect(results.map((r) => r.ok)).toEqual([true, false, true])
+    expect(String(results[1]?.ok === false ? results[1].error : "")).toMatch(
+      /earlier scene .* "same"/,
+    )
+    const [bad] = await recordBatch(
+      browser,
+      [{ scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "a/b.yaml" }],
+      project(),
+    )
+    expect(String(bad?.ok === false ? bad.error : "")).toMatch(/isn't a scene id/)
+  })
+})
+
+describe("recordBatch contexts", () => {
+  it("never gives the page clipboard permissions", async () => {
+    await expect(
+      recordBatch(browser, [], project(), { context: { permissions: ["clipboard-read"] } }),
+    ).rejects.toThrow(/never get clipboard permissions/)
   })
 })
 

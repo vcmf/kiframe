@@ -315,6 +315,120 @@ const pages: Record<string, string> = {
     <label>Age <input type="number"></label>
     <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
     <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
+  // A field whose aria-labelledby and aria-label disagree (the accessible name is the labelledby).
+  "/labelled": `<!doctype html><title>Labelled</title>
+    <span id="cc">Card number</span><input type="text" aria-labelledby="cc" aria-label="Password">`,
+  // A profile page that renders its data late (a fetch after load): a known value in a cell's input.
+  "/late-profile": `<!doctype html><title>Late profile</title><table><tr id="row"></tr></table>
+    <script>setTimeout(() => { document.getElementById("row").innerHTML = '<td><input value="bob@acme.com"></td>' }, 800)</script>`,
+  // A page keeping the username in a hidden input (never part of an accessible name).
+  "/hidden-user": `<!doctype html><title>Hidden user</title>
+    <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // A header holding the signed-in user's email in text attributes.
+  "/account-header": `<!doctype html><title>Account</title>
+    <a href="mailto:bob@acme.com" aria-label="Account bob@acme.com"><img alt="bob@acme.com" src="data:,"></a>`,
+  "/to-stream": `<!doctype html><title>To stream</title><a href="/stream-page">Open</a>`,
+  // A hidden duplicate password field (a mobile layout), the visible one lower on a tall page.
+  "/dup-password": `<!doctype html><title>Dup password</title><div style="height:300px"></div>
+    <input type="password" aria-label="Password" style="display:none">
+    <input type="password" aria-label="Password"><div style="height:2000px"></div>`,
+  // A leftover and a field holding a secret that render together, 500 ms after load.
+  "/late-both": `<!doctype html><title>Late both</title><div id="d"></div>
+    <script>setTimeout(() => { document.getElementById("d").innerHTML = '<p>Q4 report</p><input value="bob@acme.com">' }, 500)</script>`,
+  // A link to a page whose image never finishes loading, and whose spinner goes after 100 ms.
+  "/to-slow-img": `<!doctype html><title>To slow img</title><a href="/slow-img">Open</a>`,
+  "/slow-img": `<!doctype html><title>Slow img</title><div id="sp">Loading</div><img src="/api/slow5">
+    <script>setTimeout(() => document.getElementById("sp").remove(), 100)</script>`,
+  // Shows a leftover row, then navigates (after 300 ms) to a page served late that shows it too.
+  "/nav-a": `<!doctype html><title>Nav A</title><p>Leftover row</p>
+    <script>setTimeout(() => { location.href = "/nav-b?delay=400" }, 300)</script>`,
+  "/nav-b": `<!doctype html><title>Nav B</title><p>Leftover row</p>`,
+  // A secret field removed after 1200 ms, a leftover item added 300 ms later (a late list).
+  "/late-leftover": `<!doctype html><title>Late leftover</title><input id="u" value="bob@acme.com"><ul id="l"></ul>
+    <script>setTimeout(() => document.getElementById("u").remove(), 1200); setTimeout(() => { document.getElementById("l").innerHTML = "<li>Q4 Launch</li>" }, 1500)</script>`,
+  // A login form that goes away after 400 ms, its "Signing in" text after 800 ms.
+  "/signing-in": `<!doctype html><title>Signing in</title>
+    <form id="f"><input value="bob@acme.com"></form><p id="s">Signing in to Acme</p>
+    <script>setTimeout(() => document.getElementById("f").remove(), 400); setTimeout(() => document.getElementById("s").remove(), 800)</script>`,
+  // A page the exact-names check can't read (its in-page API broken), with a leftover heading.
+  "/unreadable": `<!doctype html><title>Unreadable</title><input value="bob@acme.com"><h1>Q4 Launch</h1>
+    <script>Document.prototype.querySelectorAll = () => { throw new Error("no") }</script>`,
+  // Truncates what's typed to 4 characters (a JS maxlength).
+  "/truncating": `<!doctype html><title>Truncating</title><label>Password <input id="pw" type="password"></label>
+    <script>document.getElementById("pw").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 4) })</script>`,
+  // Moves focus to a Notes box the moment the password's text is selected (fill selects it).
+  "/focus-thief": `<!doctype html><title>Focus thief</title>
+    <label>Password <input id="pw" type="password" value="a"></label><label>Notes <input id="notes"></label>
+    <script>document.addEventListener("selectionchange", () => {
+      const pw = document.getElementById("pw")
+      if (document.activeElement === pw && pw.selectionStart === 0 && pw.selectionEnd === pw.value.length) document.getElementById("notes").focus()
+    })</script>`,
+  // A password row that fades in place to opacity 0 (still named by Playwright).
+  "/fade-row": `<!doctype html><title>Fade row</title>
+    <table><tr id="r"><td>Password <input type="password" aria-label="Password"></td></tr></table>
+    <button onclick="document.getElementById('r').style.opacity='0'">Fade</button>`,
+  // A login in a drawer closed with visibility:hidden (MUI keepMounted): the field stays attached.
+  "/drawer-login": `<!doctype html><title>Drawer login</title>
+    <div id="dlg"><label>Password <input type="password"></label><button onclick="document.getElementById('dlg').style.visibility='hidden'">Sign in</button></div>
+    <button>New project</button>`,
+  // A login in a dialog that closes: the password field stays attached, hidden.
+  "/dialog-login": `<!doctype html><title>Dialog login</title>
+    <dialog open><form method="dialog"><label>Password <input type="password"></label><button>Sign in</button></form></dialog>
+    <button>New project</button>`,
+  // A hidden label holding the password field names a visible checkbox (Playwright includes it).
+  "/hidden-label": `<!doctype html><title>Hidden label</title>
+    <input type="checkbox" id="cb"><label for="cb" id="l">Remember <input type="password" aria-label="Password"
+      onchange="document.getElementById('l').style.display='none'"></label>`,
+  // A hidden box in a shadow root holding the password, named by a button of that shadow root.
+  "/shadow-named": `<!doctype html><title>Shadow named</title><div id="host"></div>
+    <script>
+      const root = document.getElementById("host").attachShadow({ mode: "open" })
+      root.innerHTML = '<label>Password <input type="password"></label><div id="box" style="display:none"></div><span id="lbl">Sign</span><button aria-labelledby="lbl box">x</button>'
+      root.querySelector("input").addEventListener("change", (e) => {
+        const box = root.getElementById("box")
+        box.appendChild(e.target.closest("label"))
+      })
+    </script>`,
+  // A code field that submits its form on input, once full (the page leaves with the value).
+  "/submit-on-input": `<!doctype html><title>Submit on input</title>
+    <form action="/fade-row"><label>Password <input type="password" name="p"
+      oninput="if (this.value.length >= 6) this.form.submit()"></label></form>`,
+  // A table-layout login: the password box inside a cell (its value is part of the cell's name).
+  "/cell-login": `<!doctype html><title>Cell login</title>
+    <table><tr><td><input type="password" aria-label="Password"></td></tr></table>
+    <button id="go" onclick="document.querySelector('table').remove()">Sign in to Acme</button>`,
+  // A textarea holding a known value re-flowed over two lines.
+  "/reflowed": `<!doctype html><title>Reflowed</title><textarea id="bio">Bob
+Smith</textarea>`,
+  // A field holding a secret's value, and one holding a longer word that merely contains it.
+  "/words": `<!doctype html><title>Words</title>
+    <label>Search <input id="search" value="administrators"></label><label>User <input id="user" value="admin"></label>`,
+  // Re-mounts the password input (a framework re-render): the new node keeps the value and focus.
+  "/remount": `<!doctype html><title>Remount</title>
+    <label>Password <input id="pw" type="password"></label><label>Email <input id="email"></label>
+    <script>
+      document.getElementById("pw").addEventListener("input", (e) => setTimeout(() => {
+        const old = e.target, n = old.cloneNode()
+        n.value = old.value; n.removeAttribute("id"); old.replaceWith(n); n.focus()
+      }, 50), { once: true })
+    </script>`,
+  // A password field inside a web component's shadow root.
+  "/shadow-login": `<!doctype html><title>Shadow login</title>
+    <pw-field id="host"></pw-field><label>Email <input id="email"></label>
+    <script>
+      customElements.define("pw-field", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open", delegatesFocus: true }).innerHTML = '<input type="password" aria-label="Password">'
+        }
+      })
+    </script>`,
+  // The same form on another path (an approved step moved elsewhere).
+  "/other/login-form": `<!doctype html><title>Login form</title>
+    <label>Email <input type="email"></label>
+    <label>Age <input type="number"></label>
+    <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
+    <button onclick="document.getElementById('s').textContent='Deleted'">Delete project</button><p id="s"></p>`,
   "/shadow-render": `<!doctype html><title>Shadow render</title>
     <x-panel></x-panel><button id="go">Load panel</button>
     <script>
@@ -449,6 +563,13 @@ export async function startFixtureServer(): Promise<{ url: string; close: () => 
       res.write("data: hello\n\n")
       return
     }
+    if (path === "/stream-page") {
+      // HTML that never finishes streaming (the document stays "loading"); #sp goes after 100 ms.
+      res.writeHead(200, { "content-type": "text/html" })
+      res.write(`<!doctype html><title>Stream</title><div id="sp">Loading</div>
+        <script>setTimeout(() => document.getElementById("sp").remove(), 100)</script>`)
+      return
+    }
     if (path === "/api/slow5") {
       setTimeout(() => {
         res.writeHead(200, { "content-type": "application/json" })
@@ -464,6 +585,15 @@ export async function startFixtureServer(): Promise<{ url: string; close: () => 
       return
     }
     const body = pages[path] ?? (path.startsWith("/projects/") ? pages["/projects"] : undefined)
+    // `?delay=ms`: the page is served late (a slow navigation).
+    const delay = Number(new URL(req.url ?? "/", "http://x").searchParams.get("delay") ?? 0)
+    if (delay > 0 && body !== undefined) {
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "text/html" })
+        res.end(body)
+      }, delay)
+      return
+    }
     res.writeHead(body === undefined ? 404 : 200, { "content-type": "text/html" })
     res.end(body ?? "not found")
   })

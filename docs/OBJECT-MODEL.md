@@ -223,11 +223,13 @@ presets:                         # shared off-camera setups (§0.4)
     steps:
       - action: goto
         url: /login
-      - action: type
+      - id: email                                        # a step typing a secret needs an id: its approval refers to it (SECRETS-DESIGN §3)
+        action: type
         target: { by: label, name: "Email" }
         value: "{{secrets.acme_staging.email}}"          # vault NAME only (APPROACHES §7.4)
         instant: true                                    # off camera: no human typing needed
-      - action: type
+      - id: password
+        action: type
         target: { by: label, name: "Password" }
         value: "{{secrets.acme_staging.password}}"
         instant: true

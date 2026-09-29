@@ -29,6 +29,8 @@ steps:
       const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
       const take = await recordScenario(page, scenario, project, {
         outDir: join(mkdtempSync(join(tmpdir(), "kiframe-e2e-")), "take"),
+        scope: "test",
+        sceneId: "test",
         resolveSecret: () => "hunter2",
       })
       const { composition } = generate(project, scenario, take)

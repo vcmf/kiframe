@@ -7,6 +7,7 @@
 //          [--dirty 2,4] [--headed]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { sceneIdOf } from "../lib/scenes.ts"
 import { parseArgs } from "node:util"
 import { recordScenario, type RunnerEvent } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
@@ -67,6 +68,8 @@ try {
     }
     try {
       const take = await recordScenario(page, scene, project, {
+        scope: "phase0",
+        sceneId: sceneIdOf(values.scenario),
         outDir: join(values.out, `run-${run}`),
         skipSessionPresets: [...sessions],
         // A sandbox app: the scene's risky teardown (delete) is pre-approved (APPROACHES §7.2).

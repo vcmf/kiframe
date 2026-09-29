@@ -15,6 +15,9 @@ const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
 try {
   await runScenario(page, scenario, project, {
+    // Approvals are the host's (SECRETS-DESIGN §3); the .env resolver here ignores them.
+    scope: "phase0",
+    sceneId: "login-check",
     resolveSecret: env,
     timeoutMs: Number(process.env.KF_TIMEOUT ?? 15_000),
   })

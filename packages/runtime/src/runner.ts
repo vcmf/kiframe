@@ -2,6 +2,7 @@ import type { ProjectConfig, Scenario } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
+import { SAFE_SELECTOR_RULES, secretsOf } from "./secret-state.ts"
 import { type Ctx, firstLine, MIN_TIMEOUT_MS, type RunOptions } from "./run/context.ts"
 import { applyHide, hideCss } from "./run/interrupts.ts"
 import { switchPage } from "./run/pages.ts"
@@ -19,6 +20,9 @@ import { runOne } from "./run/step.ts"
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
 // expanded, session presets skipped when the page already has their state, `ensure`), steps,
 // teardown.
+
+/** Hide rules already reported as skipped, per context (one warning each). */
+const warnedHideOf = new WeakMap<object, Set<string>>()
 
 /**
  * Runs a scenario. Throws a `StepError` naming the failing step. Teardown always runs, best effort:
@@ -72,9 +76,11 @@ export async function runScenario(
   // step running at that moment.
   let current: StepRef | undefined
   let listenerError: StepError | undefined
-  const secretValues = new Set<string>(
-    (options.knownSecretValues ?? []).filter((v) => v.trim() !== ""),
-  )
+  // Per browser context, not per run (SECRETS-DESIGN §3 A5): a later run on the same page still
+  // knows the values and the fields they were written to (grounding runs one step at a time).
+  const secrets = secretsOf(page.context())
+  const secretValues = secrets.values
+  for (const v of options.knownSecretValues ?? []) if (v.trim() !== "") secretValues.add(v)
   const onNavigated = (frame: Frame) => {
     if (frame === ctx.page.mainFrame() && current !== undefined) {
       try {
@@ -101,6 +107,7 @@ export async function runScenario(
   }
   const detach = (p: Page) => void p.off("framenavigated", onNavigated)
   attach(page)
+  const hide = hideCss(project.hide)
   const ctx: Ctx = {
     page,
     openers: [],
@@ -111,7 +118,7 @@ export async function runScenario(
     cursors: new Map(),
     interrupts: project.interrupts,
     perform: (action, step) => perform(ctx, action, step),
-    hideCss: hideCss(project.hide),
+    hideCss: hide.css,
     interruptsDone: new WeakMap(),
     inInterrupt: false,
     base,
@@ -121,6 +128,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
+    secretWritten: secrets.written,
     secretText: {
       shown: new Map(),
       next: 0,
@@ -143,6 +151,19 @@ export async function runScenario(
     timeoutMs: Math.max(MIN_TIMEOUT_MS, options.timeoutMs ?? 5000),
     navigationTimeoutMs: Math.max(MIN_TIMEOUT_MS, options.navigationTimeoutMs ?? 30_000),
   }
+  // Hide rules the A8 grammar refuses are skipped (a hide rule is live CSS for the whole page: it
+  // could test a value a later run knows), reported once per context.
+  const warned = warnedHideOf.get(page.context()) ?? new Set<string>()
+  warnedHideOf.set(page.context(), warned)
+  for (const s of hide.skipped) {
+    if (warned.has(s)) continue
+    warned.add(s)
+    options.onEvent?.({
+      kind: "warning",
+      message: `hide rule "${s}" is skipped: only simple CSS selectors (${SAFE_SELECTOR_RULES})`,
+    })
+  }
+
   await applyHide(ctx, page)
   // While recording, secrets shown as text are looked for between steps and during them.
   const scan =
