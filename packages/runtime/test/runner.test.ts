@@ -879,7 +879,7 @@ steps:
       await run(
         `setup: [{ action: goto, url: /submit-on-input }]
 steps:
-  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}", submit: true }
   - { id: gone, action: waitFor, until: { url: /fade-row } }
 `,
         approving(vault, []),

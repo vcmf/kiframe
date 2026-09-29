@@ -1,7 +1,13 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { exactNamesFor, isPartialName, isSafeSelector, ProbeRefusal } from "../secret-state.ts"
+import {
+  EXACT_NAMES_HINT,
+  exactNamesFor,
+  isPartialName,
+  isSafeSelector,
+  ProbeRefusal,
+} from "../secret-state.ts"
 import { pollLocator } from "./conditions.ts"
 import { countUnderRule } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
@@ -74,6 +80,8 @@ const whenLocator = (rule: ProjectConfig["interrupts"][number]) =>
 /** Rules already reported as skipped (§3 A8), per context: one warning each, not one per step. */
 const skippedRulesOf = new WeakMap<object, Set<string>>()
 
+const exactRulesOf = new WeakMap<object, Set<string>>()
+
 /** The first rule (in order, not in `skip`) whose `when` is visible right now (no waiting). */
 async function matchingInterrupt(
   ctx: Ctx,
@@ -88,6 +96,20 @@ async function matchingInterrupt(
   const context = ctx.page.context()
   const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
   skippedRulesOf.set(context, skippedRules)
+  // A partial `when` matches exactly for now: said once per rule (a banner it no longer sees would
+  // otherwise block a click with nothing pointing at names).
+  const exactRules = exactRulesOf.get(context) ?? new Set<string>()
+  exactRulesOf.set(context, exactRules)
+  if (names.exact) {
+    for (const rule of rules) {
+      if (!isPartialName(whenLocator(rule)) || exactRules.has(rule.id)) continue
+      exactRules.add(rule.id)
+      ctx.options.onEvent?.({
+        kind: "warning",
+        message: `interrupt rule "${rule.id}" matches its name exactly for now${EXACT_NAMES_HINT}`,
+      })
+    }
+  }
   // All rules queried at once, not one after another (an org rule bank can be long).
   const counts = await Promise.all(
     rules.map(async (rule) => {

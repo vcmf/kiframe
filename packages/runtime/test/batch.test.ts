@@ -194,7 +194,7 @@ steps:
 })
 
 describe("recordBatch scene ids", () => {
-  it("fails a scene reusing an earlier scene's id, not the batch", async () => {
+  it("fails a scene with an invalid id or an earlier scene's, not the batch", async () => {
     const s = scene(signedIn)
     const results = await recordBatch(
       browser,
@@ -209,6 +209,12 @@ describe("recordBatch scene ids", () => {
     expect(String(results[1]?.ok === false ? results[1].error : "")).toMatch(
       /earlier scene .* "same"/,
     )
+    const [bad] = await recordBatch(
+      browser,
+      [{ scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "a/b.yaml" }],
+      project(),
+    )
+    expect(String(bad?.ok === false ? bad.error : "")).toMatch(/isn't a scene id/)
   })
 })
 
