@@ -134,13 +134,17 @@ export async function recordScenario(
     // and the next page's count from the switch.
     let generation = 0
     let switchedAt = 0
+    let lastFrameT = 0
     function onFrame({ data, timestamp }: { data: Buffer; timestamp: number }, of: number) {
       // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
       if (stopped || of !== generation) return
       const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
       // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
       pendingWrites.push(track(writeFile(join(framesDir, file), data)))
-      frames.push({ file, t: Math.max(0, timestamp - t0, switchedAt) })
+      // Kept in one order (T4): each frame at or after the one before (the video is encoded in this
+      // order, and a region's end is found in it), the next page's from the switch.
+      lastFrameT = Math.max(0, timestamp - t0, switchedAt, lastFrameT)
+      frames.push({ file, t: lastFrameT })
       const size = jpegSize(data)
       if (size !== undefined) {
         if (
@@ -164,9 +168,9 @@ export async function recordScenario(
     await capturing.screencast.start(castOptions)
     const onPageSwitch = async (next: Page) => {
       // Frames before now show the previous page: a region of this one starts here at the earliest.
-      // Never before a frame of the page it leaves (a frame drawn within this millisecond, already
-      // kept): the next page's frames sort after it, and a left region lasts past it.
-      switchedAt = Math.max(at(), (frames.at(-1)?.t ?? 0) + 0.001)
+      // After every frame of the page it leaves (one drawn within this millisecond, already kept):
+      // the next page's frames come after it, and a left region lasts past it.
+      switchedAt = Math.max(at(), lastFrameT + 0.001)
       const of = ++generation
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next

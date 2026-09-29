@@ -354,17 +354,35 @@ async function measureSecretField(
 }
 
 /**
- * Where the target finds the field: its box when it finds exactly one element (rendered), null when
- * none or several (a re-mounted field is one element; two matches are other fields, a change-password
- * form: never a strict-mode "unknown" that would hold a blur forever; password fields show dots and
- * the text scan covers text values), "unknown" when measuring failed (a timeout): the blur stays.
+ * Where the target finds the field: its box (null when it finds nothing rendered), "unknown" when
+ * measuring failed (a timeout): the blur stays. Several matches (a responsive duplicate, the field
+ * re-mounted next to another): the union of the rendered ones, fails closed and follows them (never
+ * a strict-mode "unknown" that would hold a blur forever).
  */
 async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
   try {
     // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
     // boundingBox's attach timeout on every later step.
-    if ((await locator.count()) !== 1) return null
-    return await locator.boundingBox({ timeout: 300 })
+    const n = await locator.count()
+    if (n === 0) return null
+    if (n === 1) return await locator.boundingBox({ timeout: 300 })
+    const boxes = await Promise.all(
+      Array.from({ length: Math.min(n, 5) }, (_, i) =>
+        locator.nth(i).boundingBox({ timeout: 300 }),
+      ),
+    )
+    const shown = boxes.filter((b): b is Box => b !== null)
+    if (shown.length === 0) return null
+    return shown.reduce((a, b) => {
+      const x = Math.min(a.x, b.x)
+      const y = Math.min(a.y, b.y)
+      return {
+        x,
+        y,
+        width: Math.max(a.x + a.width, b.x + b.width) - x,
+        height: Math.max(a.y + a.height, b.y + b.height) - y,
+      }
+    })
   } catch {
     return "unknown"
   }

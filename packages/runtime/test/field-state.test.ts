@@ -109,9 +109,11 @@ describe("secret field state through real reads", () => {
       height: 30,
     }
     let matches = 1
+    const twin = { x: 10, y: 400, width: 100, height: 30 }
     const locator = {
       count: () => Promise.resolve(box === null ? 0 : matches),
       boundingBox: () => Promise.resolve(box),
+      nth: (i: number) => ({ boundingBox: () => Promise.resolve(i === 0 ? box : twin) }),
     }
     const events: RunnerEvent[] = []
     const field = {
@@ -171,12 +173,15 @@ describe("secret field state through real reads", () => {
     expect(reports().at(-1)).toMatchObject({ state: "at", shown: 100, box: { width: 100 } })
   })
 
-  it("treats a target matching two elements as gone (never a stuck 'unknown')", async () => {
+  it("covers every element a target matching several finds (never gone, never a stuck 'unknown')", async () => {
     const { ctx, step, reports, twice } = live()
     await followSecretFields(ctx, step)
     twice()
     await followSecretFields(ctx, step)
-    expect(reports().at(-1)?.state).toBe("gone")
+    expect(reports().at(-1)).toMatchObject({
+      state: "at",
+      box: { x: 10, y: 20, width: 100, height: 410 },
+    })
   })
 
   it("treats a box of no size as gone", async () => {
