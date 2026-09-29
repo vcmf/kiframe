@@ -151,6 +151,12 @@ export interface RunOptions {
 
 export type AnyAction = Action | Step
 
+/** A page's CSS viewport (boxes are normalized in the one they were measured in). */
+export interface Viewport {
+  width: number
+  height: number
+}
+
 /** Playwright treats a timeout of 0 as "wait forever": never pass it through. */
 export const MIN_TIMEOUT_MS = 1
 
@@ -219,16 +225,16 @@ export interface Ctx {
     page: Page
     /** Its type_start was reported: followed from then on (never while the cursor travels to it). */
     typed?: boolean
-    /** Its last report was "gone" (an unchanged "gone" isn't sent again). */
-    reportedGone?: boolean
+    /** Its region has an open box (a box reported, no "gone" or leave since). */
+    onScreen?: boolean
+    /** Left with its page: its next box is dated from the switch back. */
+    leftPage?: boolean
     /** When the last read that found it gone started (a return is dated from it). */
     goneReadAt?: number
     /** The viewport its last real box was measured in. */
-    lastViewport?: { width: number; height: number } | undefined
+    lastViewport?: Viewport | undefined
     /** The last real box (kept while the run is on another page). */
     lastBox?: Box
-    /** Blur ended only because the run left its page (not because the field went away). */
-    away?: boolean
   }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void

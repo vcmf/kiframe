@@ -182,7 +182,7 @@ export async function runScenario(
           // Fields too, between step boundaries (a move's hull spans one tick, not a whole step);
           // never piled up.
           if (ctx.fieldsInflight === undefined) {
-            followSecretFields(ctx, current).catch(() => undefined)
+            followSecretFields(ctx, current, true).catch(() => undefined)
           }
         }, TEXT_SCAN_MS)
       : undefined
