@@ -9,7 +9,7 @@ import { StyleOverride } from "./style.ts"
 
 /**
  * An event anchor's parts: `<stepId>:<kind>` or `<stepId>:<kind>:<n>` names the step's n-th event of
- * that kind (no `n`: the first, 0). One parser for the renderer and the migrations.
+ * that kind (no `n`: the first, 0). One parser wherever anchors are read.
  */
 export function parseEventAnchor(
   event: string,
@@ -142,10 +142,16 @@ export const MaskSegment = z
       z.strictObject({ rect: NRect }),
     ]),
   })
-  .refine((m) => !("sensitiveId" in m.target) || m.kind === "blur" || m.kind === "pixelate", {
-    message: "only a blur or pixelate names a secret region",
-    path: ["target"],
-  })
+  .refine(
+    (m) =>
+      !("sensitiveId" in m.target) ||
+      (m.source === "manual" && (m.kind === "blur" || m.kind === "pixelate")),
+    {
+      // (An auto one is an older composition's: the take draws its regions now, T7.)
+      message: "only a user's blur or pixelate names a secret region (the take draws them)",
+      path: ["target"],
+    },
+  )
 export type MaskSegment = z.infer<typeof MaskSegment>
 
 export const CursorSegment = z.strictObject({

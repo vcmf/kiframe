@@ -610,7 +610,7 @@ steps:
     await context.close()
     // The runtime found it gone, once, at the step after the goto (a gone read reported: the blur
     // ends at the next frame, never held open by a read that lost it).
-    const gone = runnerEvents.filter((e) => e.kind === "secret_field" && e.box === undefined)
+    const gone = runnerEvents.filter((e) => e.kind === "secret_field" && e.state === "gone")
     expect(gone).toHaveLength(1)
     expect(gone[0]?.kind === "secret_field" && gone[0].step.stepId).toBe("away")
     const sensitive = take.events.filter((e) => e.kind === "sensitive")

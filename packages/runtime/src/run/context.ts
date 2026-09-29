@@ -8,6 +8,32 @@ import { ProbeRefusal } from "../secret-state.ts"
 // The runner's shared state (Ctx), its options and events, and small helpers every part uses.
 
 /** What the runner reports as it goes. The recorder (P0-5) turns these into take events. */
+/** A read of the page (`now()`, SECRETS-DESIGN T2). */
+export interface ReadTimes {
+  /** When it started. */
+  at: number
+  /** When it ended: once the page drew what it read. */
+  end: number
+  /** When the run switched to the page read (T3: nothing it saw was on screen before). */
+  shown: number
+}
+
+/**
+ * Where a secret region is, as one read found it: on screen at `box` (CSS pixels, in `viewport`),
+ * gone (T4: until the first frame after the read), or left with its page (T4: until the next
+ * page's first frame). Explicit: a missing box never means one or the other.
+ */
+export type RegionReport =
+  | {
+      state: "at"
+      box: Box
+      viewport: Viewport
+      /** When its box may have appeared (T3), when not the previous read's start. */
+      since?: number | undefined
+    }
+  | { state: "gone" }
+  | { state: "left" }
+
 export type RunnerEvent =
   | { kind: "step_start" | "step_end"; step: StepRef }
   | { kind: "navigate"; step: StepRef; url: string }
@@ -34,43 +60,10 @@ export type RunnerEvent =
       button: "left" | "right"
       count: number
     }
-  /**
-   * A secret value shown as text on the page (`box`), or gone (no `box`). Recording only. `since`
-   * (epoch ms): when the blur must start, the last scan that didn't see it (fails closed).
-   */
-  | {
-      kind: "secret_text"
-      step: StepRef
-      id: string
-      box?: Box | undefined
-      viewport?: { width: number; height: number } | undefined
-      since?: number | undefined
-      /** The read (`now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
-      at: number
-      end: number
-      /** When the run switched to the page read (T3: nothing it saw was on screen before). */
-      shown: number
-      /** Gone because the capture left its page (T4: covered until the next page's first frame). */
-      atSwitch?: boolean | undefined
-    }
-  /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
-  | {
-      kind: "secret_field"
-      step: StepRef
-      id: string
-      box?: Box | undefined
-      /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
-      viewport?: { width: number; height: number } | undefined
-      /** The read (`now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
-      at: number
-      end: number
-      /** When the run switched to the page read (T3: nothing it saw was on screen before). */
-      shown: number
-      /** Gone because the capture left its page (T4: covered until the next page's first frame). */
-      atSwitch?: boolean | undefined
-      /** Back on screen since (ms, `now()`): a page switch back. By default, since it left. */
-      since?: number | undefined
-    }
+  /** A secret value shown as text on the page, per read (SECRETS-DESIGN T2–T4). Recording only. */
+  | ({ kind: "secret_text"; step: StepRef; id: string } & ReadTimes & RegionReport)
+  /** A field holding a secret, per read (SECRETS-DESIGN T2–T4). Recording only. */
+  | ({ kind: "secret_field"; step: StepRef; id: string } & ReadTimes & RegionReport)
   /** A key combination was pressed (`press` action). */
   | { kind: "key"; step: StepRef; keys: string }
   /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
@@ -212,6 +205,8 @@ export interface Ctx {
   switching: boolean
   /** The field measurement running, if any (one at a time). */
   fieldsInflight: Promise<void> | undefined
+  /** How many fields a secret was typed into so far (their region ids: never reused). */
+  secretFieldCount: number
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
