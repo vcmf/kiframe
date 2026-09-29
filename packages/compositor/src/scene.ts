@@ -93,6 +93,8 @@ export interface Prepared {
   map: TimeMap
   style: Style
   composition: Composition
+  /** The take's secret region boxes, by time (drawn whatever the composition says). */
+  regionIndex: RegionIndex
   /** Output duration in ms. */
   duration: number
   /**
@@ -139,6 +141,7 @@ export function prepare(
     map,
     style: s,
     composition,
+    regionIndex: indexRegions(timeline.regions),
     duration: map.outputDuration,
   }
   const moves = cameraMoves(base)
@@ -189,7 +192,7 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   // By source time, both ends included: the frame shown is what must be covered. Secret regions
   // straight from the take, each box over its own span (SECRETS-DESIGN I4: no composition edit
   // removes or shortens them, and no timing rule of the compositor's own).
-  const blurs: NRect[] = secretRects(tl.regions, sourceT)
+  const blurs: NRect[] = secretRects(p.regionIndex, sourceT)
   for (const m of tracks.masks) {
     if (m.kind !== "blur" && m.kind !== "pixelate") continue
     const a = resolveAnchor(m.at, tl)
@@ -244,16 +247,31 @@ function regionRect(tl: Timeline, id: string, t: number): NRect {
   return (box === undefined ? undefined : clipRect(box.rect)) ?? { x: 0, y: 0, w: 1, h: 1 }
 }
 
-/** The boxes of the take's secret regions on screen at source time `t`. */
-function secretRects(regions: Timeline["regions"], t: number): NRect[] {
-  const out: NRect[] = []
-  for (const e of regions) {
-    if (t < e.t || t > e.until) continue
-    for (const box of e.boxes) {
-      if (t < box.from || t > box.until) continue
-      const rect = clipRect(box.rect)
-      if (rect !== undefined) out.push(rect)
+/** Region boxes by second of source time: a frame looks at its second's boxes only. */
+const BUCKET_MS = 1000
+type RegionIndex = Map<number, Timeline["regions"][number]["boxes"]>
+
+function indexRegions(regions: Timeline["regions"]): RegionIndex {
+  const index: RegionIndex = new Map()
+  for (const region of regions) {
+    for (const box of region.boxes) {
+      for (let k = Math.floor(box.from / BUCKET_MS); k <= Math.floor(box.until / BUCKET_MS); k++) {
+        const list = index.get(k) ?? []
+        list.push(box)
+        index.set(k, list)
+      }
     }
+  }
+  return index
+}
+
+/** The boxes of the take's secret regions on screen at source time `t` (both ends included). */
+function secretRects(index: RegionIndex, t: number): NRect[] {
+  const out: NRect[] = []
+  for (const box of index.get(Math.floor(t / BUCKET_MS)) ?? []) {
+    if (t < box.from || t > box.until) continue
+    const rect = clipRect(box.rect)
+    if (rect !== undefined) out.push(rect)
   }
   return out
 }

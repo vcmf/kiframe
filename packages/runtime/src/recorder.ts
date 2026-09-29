@@ -24,6 +24,7 @@ import type { Box } from "./motion.ts"
 import { Regions } from "./regions.ts"
 import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
+import { now } from "./clock.ts"
 
 // The recorder (docs/OBJECT-MODEL.md §3): replays a scenario through the runner while capturing the
 // page, and writes a take: frames.webm, events.jsonl, cursor.jsonl, shots/<stepId>.jpg, meta.json.
@@ -81,8 +82,8 @@ export async function recordScenario(
     // The viewport rects are normalized against: the driven page's (a popup can have its own size).
     let current = viewport
     const recordedAt = new Date()
-    const t0 = Date.now()
-    const at = () => Math.max(0, Date.now() - t0)
+    const t0 = now()
+    const at = () => Math.max(0, now() - t0)
     const norm = (x: number, y: number) => ({
       x: clamp01(x / current.width),
       y: clamp01(y / current.height),
@@ -209,7 +210,7 @@ export async function recordScenario(
       box: Box | undefined,
       viewport?: { width: number; height: number },
       since?: number,
-      read?: { at: number; end: number },
+      read?: { at: number; end: number; shown: number },
     ) => {
       // Take time (T1); a box measured by the event's own sender (type_start) is read now.
       const when =
@@ -218,6 +219,7 @@ export async function recordScenario(
           : {
               start: Math.max(0, read.at - t0),
               end: Math.max(0, read.end - t0),
+              floor: Math.max(0, read.shown - t0),
             }
       if (box === undefined || box.width === 0 || box.height === 0) regions.gone(id, when)
       else {

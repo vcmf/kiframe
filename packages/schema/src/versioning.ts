@@ -40,13 +40,14 @@ export const MIGRATIONS: MigrationRegistry = {
       // Secret masks left the composition (drawn from the take at render time, SECRETS-DESIGN I4).
       1: (doc) => {
         const tracks = (doc.tracks ?? {}) as Record<string, unknown>
-        // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start.
-        const anchor = (x: unknown): unknown => {
+        // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start,
+        // an end anchor its step's end (rounded outwards: a mask never gets shorter).
+        const anchor = (x: unknown, edge: "start" | "end"): unknown => {
           const event = (x as { event?: unknown } | null)?.event
           const match = typeof event === "string" ? /^(.+):sensitive(?::\d+)?$/.exec(event) : null
           if (match === null) return x
           const { offsetMs } = x as { offsetMs?: unknown }
-          return { step: match[1], edge: "start", ...(offsetMs !== undefined && { offsetMs }) }
+          return { step: match[1], edge, ...(offsetMs !== undefined && { offsetMs }) }
         }
         const out: Record<string, unknown> = {}
         for (const [name, list] of Object.entries(tracks)) {
@@ -68,8 +69,8 @@ export const MIGRATIONS: MigrationRegistry = {
             .map((m) => {
               if (typeof m !== "object" || m === null) return m
               const seg = { ...(m as Record<string, unknown>) }
-              if ("at" in seg) seg.at = anchor(seg.at)
-              if ("until" in seg) seg.until = anchor(seg.until)
+              if ("at" in seg) seg.at = anchor(seg.at, "start")
+              if ("until" in seg) seg.until = anchor(seg.until, "end")
               return seg
             })
         }

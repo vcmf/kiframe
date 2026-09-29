@@ -4,6 +4,7 @@ import { type Ctx, firstLine, guard } from "./context.ts"
 import { applyHide } from "./interrupts.ts"
 import { followSecretFields, pathOnly, scrubSecrets } from "./secrets.ts"
 import { settle } from "./settle.ts"
+import { now } from "../clock.ts"
 
 // Following tabs and popups: the page the run drives, and switching to it.
 
@@ -18,8 +19,9 @@ export async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<v
 }
 
 async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
-  // A measurement already running finishes on the page it started on.
+  // Reads already running finish on the page they started on (the tick starts none mid-switch).
   await ctx.fieldsInflight?.catch(() => undefined)
+  await ctx.secretText.inflight?.catch(() => undefined)
   ctx.detach(ctx.page)
   // Headed and CDP runs: the driven page is the visible tab (a background tab is throttled).
   await next.bringToFront().catch(() => undefined)
@@ -33,7 +35,7 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   // This page's secret fields are measured BEFORE the capture moves here (its first frame is
   // already covered); the other pages' blurs end only AFTER the capture left them. A field back on
   // this page is on screen from now, whenever it's measured.
-  ctx.pageShownAt = Date.now()
+  ctx.pageShownAt = now()
   if (ctx.options.recording === true) await followSecretFields(ctx, step, "here")
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
   if (ctx.options.recording === true) await followSecretFields(ctx, step, "elsewhere")

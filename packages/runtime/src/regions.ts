@@ -18,6 +18,8 @@ type Sensitive = Extract<TakeEvent, { kind: "sensitive" }>
 export interface Read {
   start: number
   end: number
+  /** When the capture could first show the page read (T3); by default the last page switch. */
+  floor?: number
 }
 
 /** A box, and when the page left it (`left`: its end waits for a frame that shows the change). */
@@ -53,7 +55,7 @@ export class Regions {
 
   /** T3: the earliest a box first seen by a read could have been on screen. */
   #appear(t: number, read: Read): number {
-    return Math.min(Math.max(t - FRAME_MARGIN_MS, this.#switched), read.end)
+    return Math.min(Math.max(t - FRAME_MARGIN_MS, read.floor ?? this.#switched), read.end)
   }
 
   /**
@@ -92,9 +94,10 @@ export class Regions {
     } else if (!same(current.rect, rect)) {
       const from = this.#appear(region.last.start, read)
       region.boxes.push({ from: current.from, until: end, rect: current.rect, left: end })
-      // (A hull that is the old box itself, a full-frame fallback, adds nothing.)
+      // (A hull that is one of the two boxes, a full-frame fallback or a field that grew, adds
+      // nothing: the new box starts as early.)
       const between = rectUnion(current.rect, rect)
-      if (!same(between, current.rect)) {
+      if (!same(between, current.rect) && !same(between, rect)) {
         region.boxes.push({ from, until: end, rect: between, left: end })
       }
       region.current = { from, rect }

@@ -1200,6 +1200,20 @@ describe("secret regions left the composition (SECRETS-DESIGN I4, T7)", () => {
       edge: "start",
       offsetMs: 100,
     })
+    // An end anchor goes to the step's end: a mask never gets shorter (nor inverted).
+    const mine = {
+      id: "m",
+      source: "manual",
+      kind: "blur",
+      at: { step: "login", edge: "start", offsetMs: 500 },
+      until: { event: "login:sensitive:1" },
+      target: { rect: { x: 0, y: 0, w: 0.1, h: 0.1 } },
+    }
+    const masked = migrate("composition", { version: 1, tracks: { masks: [mine] } })
+    expect(Composition.parse(masked.doc).tracks.masks[0]?.until).toEqual({
+      step: "login",
+      edge: "end",
+    })
   })
 
   it("only lets a blur or pixelate name a secret region", () => {
