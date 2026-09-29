@@ -728,7 +728,7 @@ steps:
       )
       const fields = events.filter((e) => e.kind === "secret_field")
       expect(fields.length).toBeGreaterThan(0)
-      for (const f of fields) expect(f.kind === "secret_field" && f.box).toBeTruthy()
+      for (const f of fields) expect(f.kind === "secret_field" && f.state).toBe("at")
     })
 
     it("follows a secret field when the page scrolls, despite a hidden duplicate", async () => {

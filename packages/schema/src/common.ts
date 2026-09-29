@@ -35,6 +35,16 @@ export const ViewportRect = z.strictObject({
 })
 export type ViewportRect = z.infer<typeof ViewportRect>
 
+/** The smallest rect holding both (any `{x, y, w, h}` rects in one space). */
+export function rectUnion<R extends { x: number; y: number; w: number; h: number }>(
+  p: R,
+  q: R,
+): { x: number; y: number; w: number; h: number } {
+  const x = Math.min(p.x, q.x)
+  const y = Math.min(p.y, q.y)
+  return { x, y, w: Math.max(p.x + p.w, q.x + q.w) - x, h: Math.max(p.y + p.h, q.y + q.h) - y }
+}
+
 /** A normalized rect written as `[x, y, w, h]` (author-facing form used in scenarios). */
 export const RectTuple = z
   .tuple([unit, unit, size, size])

@@ -40,6 +40,8 @@ import {
   followSecretField,
   prepareSecretWrite,
   type SecretWrite,
+  usableBox,
+  viewportWithin,
   writeSecret,
 } from "./secrets.ts"
 
@@ -147,13 +149,27 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
               .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
               .catch(() => null)
           }
+          // Its viewport now (the box's), before type_start: nothing awaits after it.
+          const viewport = await viewportWithin(ctx.page, 300)
           ctx.options.onEvent?.({
             kind: "type_start",
             step,
             secret,
             sensitiveId,
+            shown: ctx.pageShownAt,
             box: fieldBox ?? undefined,
+            viewport,
           })
+          if (followed?.field !== undefined) {
+            // Followed from now, its region open (the recorder opened it at type_start, just
+            // above: a tick read can't come before it); its box now is its last real one until a
+            // read (a return falls back to it).
+            followed.field.state = "on"
+            if (fieldBox !== null && usableBox(fieldBox) && viewport !== undefined) {
+              followed.field.lastBox = fieldBox
+              followed.field.lastViewport = viewport
+            }
+          }
           // Checked again right before the text is sent: the page may have navigated while the
           // secret was being resolved.
           assertSecretOrigin(ctx, secret, step)

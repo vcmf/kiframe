@@ -206,6 +206,11 @@ const pages: Record<string, string> = {
       document.getElementById("b").onclick = () => document.getElementById("hidden").click()
       document.getElementById("zone").onclick = () => document.getElementById("hidden").click()
     </script>`,
+  // A click that pushes the form down (a banner) and opens a popup at once: the field moves in the
+  // last moments before the capture leaves the page.
+  "/shift-open": `<!doctype html><title>Shift open</title><div id="banner"></div>
+    <label>API key <input id="key"></label>
+    <button onclick="document.getElementById('banner').style.height = '200px'; setTimeout(() => window.open('/popup-report', 'report', 'width=800,height=600'), 100)">Open popup</button>`,
   "/opener": `<!doctype html><title>Opener</title>
     <label>API key <input id="key"></label>
     <a href="/popup-report" target="_blank">Open report</a>

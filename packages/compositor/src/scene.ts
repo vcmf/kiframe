@@ -9,6 +9,7 @@ import {
   type Timeline,
 } from "@kiframe/generators"
 import {
+  CAPTURE_LAG_MS,
   applyStyle,
   DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE,
   type Anchor,
@@ -92,6 +93,8 @@ export interface Prepared {
   map: TimeMap
   style: Style
   composition: Composition
+  /** The take's secret region boxes, by time (drawn whatever the composition says). */
+  regionIndex: RegionIndex
   /** Output duration in ms. */
   duration: number
   /**
@@ -138,6 +141,7 @@ export function prepare(
     map,
     style: s,
     composition,
+    regionIndex: indexRegions(timeline.regions),
     duration: map.outputDuration,
   }
   const moves = cameraMoves(base)
@@ -185,18 +189,20 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   const tracks = p.composition.tracks
   const tl = p.timeline
 
-  // Masks by source time, both ends included: the frame shown is what must be covered.
-  const blurs: NRect[] = []
+  // By source time, both ends included: the frame shown is what must be covered. Secret regions
+  // straight from the take, each box over its own span (SECRETS-DESIGN I4: no composition edit
+  // removes or shortens them, and no timing rule of the compositor's own).
+  const blurs: NRect[] = secretRects(p.regionIndex, sourceT)
   for (const m of tracks.masks) {
     if (m.kind !== "blur" && m.kind !== "pixelate") continue
     const a = resolveAnchor(m.at, tl)
     const b = resolveAnchor(m.until, tl)
-    // Past its end too, for the capture lag: frames just after "gone" can still show the region.
-    if (a === undefined || b === undefined || sourceT < a || sourceT > b + MOVE_OVERLAP_MS) continue
+    // Past its end too: frames just after it can still show what it hid (the capture lags the DOM).
+    if (a === undefined || b === undefined || sourceT < a || sourceT > b + MASK_TAIL_MS) continue
     if ("rect" in m.target) blurs.push(m.target.rect)
+    else if ("sensitiveId" in m.target) blurs.push(regionRect(tl, m.target.sensitiveId, sourceT))
     // Framed-element rects aren't recorded yet (P0-6 backlog): a privacy mask fails closed.
-    else if (!("sensitiveId" in m.target)) blurs.push({ x: 0, y: 0, w: 1, h: 1 })
-    else blurs.push(...maskRects(tl, m.target.sensitiveId, sourceT))
+    else blurs.push({ x: 0, y: 0, w: 1, h: 1 })
   }
 
   const hidden = tracks.cursor.some((c) => c.kind === "hidden" && active(p, c, sourceT, frozen))
@@ -228,30 +234,45 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   }
 }
 
-/**
- * Around a move, the frame on screen can still show the region where it was (capture lags the
- * DOM): both the previous and the new rect are blurred for MOVE_OVERLAP_MS on each side.
- */
-const MOVE_OVERLAP_MS = 250
+/** A composition mask lasts this long past its end (its `until` is DOM or step timing). */
+const MASK_TAIL_MS = CAPTURE_LAG_MS
 
-/** The rects of a sensitive region at source time `t` (it follows the element). */
-function maskRects(tl: Timeline, id: string, t: number): NRect[] {
-  const events = tl.events.filter(
-    (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive" && e.id === id,
-  )
+/**
+ * Where region `id` is at source time `t`, for a mask naming it (T7): its latest box started by
+ * then, else its first; the whole frame if the take has no such region (fails closed).
+ */
+function regionRect(tl: Timeline, id: string, t: number): NRect {
+  const boxes = tl.regions.find((r) => r.id === id)?.boxes ?? []
+  const box = boxes.filter((b) => b.from <= t).at(-1) ?? boxes[0]
+  return (box === undefined ? undefined : clipRect(box.rect)) ?? { x: 0, y: 0, w: 1, h: 1 }
+}
+
+/** Region boxes by second of source time: a frame looks at its second's boxes only. */
+const BUCKET_MS = 1000
+type RegionIndex = Map<number, Timeline["regions"][number]["boxes"]>
+
+function indexRegions(regions: Timeline["regions"]): RegionIndex {
+  const index: RegionIndex = new Map()
+  for (const region of regions) {
+    for (const box of region.boxes) {
+      for (let k = Math.floor(box.from / BUCKET_MS); k <= Math.floor(box.until / BUCKET_MS); k++) {
+        const list = index.get(k) ?? []
+        list.push(box)
+        index.set(k, list)
+      }
+    }
+  }
+  return index
+}
+
+/** The boxes of the take's secret regions on screen at source time `t` (both ends included). */
+function secretRects(index: RegionIndex, t: number): NRect[] {
   const out: NRect[] = []
-  events.forEach((e, i) => {
-    const rect = clipRect(e.rect)
-    if (rect === undefined) return
-    // From the start of the step that reported it (the field is measured at step end: it may have
-    // moved anywhere in that step), at least MOVE_OVERLAP_MS early...
-    const step = e.stepId === undefined ? undefined : tl.byId.get(e.stepId)
-    const from = Math.min(e.t - MOVE_OVERLAP_MS, step?.start ?? Infinity)
-    // ...until MOVE_OVERLAP_MS after the next report replaced it (frames lag the DOM).
-    const next = events[i + 1]
-    const until = next === undefined ? Infinity : next.t + MOVE_OVERLAP_MS
-    if (t >= from && t < until) out.push(rect)
-  })
+  for (const box of index.get(Math.floor(t / BUCKET_MS)) ?? []) {
+    if (t < box.from || t > box.until) continue
+    const rect = clipRect(box.rect)
+    if (rect !== undefined) out.push(rect)
+  }
   return out
 }
 

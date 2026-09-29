@@ -8,6 +8,32 @@ import { ProbeRefusal } from "../secret-state.ts"
 // The runner's shared state (Ctx), its options and events, and small helpers every part uses.
 
 /** What the runner reports as it goes. The recorder (P0-5) turns these into take events. */
+/** A read of the page (`now()`, SECRETS-DESIGN T2). */
+export interface ReadTimes {
+  /** When it started. */
+  at: number
+  /** When it ended: once the page drew what it read. */
+  end: number
+  /** When the run switched to the page read (T3: nothing it saw was on screen before). */
+  shown: number
+}
+
+/**
+ * Where a secret region is, as one read found it: on screen at `box` (CSS pixels, in `viewport`),
+ * gone (T4: until the first frame after the read), or left with its page (T4: until the next
+ * page's first frame). Explicit: a missing box never means one or the other.
+ */
+export type RegionReport =
+  | {
+      state: "at"
+      box: Box
+      viewport: Viewport
+      /** When its box may have appeared (T3), when not the previous read's start. */
+      since?: number | undefined
+    }
+  | { state: "gone" }
+  | { state: "left" }
+
 export type RunnerEvent =
   | { kind: "step_start" | "step_end"; step: StepRef }
   | { kind: "navigate"; step: StepRef; url: string }
@@ -18,6 +44,10 @@ export type RunnerEvent =
       kind: "type_start"
       step: StepRef
       secret?: string | undefined
+      /** When the run switched to this page (`now()`): a secret field's region starts after. */
+      shown?: number | undefined
+      /** The viewport `box` was measured in. */
+      viewport?: Viewport | undefined
       /** With a secret: the id of its sensitive region (later `secret_field` events use it). */
       sensitiveId?: string | undefined
       box?: Box | undefined
@@ -32,27 +62,10 @@ export type RunnerEvent =
       button: "left" | "right"
       count: number
     }
-  /**
-   * A secret value shown as text on the page (`box`), or gone (no `box`). Recording only. `since`
-   * (epoch ms): when the blur must start, the last scan that didn't see it (fails closed).
-   */
-  | {
-      kind: "secret_text"
-      step: StepRef
-      id: string
-      box?: Box | undefined
-      viewport?: { width: number; height: number } | undefined
-      since?: number | undefined
-    }
-  /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
-  | {
-      kind: "secret_field"
-      step: StepRef
-      id: string
-      box?: Box | undefined
-      /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
-      viewport?: { width: number; height: number } | undefined
-    }
+  /** A secret value shown as text on the page, per read (SECRETS-DESIGN T2–T4). Recording only. */
+  | ({ kind: "secret_text"; step: StepRef; id: string } & ReadTimes & RegionReport)
+  /** A field holding a secret, per read (SECRETS-DESIGN T2–T4). Recording only. */
+  | ({ kind: "secret_field"; step: StepRef; id: string } & ReadTimes & RegionReport)
   /** A key combination was pressed (`press` action). */
   | { kind: "key"; step: StepRef; keys: string }
   /** The cursor moved or was pressed/released (CSS pixels of the viewport). For the recorder (P0-5). */
@@ -133,6 +146,12 @@ export interface RunOptions {
 
 export type AnyAction = Action | Step
 
+/** A page's CSS viewport (boxes are normalized in the one they were measured in). */
+export interface Viewport {
+  width: number
+  height: number
+}
+
 /** Playwright treats a timeout of 0 as "wait forever": never pass it through. */
 export const MIN_TIMEOUT_MS = 1
 
@@ -180,6 +199,16 @@ export interface Ctx {
   }
   /** Elements a secret was written to in this run (SECRETS-DESIGN §3 A5: no copy or drag from them). */
   secretWritten: { page: Page; handle: ElementHandle }[]
+  /** When the driven page became the one on screen (`now()`): a field back on it since then. */
+  pageShownAt: number
+  /** Pages with a read that took too long still pending: no new read of them until it settles. */
+  stuckReads: WeakMap<Page, number>
+  /** A page switch is under way (the capture hasn't followed yet): the tick measures nothing. */
+  switching: boolean
+  /** The field measurement running, if any (one at a time). */
+  fieldsInflight: Promise<void> | undefined
+  /** How many fields a secret was typed into so far (their region ids: never reused). */
+  secretFieldCount: number
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
@@ -191,11 +220,19 @@ export interface Ctx {
      */
     handle?: ElementHandle
     page: Page
-    last?: string
+    /**
+     * Where it stands (SECRETS-DESIGN T2–T4): not typed yet (never followed while the cursor
+     * travels to it); on screen (its region has an open box); gone (a read found it gone, at
+     * `goneReadAt`: a return is dated from there); left with its page (its next box is dated
+     * from the switch back).
+     */
+    state: "pending" | "on" | "gone" | "left"
+    /** When the last read that found it gone started. */
+    goneReadAt?: number
+    /** The viewport its last real box was measured in. */
+    lastViewport?: Viewport | undefined
     /** The last real box (kept while the run is on another page). */
-    lastBox?: Box
-    /** Blur ended only because the run left its page (not because the field went away). */
-    away?: boolean
+    lastBox?: Box | undefined
   }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void

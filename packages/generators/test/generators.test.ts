@@ -375,22 +375,20 @@ describe("captions, cursor and masks", () => {
     expect(kinds).toEqual(["hidden"])
   })
 
-  it("a mask never starts late or ends early (rounded outwards)", () => {
+  it("writes no secret mask: the compositor draws secret regions from the take", () => {
     const s = scenario(btn("a"))
-    const ev = (t: number, w: number) => ({
+    const region = {
       stepId: "a",
-      t,
+      t: 1000,
+      phase: "steps" as const,
       kind: "sensitive" as const,
       id: "s",
-      rect: { x: 0.1, y: 0.1, w, h: w },
-      why: "secret-field",
-    })
-    const t = take([["a", 0, 3000]], [ev(1000.6, 0.1), ev(2000.4, 0)])
-    const { composition } = generate(project(), s, t)
-    const { timeline } = buildTimeline(s, t)
-    const [m] = composition.tracks.masks
-    expect(resolveAnchor(m!.at, timeline)).toBeLessThanOrEqual(1000.6)
-    expect(resolveAnchor(m!.until, timeline)).toBeGreaterThanOrEqual(2000.4)
+      why: "secret-field" as const,
+      until: 2000,
+      boxes: [{ from: 1000, until: 2000, rect: { x: 0.1, y: 0.1, w: 0.1, h: 0.1 } }],
+    }
+    const { composition } = generate(project(), s, take([["a", 0, 3000]], [region]))
+    expect(composition.tracks.masks).toEqual([])
   })
 
   it("shows two ripples for a double click", () => {
@@ -398,35 +396,6 @@ describe("captions, cursor and masks", () => {
     const t = take([["a", 0, 1000]], [{ ...click("a", 500, 0.1, 0.1), count: 2 }])
     const ids = generate(project(), s, t).composition.tracks.cursor.map((c) => c.id)
     expect(ids).toEqual(["cursor:ripple:a:click", "cursor:ripple:a:click#1"])
-  })
-
-  it("blurs a sensitive region until it's gone, and again if it comes back", () => {
-    const s = scenario(btn("a") + btn("b"))
-    const sensitive = (t: number, w: number) => ({
-      stepId: "a",
-      t,
-      kind: "sensitive" as const,
-      id: "secret:acme.password:steps:0",
-      rect: { x: 0.3, y: 0.3, w, h: w === 0 ? 0 : 0.05 },
-      why: "secret-field",
-    })
-    const t = take(
-      [
-        ["a", 0, 1000],
-        ["b", 1000, 2000],
-      ],
-      [sensitive(100, 0.2), sensitive(500, 0.2), sensitive(1000, 0), sensitive(1500, 0.2)],
-    )
-    const { composition } = generate(project(), s, t)
-    const { timeline } = buildTimeline(s, t)
-    const masks = composition.tracks.masks.map((m) => [
-      resolveAnchor(m.at, timeline),
-      resolveAnchor(m.until, timeline),
-    ])
-    expect(masks).toEqual([
-      [100, 1000],
-      [1500, t.meta.durationMs],
-    ])
   })
 
   it("uses the recorded order when the scenario was reordered since the take", () => {

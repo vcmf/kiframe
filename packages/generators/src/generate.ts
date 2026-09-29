@@ -8,7 +8,7 @@ import {
 } from "@kiframe/schema"
 import { effectiveCamera, generateCamera, type CameraOptions } from "./camera.ts"
 import { generateClips, type ClipOptions } from "./clips.ts"
-import { generateCaptions, generateCursor, generateMasks } from "./overlays.ts"
+import { generateCaptions, generateCursor } from "./overlays.ts"
 import { buildTimeline, timeMap, type TakeInput } from "./timeline.ts"
 
 // generate(scenario, take) → auto segments (docs/OBJECT-MODEL.md §4.1). Pure: no LLM, no I/O.
@@ -57,7 +57,8 @@ export function generate(
       camera: nonEmpty(camera.camera),
       cursor: nonEmpty(generateCursor(tl)),
       captions: nonEmpty(generateCaptions(tl)),
-      masks: nonEmpty(generateMasks(tl)),
+      // Secret regions are drawn from the take at render time (SECRETS-DESIGN I4), never masks here.
+      masks: [],
       callouts: [],
       keystrokes: [],
     },

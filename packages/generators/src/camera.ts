@@ -4,6 +4,7 @@ import {
   type CameraDirective,
   type CameraSegment,
   type NRect,
+  rectUnion,
   type ViewportRect,
 } from "@kiframe/schema"
 import { anchorFor, type StepSpan, type Timeline } from "./timeline.ts"
@@ -129,7 +130,7 @@ export function generateCamera(
       let joined = false
       if (rect !== undefined) {
         joined = true
-        const union = cluster === undefined ? rect : unionRect(cluster.rect, rect)
+        const union = cluster === undefined ? rect : rectUnion(cluster.rect, rect)
         const joins =
           cluster !== undefined &&
           seen(cluster.b, span.start) <= gapMs &&
@@ -259,12 +260,6 @@ export function clipRect(r: ViewportRect): NRect | undefined {
   const w = Math.min(1, r.x + r.w) - x
   const h = Math.min(1, r.y + r.h) - y
   return w > 0 && h > 0 ? { x, y, w, h } : undefined
-}
-
-function unionRect(p: NRect, q: NRect): NRect {
-  const x = Math.min(p.x, q.x)
-  const y = Math.min(p.y, q.y)
-  return { x, y, w: Math.max(p.x + p.w, q.x + q.w) - x, h: Math.max(p.y + p.h, q.y + q.h) - y }
 }
 
 /**

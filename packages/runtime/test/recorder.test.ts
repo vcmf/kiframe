@@ -21,7 +21,7 @@ import {
 import { generate } from "@kiframe/generators"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { pathOnly, recordScenario, scrubSecrets } from "../src/index.ts"
+import { pathOnly, recordScenario, scrubSecrets, type RunnerEvent } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -507,20 +507,48 @@ steps:
     const sensitive = take.events.filter(
       (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive",
     )
-    // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5).
-    const code = sensitive.find((e) => e.id.includes("acme.code") && e.rect.w > 0)
-    expect(code?.rect.x).toBeCloseTo(300 / 800, 2)
-    expect(code?.rect.y).toBeCloseTo(285 / 600, 2)
-    // Back on the opener (in the "done" step), the API key's blur is back before the next step.
+    // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5); boxes are
+    // padded 4 px (T8).
+    const code = sensitive.find((e) => e.id.includes("acme.code"))?.boxes[0]?.rect
+    expect(code?.x).toBeCloseTo(296 / 800, 2)
+    expect(code?.y).toBeCloseTo(281 / 600, 2)
+    // Back on the opener (in the "done" step), the API key's blur is back before the next step,
+    // and not before the switch back (the frames before it show the popup).
     const lookStart =
       take.events.find((e) => e.kind === "step_start" && e.stepId === "look")?.t ?? 0
-    const keyEvents = sensitive.filter((e) => e.id.includes("acme.key"))
-    const goneAt = keyEvents.find((e) => e.rect.w === 0)?.t ?? Infinity
-    const back = keyEvents.find((e) => e.t > goneAt && e.rect.w > 0)
-    expect(back?.t ?? Infinity).toBeLessThanOrEqual(lookStart)
+    const key = sensitive.find((e) => e.id.includes("acme.key"))
+    const [before, ...later] = key?.boxes ?? []
+    const back = later.at(-1)
+    expect(back?.from ?? Infinity).toBeLessThanOrEqual(lookStart)
+    const codeStart = sensitive.find((e) => e.id.includes("acme.code"))?.t ?? Infinity
+    expect(back?.from ?? 0).toBeGreaterThan(codeStart)
     // Same field, same opener viewport: the same rect as before the popup (not scaled to 800×600).
-    const before = keyEvents.find((e) => e.rect.w > 0)
     expect(back?.rect).toEqual(before?.rect)
+  })
+
+  it("reads the page once more before the capture leaves it (a last-moment move is covered)", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /shift-open }]
+steps:
+  - { id: key, action: type, target: { by: label, name: API key }, value: "{{secrets.acme.key}}" }
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: look, action: pause, ms: 200 }
+`),
+      project(),
+      { outDir, scope: "test", sceneId: "test", resolveSecret: () => "k-123456" },
+    )
+    await context.close()
+    const key = take.events.find((e) => e.kind === "sensitive" && e.id.includes("acme.key"))
+    const ys = key?.kind === "sensitive" ? key.boxes.map((b) => b.rect.y) : []
+    // Pushed down 200 px (of 800) before the popup opened: a box there, on the opener. (A tick
+    // during the click's settle may read it too: this shows the behavior, the switch's own last
+    // read is what guarantees it when no tick falls in between.)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(0.2)
   })
 
   it("marks a handled interrupt as a span that the generators cut", async () => {
@@ -571,10 +599,13 @@ steps:
       { outDir, scope: "test", sceneId: "test", resolveSecret: () => SECRET },
     )
     await context.close()
-    const rects = take.events.flatMap((e) => (e.kind === "sensitive" ? [e.rect.y] : []))
-    // Logged at type_start, then again after each step; after the scroll it's higher on screen.
-    expect(rects.length).toBeGreaterThanOrEqual(3)
-    expect(Math.min(...rects)).toBeLessThan(Math.max(...rects))
+    const [region, ...others] = take.events.filter((e) => e.kind === "sensitive")
+    expect(others).toEqual([])
+    // Measured at type_start, then after each step; after the scroll it's higher on screen (a
+    // box before, the hull of the move, a box after).
+    const ys = region?.kind === "sensitive" ? region.boxes.map((b) => b.rect.y) : []
+    expect(ys.length).toBeGreaterThanOrEqual(3)
+    expect(Math.min(...ys)).toBeLessThan(Math.max(...ys))
   })
 
   it("ends the blur once when the secret field is gone, and doesn't stall later steps", async () => {
@@ -582,6 +613,7 @@ steps:
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
     const page = await context.newPage()
     const started = Date.now()
+    const runnerEvents: RunnerEvent[] = []
     const take = await recordScenario(
       page,
       scenario(`  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
@@ -592,13 +624,25 @@ steps:
   - { id: w3, action: scroll, by: { y: 10 } }
 `),
       project(),
-      { outDir, scope: "test", sceneId: "test", resolveSecret: () => SECRET },
+      {
+        outDir,
+        scope: "test",
+        sceneId: "test",
+        resolveSecret: () => SECRET,
+        onEvent: (e) => runnerEvents.push(e),
+      },
     )
     await context.close()
+    // The runtime found it gone, once, at the step after the goto (a gone read reported: the blur
+    // ends at the next frame, never held open by a read that lost it).
+    const gone = runnerEvents.filter((e) => e.kind === "secret_field" && e.state === "gone")
+    expect(gone).toHaveLength(1)
+    expect(gone[0]?.kind === "secret_field" && gone[0].step.stepId).toBe("away")
     const sensitive = take.events.filter((e) => e.kind === "sensitive")
-    const gone = sensitive.filter((e) => e.rect.w === 0 && e.rect.h === 0)
-    expect(gone.length).toBe(1)
-    expect(sensitive.at(-1)).toBe(gone[0])
+    // One region with one box: ended once, after the goto (at the first frame after the read that
+    // found it gone; this static page draws none, so the last one is held: T4), never back.
+    expect(sensitive).toHaveLength(1)
+    expect(sensitive[0]?.kind === "sensitive" && sensitive[0].boxes).toHaveLength(1)
     expect(Date.now() - started).toBeLessThan(15_000)
   })
 
