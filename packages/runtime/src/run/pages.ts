@@ -2,7 +2,13 @@ import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { applyHide } from "./interrupts.ts"
-import { followSecretFields, leaveSecretText, pathOnly, scrubSecrets } from "./secrets.ts"
+import {
+  followSecretFields,
+  leaveSecretFields,
+  leaveSecretText,
+  pathOnly,
+  scrubSecrets,
+} from "./secrets.ts"
 import { settle } from "./settle.ts"
 import { now } from "../clock.ts"
 
@@ -36,10 +42,10 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   // already covered); the other pages' blurs end only AFTER the capture left them. A field back on
   // this page is on screen from now, whenever it's measured.
   ctx.pageShownAt = now()
-  if (ctx.options.recording === true) await followSecretFields(ctx, step, "here")
+  if (ctx.options.recording === true) await followSecretFields(ctx, step)
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
   if (ctx.options.recording === true) {
-    await followSecretFields(ctx, step, "elsewhere")
+    leaveSecretFields(ctx, step)
     leaveSecretText(ctx, step)
   }
   ctx.options.onEvent?.({

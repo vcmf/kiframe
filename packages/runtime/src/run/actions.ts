@@ -147,7 +147,12 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
               .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
               .catch(() => null)
           }
-          if (followed?.field !== undefined) followed.field.typed = true
+          if (followed?.field !== undefined) {
+            followed.field.typed = true
+            // Its box at type_start is its last real one until a read (a return falls back to it).
+            if (fieldBox !== null) followed.field.lastBox = fieldBox
+            followed.field.lastViewport = await viewportOf(ctx.page).catch(() => undefined)
+          }
           ctx.options.onEvent?.({
             kind: "type_start",
             step,

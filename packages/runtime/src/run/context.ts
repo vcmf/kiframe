@@ -201,7 +201,7 @@ export interface Ctx {
   /** When the driven page became the one on screen (`now()`): a field back on it since then. */
   pageShownAt: number
   /** Pages with a read that took too long still pending: no new read of them until it settles. */
-  stuckReads: WeakSet<Page>
+  stuckReads: WeakMap<Page, number>
   /** A page switch is under way (the capture hasn't followed yet): the tick measures nothing. */
   switching: boolean
   /** The field measurement running, if any (one at a time). */
@@ -221,6 +221,10 @@ export interface Ctx {
     typed?: boolean
     /** Its last report was "gone" (an unchanged "gone" isn't sent again). */
     reportedGone?: boolean
+    /** When the last read that found it gone started (a return is dated from it). */
+    goneReadAt?: number
+    /** The viewport its last real box was measured in. */
+    lastViewport?: { width: number; height: number } | undefined
     /** The last real box (kept while the run is on another page). */
     lastBox?: Box
     /** Blur ended only because the run left its page (not because the field went away). */

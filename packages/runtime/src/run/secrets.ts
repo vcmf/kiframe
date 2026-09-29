@@ -22,21 +22,16 @@ import { now } from "../clock.ts"
 // Everything about secret values: resolution, origin checks, the scrubber, field tracking and the text scan.
 
 /**
- * Re-measures every field a secret was typed into and reports when it moved (the blur follows it)
- * or is gone (navigated away, removed: nothing left to blur). Every measurement is reported (a
- * move's hull starts at the last one, not at the last change). Bounded,
- * never fails a step.
+ * Re-reads every field a secret was typed into, on the driven page, and reports where it is (the
+ * blur follows it) or that it's gone (navigated away, removed: nothing left to blur). A field on
+ * another page was left with its page (`leaveSecretFields`). Bounded, never fails a step.
  */
-export async function followSecretFields(
-  ctx: Ctx,
-  step: StepRef,
-  which: "all" | "here" | "elsewhere" = "all",
-): Promise<void> {
-  // One at a time (the recording tick measures too): a later one waits for the one running.
+export async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
+  // One at a time (the recording tick reads too): a later one waits for the one running.
   const previous = ctx.fieldsInflight
   const run = (async () => {
     await previous?.catch(() => undefined)
-    await measureFields(ctx, step, which)
+    await readFields(ctx, step)
   })()
   ctx.fieldsInflight = run
   try {
@@ -46,88 +41,92 @@ export async function followSecretFields(
   }
 }
 
-async function measureFields(
-  ctx: Ctx,
-  step: StepRef,
-  which: "all" | "here" | "elsewhere",
-): Promise<void> {
-  // The driven page as of now, throughout (a switch may start while this runs).
+async function readFields(ctx: Ctx, step: StepRef): Promise<void> {
+  // The driven page as of now, throughout (a switch may start while this runs). Followed from its
+  // type_start only (T3: the empty field isn't blurred before typing).
   const page = ctx.page
-  // Followed from its type_start only (T3: the empty field isn't blurred before typing).
-  const fields = ctx.secretFields.filter(
-    (f) => f.typed === true && (which === "all" || (which === "here") === (f.page === page)),
-  )
+  const fields = ctx.secretFields.filter((f) => f.typed === true && f.page === page)
   if (fields.length === 0) return
   // When the read started (T2; the events are handled later: a move's hull starts here), and when
   // the run switched to its page (nothing it saw was on screen before: T3).
   const at = now()
   const shown = ctx.pageShownAt
-  // In parallel: every field costs a round trip or two after each step.
-  // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
-  // and comes back if the run returns to that page.
   // Bounded as a whole (a frozen page): what it read is used only if it finished in time.
-  const here = fields.some((f) => f.page === page)
   const read = await boundedRead(ctx, page, async () => {
-    const measured = await Promise.all(
-      fields.map((field) =>
-        field.page === page ? measureSecretField(field) : Promise.resolve(null),
-      ),
-    )
+    // In parallel: every field costs a round trip or two.
+    const measured = await Promise.all(fields.map((field) => measureSecretField(field)))
     const viewport = await viewportOf(page).catch(() => undefined)
-    // Its end (T2): once the page drew what it read. No drawing: unsure, nothing changes.
-    const end = here ? await drawnSince(page) : now()
+    // Its end (T2): once the page drew what it read. No drawing: unsure.
+    const end = await drawnSince(page)
     return end === undefined ? undefined : { measured, viewport, end }
   })
-  if (read === undefined) {
-    // Unsure: a field back on this page still gets its last box (fails closed).
-    const t = now()
-    for (const field of fields) {
-      if (field.away !== true || field.page !== page || field.lastBox === undefined) continue
-      field.away = false
-      field.reportedGone = false
+  const end = read?.end ?? now()
+  for (const [i, field] of fields.entries()) {
+    // An unsure read: every field "unknown".
+    const box = read?.measured[i] ?? "unknown"
+    const report = (b: Box | undefined, viewport: Viewport | undefined, since?: number) =>
       ctx.options.onEvent?.({
         kind: "secret_field",
         step,
         id: field.id,
-        box: field.lastBox,
-        at: t,
-        end: t,
+        box: b,
+        viewport,
+        at,
+        end,
         shown,
-        since: shown,
+        ...(since !== undefined && { since }),
       })
+    if (box === "unknown" || box === undefined) {
+      // Unsure, just back on its page: the last real box comes back, from the switch (fails
+      // closed). It stays "away": the next real read is still dated from the switch.
+      if (field.away === true && field.lastBox !== undefined) {
+        report(field.lastBox, field.lastViewport, shown)
+      }
+      continue
     }
-    return
+    if (box === null) {
+      // An unchanged "gone" isn't sent again (a removed field is read every tick), but its time
+      // is kept: a field that comes back is dated from the read before (T3).
+      if (field.reportedGone !== true) report(undefined, read?.viewport)
+      field.reportedGone = true
+      field.goneReadAt = at
+      field.away = false
+      continue
+    }
+    // Back on its page: on screen since the run switched to it; back after a "gone": since the read
+    // before this one.
+    const since =
+      field.away === true ? shown : field.reportedGone === true ? field.goneReadAt : undefined
+    report(box, read?.viewport, since)
+    field.away = false
+    field.reportedGone = false
+    field.lastBox = box
+    field.lastViewport = read?.viewport
   }
-  const { measured, viewport, end } = read
-  for (const [i, field] of fields.entries()) {
-    let box = measured[i]
-    const elsewhere = field.page !== page
-    // Unsure, just back on its page: the last real rect comes back (fails closed). Otherwise an
-    // unsure measurement keeps the current rect; only a field known to be gone ends its blur.
-    if (box === "unknown" && field.away === true && !elsewhere) box = field.lastBox ?? "unknown"
-    if (box === undefined || box === "unknown") continue
-    // Back on its page: on screen since the run switched to it, not since it left.
-    const back = field.away === true && !elsewhere && box !== null
-    field.away = elsewhere
-    if (box !== null) field.lastBox = box
-    // An unchanged "gone" isn't sent again (a removed field is read every tick).
-    if (box === null && field.reportedGone === true) continue
-    field.reportedGone = box === null
+}
+
+/**
+ * The capture left the fields' page (T4): their regions are left now (they last until the next
+ * page's first frame). No read of any page: a stuck page never keeps them open.
+ */
+export function leaveSecretFields(ctx: Ctx, step: StepRef): void {
+  const t = now()
+  for (const field of ctx.secretFields) {
+    if (field.typed !== true || field.page === ctx.page || field.away === true) continue
+    field.away = true
     ctx.options.onEvent?.({
       kind: "secret_field",
       step,
       id: field.id,
-      box: box ?? undefined,
-      viewport,
-      at,
-      end,
-      shown,
-      ...(back && { since: shown }),
-      // Left because the capture left its page (T4: until the next page's first frame).
-      ...(which === "elsewhere" && elsewhere && { atSwitch: true }),
+      at: t,
+      end: t,
+      shown: ctx.pageShownAt,
+      atSwitch: true,
     })
   }
 }
+
+type Viewport = { width: number; height: number }
 
 /**
  * T2: the end of a read of `page`: when the page has run two rendering updates since (a busy page
@@ -180,7 +179,7 @@ export async function boundedRead<T>(
   page: Page,
   read: () => Promise<T>,
 ): Promise<T | undefined> {
-  if (ctx.stuckReads.has(page)) return undefined
+  if ((ctx.stuckReads.get(page) ?? 0) > 0) return undefined
   const pending = read()
   let timer: ReturnType<typeof setTimeout> | undefined
   const result = await Promise.race([
@@ -190,9 +189,12 @@ export async function boundedRead<T>(
     }),
   ]).finally(() => clearTimeout(timer))
   if (result !== undefined) return result.value
-  // Only this page's reads wait (a stuck opener never blinds the reads of a popup).
-  ctx.stuckReads.add(page)
-  void pending.catch(() => undefined).finally(() => ctx.stuckReads.delete(page))
+  // Only this page's reads wait (a stuck opener never blinds the reads of a popup), until every
+  // read of it that took too long has settled.
+  ctx.stuckReads.set(page, (ctx.stuckReads.get(page) ?? 0) + 1)
+  void pending
+    .catch(() => undefined)
+    .finally(() => ctx.stuckReads.set(page, (ctx.stuckReads.get(page) ?? 1) - 1))
   return undefined
 }
 

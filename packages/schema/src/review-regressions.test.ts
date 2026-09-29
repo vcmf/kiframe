@@ -1203,7 +1203,7 @@ describe("secret regions left the composition (SECRETS-DESIGN I4, T7)", () => {
     // Another segment never ends before it starts: its end goes to the step's end unless both
     // ends were that step's regions (then its length is kept).
     const late = { ...caption, id: "d", at: { step: "login", edge: "start", offsetMs: 500 } }
-    const both = { ...caption, id: "e", until: { event: "login:sensitive:2", offsetMs: 900 } }
+    const both = { ...caption, id: "e", until: { event: "login:sensitive:1", offsetMs: 900 } }
     const moved = migrate("composition", {
       version: 1,
       tracks: { captions: [{ ...late, until: { event: "login:sensitive:1" } }, both] },
@@ -1211,6 +1211,24 @@ describe("secret regions left the composition (SECRETS-DESIGN I4, T7)", () => {
     const [d, e] = Composition.parse(moved.doc).tracks.captions
     expect(d?.until).toEqual({ step: "login", edge: "end" })
     expect(e?.until).toEqual({ step: "login", edge: "start", offsetMs: 900 })
+    // Two different events of the step: the end goes to the step's end (their times are gone).
+    const two = migrate("composition", {
+      version: 1,
+      tracks: {
+        captions: [
+          {
+            ...caption,
+            id: "f",
+            at: { event: "login:sensitive" },
+            until: { event: "login:sensitive:3" },
+          },
+        ],
+      },
+    })
+    expect(Composition.parse(two.doc).tracks.captions[0]?.until).toEqual({
+      step: "login",
+      edge: "end",
+    })
     // An end anchor goes to the step's end: a mask never gets shorter (nor inverted).
     const mine = {
       id: "m",

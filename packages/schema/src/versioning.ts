@@ -42,12 +42,18 @@ export const MIGRATIONS: MigrationRegistry = {
         const tracks = (doc.tracks ?? {}) as Record<string, unknown>
         // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start;
         // a mask's end anchor its step's end (rounded outwards: a mask never gets shorter).
-        const anchor = (x: unknown, edge: "start" | "end"): unknown => {
+        const regionEvent = (x: unknown): string | undefined => {
           const event = (x as { event?: unknown } | null)?.event
-          const match = typeof event === "string" ? /^(.+):sensitive(?::\d+)?$/.exec(event) : null
-          if (match === null) return x
+          return typeof event === "string" && /^.+:sensitive(?::\d+)?$/.test(event)
+            ? event
+            : undefined
+        }
+        const anchor = (x: unknown, edge: "start" | "end"): unknown => {
+          const event = regionEvent(x)
+          if (event === undefined) return x
           const { offsetMs } = x as { offsetMs?: unknown }
-          return { step: match[1], edge, ...(offsetMs !== undefined && { offsetMs }) }
+          const step = event.replace(/:sensitive(?::\d+)?$/, "")
+          return { step, edge, ...(offsetMs !== undefined && { offsetMs }) }
         }
         const out: Record<string, unknown> = {}
         for (const [name, list] of Object.entries(tracks)) {
@@ -70,19 +76,18 @@ export const MIGRATIONS: MigrationRegistry = {
               if (typeof m !== "object" || m === null) return m
               const seg = { ...(m as Record<string, unknown>) }
               // A mask is rounded outwards (never shorter). Any other segment keeps its length when
-              // both ends were this step's regions, and never ends before it starts otherwise.
-              const sameStep =
-                typeof seg.at === "object" &&
-                seg.at !== null &&
-                "event" in seg.at &&
-                typeof seg.until === "object" &&
-                seg.until !== null &&
-                "event" in seg.until &&
-                String(seg.at.event).split(":sensitive")[0] ===
-                  String(seg.until.event).split(":sensitive")[0]
+              // both ends were the same event (its offsets in order), else its end goes to the step's
+              // end: it never ends before it starts.
+              const at = regionEvent(seg.at)
+              const offset = (x: unknown) => Number((x as { offsetMs?: unknown }).offsetMs ?? 0)
+              const keeps =
+                name !== "masks" &&
+                at !== undefined &&
+                at === regionEvent(seg.until) &&
+                offset(seg.until) >= offset(seg.at)
               if ("at" in seg) seg.at = anchor(seg.at, "start")
               if ("until" in seg) {
-                seg.until = anchor(seg.until, name !== "masks" && sameStep ? "start" : "end")
+                seg.until = anchor(seg.until, keeps ? "start" : "end")
               }
               return seg
             })
