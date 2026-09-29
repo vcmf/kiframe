@@ -152,8 +152,14 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
             // now is its last real one until a read (a return falls back to it).
             followed.field.typed = true
             followed.field.onScreen = true
-            if (fieldBox !== null) followed.field.lastBox = fieldBox
-            followed.field.lastViewport = ctx.page.viewportSize() ?? undefined
+            const box: Box | null = fieldBox
+            if (box !== null && box.width > 0 && box.height > 0) followed.field.lastBox = box
+            followed.field.lastViewport =
+              ctx.page.viewportSize() ??
+              (await Promise.race([
+                viewportOf(ctx.page).catch(() => undefined),
+                new Promise<undefined>((resolve) => setTimeout(resolve, 300)),
+              ]))
           }
           ctx.options.onEvent?.({
             kind: "type_start",

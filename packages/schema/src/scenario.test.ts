@@ -106,7 +106,7 @@ describe("Take and Composition", () => {
 
   it("defaults every track to empty and parses clip modes", () => {
     const c = Composition.parse({
-      version: 2,
+      version: 1,
       tracks: {
         clips: [
           {
@@ -126,7 +126,7 @@ describe("Take and Composition", () => {
 
   it("rejects a speed clip without a positive speed", () => {
     const bad = {
-      version: 2,
+      version: 1,
       tracks: {
         clips: [
           { id: "c", source: "auto", mode: "speed", speed: 0, at: { ms: 0 }, until: { ms: 10 } },

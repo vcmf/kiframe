@@ -62,7 +62,7 @@ function fixture(extra: string = "") {
       pressed: false,
     }))
   const meta: TakeMeta = {
-    version: 2,
+    version: 1,
     takeKey: "k",
     scenarioHash: "h",
     recordedAt: "2026-09-27T00:00:00.000Z",

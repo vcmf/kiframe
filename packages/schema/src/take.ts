@@ -121,11 +121,7 @@ export type CursorSample = z.infer<typeof CursorSampleBase>
 
 /** Unguarded: internal only, use the guarded export. */
 const TakeMetaBase = z.strictObject({
-  /** 2: secret regions carry their spans (SECRETS-DESIGN §5); version 1 takes are re-recorded. */
-  version: z.literal(2, {
-    error:
-      "recorded by an older Kiframe (take version 1: secret regions without spans): record it again",
-  }),
+  version: z.literal(1),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),

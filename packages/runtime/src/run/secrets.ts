@@ -26,12 +26,12 @@ import { now } from "../clock.ts"
  * blur follows it) or that it's gone (navigated away, removed: nothing left to blur). A field on
  * another page was left with its page (`leaveSecretFields`). Bounded, never fails a step.
  */
-export async function followSecretFields(ctx: Ctx, step: StepRef, tick = false): Promise<void> {
+export async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
   // One at a time (the recording tick reads too): a later one waits for the one running.
   const previous = ctx.fieldsInflight
   const run = (async () => {
     await previous?.catch(() => undefined)
-    await readFields(ctx, step, tick)
+    await readFields(ctx, step)
   })()
   ctx.fieldsInflight = run
   try {
@@ -45,15 +45,12 @@ export async function followSecretFields(ctx: Ctx, step: StepRef, tick = false):
  * A field's state (T2–T4): `onScreen` while its region has an open box (a box reported, no "gone"
  * or leave since); `leftPage` once it was left with its page (its next box dates from the switch).
  */
-async function readFields(ctx: Ctx, step: StepRef, tick: boolean): Promise<void> {
+async function readFields(ctx: Ctx, step: StepRef): Promise<void> {
   // The driven page as of now, throughout (a switch may start while this runs). Followed from its
-  // type_start only (T3: the empty field isn't blurred before typing). The tick skips fields known
-  // gone (re-read at step boundaries: a re-mounted field comes back there).
+  // type_start only (T3: the empty field isn't blurred before typing). A field known gone is read
+  // too: a re-mounted one comes back mid-step (the switch read settles a field left with its page).
   const page = ctx.page
-  const fields = ctx.secretFields.filter(
-    (f) =>
-      f.typed === true && f.page === page && (!tick || f.onScreen === true || f.leftPage === true),
-  )
+  const fields = ctx.secretFields.filter((f) => f.typed === true && f.page === page)
   if (fields.length === 0) return
   // When the read started (T2; the events are handled later: a move's hull starts here), and when
   // the run switched to its page (nothing it saw was on screen before: T3).
@@ -86,15 +83,14 @@ async function readFields(ctx: Ctx, step: StepRef, tick: boolean): Promise<void>
         shown,
         ...(extra.since !== undefined && { since: extra.since }),
       })
-    // An unsure read: every field "unknown".
-    const box = read?.measured[i] ?? "unknown"
+    // An unsure read: every field "unknown" (never `??`: null is "gone").
+    const box = read === undefined ? "unknown" : read.measured[i]
     if (box === "unknown" || box === undefined) {
       // Unsure, just back on its page: its last box comes back (the whole frame without a usable
       // one), as read from the switch (a move's hull then covers from there too). Fails closed.
       if (field.leftPage === true) {
         const last = field.lastBox
-        const usable = last !== undefined && last.width > 0 && last.height > 0
-        report(usable ? last : WHOLE_FRAME, usable ? field.lastViewport : undefined, {
+        report(last ?? WHOLE_FRAME, last === undefined ? undefined : field.lastViewport, {
           at: shown,
           since: shown,
         })
@@ -133,6 +129,11 @@ const WHOLE_FRAME: Box = { x: 0, y: 0, width: 1e6, height: 1e6 }
  */
 export function leaveSecretFields(ctx: Ctx, step: StepRef): void {
   const t = now()
+  // Fields of pages that closed are gone for good (their handles released).
+  for (const field of ctx.secretFields.filter((f) => f.page.isClosed())) {
+    ctx.secretFields.splice(ctx.secretFields.indexOf(field), 1)
+    void field.handle?.dispose().catch(() => undefined)
+  }
   for (const field of ctx.secretFields) {
     if (field.typed !== true || field.page === ctx.page || field.onScreen !== true) continue
     field.onScreen = false
@@ -318,11 +319,12 @@ async function measureSecretField(
   field: Ctx["secretFields"][number],
 ): Promise<Box | null | "unknown"> {
   const handle = field.handle
-  if (handle !== undefined) {
-    const connected = await handle.evaluate((e) => e.isConnected).catch(() => false)
-    if (connected) return (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
-  }
-  return measureField(field.locator)
+  let box: Box | null | "unknown"
+  if (handle !== undefined && (await handle.evaluate((e) => e.isConnected).catch(() => false))) {
+    box = (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
+  } else box = await measureField(field.locator)
+  // A box of no size shows nothing: gone (one definition for the runtime and the regions).
+  return box !== null && box !== "unknown" && (box.width <= 0 || box.height <= 0) ? null : box
 }
 
 /**

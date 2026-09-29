@@ -426,7 +426,7 @@ export async function recordScenario(
       const size = frameSize ?? viewport
       const scenarioHash = sha256(JSON.stringify(scenario))
       meta = TakeMeta.parse({
-        version: 2,
+        version: 1,
         takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
         scenarioHash,
         recordedAt: recordedAt.toISOString(),

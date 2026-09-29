@@ -21,7 +21,7 @@ import {
 import { generate } from "@kiframe/generators"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { pathOnly, recordScenario, scrubSecrets } from "../src/index.ts"
+import { pathOnly, recordScenario, scrubSecrets, type RunnerEvent } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -588,6 +588,7 @@ steps:
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
     const page = await context.newPage()
     const started = Date.now()
+    const runnerEvents: RunnerEvent[] = []
     const take = await recordScenario(
       page,
       scenario(`  - { id: open-new, action: click, target: { by: role, role: button, name: New project } }
@@ -598,9 +599,20 @@ steps:
   - { id: w3, action: scroll, by: { y: 10 } }
 `),
       project(),
-      { outDir, scope: "test", sceneId: "test", resolveSecret: () => SECRET },
+      {
+        outDir,
+        scope: "test",
+        sceneId: "test",
+        resolveSecret: () => SECRET,
+        onEvent: (e) => runnerEvents.push(e),
+      },
     )
     await context.close()
+    // The runtime found it gone, once, at the step after the goto (a gone read reported: the blur
+    // ends at the next frame, never held open by a read that lost it).
+    const gone = runnerEvents.filter((e) => e.kind === "secret_field" && e.box === undefined)
+    expect(gone).toHaveLength(1)
+    expect(gone[0]?.kind === "secret_field" && gone[0].step.stepId).toBe("away")
     const sensitive = take.events.filter((e) => e.kind === "sensitive")
     // One region with one box: ended once, after the goto (at the first frame after the read that
     // found it gone; this static page draws none, so the last one is held: T4), never back.

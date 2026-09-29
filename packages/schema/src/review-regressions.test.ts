@@ -15,7 +15,6 @@ import {
   TakeEvent,
   TakeMeta,
 } from "./index.ts"
-import { migrate } from "./versioning.ts"
 
 // Regression tests for the P0-2 review round 1 findings.
 const steps = `steps:\n  - { id: a, action: pause, ms: 1 }\n`
@@ -36,7 +35,7 @@ describe("strictness everywhere (typos are errors)", () => {
 
   it("keeps composition style, callouts and keystrokes instead of stripping them", () => {
     const c = Composition.parse({
-      version: 2,
+      version: 1,
       // Typed since M1-1 (a StyleOverride).
       style: { background: ["#000000", "#111111"] },
       tracks: {
@@ -57,7 +56,7 @@ describe("strictness everywhere (typos are errors)", () => {
     expect(c.style).toEqual({ background: ["#000000", "#111111"] })
     expect(c.tracks.callouts).toHaveLength(1)
     expect(c.tracks.keystrokes).toHaveLength(1)
-    expect(Composition.safeParse({ version: 2, tracks: {}, extra: 1 }).success).toBe(false)
+    expect(Composition.safeParse({ version: 1, tracks: {}, extra: 1 }).success).toBe(false)
   })
 })
 
@@ -124,7 +123,7 @@ describe("take events for off-camera work", () => {
 
   it("accepts recordedAt with a timezone offset", () => {
     const meta = {
-      version: 2,
+      version: 1,
       takeKey: "k",
       scenarioHash: "h",
       recordedAt: "2026-09-26T20:00:00+02:00",
@@ -224,7 +223,7 @@ describe("round 2: preset names and ids", () => {
     const seg = { id: "c", source: "auto", at: { ms: 0 }, until: { ms: 10 } }
     expect(
       Composition.safeParse({
-        version: 2,
+        version: 1,
         tracks: {
           clips: [
             { ...seg, mode: "cut" },
@@ -273,7 +272,7 @@ describe("round 2: time spans", () => {
     ).toBe(false)
     expect(
       Composition.safeParse({
-        version: 2,
+        version: 1,
         tracks: {
           clips: [{ id: "c", source: "auto", mode: "cut", at: { ms: 100 }, until: { ms: 50 } }],
         },
@@ -409,7 +408,7 @@ describe("round 3: secrets and credentials in every author string", () => {
       at: { ms: 0 },
       until: { ms: 10 },
     }
-    expect(Composition.safeParse({ version: 2, tracks: { captions: [caption] } }).success).toBe(
+    expect(Composition.safeParse({ version: 1, tracks: { captions: [caption] } }).success).toBe(
       false,
     )
   })
@@ -488,7 +487,7 @@ describe("round 4: ids across presets", () => {
 
 describe("round 4: spans that can be ordered without a take", () => {
   const caption = (at: object, until: object) => ({
-    version: 2,
+    version: 1,
     tracks: { captions: [{ id: "c", source: "manual", text: "Hi", at, until }] },
   })
 
@@ -525,7 +524,7 @@ describe("round 4: secret references in the remaining author strings", () => {
       parseProjectYaml(project('redaction: { selectors: ["{{secrets.x}}"] }\n')),
     ).toThrow(/only allowed/)
     const ks = { id: "k", source: "auto", keys: "{{secrets.x}}", at: { ms: 0 }, until: { ms: 10 } }
-    expect(Composition.safeParse({ version: 2, tracks: { keystrokes: [ks] } }).success).toBe(false)
+    expect(Composition.safeParse({ version: 1, tracks: { keystrokes: [ks] } }).success).toBe(false)
   })
 
   it("validates interrupt rule names in take events", () => {
@@ -545,7 +544,7 @@ describe("round 4: secret references in the remaining author strings", () => {
 
 describe("round 5: anchors with offsets on different edges need a take", () => {
   const caption = (at: object, until: object) => ({
-    version: 2,
+    version: 1,
     tracks: { captions: [{ id: "c", source: "manual", text: "Hi", at, until }] },
   })
 
@@ -635,7 +634,7 @@ describe("round 6: whole-document guards", () => {
 
   it("rejects secret references in any string, including free-form style", () => {
     expect(
-      Composition.safeParse({ version: 2, tracks: {}, style: { watermark: "{{secrets.x}}" } })
+      Composition.safeParse({ version: 1, tracks: {}, style: { watermark: "{{secrets.x}}" } })
         .success,
     ).toBe(false)
   })
@@ -654,7 +653,7 @@ describe("round 6: whole-document guards", () => {
 
 describe("round 6: span ordering", () => {
   const caption = (at: object, until: object) => ({
-    version: 2,
+    version: 1,
     tracks: { captions: [{ id: "c", source: "manual", text: "Hi", at, until }] },
   })
 
@@ -692,7 +691,7 @@ describe("round 6: CSS selectors can't inject rules", () => {
 describe("round 6: take metadata consistency", () => {
   it("requires frameSize = viewport × DPR", () => {
     const meta = {
-      version: 2,
+      version: 1,
       takeKey: "k",
       scenarioHash: "h",
       recordedAt: "2026-09-26T20:00:00Z",
@@ -741,13 +740,13 @@ describe("round 7: secret slots are positional", () => {
   it("rejects type-shaped objects and secret keys in free-form style", () => {
     expect(
       Composition.safeParse({
-        version: 2,
+        version: 1,
         tracks: {},
         style: { x: { action: "type", value: "{{secrets.a}}" } },
       }).success,
     ).toBe(false)
     expect(
-      Composition.safeParse({ version: 2, tracks: {}, style: { "{{secrets.a}}": 1 } }).success,
+      Composition.safeParse({ version: 1, tracks: {}, style: { "{{secrets.a}}": 1 } }).success,
     ).toBe(false)
   })
 
@@ -824,7 +823,7 @@ describe("round 8: secret slots are matched from the root", () => {
       steps: [{ action: "type", value: "{{secrets.x}}" }],
       interrupts: [{ do: { action: "type", value: "{{secrets.x}}" } }],
     }
-    expect(Composition.safeParse({ version: 2, tracks: {}, style }).success).toBe(false)
+    expect(Composition.safeParse({ version: 1, tracks: {}, style }).success).toBe(false)
   })
 })
 
@@ -906,7 +905,7 @@ describe("round 9: issues point at the offending value", () => {
 describe("round 9: time zero is before everything", () => {
   it("rejects a span ending at time zero", () => {
     const caption = (until: object) => ({
-      version: 2,
+      version: 1,
       tracks: {
         captions: [
           { id: "c", source: "manual", text: "Hi", at: { step: "a", edge: "end" }, until },
@@ -940,7 +939,7 @@ describe("round 10", () => {
 
   it("accepts a fractional take duration", () => {
     const meta = {
-      version: 2,
+      version: 1,
       takeKey: "k",
       scenarioHash: "h",
       recordedAt: "2026-09-26T20:00:00Z",
@@ -1006,7 +1005,7 @@ describe("round 11", () => {
 
   it("accepts the environment in take metadata", () => {
     const meta = {
-      version: 2,
+      version: 1,
       takeKey: "k",
       scenarioHash: "h",
       recordedAt: "2026-09-26T20:00:00Z",
@@ -1031,11 +1030,11 @@ describe("round 11", () => {
       until: { ms: 10 },
       target: { rect: { x: 0, y: 0, w: 0.1, h: 0.1 } },
     }
-    expect(Composition.safeParse({ version: 2, tracks: { callouts: [callout] } }).success).toBe(
+    expect(Composition.safeParse({ version: 1, tracks: { callouts: [callout] } }).success).toBe(
       false,
     )
     expect(
-      Composition.safeParse({ version: 2, tracks: { callouts: [{ ...callout, kind: "arrow" }] } })
+      Composition.safeParse({ version: 1, tracks: { callouts: [{ ...callout, kind: "arrow" }] } })
         .success,
     ).toBe(true)
   })
@@ -1073,7 +1072,7 @@ describe("round 12", () => {
 
   it("rejects Maps and Sets that would hide their contents", () => {
     const style = { x: new Set(["{{secrets.pw}}"]) }
-    expect(Composition.safeParse({ version: 2, tracks: {}, style }).success).toBe(false)
+    expect(Composition.safeParse({ version: 1, tracks: {}, style }).success).toBe(false)
   })
 
   it("restricts freeze reasons to reading and user", () => {
@@ -1085,12 +1084,12 @@ describe("round 12", () => {
       at: { ms: 0 },
       reason: "interrupt",
     }
-    expect(Composition.safeParse({ version: 2, tracks: { clips: [freeze] } }).success).toBe(false)
+    expect(Composition.safeParse({ version: 1, tracks: { clips: [freeze] } }).success).toBe(false)
   })
 
   it("gives a plain 'required' error for a missing DPR in take metadata", () => {
     const meta = {
-      version: 2,
+      version: 1,
       takeKey: "k",
       scenarioHash: "h",
       recordedAt: "2026-09-26T20:00:00Z",
@@ -1139,7 +1138,7 @@ describe("round 13", () => {
       at: { scene: "end" },
       until: { scene: "start", offsetMs: 5 },
     }
-    expect(Composition.safeParse({ version: 2, tracks: { clips: [clip] } }).success).toBe(false)
+    expect(Composition.safeParse({ version: 1, tracks: { clips: [clip] } }).success).toBe(false)
   })
 
   it("doesn't echo the source line in YAML errors", () => {
@@ -1156,98 +1155,30 @@ describe("round 13", () => {
   })
 })
 
-describe("secret regions left the composition (SECRETS-DESIGN I4, T7)", () => {
-  const rect = { x: 0, y: 0, w: 0.1, h: 0.1 }
-  const mask = (id: string, target: object, extra: object = {}) => ({
-    id,
-    source: "auto",
-    kind: "blur",
-    at: { ms: 0 },
-    until: { ms: 10 },
-    target,
-    ...extra,
-  })
-  const region = { sensitiveId: "secret:x" }
-
-  it("drops auto masks and highlights on secret regions, keeps a user's blur of one", () => {
-    const { doc } = migrate("composition", {
-      version: 1,
-      tracks: {
-        masks: [
-          mask("auto", region),
-          mask("mine", region, { source: "manual" }),
-          mask("spot", region, { source: "manual", kind: "spotlight" }),
-          mask("r", { rect }),
-        ],
-      },
-    })
-    const c = Composition.parse(doc)
-    expect(c.version).toBe(2)
-    expect(c.tracks.masks.map((m) => m.id)).toEqual(["mine", "r"])
-  })
-
-  it("moves an anchor to a region to the start of its step", () => {
-    const caption = {
-      id: "c",
-      source: "manual",
-      text: "Hi",
-      at: { event: "login:sensitive:1", offsetMs: 100 },
-      until: { step: "login", edge: "end" },
-    }
-    const { doc } = migrate("composition", { version: 1, tracks: { captions: [caption] } })
-    expect(Composition.parse(doc).tracks.captions[0]?.at).toEqual({
-      step: "login",
-      edge: "start",
-      offsetMs: 100,
-    })
-    // Another segment never ends before it starts: its end goes to the step's end unless both
-    // ends were that step's regions (then its length is kept).
-    const late = { ...caption, id: "d", at: { step: "login", edge: "start", offsetMs: 500 } }
-    const both = { ...caption, id: "e", until: { event: "login:sensitive:1", offsetMs: 900 } }
-    const moved = migrate("composition", {
-      version: 1,
-      tracks: { captions: [{ ...late, until: { event: "login:sensitive:1" } }, both] },
-    })
-    const [d, e] = Composition.parse(moved.doc).tracks.captions
-    expect(d?.until).toEqual({ step: "login", edge: "end" })
-    expect(e?.until).toEqual({ step: "login", edge: "start", offsetMs: 900 })
-    // Two different events of the step: the end goes to the step's end (their times are gone).
-    const two = migrate("composition", {
-      version: 1,
-      tracks: {
-        captions: [
-          {
-            ...caption,
-            id: "f",
-            at: { event: "login:sensitive" },
-            until: { event: "login:sensitive:3" },
-          },
-        ],
-      },
-    })
-    expect(Composition.parse(two.doc).tracks.captions[0]?.until).toEqual({
-      step: "login",
-      edge: "end",
-    })
-    // An end anchor goes to the step's end: a mask never gets shorter (nor inverted).
-    const mine = {
+describe("secret regions and the composition (SECRETS-DESIGN I4, T7)", () => {
+  it("only lets a blur or pixelate name a secret region (it only adds)", () => {
+    const mask = (kind: string) => ({
       id: "m",
       source: "manual",
-      kind: "blur",
-      at: { step: "login", edge: "start", offsetMs: 500 },
-      until: { event: "login:sensitive:1" },
-      target: { rect: { x: 0, y: 0, w: 0.1, h: 0.1 } },
-    }
-    const masked = migrate("composition", { version: 1, tracks: { masks: [mine] } })
-    expect(Composition.parse(masked.doc).tracks.masks[0]?.until).toEqual({
-      step: "login",
-      edge: "end",
+      kind,
+      at: { ms: 0 },
+      until: { ms: 10 },
+      target: { sensitiveId: "secret:x" },
     })
+    const ok = (m: object) => Composition.safeParse({ version: 1, tracks: { masks: [m] } }).success
+    expect(ok(mask("blur"))).toBe(true)
+    expect(ok(mask("spotlight"))).toBe(false)
   })
 
-  it("only lets a blur or pixelate name a secret region", () => {
-    const v2 = (m: object) => Composition.safeParse({ version: 2, tracks: { masks: [m] } }).success
-    expect(v2(mask("b", region, { source: "manual" }))).toBe(true)
-    expect(v2(mask("s", region, { source: "manual", kind: "spotlight" }))).toBe(false)
+  it("refuses a take event of the old format (a region without its span): re-record", () => {
+    const old = {
+      t: 0,
+      phase: "setup",
+      kind: "sensitive",
+      id: "s",
+      rect: { x: 0, y: 0, w: 1, h: 1 },
+      why: "secret-field",
+    }
+    expect(TakeEvent.safeParse(old).success).toBe(false)
   })
 })
