@@ -13,7 +13,7 @@ describe("isSafeSelector", () => {
     "button.primary, a.link",
     '[data-testid="save"]',
     "[aria-label='Close']",
-    "input[name^=pass i]",
+    "input[name=password i]",
     "ul li + li ~ li",
     "button:focus",
     // Common hide rules: descendants, a banner's container, an escaped utility class.
@@ -26,7 +26,7 @@ describe("isSafeSelector", () => {
     'a[href="/login"]',
     "img[alt~=avatar]",
     "[aria-expanded=true]",
-    "[data-testid^=row-]",
+    "[data-testid=row-1]",
     "div[contenteditable='true']",
   ])("accepts %s", (selector) => expect(isSafeSelector(selector)).toBe(true))
 
@@ -44,6 +44,10 @@ describe("isSafeSelector", () => {
     "[title$=com]",
     "[placeholder|=bob]",
     "form[action*='bob']",
+    // Partial operators on identity attributes too (a displayed slug, `:has()` from elsewhere).
+    "[data-testid^='avatar-b']",
+    "ul:not(:has([data-testid*=bob]))",
+    "input[name^=pass]",
     // Text-bearing ARIA attributes aren't states: refused.
     "[aria-braillelabel^='b']",
     "[aria-rowindextext^=b]",

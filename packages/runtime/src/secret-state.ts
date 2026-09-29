@@ -142,8 +142,7 @@ const attributeClass = (name: string): "any" | "whole" | undefined => {
 /** The A8 grammar in words, for every message that refuses a selector. */
 export const SAFE_SELECTOR_RULES = [
   "tags and *, #ids, .classes",
-  `attributes with any operator: ${[...IDENTITY_ATTRIBUTES, ...ARIA_STATES].join(", ")}`,
-  `attributes with = or ~= only: ${[...TEXT_ATTRIBUTES].join(", ")}`,
+  `the attributes ${[...IDENTITY_ATTRIBUTES, ...ARIA_STATES, ...TEXT_ATTRIBUTES].join(", ")}, with = or ~= only (or presence)`,
   `the combinators, :not(), :has(), ${[...NTH_PSEUDOS].map((p) => `:${p}()`).join(", ")}, ${[...PSEUDOS].map((p) => `:${p}`).join(", ")}`,
 ].join("; ")
 
@@ -204,7 +203,9 @@ export function isSafeSelector(selector: string): boolean {
     if (peek() === "]") return (i++, true)
     const op = ATTRIBUTE_OPS.find((o) => s.startsWith(o, i))
     if (op === undefined) return false
-    if (kind === "whole" && op !== "=" && op !== "~=") return false
+    // Whole-value tests only, on every attribute (§3 A8): a partial operator could test a displayed
+    // identity (a slug in a test id, an email in an alt), `:has()` included.
+    if (op !== "=" && op !== "~=") return false
     i += op.length
     ws()
     if (!attributeValue()) return false
