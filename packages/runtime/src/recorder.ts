@@ -219,7 +219,8 @@ export async function recordScenario(
       }
       switch (read.state) {
         case "left":
-          // Left with its page (T4): until the next page's first frame.
+          // Left with its page (T4): until the next page's first frame, from the capture's own
+          // switch time (a leave is sent right after the capture switched).
           regions.leave(id, switchedAt)
           return
         case "gone":
@@ -308,7 +309,11 @@ export async function recordScenario(
             // the page the run switched to at `shown` (T3).
             const t = now()
             const read = { at: t, end: t, shown: e.shown ?? t }
-            measured(id, "secret-field", e.step, { ...read, ...placeBox(box, current), since: t })
+            measured(id, "secret-field", e.step, {
+              ...read,
+              ...placeBox(box, e.viewport ?? current),
+              since: t,
+            })
           }
           break
         }

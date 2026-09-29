@@ -13,8 +13,7 @@ function setup() {
     id: "f",
     locator: {} as Ctx["secretFields"][number]["locator"],
     page: p1,
-    typed: true,
-    onScreen: true,
+    state: "on",
     lastBox: { x: 10, y: 20, width: 100, height: 30 },
   }
   const ctx = {
@@ -72,7 +71,7 @@ describe("secret field state through page switches and unsure reads", () => {
 
   it("doesn't reopen a field that was gone before the run left its page", async () => {
     const { ctx, field, p1, p2, step, fieldEvents } = setup()
-    field.onScreen = false
+    field.state = "gone"
     ctx.page = p2
     leaveSecretFields(ctx, step)
     ctx.page = p1
@@ -118,8 +117,7 @@ describe("secret field state through real reads", () => {
       id: "f",
       locator,
       page,
-      typed: true,
-      onScreen: true,
+      state: "on",
     } as unknown as Ctx["secretFields"][number]
     const ctx = {
       page,

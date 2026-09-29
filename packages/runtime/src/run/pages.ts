@@ -4,6 +4,7 @@ import { type Ctx, firstLine, guard } from "./context.ts"
 import { applyHide } from "./interrupts.ts"
 import {
   followSecretFields,
+  followSecretText,
   leaveSecretFields,
   leaveSecretText,
   pathOnly,
@@ -28,6 +29,12 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   // Reads already running finish on the page they started on (the tick starts none mid-switch).
   await ctx.fieldsInflight?.catch(() => undefined)
   await ctx.secretText.inflight?.catch(() => undefined)
+  // A last read of the page the capture is about to leave: a move since its last tick is covered
+  // (the next reads are of another page). A closed page can't be read: its last boxes stay.
+  if (ctx.options.recording === true && !ctx.page.isClosed()) {
+    await followSecretFields(ctx, step)
+    await followSecretText(ctx, step, true)
+  }
   ctx.detach(ctx.page)
   // Headed and CDP runs: the driven page is the visible tab (a background tab is throttled).
   await next.bringToFront().catch(() => undefined)
