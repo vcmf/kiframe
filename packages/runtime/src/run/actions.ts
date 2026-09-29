@@ -10,7 +10,14 @@ import {
   seededRandom,
   typingDelays,
 } from "../motion.ts"
-import { isOnScreen, locatorFor, resolveTarget, stripExtras, viewportOf } from "../targets.ts"
+import {
+  countUnderRule,
+  isOnScreen,
+  resolveTarget,
+  stripExtras,
+  toPlaywright,
+  viewportOf,
+} from "../targets.ts"
 import { waitForCondition } from "./conditions.ts"
 import {
   type AnyAction,
@@ -407,11 +414,15 @@ async function drag(
 /** The target, if it resolves to exactly one hidden `<input type=file>` (primary locator only). */
 async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
-  const candidates = (await locatorFor(ctx.page, stripExtras(target))).and(
-    ctx.page.locator("input[type=file]"),
-  )
-  const count = await candidates.count().catch(() => 0)
-  if (count !== 1) return undefined
+  const locator = stripExtras(target)
+  const fileInput = (l: Locator) => l.and(ctx.page.locator("input[type=file]"))
+  // Counted through the one helper (§3 A8), hidden matches included: a hidden file input.
+  const r = await countUnderRule(ctx.page, locator, undefined, {
+    refine: fileInput,
+    hidden: true,
+  }).catch(() => undefined)
+  if (r?.count !== 1) return undefined
+  const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact))
   const visible = await candidates.isVisible().catch(() => true)
   return visible ? undefined : candidates
 }

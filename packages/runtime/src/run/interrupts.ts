@@ -1,7 +1,7 @@
 import type { ProjectConfig } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
-import { exactNamesFor, isSafeSelector, ProbeRefusal } from "../secret-state.ts"
+import { exactNamesFor, isPartialName, isSafeSelector, ProbeRefusal } from "../secret-state.ts"
 import { pollLocator } from "./conditions.ts"
 import { countUnderRule } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
@@ -92,8 +92,11 @@ async function matchingInterrupt(
   const counts = await Promise.all(
     rules.map(async (rule) => {
       try {
-        // Counted under the rule decided once for this check, a partial match confirmed (§3 A8).
-        return (await countUnderRule(ctx.page, whenLocator(rule), names)).count ?? 0
+        // Counted under the rule decided once for this check; partial matches confirmed together
+        // below (one page check, not one per rule: §3 A8).
+        return (
+          (await countUnderRule(ctx.page, whenLocator(rule), names, { confirm: false })).count ?? 0
+        )
       } catch (error) {
         // A `when` that could probe a known value (§3 A8) never matches while secrets are known,
         // with one warning per rule; any other failure (a selector the browser rejects) is no
@@ -109,6 +112,18 @@ async function matchingInterrupt(
       }
     }),
   )
+  // A partial match is confirmed once for all the rules: a field holding a secret may have rendered
+  // since the rule's check. If so, the matching rules are counted again exactly.
+  const partialHit = rules.some((r, i) => (counts[i] ?? 0) > 0 && isPartialName(whenLocator(r)))
+  if (!names.exact && partialHit && (await exactNamesFor(ctx.page, rules.map(whenLocator))).exact) {
+    const exact = { exact: true, unsure: false }
+    for (const [i, rule] of rules.entries()) {
+      if ((counts[i] ?? 0) === 0 || !isPartialName(whenLocator(rule))) continue
+      counts[i] =
+        (await countUnderRule(ctx.page, whenLocator(rule), exact).catch(() => undefined))?.count ??
+        0
+    }
+  }
   return rules.find((_, i) => (counts[i] ?? 0) > 0)
 }
 

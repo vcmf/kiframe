@@ -114,6 +114,7 @@ export async function resolveTarget(
     exact = names.exact
     for (const [i, candidate] of candidates.entries()) {
       const r = await countUnderRule(page, candidate.locator, names)
+      exact ||= r.exact
       // The helper's confirmation turned the rule on: every candidate again, at once, exactly
       // (once per poll: a field that keeps flapping waits for the next one).
       if (r.exact && !names.exact && !retried) {
@@ -322,9 +323,21 @@ export async function countUnderRule(
   locator: SchemaLocator,
   /** The rule already decided for this poll (several locators counted at once). */
   decided?: { exact: boolean; unsure: boolean },
+  o: {
+    /** Narrows the locator (the upload's `input[type=file]`). */
+    refine?: (l: Locator) => Locator
+    /** Count hidden matches too (a hidden file input). */
+    hidden?: boolean
+    /** Skip the confirmation (the caller confirms once for several counts). */
+    confirm?: boolean
+  } = {},
 ): Promise<{ count: number | undefined; exact: boolean; unsure: boolean }> {
+  const build = (exact: boolean) => {
+    const base = (o.refine ?? ((l: Locator) => l))(toPlaywright(page, locator, exact))
+    return o.hidden === true ? base : visibleOnly(base)
+  }
   const countWith = (exact: boolean) =>
-    visibleOnly(toPlaywright(page, locator, exact))
+    build(exact)
       .count()
       .catch((error: unknown) => {
         if (isNavigationError(error)) return undefined
@@ -333,7 +346,7 @@ export async function countUnderRule(
   const names = decided ?? (await exactNamesFor(page, [locator]))
   let { exact, unsure } = names
   let count = await countWith(exact)
-  if (count !== undefined && count > 0 && !exact && isPartialName(locator)) {
+  if (o.confirm !== false && count !== undefined && count > 0 && !exact && isPartialName(locator)) {
     const again = await exactNamesFor(page, [locator])
     if (again.exact) {
       ;({ exact, unsure } = again)
