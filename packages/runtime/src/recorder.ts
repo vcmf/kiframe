@@ -22,6 +22,8 @@ import type { Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import type { Box } from "./motion.ts"
 import { Regions } from "./regions.ts"
+import type { ReadTimes, RegionReport } from "./run/context.ts"
+import { placed as placeBox } from "./run/secrets.ts"
 import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
 import { now } from "./clock.ts"
@@ -203,32 +205,42 @@ export async function recordScenario(
     }
     // Secret regions, written once with their spans when the take ends (SECRETS-DESIGN §5).
     const regions = new Regions()
+    // A read's report of a region (SECRETS-DESIGN T2–T4), on the take's clock (T1).
     const measured = (
       id: string,
       why: "secret-field" | "secret-text",
       step: StepRef,
-      box: Box | undefined,
-      viewport: { width: number; height: number } | undefined,
-      since: number | undefined,
-      read: { at: number; end: number; shown: number; atSwitch?: boolean | undefined },
+      read: ReadTimes & RegionReport,
     ) => {
-      // Take time (T1).
       const when = {
         start: Math.max(0, read.at - t0),
         end: Math.max(0, read.end - t0),
         floor: Math.max(0, read.shown - t0),
       }
-      // Left with its page (T4): until the next page's first frame.
-      if (box === undefined && read.atSwitch === true) regions.leave(id, switchedAt)
-      else if (box === undefined || box.width === 0 || box.height === 0) regions.gone(id, when)
-      else {
-        const where = {
-          phase: step.phase,
-          ...(step.stepId !== undefined && { stepId: step.stepId }),
+      switch (read.state) {
+        case "left":
+          // Left with its page (T4): until the next page's first frame.
+          regions.leave(id, switchedAt)
+          return
+        case "gone":
+          regions.gone(id, when)
+          return
+        case "at": {
+          const where = {
+            phase: step.phase,
+            ...(step.stepId !== undefined && { stepId: step.stepId }),
+          }
+          // T8: padded 4 CSS pixels on each side (glyph edges, sub-pixel moves).
+          const { box } = read
+          const padded = {
+            x: box.x - 4,
+            y: box.y - 4,
+            width: box.width + 8,
+            height: box.height + 8,
+          }
+          const since = read.since === undefined ? undefined : Math.max(0, read.since - t0)
+          regions.seen(id, why, where, when, rect(padded, read.viewport), since)
         }
-        // T8: padded 4 CSS pixels on each side (glyph edges, sub-pixel moves).
-        const padded = { x: box.x - 4, y: box.y - 4, width: box.width + 8, height: box.height + 8 }
-        regions.seen(id, why, where, when, rect(padded, viewport), since)
       }
     }
     const interruptStarts = new Map<string, number>()
@@ -294,39 +306,20 @@ export async function recordScenario(
             const id = e.sensitiveId ?? `secret:${e.secret}`
             // A box of no size (a field still scaling in) is no box: the whole frame. Read now, on
             // the page the run switched to at `shown` (T3).
-            const seen = box === undefined || box.width === 0 || box.height === 0 ? undefined : box
-            const whole = { x: 0, y: 0, width: current.width, height: current.height }
             const t = now()
             const read = { at: t, end: t, shown: e.shown ?? t }
-            measured(id, "secret-field", e.step, seen ?? whole, undefined, at(), read)
+            measured(id, "secret-field", e.step, { ...read, ...placeBox(box, current), since: t })
           }
           break
         }
         case "secret_text":
-          // Backdated to the last scan that didn't see it: no frame shows it unblurred. Gone: kept
-          // for the capture's lag.
-          measured(
-            e.id,
-            "secret-text",
-            e.step,
-            e.box,
-            e.viewport,
-            e.since === undefined ? undefined : Math.max(0, e.since - t0),
-            e,
-          )
+          // A new region is backdated to the last scan that didn't see it (T3).
+          measured(e.id, "secret-text", e.step, e)
           break
         case "secret_field":
           // The blur follows the field (normalized in the viewport it was measured in, before the
-          // capture switched). A field that's gone (no box) shows nothing.
-          measured(
-            e.id,
-            "secret-field",
-            e.step,
-            e.box,
-            e.viewport,
-            e.since === undefined ? undefined : Math.max(0, e.since - t0),
-            e,
-          )
+          // capture switched).
+          measured(e.id, "secret-field", e.step, e)
           break
         case "key":
           push({ ...base(e.step), kind: "key", key: e.keys })
@@ -415,7 +408,25 @@ export async function recordScenario(
         }
         return times[lo]
       }
-      for (const region of regions.finish(durationMs, frameAfter)) push(region)
+      for (const region of regions.finish(durationMs, frameAfter)) {
+        if (TakeEvent.safeParse(region).success) push(region)
+        else {
+          // Never dropped (the secret would show): the whole frame over its whole span.
+          warnings.push(`secret region ${region.id}: invalid box, the whole frame is blurred`)
+          const whole = { x: 0, y: 0, w: 1, h: 1 }
+          const from = Number.isFinite(region.t) ? region.t : 0
+          const until = Number.isFinite(region.until) ? region.until : durationMs
+          push({
+            t: from,
+            phase: "setup",
+            kind: "sensitive",
+            id: region.id,
+            why: region.why,
+            until,
+            boxes: [{ from, until, rect: whole }],
+          })
+        }
+      }
       events.sort((a, b) => a.t - b.t)
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
       writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))

@@ -1,10 +1,8 @@
-import { CAPTURE_LAG_MS, rectUnion, type TakeEvent, type ViewportRect } from "@kiframe/schema"
+import { rectUnion, type TakeEvent, type ViewportRect } from "@kiframe/schema"
 
 // Secret regions with their whole time spans (SECRETS-DESIGN §5, T1–T8): the recorder reports what
 // the runtime read, when; this writes each region once, at the end, as one `sensitive` event whose
 // boxes the compositor draws exactly (no timing rules of its own).
-
-export { CAPTURE_LAG_MS }
 
 /**
  * T3/T4: what is displayed can run up to this far from what the page reports (a compositor

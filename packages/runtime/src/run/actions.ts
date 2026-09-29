@@ -40,6 +40,7 @@ import {
   followSecretField,
   prepareSecretWrite,
   type SecretWrite,
+  usableBox,
   writeSecret,
 } from "./secrets.ts"
 
@@ -147,20 +148,13 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
               .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
               .catch(() => null)
           }
-          if (followed?.field !== undefined) {
-            // Followed from now, its region open (the recorder opens it at type_start); its box
-            // now is its last real one until a read (a return falls back to it).
-            followed.field.typed = true
-            followed.field.onScreen = true
-            const box: Box | null = fieldBox
-            if (box !== null && box.width > 0 && box.height > 0) followed.field.lastBox = box
-            followed.field.lastViewport =
-              ctx.page.viewportSize() ??
-              (await Promise.race([
-                viewportOf(ctx.page).catch(() => undefined),
-                new Promise<undefined>((resolve) => setTimeout(resolve, 300)),
-              ]))
-          }
+          // Its viewport now (the box's), before type_start: nothing awaits after it.
+          const viewport =
+            ctx.page.viewportSize() ??
+            (await Promise.race([
+              viewportOf(ctx.page).catch(() => undefined),
+              new Promise<undefined>((resolve) => setTimeout(resolve, 300)),
+            ]))
           ctx.options.onEvent?.({
             kind: "type_start",
             step,
@@ -169,6 +163,15 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
             shown: ctx.pageShownAt,
             box: fieldBox ?? undefined,
           })
+          if (followed?.field !== undefined) {
+            // Followed from now, its region open (the recorder opened it at type_start, just
+            // above: a tick read can't come before it); its box now is its last real one until a
+            // read (a return falls back to it).
+            followed.field.typed = true
+            followed.field.onScreen = true
+            if (fieldBox !== null && usableBox(fieldBox)) followed.field.lastBox = fieldBox
+            followed.field.lastViewport = viewport
+          }
           // Checked again right before the text is sent: the page may have navigated while the
           // secret was being resolved.
           assertSecretOrigin(ctx, secret, step)

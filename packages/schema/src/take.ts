@@ -24,9 +24,8 @@ const base = {
 }
 
 /**
- * Frames can show the page as it was up to this long before (the capture lags the DOM): what the
- * page stopped showing at `s` stays covered until the first frame at or after `s` plus this
- * (SECRETS-DESIGN §5 R4; the R8 budget until the lag is measured).
+ * How long a composition mask lasts past its `until` (SECRETS-DESIGN T6: its end is step or DOM
+ * timing, and the compositor doesn't see frames). Secret regions end as T4 says, not by this.
  */
 export const CAPTURE_LAG_MS = 500
 

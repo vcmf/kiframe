@@ -130,6 +130,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
+    secretFieldCount: 0,
     pageShownAt: now(),
     switching: false,
     stuckReads: new WeakMap(),

@@ -39,18 +39,35 @@ function setup() {
 describe("secret field state through page switches and unsure reads", () => {
   it("reopens its last box on an unsure return, dated from the switch, and leaves it again", async () => {
     const { ctx, field, p1, p2, step, fieldEvents } = setup()
+    field.lastViewport = { width: 800, height: 600 }
     ctx.page = p2
     leaveSecretFields(ctx, step)
-    expect(fieldEvents().at(-1)).toMatchObject({ atSwitch: true })
+    expect(fieldEvents().at(-1)).toMatchObject({ state: "left" })
     ctx.page = p1
     ctx.pageShownAt = 5000
     await followSecretFields(ctx, step)
-    expect(fieldEvents().at(-1)).toMatchObject({ box: field.lastBox, at: 5000, since: 5000 })
+    expect(fieldEvents().at(-1)).toMatchObject({
+      state: "at",
+      box: field.lastBox,
+      viewport: { width: 800, height: 600 },
+      at: 5000,
+      since: 5000,
+    })
     // Left again before any real read: the reopened region is left too (never stuck open).
     ctx.page = p2
     leaveSecretFields(ctx, step)
-    expect(fieldEvents().at(-1)).toMatchObject({ atSwitch: true })
+    expect(fieldEvents().at(-1)).toMatchObject({ state: "left" })
     expect(fieldEvents()).toHaveLength(3)
+  })
+
+  it("leaves the field of a popup that closed itself, then drops it", () => {
+    const { ctx, field, p1, step, fieldEvents } = setup()
+    const popup = { isClosed: () => true } as unknown as Page
+    field.page = popup
+    ctx.page = p1
+    leaveSecretFields(ctx, step)
+    expect(fieldEvents()).toEqual([expect.objectContaining({ id: "f", state: "left" })])
+    expect(ctx.secretFields).toEqual([])
   })
 
   it("doesn't reopen a field that was gone before the run left its page", async () => {
@@ -70,7 +87,11 @@ describe("secret field state through page switches and unsure reads", () => {
     leaveSecretFields(ctx, step)
     ctx.page = p1
     await followSecretFields(ctx, step)
-    expect(fieldEvents().at(-1)?.box).toMatchObject({ x: 0, y: 0, width: 1e6, height: 1e6 })
+    expect(fieldEvents().at(-1)).toMatchObject({
+      state: "at",
+      box: { x: 0, y: 0, width: 1, height: 1 },
+      viewport: { width: 1, height: 1 },
+    })
   })
 })
 
@@ -124,24 +145,24 @@ describe("secret field state through real reads", () => {
   it("reports gone once, reads it again, and dates a return from the last read that found it gone", async () => {
     const { ctx, step, reports, set } = live()
     await followSecretFields(ctx, step)
-    expect(reports().at(-1)?.box).toMatchObject({ width: 100 })
+    expect(reports().at(-1)).toMatchObject({ state: "at", box: { width: 100 } })
     set(null)
     await followSecretFields(ctx, step)
     await followSecretFields(ctx, step)
-    const gone = reports().filter((e) => e.box === undefined)
+    const gone = reports().filter((e) => e.state === "gone")
     expect(gone).toHaveLength(1)
     // The read that found it gone for the second time started after the reported one.
     set({ x: 10, y: 300, width: 100, height: 30 })
     await followSecretFields(ctx, step)
     const back = reports().at(-1)
-    expect(back?.box).toMatchObject({ y: 300 })
-    expect(back?.since).toBeGreaterThanOrEqual(gone[0]?.at ?? Infinity)
+    expect(back).toMatchObject({ state: "at", box: { y: 300 } })
+    expect(back?.state === "at" && back.since).toBeGreaterThanOrEqual(gone[0]?.at ?? Infinity)
   })
 
   it("treats a box of no size as gone", async () => {
     const { ctx, step, reports, set } = live()
     set({ x: 10, y: 20, width: 0, height: 30 })
     await followSecretFields(ctx, step)
-    expect(reports().at(-1)?.box).toBeUndefined()
+    expect(reports().at(-1)?.state).toBe("gone")
   })
 })
