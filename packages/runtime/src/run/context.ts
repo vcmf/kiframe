@@ -50,6 +50,8 @@ export type RunnerEvent =
       end: number
       /** When the run switched to the page read (T3: nothing it saw was on screen before). */
       shown: number
+      /** Gone because the capture left its page (T4: covered until the next page's first frame). */
+      atSwitch?: boolean | undefined
     }
   /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
   | {
@@ -64,6 +66,8 @@ export type RunnerEvent =
       end: number
       /** When the run switched to the page read (T3: nothing it saw was on screen before). */
       shown: number
+      /** Gone because the capture left its page (T4: covered until the next page's first frame). */
+      atSwitch?: boolean | undefined
       /** Back on screen since (ms, `now()`): a page switch back. By default, since it left. */
       since?: number | undefined
     }
@@ -196,8 +200,8 @@ export interface Ctx {
   secretWritten: { page: Page; handle: ElementHandle }[]
   /** When the driven page became the one on screen (`now()`): a field back on it since then. */
   pageShownAt: number
-  /** A read that took too long, still pending in the page: no new read starts until it settles. */
-  stuckRead: Promise<unknown> | undefined
+  /** Pages with a read that took too long still pending: no new read of them until it settles. */
+  stuckReads: WeakSet<Page>
   /** A page switch is under way (the capture hasn't followed yet): the tick measures nothing. */
   switching: boolean
   /** The field measurement running, if any (one at a time). */
@@ -215,6 +219,8 @@ export interface Ctx {
     page: Page
     /** Its type_start was reported: followed from then on (never while the cursor travels to it). */
     typed?: boolean
+    /** Its last report was "gone" (an unchanged "gone" isn't sent again). */
+    reportedGone?: boolean
     /** The last real box (kept while the run is on another page). */
     lastBox?: Box
     /** Blur ended only because the run left its page (not because the field went away). */

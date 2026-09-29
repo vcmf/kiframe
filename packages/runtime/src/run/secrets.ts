@@ -67,7 +67,7 @@ async function measureFields(
   // and comes back if the run returns to that page.
   // Bounded as a whole (a frozen page): what it read is used only if it finished in time.
   const here = fields.some((f) => f.page === page)
-  const read = await boundedRead(ctx, async () => {
+  const read = await boundedRead(ctx, page, async () => {
     const measured = await Promise.all(
       fields.map((field) =>
         field.page === page ? measureSecretField(field) : Promise.resolve(null),
@@ -78,7 +78,26 @@ async function measureFields(
     const end = here ? await drawnSince(page) : now()
     return end === undefined ? undefined : { measured, viewport, end }
   })
-  if (read === undefined) return
+  if (read === undefined) {
+    // Unsure: a field back on this page still gets its last box (fails closed).
+    const t = now()
+    for (const field of fields) {
+      if (field.away !== true || field.page !== page || field.lastBox === undefined) continue
+      field.away = false
+      field.reportedGone = false
+      ctx.options.onEvent?.({
+        kind: "secret_field",
+        step,
+        id: field.id,
+        box: field.lastBox,
+        at: t,
+        end: t,
+        shown,
+        since: shown,
+      })
+    }
+    return
+  }
   const { measured, viewport, end } = read
   for (const [i, field] of fields.entries()) {
     let box = measured[i]
@@ -91,6 +110,9 @@ async function measureFields(
     const back = field.away === true && !elsewhere && box !== null
     field.away = elsewhere
     if (box !== null) field.lastBox = box
+    // An unchanged "gone" isn't sent again (a removed field is read every tick).
+    if (box === null && field.reportedGone === true) continue
+    field.reportedGone = box === null
     ctx.options.onEvent?.({
       kind: "secret_field",
       step,
@@ -101,6 +123,8 @@ async function measureFields(
       end,
       shown,
       ...(back && { since: shown }),
+      // Left because the capture left its page (T4: until the next page's first frame).
+      ...(which === "elsewhere" && elsewhere && { atSwitch: true }),
     })
   }
 }
@@ -147,12 +171,16 @@ export const TEXT_SCAN_MS = 300
 const READ_TIMEOUT_MS = 3500
 
 /**
- * A read bounded in time: undefined (unsure) when it took longer than READ_TIMEOUT_MS. While one
- * that took too long is still pending in the page, no new read starts (they'd pile up in a frozen
- * page's queue and all run when it wakes): those are unsure too.
+ * A read of `page` bounded in time: undefined (unsure) when it took longer than READ_TIMEOUT_MS.
+ * While one that took too long is still pending in the page, no new read of it starts (they'd pile
+ * up in a frozen page's queue and all run when it wakes): those are unsure too.
  */
-async function boundedRead<T>(ctx: Ctx, read: () => Promise<T>): Promise<T | undefined> {
-  if (ctx.stuckRead !== undefined) return undefined
+export async function boundedRead<T>(
+  ctx: Pick<Ctx, "stuckReads">,
+  page: Page,
+  read: () => Promise<T>,
+): Promise<T | undefined> {
+  if (ctx.stuckReads.has(page)) return undefined
   const pending = read()
   let timer: ReturnType<typeof setTimeout> | undefined
   const result = await Promise.race([
@@ -162,12 +190,9 @@ async function boundedRead<T>(ctx: Ctx, read: () => Promise<T>): Promise<T | und
     }),
   ]).finally(() => clearTimeout(timer))
   if (result !== undefined) return result.value
-  const stuck: Promise<unknown> = pending
-    .catch(() => undefined)
-    .finally(() => {
-      if (ctx.stuckRead === stuck) ctx.stuckRead = undefined
-    })
-  ctx.stuckRead = stuck
+  // Only this page's reads wait (a stuck opener never blinds the reads of a popup).
+  ctx.stuckReads.add(page)
+  void pending.catch(() => undefined).finally(() => ctx.stuckReads.delete(page))
   return undefined
 }
 
@@ -179,7 +204,15 @@ export function leaveSecretText(ctx: Ctx, step: StepRef): void {
   const state = ctx.secretText
   const t = now()
   for (const id of state.shown.values()) {
-    ctx.options.onEvent?.({ kind: "secret_text", step, id, at: t, end: t, shown: ctx.pageShownAt })
+    ctx.options.onEvent?.({
+      kind: "secret_text",
+      step,
+      id,
+      at: t,
+      end: t,
+      shown: ctx.pageShownAt,
+      atSwitch: true,
+    })
   }
   state.shown.clear()
 }
@@ -211,7 +244,7 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     // Bounded as a whole: a frozen page never hangs the step (or the end of the run), and what a
     // scan read is used only if it finished in time. (A switch waits for this scan: what it saw
     // of its page is reported, never dropped.)
-    const scanned = await boundedRead(ctx, async () => {
+    const scanned = await boundedRead(ctx, page, async () => {
       const boxes = await scanSecretTextPartly(page, ctx.secretValues).catch(() => undefined)
       if (boxes === undefined) return undefined
       const viewport = await viewportOf(page).catch(() => undefined)

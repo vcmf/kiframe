@@ -71,6 +71,16 @@ describe("Regions (SECRETS-DESIGN §5 T2–T4)", () => {
     expect(r.finish(3000)[0]?.boxes[0]?.from).toBe(500 - M)
   })
 
+  it("leaves a region with its page until the next page's first frame", () => {
+    const r = new Regions()
+    r.seen("t", "secret-text", base, read(100), A)
+    r.leave("t", 1000)
+    // Old page's frames up to 990, the next page's first at 1003.4 (then none for a while).
+    const frames = [990, 1003.4, 6000]
+    const after = (t: number) => frames.find((f) => f >= t)
+    expect(r.finish(8000, after)[0]?.boxes).toEqual([{ from: 100 - M, until: 1004, rect: A }])
+  })
+
   it("lets an older read only add coverage, never replace the box", () => {
     const r = new Regions()
     r.seen("f", "secret-field", base, read(1000), B)

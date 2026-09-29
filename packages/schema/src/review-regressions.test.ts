@@ -1200,6 +1200,17 @@ describe("secret regions left the composition (SECRETS-DESIGN I4, T7)", () => {
       edge: "start",
       offsetMs: 100,
     })
+    // Another segment never ends before it starts: its end goes to the step's end unless both
+    // ends were that step's regions (then its length is kept).
+    const late = { ...caption, id: "d", at: { step: "login", edge: "start", offsetMs: 500 } }
+    const both = { ...caption, id: "e", until: { event: "login:sensitive:2", offsetMs: 900 } }
+    const moved = migrate("composition", {
+      version: 1,
+      tracks: { captions: [{ ...late, until: { event: "login:sensitive:1" } }, both] },
+    })
+    const [d, e] = Composition.parse(moved.doc).tracks.captions
+    expect(d?.until).toEqual({ step: "login", edge: "end" })
+    expect(e?.until).toEqual({ step: "login", edge: "start", offsetMs: 900 })
     // An end anchor goes to the step's end: a mask never gets shorter (nor inverted).
     const mine = {
       id: "m",
