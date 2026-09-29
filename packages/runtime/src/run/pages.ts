@@ -53,8 +53,10 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   // the switch (the next page's text is dated from it, floored at that page's switch). A closed page
   // can't be read: its last boxes stay until left.
   if (ctx.options.recording === true && !leaving.page.isClosed()) {
-    await followSecretFields(ctx, step, leaving)
-    await followSecretText(ctx, step, true, leaving)
+    await Promise.all([
+      followSecretFields(ctx, step, leaving),
+      followSecretText(ctx, step, true, leaving),
+    ])
   }
   try {
     await guard(step, async () => ctx.options.onPageSwitch?.(next))
