@@ -50,6 +50,16 @@ describe("Regions (SECRETS-DESIGN §5)", () => {
     expect(f?.boxes.at(-1)?.from).toBe(1900)
   })
 
+  it("adds no hull when the old box already holds the new one (a full-frame fallback)", () => {
+    const r = new Regions()
+    r.seen("f", "secret-field", base, 100, { x: 0, y: 0, w: 1, h: 1 })
+    r.seen("f", "secret-field", base, 900, B)
+    expect(r.finish(2000)[0]?.boxes).toEqual([
+      { from: 100, until: 900, rect: { x: 0, y: 0, w: 1, h: 1 } },
+      { from: 900, until: 2000, rect: B },
+    ])
+  })
+
   it("clamps every box to the end of the scene", () => {
     const r = new Regions()
     r.seen("f", "secret-field", base, 100, A)

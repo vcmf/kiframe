@@ -78,7 +78,11 @@ export class Regions {
       }
     } else if (!same(current.rect, rect)) {
       region.boxes.push({ from: current.from, until: at, rect: current.rect })
-      region.boxes.push({ from: region.measured, until: at, rect: hull(current.rect, rect) })
+      // (A hull that is the old box itself, a full-frame fallback, adds nothing.)
+      const between = hull(current.rect, rect)
+      if (!same(between, current.rect)) {
+        region.boxes.push({ from: region.measured, until: at, rect: between })
+      }
       region.current = { from: at, rect }
     }
     region.measured = at
