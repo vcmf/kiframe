@@ -98,6 +98,18 @@ export class Regions {
     region.last = { start: read.start, end }
   }
 
+  /**
+   * The capture left region `id`'s page at `at` (T4): its box lasts until the next page's first
+   * frame (the first frame at or after `at`; the old page's later frames are dropped).
+   */
+  leave(id: string, at: number): void {
+    const region = this.#open.get(id)
+    if (region?.current === undefined) return
+    const left = at - FRAME_MARGIN_MS
+    region.boxes.push({ from: region.current.from, until: at, rect: region.current.rect, left })
+    region.current = undefined
+  }
+
   /** Region `id` read gone: its box is left at the read's end (T4). */
   gone(id: string, read: Read): void {
     const region = this.#open.get(id)

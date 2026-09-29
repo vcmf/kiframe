@@ -69,9 +69,21 @@ export const MIGRATIONS: MigrationRegistry = {
             .map((m) => {
               if (typeof m !== "object" || m === null) return m
               const seg = { ...(m as Record<string, unknown>) }
-              // A mask is rounded outwards (never shorter); any other segment keeps its length.
+              // A mask is rounded outwards (never shorter). Any other segment keeps its length when
+              // both ends were this step's regions, and never ends before it starts otherwise.
+              const sameStep =
+                typeof seg.at === "object" &&
+                seg.at !== null &&
+                "event" in seg.at &&
+                typeof seg.until === "object" &&
+                seg.until !== null &&
+                "event" in seg.until &&
+                String(seg.at.event).split(":sensitive")[0] ===
+                  String(seg.until.event).split(":sensitive")[0]
               if ("at" in seg) seg.at = anchor(seg.at, "start")
-              if ("until" in seg) seg.until = anchor(seg.until, name === "masks" ? "end" : "start")
+              if ("until" in seg) {
+                seg.until = anchor(seg.until, name !== "masks" && sameStep ? "start" : "end")
+              }
               return seg
             })
         }

@@ -1,5 +1,4 @@
-// The take's clock (SECRETS-DESIGN T1): epoch milliseconds that never run backwards (the process's
-// monotonic clock, anchored to the wall clock when it started), so a read or an event is never
-// "older" because the wall clock stepped back. Screencast frames carry the browser's wall clock:
-// the same epoch, until the wall clock steps during a take.
-export const now = (): number => performance.timeOrigin + performance.now()
+// The take's clock (SECRETS-DESIGN T1): the wall clock, the one screencast frames carry, so reads,
+// events and frames agree through a take (a sleeping machine included). A wall-clock step during a
+// take is a stated gap (§6): a read then looks older and only adds coverage.
+export const now = (): number => Date.now()
