@@ -42,18 +42,17 @@ export const MIGRATIONS: MigrationRegistry = {
         const tracks = (doc.tracks ?? {}) as Record<string, unknown>
         // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start;
         // a mask's end anchor its step's end (rounded outwards: a mask never gets shorter).
-        const regionEvent = (x: unknown): string | undefined => {
+        // An anchor to a region event: its step and index (`step:sensitive` is `step:sensitive:0`).
+        const regionEvent = (x: unknown): { step: string; n: number } | undefined => {
           const event = (x as { event?: unknown } | null)?.event
-          return typeof event === "string" && /^.+:sensitive(?::\d+)?$/.test(event)
-            ? event
-            : undefined
+          const match = typeof event === "string" ? /^(.+):sensitive(?::(\d+))?$/.exec(event) : null
+          return match === null ? undefined : { step: match[1] ?? "", n: Number(match[2] ?? 0) }
         }
         const anchor = (x: unknown, edge: "start" | "end"): unknown => {
           const event = regionEvent(x)
           if (event === undefined) return x
           const { offsetMs } = x as { offsetMs?: unknown }
-          const step = event.replace(/:sensitive(?::\d+)?$/, "")
-          return { step, edge, ...(offsetMs !== undefined && { offsetMs }) }
+          return { step: event.step, edge, ...(offsetMs !== undefined && { offsetMs }) }
         }
         const out: Record<string, unknown> = {}
         for (const [name, list] of Object.entries(tracks)) {
@@ -79,11 +78,14 @@ export const MIGRATIONS: MigrationRegistry = {
               // both ends were the same event (its offsets in order), else its end goes to the step's
               // end: it never ends before it starts.
               const at = regionEvent(seg.at)
+              const until = regionEvent(seg.until)
               const offset = (x: unknown) => Number((x as { offsetMs?: unknown }).offsetMs ?? 0)
               const keeps =
                 name !== "masks" &&
                 at !== undefined &&
-                at === regionEvent(seg.until) &&
+                until !== undefined &&
+                at.step === until.step &&
+                at.n === until.n &&
                 offset(seg.until) >= offset(seg.at)
               if ("at" in seg) seg.at = anchor(seg.at, "start")
               if ("until" in seg) {

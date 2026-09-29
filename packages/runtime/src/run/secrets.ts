@@ -10,7 +10,7 @@ import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../err
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { isNavigationError, viewportOf } from "../targets.ts"
-import { type Ctx, firstLine, guard } from "./context.ts"
+import { type Ctx, firstLine, guard, type Viewport } from "./context.ts"
 import {
   containsKnownValue,
   isSafeSelector,
@@ -26,12 +26,12 @@ import { now } from "../clock.ts"
  * blur follows it) or that it's gone (navigated away, removed: nothing left to blur). A field on
  * another page was left with its page (`leaveSecretFields`). Bounded, never fails a step.
  */
-export async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
+export async function followSecretFields(ctx: Ctx, step: StepRef, tick = false): Promise<void> {
   // One at a time (the recording tick reads too): a later one waits for the one running.
   const previous = ctx.fieldsInflight
   const run = (async () => {
     await previous?.catch(() => undefined)
-    await readFields(ctx, step)
+    await readFields(ctx, step, tick)
   })()
   ctx.fieldsInflight = run
   try {
@@ -41,11 +41,19 @@ export async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void>
   }
 }
 
-async function readFields(ctx: Ctx, step: StepRef): Promise<void> {
+/**
+ * A field's state (T2–T4): `onScreen` while its region has an open box (a box reported, no "gone"
+ * or leave since); `leftPage` once it was left with its page (its next box dates from the switch).
+ */
+async function readFields(ctx: Ctx, step: StepRef, tick: boolean): Promise<void> {
   // The driven page as of now, throughout (a switch may start while this runs). Followed from its
-  // type_start only (T3: the empty field isn't blurred before typing).
+  // type_start only (T3: the empty field isn't blurred before typing). The tick skips fields known
+  // gone (re-read at step boundaries: a re-mounted field comes back there).
   const page = ctx.page
-  const fields = ctx.secretFields.filter((f) => f.typed === true && f.page === page)
+  const fields = ctx.secretFields.filter(
+    (f) =>
+      f.typed === true && f.page === page && (!tick || f.onScreen === true || f.leftPage === true),
+  )
   if (fields.length === 0) return
   // When the read started (T2; the events are handled later: a move's hull starts here), and when
   // the run switched to its page (nothing it saw was on screen before: T3).
@@ -62,58 +70,73 @@ async function readFields(ctx: Ctx, step: StepRef): Promise<void> {
   })
   const end = read?.end ?? now()
   for (const [i, field] of fields.entries()) {
-    // An unsure read: every field "unknown".
-    const box = read?.measured[i] ?? "unknown"
-    const report = (b: Box | undefined, viewport: Viewport | undefined, since?: number) =>
+    const report = (
+      box: Box | undefined,
+      viewport: Viewport | undefined,
+      extra: { at?: number; since?: number } = {},
+    ) =>
       ctx.options.onEvent?.({
         kind: "secret_field",
         step,
         id: field.id,
-        box: b,
+        box,
         viewport,
-        at,
+        at: extra.at ?? at,
         end,
         shown,
-        ...(since !== undefined && { since }),
+        ...(extra.since !== undefined && { since: extra.since }),
       })
+    // An unsure read: every field "unknown".
+    const box = read?.measured[i] ?? "unknown"
     if (box === "unknown" || box === undefined) {
-      // Unsure, just back on its page: the last real box comes back, from the switch (fails
-      // closed). It stays "away": the next real read is still dated from the switch.
-      if (field.away === true && field.lastBox !== undefined) {
-        report(field.lastBox, field.lastViewport, shown)
+      // Unsure, just back on its page: its last box comes back (the whole frame without a usable
+      // one), as read from the switch (a move's hull then covers from there too). Fails closed.
+      if (field.leftPage === true) {
+        const last = field.lastBox
+        const usable = last !== undefined && last.width > 0 && last.height > 0
+        report(usable ? last : WHOLE_FRAME, usable ? field.lastViewport : undefined, {
+          at: shown,
+          since: shown,
+        })
+        field.onScreen = true
+        field.leftPage = false
       }
       continue
     }
     if (box === null) {
-      // An unchanged "gone" isn't sent again (a removed field is read every tick), but its time
-      // is kept: a field that comes back is dated from the read before (T3).
-      if (field.reportedGone !== true) report(undefined, read?.viewport)
-      field.reportedGone = true
+      // Gone: reported only while its region is open (a removed field is read again and again);
+      // a return is dated from the last read that found it gone (T3).
+      if (field.onScreen === true) report(undefined, read?.viewport)
+      field.onScreen = false
+      field.leftPage = false
       field.goneReadAt = at
-      field.away = false
       continue
     }
-    // Back on its page: on screen since the run switched to it; back after a "gone": since the read
-    // before this one.
+    // Back on its page: on screen since the run switched to it; back after a "gone": since the
+    // last read that found it gone.
     const since =
-      field.away === true ? shown : field.reportedGone === true ? field.goneReadAt : undefined
-    report(box, read?.viewport, since)
-    field.away = false
-    field.reportedGone = false
+      field.leftPage === true ? shown : field.onScreen === true ? undefined : field.goneReadAt
+    report(box, read?.viewport, since === undefined ? {} : { since })
+    field.onScreen = true
+    field.leftPage = false
     field.lastBox = box
     field.lastViewport = read?.viewport
   }
 }
 
+/** A box bigger than any viewport: clipped to the whole frame (the fallback without a box). */
+const WHOLE_FRAME: Box = { x: 0, y: 0, width: 1e6, height: 1e6 }
+
 /**
- * The capture left the fields' page (T4): their regions are left now (they last until the next
- * page's first frame). No read of any page: a stuck page never keeps them open.
+ * The capture left the fields' page (T4): their open regions are left now (they last until the
+ * next page's first frame). No read of any page: a stuck page never keeps them open.
  */
 export function leaveSecretFields(ctx: Ctx, step: StepRef): void {
   const t = now()
   for (const field of ctx.secretFields) {
-    if (field.typed !== true || field.page === ctx.page || field.away === true) continue
-    field.away = true
+    if (field.typed !== true || field.page === ctx.page || field.onScreen !== true) continue
+    field.onScreen = false
+    field.leftPage = true
     ctx.options.onEvent?.({
       kind: "secret_field",
       step,
@@ -125,8 +148,6 @@ export function leaveSecretFields(ctx: Ctx, step: StepRef): void {
     })
   }
 }
-
-type Viewport = { width: number; height: number }
 
 /**
  * T2: the end of a read of `page`: when the page has run two rendering updates since (a busy page
