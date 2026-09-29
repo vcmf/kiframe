@@ -170,3 +170,10 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Region churn on movement:** a region is one exact box; a scrolling or animated secret ends and starts a region every scan (hundreds of mask segments on a long take). Carry an id across small moves, like secret fields.
 - **Scan round trips:** four per scan (collect, parts, rects, viewport) and a style computed twice per text node's parent; return the viewport from `collect` and share the style.
 - **Backdating to the run start:** when a new value becomes known, its first regions are blurred from the run's start (it may have been shown all along). A box that only held unrelated content earlier is blurred too.
+
+## Vault hardening (M1-7)
+- **Electron targets:** an app attached over CDP (F4) runs in its own persistent profile: no ephemeral context there. The app's own storage keeps whatever the scene typed; document it for Electron projects and prefer a throwaway app profile (`--user-data-dir` per run).
+- **One launch helper:** browsers are launched by each entry point; nothing enforces an off-the-record context. A runtime-owned `launchBrowser()` / context factory would make it hard to bypass (the desktop app's main process).
+- **Secrets into contenteditable:** v0 writes secrets to inputs and textareas only (`fill` on the approved element); a rich-text field is refused.
+- **Network exfiltration by the page itself:** a hostile page receives the typed password in its own field and can send it anywhere; that's the target app's own data. Out of scope for the vault (it only guarantees the value goes to the bound field on the allowed origins).
+- **Suite growth:** add pages for a secret echoed in a `title`/`aria-label` (not text), in a `<select>`, in an iframe, and drawn on a canvas (the scanner's scope limits, M1-6), each asserting the documented behaviour.
