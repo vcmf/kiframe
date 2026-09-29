@@ -70,6 +70,15 @@ describe("Regions (SECRETS-DESIGN §5)", () => {
     ])
   })
 
+  it("keeps a left box until the first frame at or after the lag (a frame inside it may be stale)", () => {
+    const r = new Regions()
+    r.seen("f", "secret-field", base, 100, A)
+    r.gone("f", 1000)
+    const frames = [1100, 4000]
+    const after = (t: number) => frames.find((f) => f >= t)
+    expect(r.finish(5000, after)[0]?.boxes).toEqual([{ from: 100, until: 4000, rect: A }])
+  })
+
   it("never writes an inverted box when the clock steps back", () => {
     const r = new Regions()
     r.seen("f", "secret-field", base, 1000, A)

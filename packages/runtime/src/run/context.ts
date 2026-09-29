@@ -52,6 +52,8 @@ export type RunnerEvent =
       box?: Box | undefined
       /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
       viewport?: { width: number; height: number } | undefined
+      /** When the page was read (`Date.now()`). */
+      at: number
       /** Back on screen since (ms, `Date.now()`): a page switch back. By default, since it left. */
       since?: number | undefined
     }
@@ -184,6 +186,10 @@ export interface Ctx {
   secretWritten: { page: Page; handle: ElementHandle }[]
   /** When the driven page became the one on screen (`Date.now()`): a field back on it since then. */
   pageShownAt: number
+  /** A page switch is under way (the capture hasn't followed yet): the tick measures nothing. */
+  switching: boolean
+  /** The field measurement running, if any (one at a time). */
+  fieldsInflight: Promise<void> | undefined
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string

@@ -31,7 +31,10 @@ export interface Timeline {
   steps: StepSpan[]
   byId: Map<string, StepSpan>
   duration: number
+  /** The take's events, but its secret regions (spans, not moments: nothing anchors to them). */
   events: TakeEvent[]
+  /** The take's secret regions: drawn at render time, whatever the composition says (I4). */
+  regions: Extract<TakeEvent, { kind: "sensitive" }>[]
   cursor: CursorSample[]
 }
 
@@ -71,7 +74,10 @@ export function buildTimeline(
       steps,
       byId: new Map(steps.map((s) => [s.id, s])),
       duration,
-      events: take.events,
+      events: take.events.filter((e) => e.kind !== "sensitive"),
+      regions: take.events.filter(
+        (e): e is Extract<TakeEvent, { kind: "sensitive" }> => e.kind === "sensitive",
+      ),
       cursor: take.cursor,
     },
     missing,
@@ -100,8 +106,6 @@ export function resolveAnchor(anchor: Anchor, tl: Timeline): number | undefined 
   const match = /^(.+):([a-z_]+)(?::(\d+))?$/.exec(anchor.event)
   if (match === null) return undefined
   const [, stepId, kind, n] = match
-  // A secret region is a span, not a moment (and its start is backdated): nothing anchors to it.
-  if (kind === "sensitive") return undefined
   const found = tl.events.filter((e) => e.stepId === stepId && e.kind === kind)[Number(n ?? 0)]
   return found === undefined ? undefined : clamp(found.t + offset)
 }

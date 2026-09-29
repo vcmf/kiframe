@@ -9,6 +9,17 @@ import { settle } from "./settle.ts"
 
 /** Drives `next` from now on: listeners, network tracking, the recorder's capture follow it. */
 export async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
+  ctx.switching = true
+  try {
+    await switchTo(ctx, next, step)
+  } finally {
+    ctx.switching = false
+  }
+}
+
+async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
+  // A measurement already running finishes on the page it started on.
+  await ctx.fieldsInflight?.catch(() => undefined)
   ctx.detach(ctx.page)
   // Headed and CDP runs: the driven page is the visible tab (a background tab is throttled).
   await next.bringToFront().catch(() => undefined)

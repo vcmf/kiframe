@@ -1174,13 +1174,12 @@ describe("secret regions left the composition (SECRETS-DESIGN I4)", () => {
     const c = Composition.parse(doc)
     expect(c.version).toBe(2)
     expect(c.tracks.masks.map((m) => m.id)).toEqual(["r"])
-    // Any other mask on a secret region can't be kept: refused, never dropped silently.
-    expect(() =>
-      migrate("composition", {
-        version: 1,
-        tracks: { masks: [{ ...mask("h", { sensitiveId: "secret:x" }), kind: "spotlight" }] },
-      }),
-    ).toThrow(/mask "h" \(spotlight\) points at a secret region/)
+    // A spotlight on one goes too (it hid nothing and was never drawn): the composition still opens.
+    const spot = migrate("composition", {
+      version: 1,
+      tracks: { masks: [{ ...mask("h", { sensitiveId: "secret:x" }), kind: "spotlight" }] },
+    })
+    expect(Composition.parse(spot.doc).tracks.masks).toEqual([])
     // A version 2 composition can't point a mask at a secret region at all.
     expect(
       Composition.safeParse({

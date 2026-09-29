@@ -31,22 +31,45 @@ export async function followSecretFields(
   step: StepRef,
   which: "all" | "here" | "elsewhere" = "all",
 ): Promise<void> {
+  // One at a time (the recording tick measures too): a later one waits for the one running.
+  const previous = ctx.fieldsInflight
+  const run = (async () => {
+    await previous?.catch(() => undefined)
+    await measureFields(ctx, step, which)
+  })()
+  ctx.fieldsInflight = run
+  try {
+    await run
+  } finally {
+    if (ctx.fieldsInflight === run) ctx.fieldsInflight = undefined
+  }
+}
+
+async function measureFields(
+  ctx: Ctx,
+  step: StepRef,
+  which: "all" | "here" | "elsewhere",
+): Promise<void> {
+  // The driven page as of now, throughout (a switch may start while this runs).
+  const page = ctx.page
   const fields = ctx.secretFields.filter(
-    (f) => which === "all" || (which === "here") === (f.page === ctx.page),
+    (f) => which === "all" || (which === "here") === (f.page === page),
   )
   if (fields.length === 0) return
+  // When the page was read (the events are handled later: a move's hull starts here).
+  const at = Date.now()
   // In parallel: every field costs a round trip or two after each step.
   // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
   // and comes back if the run returns to that page.
   const measured = await Promise.all(
     fields.map((field) =>
-      field.page === ctx.page ? measureSecretField(field) : Promise.resolve(null),
+      field.page === page ? measureSecretField(field) : Promise.resolve(null),
     ),
   )
-  const viewport = await viewportOf(ctx.page).catch(() => undefined)
+  const viewport = await viewportOf(page).catch(() => undefined)
   for (const [i, field] of fields.entries()) {
     let box = measured[i]
-    const elsewhere = field.page !== ctx.page
+    const elsewhere = field.page !== page
     // Unsure, just back on its page: the last real rect comes back (fails closed). Otherwise an
     // unsure measurement keeps the current rect; only a field known to be gone ends its blur.
     if (box === "unknown" && field.away === true && !elsewhere) box = field.lastBox ?? "unknown"
@@ -61,6 +84,7 @@ export async function followSecretFields(
       id: field.id,
       box: box ?? undefined,
       viewport,
+      at,
       ...(back && { since: ctx.pageShownAt }),
     })
   }

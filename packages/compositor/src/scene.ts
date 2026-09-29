@@ -9,6 +9,7 @@ import {
   type Timeline,
 } from "@kiframe/generators"
 import {
+  CAPTURE_LAG_MS,
   applyStyle,
   DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE,
   type Anchor,
@@ -92,8 +93,6 @@ export interface Prepared {
   map: TimeMap
   style: Style
   composition: Composition
-  /** The take's secret regions (drawn at every frame, whatever the composition says). */
-  regions: Region[]
   /** Output duration in ms. */
   duration: number
   /**
@@ -140,7 +139,6 @@ export function prepare(
     map,
     style: s,
     composition,
-    regions: timeline.events.filter((e): e is Region => e.kind === "sensitive"),
     duration: map.outputDuration,
   }
   const moves = cameraMoves(base)
@@ -191,7 +189,7 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   // By source time, both ends included: the frame shown is what must be covered. Secret regions
   // straight from the take, each box over its own span (SECRETS-DESIGN I4: no composition edit
   // removes or shortens them, and no timing rule of the compositor's own).
-  const blurs: NRect[] = secretRects(p.regions, sourceT)
+  const blurs: NRect[] = secretRects(tl.regions, sourceT)
   for (const m of tracks.masks) {
     if (m.kind !== "blur" && m.kind !== "pixelate") continue
     const a = resolveAnchor(m.at, tl)
@@ -233,12 +231,10 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
 }
 
 /** A composition mask lasts this long past its end (its `until` is DOM or step timing). */
-const MASK_TAIL_MS = 250
-
-type Region = Extract<Timeline["events"][number], { kind: "sensitive" }>
+const MASK_TAIL_MS = CAPTURE_LAG_MS
 
 /** The boxes of the take's secret regions on screen at source time `t`. */
-function secretRects(regions: readonly Region[], t: number): NRect[] {
+function secretRects(regions: Timeline["regions"], t: number): NRect[] {
   const out: NRect[] = []
   for (const e of regions) {
     if (t < e.t || t > e.until) continue

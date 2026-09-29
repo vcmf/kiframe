@@ -1,15 +1,10 @@
-import { rectUnion, type TakeEvent, type ViewportRect } from "@kiframe/schema"
+import { CAPTURE_LAG_MS, rectUnion, type TakeEvent, type ViewportRect } from "@kiframe/schema"
 
 // Secret regions with their whole time spans (SECRETS-DESIGN §5): the recorder reports what it
 // measured, when; this writes each region once, at the end, as one `sensitive` event whose boxes the
 // compositor draws exactly (no timing rules of its own).
 
-/**
- * Frames can show the page as it was up to this long before (the capture lags the DOM): a box left
- * at `s` (moved away, gone) stays covered until `s` plus this (§5 R4; the R8 budget until the lag
- * is measured).
- */
-export const CAPTURE_LAG_MS = 500
+export { CAPTURE_LAG_MS }
 
 type Sensitive = Extract<TakeEvent, { kind: "sensitive" }>
 
@@ -99,7 +94,7 @@ export class Regions {
 
   /**
    * Every region, each box closed by `end` (the end of the scene) at the latest. A box the page
-   * left at `s` lasts until `s` plus the capture lag, and at least until the first frame after `s`
+   * left at `s` lasts until the first frame at or after `s` plus the capture lag
    * (`frameAfter`; undefined: none came, it lasts to the end): the video holds the last frame
    * until a new one comes. By default a frame comes at once.
    */
@@ -112,8 +107,8 @@ export class Regions {
       }
       const closed = boxes
         .map(({ from, until, rect, left }) => {
-          const tail =
-            left === undefined ? until : Math.max(left + CAPTURE_LAG_MS, frameAfter(left) ?? end)
+          // The first frame at or after `left` plus the lag replaces what may be stale.
+          const tail = left === undefined ? until : (frameAfter(left + CAPTURE_LAG_MS) ?? end)
           const f = Math.min(from, end)
           return { from: f, until: Math.max(f, Math.min(tail, end)), rect }
         })

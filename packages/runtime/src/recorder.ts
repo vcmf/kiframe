@@ -198,11 +198,17 @@ export async function recordScenario(
       step: StepRef,
       box: ReturnType<typeof rect> | undefined,
       since?: number,
+      measuredAt?: number,
     ) => {
-      const { phase, stepId } = base(step)
-      if (box === undefined || box.w === 0 || box.h === 0) regions.gone(id, at())
-      else
-        regions.seen(id, why, { phase, ...(stepId !== undefined && { stepId }) }, at(), box, since)
+      const when = measuredAt ?? at()
+      if (box === undefined || box.w === 0 || box.h === 0) regions.gone(id, when)
+      else {
+        const where = {
+          phase: step.phase,
+          ...(step.stepId !== undefined && { stepId: step.stepId }),
+        }
+        regions.seen(id, why, where, when, box, since)
+      }
     }
     const interruptStarts = new Map<string, number>()
     const clickedSteps = new Set<string>()
@@ -291,6 +297,7 @@ export async function recordScenario(
             e.step,
             e.box === undefined ? undefined : rect(e.box, e.viewport),
             e.since === undefined ? undefined : Math.max(0, e.since - t0),
+            Math.max(0, e.at - t0),
           )
           break
         case "key":
@@ -368,7 +375,18 @@ export async function recordScenario(
       if (writeError !== undefined) throw writeError
       // The secret regions, closed at the end of the scene; in time order (a region starts
       // backdated; stable: same-time events keep their order).
-      const frameAfter = (t: number) => frames.find((f) => f.t > t)?.t
+      // The first frame at or after `t` (frames sorted once; they may arrive out of order).
+      const times = frames.map((f) => f.t).sort((a, b) => a - b)
+      const frameAfter = (t: number) => {
+        let lo = 0
+        let hi = times.length
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if ((times[mid] ?? Infinity) < t) lo = mid + 1
+          else hi = mid
+        }
+        return times[lo]
+      }
       for (const region of regions.finish(durationMs, frameAfter)) push(region)
       events.sort((a, b) => a.t - b.t)
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))

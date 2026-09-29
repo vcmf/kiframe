@@ -130,7 +130,7 @@ export function generateCamera(
       let joined = false
       if (rect !== undefined) {
         joined = true
-        const union = cluster === undefined ? rect : unionRect(cluster.rect, rect)
+        const union = cluster === undefined ? rect : rectUnion(cluster.rect, rect)
         const joins =
           cluster !== undefined &&
           seen(cluster.b, span.start) <= gapMs &&
@@ -261,8 +261,6 @@ export function clipRect(r: ViewportRect): NRect | undefined {
   const h = Math.min(1, r.y + r.h) - y
   return w > 0 && h > 0 ? { x, y, w, h } : undefined
 }
-
-const unionRect = (p: NRect, q: NRect): NRect => rectUnion(p, q)
 
 /**
  * The zoom that shows `rect` with room around it: the element takes at most ~60% of the frame
