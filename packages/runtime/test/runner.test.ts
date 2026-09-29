@@ -823,6 +823,28 @@ steps: [{ id: a, action: pause, ms: 1 }]
       expect(error.message).toMatch(/couldn't confirm the absence/)
     })
 
+    it("turns exact names off once the written field is visibility:hidden (a closed drawer)", async () => {
+      const vault = await vaultWithPassword()
+      await run(
+        `setup: [{ action: goto, url: /drawer-login }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: in, action: click, target: { by: role, role: button, name: Sign in } }
+  - { id: new, action: click, target: { by: role, role: button, name: New } }
+`,
+        approving(vault, []),
+      )
+    })
+
+    it("refuses a host scene id that isn't one", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(into(password), {
+        ...approving(vault, []),
+        sceneId: "examples/calcom/x.yaml",
+      })
+      expect(error.message).toMatch(/isn't a scene id/)
+    })
+
     it("turns exact names off once the written field is hidden (a closed login dialog)", async () => {
       const vault = await vaultWithPassword()
       await run(

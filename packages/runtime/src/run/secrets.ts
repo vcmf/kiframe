@@ -1,5 +1,10 @@
-import { isDeepStrictEqual } from "node:util"
-import { canonicalTarget, type GroundedTarget, isGrounded, type Target } from "@kiframe/schema"
+import {
+  canonicalTarget,
+  type GroundedTarget,
+  isGrounded,
+  SceneId,
+  type Target,
+} from "@kiframe/schema"
 import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
@@ -398,6 +403,13 @@ function approvalKeyOf(
   if (step.preset !== undefined)
     return { scope, stepKey: `preset:${step.preset}/${step.stepId ?? ""}` }
   if (sceneId === undefined || sceneId === "") throw missing("scene id")
+  if (!SceneId.safeParse(sceneId).success) {
+    throw new StepError(
+      step,
+      "secret-refused",
+      `secret "${secret}": the host's scene id "${sceneId}" isn't a scene id (kebab-case)`,
+    )
+  }
   return { scope, stepKey: `scene:${sceneId}/${step.keyPhase ?? step.phase}/${step.stepId ?? ""}` }
 }
 
@@ -418,12 +430,19 @@ function grantedTarget(ctx: Ctx, step: StepRef, target: GroundedTarget): string 
   return JSON.stringify({ do: canonical, when })
 }
 
-/** What an element a secret goes into is (runs in the page): tag, type, and its label. */
-function elementInfo(el: HTMLInputElement | HTMLTextAreaElement): {
-  tag: "input" | "textarea"
-  type: string
-  label: string | null
-} {
+/** What an element a secret goes into is: tag, type, and its label (never a placeholder). */
+type ElementInfo = { tag: "input" | "textarea"; type: string; label: string | null }
+
+/**
+ * The page side of a secret write (runs in the page): the element's info, and, given the approved
+ * info and a value, the check and the write in one synchronous turn (nothing the page does can come
+ * between them: a "show password" toggle, a script changing the type). Sets the value through the
+ * prototype's setter, then the events a framework listens to; returns what the field holds.
+ */
+function fieldWrite(
+  el: HTMLInputElement | HTMLTextAreaElement,
+  arg: { expected?: ElementInfo; value?: string },
+): { info: ElementInfo; written: boolean; landed?: string } {
   const text = (s: string | null | undefined) => {
     const t = s?.replace(/\s+/g, " ").trim().slice(0, 200)
     return t === undefined || t === "" ? null : t
@@ -445,9 +464,22 @@ function elementInfo(el: HTMLInputElement | HTMLTextAreaElement): {
         )) ??
     text(el.getAttribute("aria-label")) ??
     text(rendered(el.labels?.[0]))
-  return el instanceof HTMLInputElement
-    ? { tag: "input", type: el.type, label }
-    : { tag: "textarea", type: "textarea", label }
+  const info: ElementInfo =
+    el instanceof HTMLInputElement
+      ? { tag: "input", type: el.type, label }
+      : { tag: "textarea", type: "textarea", label }
+  const { expected, value } = arg
+  if (expected === undefined || value === undefined) return { info, written: false }
+  if (info.tag !== expected.tag || info.type !== expected.type || info.label !== expected.label) {
+    return { info, written: false }
+  }
+  const proto =
+    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  // The prototype's setter: a framework's own (React) tracks the value through it.
+  Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value)
+  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }))
+  el.dispatchEvent(new Event("change", { bubbles: true }))
+  return { info, written: true, landed: el.value }
 }
 
 /**
@@ -484,7 +516,7 @@ export async function prepareSecretWrite(
       origin: url.origin,
       path: url.pathname,
       target: grantedTarget(ctx, step, stepTarget),
-      element: await input.evaluate(elementInfo),
+      element: (await input.evaluate(fieldWrite, {})).info,
     }
     const value = await resolveSecret(ctx, secret, step, use, input)
     return { secret, input, value, use }
@@ -513,12 +545,6 @@ export async function writeSecret(
     // doesn't detach the handle), and nothing awaits between it and the write but the write.
     await write.input.waitForElementState("visible", { timeout })
     await write.input.waitForElementState("editable", { timeout })
-    // The element as approved: the approval prompt or the keychain may have taken seconds, and a
-    // "show password" toggle (or the page) may have turned it into a text field meanwhile.
-    const element = await write.input.evaluate(elementInfo, undefined)
-    if (!isDeepStrictEqual(element, write.use.element)) {
-      throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
-    }
     const now = new URL(ctx.page.url())
     if (now.origin !== write.use.origin || now.pathname !== write.use.path) {
       throw new StepError(
@@ -527,11 +553,19 @@ export async function writeSecret(
         `the page moved to ${now.origin}${now.pathname} while the secret was resolved`,
       )
     }
-    // Set on the approved element itself (the native setter, then the events a framework listens
-    // to), never typed: `fill` sends the text to whatever has focus, which a page can move.
+    // Checked against the approved element and written in one page turn: the approval prompt or
+    // the keychain may have taken seconds, and a "show password" toggle (or the page) may have
+    // turned it into a text field meanwhile. Never typed: `fill` sends the text to whatever has
+    // focus, which a page can move.
     const wanted = before + write.value
-    await write.input.evaluate(setValue, wanted)
-    const landed = await write.input.evaluate((el) => el.value)
+    const result = await write.input.evaluate(fieldWrite, {
+      expected: write.use.element,
+      value: wanted,
+    })
+    if (!result.written) {
+      throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
+    }
+    const landed = result.landed
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
     if (write.field !== undefined) write.field.handle = write.input
@@ -685,16 +719,6 @@ export async function assertDragKeepsSecrets(
   if (found === undefined || found.holds || found.values.some((v) => containsKnown(ctx, v))) {
     throw new StepError(step, "secret-refused", "this drag would move a field holding a secret")
   }
-}
-
-/** Sets a field's value as a user's input would (runs in the page, on the approved element). */
-function setValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
-  const proto =
-    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
-  // The prototype's setter: a framework's own (React) tracks the value through it.
-  Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value)
-  el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }))
-  el.dispatchEvent(new Event("change", { bubbles: true }))
 }
 
 /** Releases a prepared write that won't happen (the step failed before it). */

@@ -2,7 +2,7 @@
 // Usage: node scripts/record.ts --project p.yaml --scenario s.yaml --out <take dir> [--headed] [--dpr 2]
 //          [--secrets calcom.username,calcom.password] [--approve-risky]
 import { existsSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { basename, extname, join } from "node:path"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
@@ -58,7 +58,9 @@ try {
   const take = await recordScenario(page, scenario, project, {
     // Approvals are the host's (SECRETS-DESIGN §3); the .env resolver here ignores them.
     scope: "phase0",
-    sceneId: values.scenario,
+    sceneId: basename(values.scenario, extname(values.scenario))
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-"),
     outDir: values.out,
     resolveSecret,
     ...(values.assets !== undefined && {
