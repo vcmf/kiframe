@@ -20,17 +20,26 @@ describe("examples", () => {
   })
 })
 
-// A recording knows its secrets from the login on (SECRETS-DESIGN §3 A8): every CSS selector in an
-// example must fit the grammar, or the scene fails at that step.
+// A recording knows its secrets from the login on (SECRETS-DESIGN §3 A8), and hide rules always
+// follow the grammar: every CSS selector in an example's parsed config (targets, fallbacks,
+// `within`, conditions, interrupt `when`s, hide rules) must fit, or the scene fails at that step.
+function cssSelectors(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) value.forEach((v) => cssSelectors(v, out))
+  else if (value !== null && typeof value === "object") {
+    const o = value as Record<string, unknown>
+    if (o.by === "css" && typeof o.selector === "string") out.push(o.selector)
+    Object.values(o).forEach((v) => cssSelectors(v, out))
+  }
+  return out
+}
+
 describe("examples' CSS selectors", () => {
-  const selectors = files.flatMap((file) =>
-    [...readFileSync(file, "utf8").matchAll(/selector:\s*("[^"]*"|'[^']*'|[^,}\n]+)/g)].map(
-      (m) => ({
-        file,
-        selector: (m[1] ?? "").trim().replace(/^["']|["']$/g, ""),
-      }),
-    ),
-  )
+  const selectors = files.flatMap((file) => {
+    const text = readFileSync(file, "utf8")
+    const parsed = file.endsWith("project.yaml") ? parseProjectYaml(text) : parseScenarioYaml(text)
+    const hide = "hide" in parsed ? parsed.hide : []
+    return [...cssSelectors(parsed), ...hide].map((selector) => ({ file, selector }))
+  })
   it.each(selectors)("$selector ($file) fits the A8 grammar", ({ selector }) => {
     expect(isSafeSelector(selector)).toBe(true)
   })

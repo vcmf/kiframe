@@ -102,41 +102,32 @@ export async function resolveTarget(
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
   let ambiguous: string | undefined
-  for (;;) {
+  let retried = false
+  polls: for (;;) {
     ambiguous = undefined
-    // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll: a
-    // field that renders mid-step is seen at once.
-    // (Only a partial name is changed by the rule: no check otherwise.)
-    exact = (
-      await exactNamesFor(
-        page,
-        candidates.map((c) => c.locator),
-      )
-    ).exact
+    // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll (a
+    // field that renders mid-step is seen at once), and counted through the one helper.
+    const names = await exactNamesFor(
+      page,
+      candidates.map((c) => c.locator),
+    )
+    exact = names.exact
     for (const [i, candidate] of candidates.entries()) {
-      const visible = visibleOnly(toPlaywright(page, candidate.locator, exact))
-      const count = await visible.count().catch((error: unknown) => {
-        // A navigation (client-side redirect…) replaced the page mid-poll: retry on the new one.
-        if (isNavigationError(error)) return 0
-        throw error
-      })
-      if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
-      // Any partial-name result (one match, or several: ambiguous) is confirmed first: a field
-      // holding a secret may have rendered between the rule's check and the count (§3 A8); then
-      // the poll starts again with exact names.
-      if (
-        !exact &&
-        isPartialName(candidate.locator) &&
-        (await exactNamesFor(page, [candidate.locator])).exact
-      ) {
-        exact = true
-        break
+      const r = await countUnderRule(page, candidate.locator, names)
+      // The helper's confirmation turned the rule on: every candidate again, at once, exactly
+      // (once per poll: a field that keeps flapping waits for the next one).
+      if (r.exact && !names.exact && !retried) {
+        retried = true
+        continue polls
       }
+      const count = r.count ?? 0
+      if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
         ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
         break
       }
+      const visible = visibleOnly(toPlaywright(page, candidate.locator, r.exact))
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       return {
         ok: true,
@@ -146,6 +137,7 @@ export async function resolveTarget(
         fallbackIndex: i === 0 ? undefined : i - 1,
       }
     }
+    retried = false
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, 100))
   }

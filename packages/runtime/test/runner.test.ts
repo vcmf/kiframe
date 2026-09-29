@@ -791,6 +791,23 @@ steps:
       expect(events.some((e) => e.kind === "key" && e.keys === "Enter")).toBe(true)
     })
 
+    it("refuses prefix or substring tests on attributes that hold the user's email", async () => {
+      for (const selector of [
+        `"img[alt^='b']"`,
+        `"a[href^='mailto:bob@']"`,
+        `"[aria-label*='acme']"`,
+      ]) {
+        const error = await failure(
+          `setup: [{ action: goto, url: /account-header }]
+steps:
+  - { id: p, action: expect, that: { visible: { by: css, selector: ${selector} } } }
+`,
+          { knownSecretValues: ["bob@acme.com"] },
+        )
+        expect(error.reason, selector).toBe("secret-refused")
+      }
+    })
+
     it("never passes an ensure-absent it couldn't check (unreadable page)", async () => {
       const error = await failure(
         `setup:

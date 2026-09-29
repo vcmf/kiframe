@@ -93,19 +93,12 @@ async function matchingInterrupt(
     rules.map(async (rule) => {
       try {
         // Counted under the rule decided once for this check, a partial match confirmed (§3 A8).
-        // A count that fails (an invalid selector) is no match, as it always was.
-        const counted = await countUnderRule(ctx.page, whenLocator(rule), names).catch(
-          (error: unknown) => {
-            if (error instanceof ProbeRefusal) throw error
-            return undefined
-          },
-        )
-        return counted?.count ?? 0
+        return (await countUnderRule(ctx.page, whenLocator(rule), names)).count ?? 0
       } catch (error) {
-        // A `when` that could probe a known value (§3 A8) never matches while secrets are known:
-        // the rule is refused by its selector's form, whatever the value (nothing leaks).
-        if (!(error instanceof ProbeRefusal)) throw error
-        if (!skippedRules.has(rule.id)) {
+        // A `when` that could probe a known value (§3 A8) never matches while secrets are known,
+        // with one warning per rule; any other failure (a selector the browser rejects) is no
+        // match, as it always was.
+        if (error instanceof ProbeRefusal && !skippedRules.has(rule.id)) {
           skippedRules.add(rule.id)
           ctx.options.onEvent?.({
             kind: "warning",
