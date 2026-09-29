@@ -232,7 +232,7 @@ export interface Ctx {
     /** The viewport its last real box was measured in. */
     lastViewport?: Viewport | undefined
     /** The last real box (kept while the run is on another page). */
-    lastBox?: Box
+    lastBox?: Box | undefined
   }[]
   /** Rethrows (once) an error raised inside a Playwright event listener during this step. */
   throwListenerError: () => void

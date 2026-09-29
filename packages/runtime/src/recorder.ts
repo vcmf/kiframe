@@ -311,7 +311,7 @@ export async function recordScenario(
             const read = { at: t, end: t, shown: e.shown ?? t }
             measured(id, "secret-field", e.step, {
               ...read,
-              ...placeBox(box, e.viewport ?? current),
+              ...placeBox(box, e.viewport),
               since: t,
             })
           }

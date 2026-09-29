@@ -157,6 +157,16 @@ describe("secret field state through real reads", () => {
     expect(back?.state === "at" && back.since).toBeGreaterThanOrEqual(gone[0]?.at ?? Infinity)
   })
 
+  it("reads the page the capture just left, with its own shown time (the last read)", async () => {
+    const { ctx, step, reports } = live()
+    const left = ctx.page
+    // The run already drives the next page (the switch), shown since 9000.
+    ctx.page = { isClosed: () => false } as unknown as Page
+    ctx.pageShownAt = 9000
+    await followSecretFields(ctx, step, { page: left, shown: 100 })
+    expect(reports().at(-1)).toMatchObject({ state: "at", shown: 100, box: { width: 100 } })
+  })
+
   it("treats a box of no size as gone", async () => {
     const { ctx, step, reports, set } = live()
     set({ x: 10, y: 20, width: 0, height: 30 })
