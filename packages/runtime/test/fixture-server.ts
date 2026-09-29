@@ -324,6 +324,9 @@ const pages: Record<string, string> = {
   // A page keeping the username in a hidden input (never part of an accessible name).
   "/hidden-user": `<!doctype html><title>Hidden user</title>
     <input type="hidden" name="email" value="bob@acme.com"><button>Save changes</button>`,
+  // A header holding the signed-in user's email in text attributes.
+  "/account-header": `<!doctype html><title>Account</title>
+    <a href="mailto:bob@acme.com" aria-label="Account bob@acme.com"><img alt="bob@acme.com" src="data:,"></a>`,
   "/to-stream": `<!doctype html><title>To stream</title><a href="/stream-page">Open</a>`,
   // A hidden duplicate password field (a mobile layout), the visible one lower on a tall page.
   "/dup-password": `<!doctype html><title>Dup password</title><div style="height:300px"></div>

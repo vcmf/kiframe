@@ -22,6 +22,12 @@ describe("isSafeSelector", () => {
     "div:has(input)",
     ".md\\:hidden",
     "*",
+    // Whole-value tests on text attributes; any operator on identity ones.
+    'a[href="/login"]',
+    "img[alt~=avatar]",
+    "[aria-expanded=true]",
+    "[data-testid^=row-]",
+    "div[contenteditable='true']",
   ])("accepts %s", (selector) => expect(isSafeSelector(selector)).toBe(true))
 
   it.each([
@@ -31,6 +37,13 @@ describe("isSafeSelector", () => {
     "input[VALUE*=x]",
     "input[data-value=1]",
     "input[ng-reflect-model^=h]",
+    // Prefix or substring tests on attributes that hold the user's name or email.
+    "img[alt^='b']",
+    "a[href^='mailto:b']",
+    "[aria-label*='acme']",
+    "[title$=com]",
+    "[placeholder|=bob]",
+    "form[action*='bob']",
     "input[aria-valuetext=x]",
     "form:has(input[value^='h']) button",
     'input[\\76 alue^="hun"]',

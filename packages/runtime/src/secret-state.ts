@@ -45,7 +45,7 @@ export function assertNotProbing(context: BrowserContext, selector: string): voi
 
 /** The A8 grammar in words, for every message that refuses a selector. */
 export const SAFE_SELECTOR_RULES =
-  "tags, *, #ids, .classes, the attributes id, class, name, type, role, for, href, src, alt, title, placeholder, the boolean states, aria-* (not aria-value*) and data-testid/-test/-qa/-cy/-state, the combinators, and :not(), :has(), :nth-child() and a few states"
+  "tags, *, #ids, .classes, identity attributes (id, class, name, type, role, for, the states, aria-* states, data-testid/-test/-qa/-cy/-state) with any operator, text attributes (alt, title, href, src, placeholder, aria-label…) with = or ~= only, the combinators, and :not(), :has(), :nth-child() and a few states"
 
 const PSEUDOS = new Set([
   "first-child",
@@ -59,23 +59,22 @@ const PSEUDOS = new Set([
 const NTH_PSEUDOS = new Set(["nth-child", "nth-of-type"])
 const ATTRIBUTE_OPS = ["~=", "|=", "^=", "$=", "*=", "="]
 /**
- * Attribute names a selector may test: an allowlist of ones that never mirror what a user typed
- * (frameworks copy a field's value into `value`, `ng-reflect-model`, `aria-valuetext`…).
+ * Attribute names a selector may test (§3 A8), in two classes. Identity attributes never hold what
+ * a user typed or who they are: any operator. Text-bearing ones often hold the signed-in user's
+ * name or email (an avatar's `alt`, a `mailto:` `href`, "Account bob@acme.com"): only presence and
+ * whole-value tests (`=`, `~=`), so a guess must be a whole value, like exact names. Frameworks copy
+ * a field's value into `value`, `ng-reflect-model`, `aria-valuetext`: never allowed.
  */
-const ATTRIBUTES = new Set([
+const IDENTITY_ATTRIBUTES = new Set([
   "id",
   "class",
   "name",
   "type",
   "role",
   "for",
-  "href",
-  "src",
-  "alt",
-  "title",
-  "placeholder",
   "lang",
   "dir",
+  "tabindex",
   "disabled",
   "checked",
   "selected",
@@ -83,15 +82,12 @@ const ATTRIBUTES = new Set([
   "required",
   "hidden",
   "open",
-  "tabindex",
   "contenteditable",
   "draggable",
   "spellcheck",
   "inert",
   "multiple",
   "autofocus",
-  "method",
-  "action",
   "data-testid",
   "data-test",
   "data-test-id",
@@ -99,9 +95,25 @@ const ATTRIBUTES = new Set([
   "data-cy",
   "data-state",
 ])
-const allowedAttribute = (name: string) => {
+const TEXT_ATTRIBUTES = new Set([
+  "alt",
+  "title",
+  "href",
+  "src",
+  "placeholder",
+  "aria-label",
+  "aria-description",
+  "aria-placeholder",
+  "aria-roledescription",
+])
+/** Which operators an attribute takes: "any", "whole" (presence, `=`, `~=`), or none. */
+const attributeClass = (name: string): "any" | "whole" | undefined => {
   const n = name.toLowerCase()
-  return ATTRIBUTES.has(n) || (n.startsWith("aria-") && !n.includes("value"))
+  if (IDENTITY_ATTRIBUTES.has(n)) return "any"
+  if (TEXT_ATTRIBUTES.has(n)) return "whole"
+  // The other aria-* are states and relations (aria-expanded, aria-controls), never page text.
+  if (n.startsWith("aria-") && !n.includes("value")) return "any"
+  return undefined
 }
 
 /**
@@ -155,11 +167,13 @@ export function isSafeSelector(selector: string): boolean {
     i++ // [
     ws()
     const name = ident()
-    if (name === undefined || !allowedAttribute(name)) return false
+    const kind = name === undefined ? undefined : attributeClass(name)
+    if (kind === undefined) return false
     ws()
     if (peek() === "]") return (i++, true)
     const op = ATTRIBUTE_OPS.find((o) => s.startsWith(o, i))
     if (op === undefined) return false
+    if (kind === "whole" && op !== "=" && op !== "~=") return false
     i += op.length
     ws()
     if (!attributeValue()) return false
