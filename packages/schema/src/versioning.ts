@@ -40,14 +40,40 @@ export const MIGRATIONS: MigrationRegistry = {
       // Secret masks left the composition (drawn from the take at render time, SECRETS-DESIGN I4).
       1: (doc) => {
         const tracks = (doc.tracks ?? {}) as Record<string, unknown>
-        if (!Array.isArray(tracks.masks)) return { ...doc }
-        // Every mask on a secret region goes: a blur of one is drawn from the take now, and a
-        // highlight or spotlight on one hid nothing and was never drawn (no renderer yet).
-        const kept = (tracks.masks as unknown[]).filter((m) => {
-          const { target } = (m ?? {}) as { target?: unknown }
-          return !(typeof target === "object" && target !== null && "sensitiveId" in target)
-        })
-        return { ...doc, tracks: { ...tracks, masks: kept } }
+        // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start.
+        const anchor = (x: unknown): unknown => {
+          const event = (x as { event?: unknown } | null)?.event
+          const match = typeof event === "string" ? /^(.+):sensitive(?::\d+)?$/.exec(event) : null
+          if (match === null) return x
+          const { offsetMs } = x as { offsetMs?: unknown }
+          return { step: match[1], edge: "start", ...(offsetMs !== undefined && { offsetMs }) }
+        }
+        const out: Record<string, unknown> = {}
+        for (const [name, list] of Object.entries(tracks)) {
+          if (!Array.isArray(list)) {
+            out[name] = list
+            continue
+          }
+          out[name] = (list as unknown[])
+            .filter((m) => {
+              if (name !== "masks") return true
+              const { target, kind, source } = (m ?? {}) as Record<string, unknown>
+              if (!(typeof target === "object" && target !== null && "sensitiveId" in target)) {
+                return true
+              }
+              // T7: the take draws an auto mask's region now; a user's blur of one is kept (it only
+              // adds); a highlight or spotlight on one hid nothing and was never drawn.
+              return source === "manual" && (kind === "blur" || kind === "pixelate")
+            })
+            .map((m) => {
+              if (typeof m !== "object" || m === null) return m
+              const seg = { ...(m as Record<string, unknown>) }
+              if ("at" in seg) seg.at = anchor(seg.at)
+              if ("until" in seg) seg.until = anchor(seg.until)
+              return seg
+            })
+        }
+        return { ...doc, tracks: out }
       },
     },
   },

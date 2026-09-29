@@ -197,6 +197,7 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
     // Past its end too: frames just after it can still show what it hid (the capture lags the DOM).
     if (a === undefined || b === undefined || sourceT < a || sourceT > b + MASK_TAIL_MS) continue
     if ("rect" in m.target) blurs.push(m.target.rect)
+    else if ("sensitiveId" in m.target) blurs.push(regionRect(tl, m.target.sensitiveId, sourceT))
     // Framed-element rects aren't recorded yet (P0-6 backlog): a privacy mask fails closed.
     else blurs.push({ x: 0, y: 0, w: 1, h: 1 })
   }
@@ -232,6 +233,16 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
 
 /** A composition mask lasts this long past its end (its `until` is DOM or step timing). */
 const MASK_TAIL_MS = CAPTURE_LAG_MS
+
+/**
+ * Where region `id` is at source time `t`, for a mask naming it (T7): its latest box started by
+ * then, else its first; the whole frame if the take has no such region (fails closed).
+ */
+function regionRect(tl: Timeline, id: string, t: number): NRect {
+  const boxes = tl.regions.find((r) => r.id === id)?.boxes ?? []
+  const box = boxes.filter((b) => b.from <= t).at(-1) ?? boxes[0]
+  return (box === undefined ? undefined : clipRect(box.rect)) ?? { x: 0, y: 0, w: 1, h: 1 }
+}
 
 /** The boxes of the take's secret regions on screen at source time `t`. */
 function secretRects(regions: Timeline["regions"], t: number): NRect[] {

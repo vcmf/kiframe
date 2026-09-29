@@ -507,10 +507,11 @@ steps:
     const sensitive = take.events.filter(
       (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive",
     )
-    // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5).
+    // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5); boxes are
+    // padded 4 px (T8).
     const code = sensitive.find((e) => e.id.includes("acme.code"))?.boxes[0]?.rect
-    expect(code?.x).toBeCloseTo(300 / 800, 2)
-    expect(code?.y).toBeCloseTo(285 / 600, 2)
+    expect(code?.x).toBeCloseTo(296 / 800, 2)
+    expect(code?.y).toBeCloseTo(281 / 600, 2)
     // Back on the opener (in the "done" step), the API key's blur is back before the next step,
     // and not before the switch back (the frames before it show the popup).
     const lookStart =

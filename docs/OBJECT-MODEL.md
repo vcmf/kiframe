@@ -463,7 +463,7 @@ Modeled on Cap's `TimelineConfiguration` (parallel typed tracks) and OpenScreen'
 
 ```ts
 type Composition = {
-  version: 1;
+  version: 2;                      // 2: secret masks left the composition (SECRETS-DESIGN T7 migrates 1)
   take?: { key: TakeKey };         // the take the auto segments were generated from (recording / still-capture only)
   style?: Partial<Style>;          // scene-level overrides (output format comes from the Output, §0.5)
   tracks: {
@@ -512,7 +512,7 @@ type CaptionSegment = SegmentBase & { text: string; position?: "bottom" | "top" 
 
 type MaskSegment = SegmentBase & {
   kind: "blur" | "pixelate" | "highlight" | "spotlight";
-  target: { frameRef: string } | { rect: NRect };  // a composition can only add masks
+  target: { sensitiveId: string } | { frameRef: string } | { rect: NRect };  // only adds: a blur naming a secret region extends it (the take draws the region anyway)
 };
 ```
 

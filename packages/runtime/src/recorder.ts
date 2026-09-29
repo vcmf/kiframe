@@ -124,30 +124,35 @@ export async function recordScenario(
     const castOptions: Parameters<Page["screencast"]["start"]>[0] = {
       size: await castSize(page, viewport),
       quality: options.quality ?? 85,
-      onFrame: ({ data, timestamp }) => {
-        // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
-        if (stopped) return
-        const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
-        // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
-        pendingWrites.push(track(writeFile(join(framesDir, file), data)))
-        frames.push({ file, t: Math.max(0, timestamp - t0) })
-        const size = jpegSize(data)
-        if (size !== undefined) {
-          if (
-            frameSize !== undefined &&
-            !sizeChanged &&
-            (size.width !== frameSize.width || size.height !== frameSize.height)
-          ) {
-            sizeChanged = true
-            warnings.push(
-              `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
-            )
-          }
-          frameSize ??= size
+      onFrame: (frame) => onFrame(frame, 0),
+    }
+    // Which capture is current (T4): a page's frames arriving after the capture left it are dropped,
+    // and the next page's count from the switch.
+    let generation = 0
+    let switchedAt = 0
+    function onFrame({ data, timestamp }: { data: Buffer; timestamp: number }, of: number) {
+      // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
+      if (stopped || of !== generation) return
+      const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
+      // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
+      pendingWrites.push(track(writeFile(join(framesDir, file), data)))
+      frames.push({ file, t: Math.max(0, timestamp - t0, switchedAt) })
+      const size = jpegSize(data)
+      if (size !== undefined) {
+        if (
+          frameSize !== undefined &&
+          !sizeChanged &&
+          (size.width !== frameSize.width || size.height !== frameSize.height)
+        ) {
+          sizeChanged = true
+          warnings.push(
+            `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
+          )
         }
-        lastFrame = data
-        for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
-      },
+        frameSize ??= size
+      }
+      lastFrame = data
+      for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
     }
     // The page being filmed: the runner may follow a tab or popup (and come back), the capture
     // follows it on the same clock (frame timestamps are epoch milliseconds whatever the page).
@@ -155,7 +160,9 @@ export async function recordScenario(
     await capturing.screencast.start(castOptions)
     const onPageSwitch = async (next: Page) => {
       // Frames before now show the previous page: a region of this one starts here at the earliest.
-      regions.switched(at())
+      switchedAt = at()
+      regions.switched(switchedAt)
+      const of = ++generation
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
       // The next step's shot must be of this page, not the last frame of the previous one.
@@ -166,7 +173,11 @@ export async function recordScenario(
       // A popup that closed right after loading: nothing to film (the runner returns to its
       // opener at the next step boundary).
       await next.screencast
-        .start({ ...castOptions, size: await castSize(next, current) })
+        .start({
+          ...castOptions,
+          onFrame: (f) => onFrame(f, of),
+          size: await castSize(next, current),
+        })
         .catch((error: unknown) => {
           if (!next.isClosed()) throw error
         })
@@ -189,25 +200,34 @@ export async function recordScenario(
           `dropped a ${(event as { kind?: string }).kind ?? "?"} event: ${parsed.error.issues[0]?.message ?? "invalid"}`,
         )
     }
-    const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
     // Secret regions, written once with their spans when the take ends (SECRETS-DESIGN §5).
     const regions = new Regions()
     const measured = (
       id: string,
       why: "secret-field" | "secret-text",
       step: StepRef,
-      box: ReturnType<typeof rect> | undefined,
+      box: Box | undefined,
+      viewport?: { width: number; height: number },
       since?: number,
-      measuredAt?: number,
+      read?: { at: number; end: number },
     ) => {
-      const when = measuredAt ?? at()
-      if (box === undefined || box.w === 0 || box.h === 0) regions.gone(id, when)
+      // Take time (T1); a box measured by the event's own sender (type_start) is read now.
+      const when =
+        read === undefined
+          ? { start: at(), end: at() }
+          : {
+              start: Math.max(0, read.at - t0),
+              end: Math.max(0, read.end - t0),
+            }
+      if (box === undefined || box.width === 0 || box.height === 0) regions.gone(id, when)
       else {
         const where = {
           phase: step.phase,
           ...(step.stepId !== undefined && { stepId: step.stepId }),
         }
-        regions.seen(id, why, where, when, box, since)
+        // T8: padded 4 CSS pixels on each side (glyph edges, sub-pixel moves).
+        const padded = { x: box.x - 4, y: box.y - 4, width: box.width + 8, height: box.height + 8 }
+        regions.seen(id, why, where, when, rect(padded, viewport), since)
       }
     }
     const interruptStarts = new Map<string, number>()
@@ -273,7 +293,10 @@ export async function recordScenario(
             const id = e.sensitiveId ?? `secret:${e.secret}`
             // A box of no size (a field still scaling in) is no box: the whole frame.
             const seen = box === undefined || box.width === 0 || box.height === 0 ? undefined : box
-            measured(id, "secret-field", e.step, seen === undefined ? fullFrame : rect(seen))
+            if (seen === undefined) {
+              const whole = { x: 0, y: 0, width: current.width, height: current.height }
+              measured(id, "secret-field", e.step, whole, undefined, at())
+            } else measured(id, "secret-field", e.step, seen, undefined, at())
           }
           break
         }
@@ -284,8 +307,10 @@ export async function recordScenario(
             e.id,
             "secret-text",
             e.step,
-            e.box === undefined ? undefined : rect(e.box, e.viewport),
+            e.box,
+            e.viewport,
             e.since === undefined ? undefined : Math.max(0, e.since - t0),
+            e,
           )
           break
         case "secret_field":
@@ -295,9 +320,10 @@ export async function recordScenario(
             e.id,
             "secret-field",
             e.step,
-            e.box === undefined ? undefined : rect(e.box, e.viewport),
+            e.box,
+            e.viewport,
             e.since === undefined ? undefined : Math.max(0, e.since - t0),
-            Math.max(0, e.at - t0),
+            e,
           )
           break
         case "key":
