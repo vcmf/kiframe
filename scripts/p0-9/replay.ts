@@ -6,7 +6,8 @@
 // Usage: node scripts/p0-9/replay.ts --project p.yaml --scenario s.yaml --out <dir> [--runs 5]
 //          [--dirty 2,4] [--headed]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { basename, extname, join } from "node:path"
+import { join } from "node:path"
+import { sceneIdOf } from "../lib/secrets.ts"
 import { parseArgs } from "node:util"
 import { recordScenario, type RunnerEvent } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
@@ -68,9 +69,7 @@ try {
     try {
       const take = await recordScenario(page, scene, project, {
         scope: "phase0",
-        sceneId: basename(values.scenario, extname(values.scenario))
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-"),
+        sceneId: sceneIdOf(values.scenario),
         outDir: join(values.out, `run-${run}`),
         skipSessionPresets: [...sessions],
         // A sandbox app: the scene's risky teardown (delete) is pre-approved (APPROACHES §7.2).

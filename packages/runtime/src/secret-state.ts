@@ -152,17 +152,14 @@ const ALLOWED_ATTRIBUTES = new Set([...ATTRIBUTE_NAMES, ...TEXT_ATTRIBUTES, ...A
 const allowedAttribute = (name: string) => ALLOWED_ATTRIBUTES.has(name.toLowerCase())
 
 /** The A8 grammar in words, for every message that refuses a selector. */
-export const SAFE_SELECTOR_RULES = [
-  "tags, *, #ids, .classes",
-  `attribute tests: presence or = on ${[...ALLOWED_ATTRIBUTES].join(", ")}; ^= $= *= |= on ${[...PARTIAL_OK].join(" and ")} only`,
-  `the combinators; :not() :has() :is() :where(); ${[...NTH_PSEUDOS].map((p) => `:${p}()`).join(" ")}; ${[...PSEUDOS].map((p) => `:${p}`).join(" ")}`,
-  "no selector engines, no escapes outside names",
-].join("; ")
+export const SAFE_SELECTOR_RULES =
+  "tags, *, #ids, .classes, attribute presence or = on common attributes (not value), ^= $= *= |= on class and id only, combinators, :not() :has() :is() :where() and structural pseudo-classes; no selector engines (SECRETS-DESIGN §3 A8 lists them)"
 
 /**
  * The allowlisted CSS subset of A8 (a tiny recursive-descent parser). Exported for its tests.
- * Escapes only inside class and id names (`.md\\:hidden`); `*`; `:has(…)` and `:not(…)` with the
- * same grammar inside.
+ * Escapes only inside class and id names (`.md\\:hidden`); `*`; structural and state
+ * pseudo-classes; `:not(…)`, `:has(…)` (relative), `:is(…)` and `:where(…)` with the same grammar
+ * inside.
  */
 export function isSafeSelector(selector: string): boolean {
   const s = selector.trim()
@@ -220,8 +217,10 @@ export function isSafeSelector(selector: string): boolean {
     if (op !== "=" && !PARTIAL_OK.has(name.toLowerCase())) return false
     i += op.length
     ws()
+    const quoted = peek() === '"' || peek() === "'"
     if (!attributeValue()) return false
-    if (ws() && /[is]/i.test(peek())) i++
+    // The case flag: after whitespace, or right after a quoted value (`[aria-label='Close'i]`).
+    if ((ws() || quoted) && /^[is](?=[\s\]])/i.test(s.slice(i))) i++
     ws()
     return peek() === "]" && (i++, true)
   }
@@ -362,7 +361,7 @@ function renderedFields(written: Element[]): { writtenRendered: boolean; values:
       if (
         field &&
         (el as HTMLInputElement).value !== "" &&
-        el.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+        el.checkVisibility({ visibilityProperty: true })
       ) {
         values.push((el as HTMLInputElement).value)
       }
@@ -370,11 +369,24 @@ function renderedFields(written: Element[]): { writtenRendered: boolean; values:
     }
   }
   visit(document)
-  // A written field hidden (a closed login dialog) is in no accessible name: it doesn't count.
+  // A written field hidden (a closed login dialog) is in no accessible name: it doesn't count,
+  // unless an element names it (or what holds it) through aria-labelledby / aria-describedby:
+  // Playwright follows those into hidden subtrees.
+  const named = (e: Element) => {
+    for (let at: Element | null = e; at !== null; at = at.parentElement) {
+      if (at.id === "") continue
+      const id = CSS.escape(at.id)
+      if (
+        document.querySelector(`[aria-labelledby~="${id}"], [aria-describedby~="${id}"]`) !== null
+      ) {
+        return true
+      }
+    }
+    return false
+  }
   return {
     writtenRendered: written.some(
-      (e) =>
-        e.isConnected && e.checkVisibility({ visibilityProperty: true, opacityProperty: true }),
+      (e) => e.isConnected && (e.checkVisibility({ visibilityProperty: true }) || named(e)),
     ),
     values,
   }

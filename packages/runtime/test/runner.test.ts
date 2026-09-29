@@ -836,6 +836,21 @@ steps:
       )
     })
 
+    it("keeps exact names on for a secret field faded to opacity 0 (still named)", async () => {
+      const vault = await vaultWithPassword()
+      const error = await failure(
+        `setup: [{ action: goto, url: /fade-row }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: fade, action: click, target: { by: role, role: button, name: Fade } }
+  - { id: p, action: expect, that: { visible: { by: role, role: cell, name: "Password h" } } }
+`,
+        approving(vault, []),
+      )
+      expect(error.reason).toBe("expectation-failed")
+      expect(error.message).toMatch(/names match exactly/)
+    })
+
     it("refuses a host scene id that isn't one", async () => {
       const vault = await vaultWithPassword()
       const error = await failure(into(password), {

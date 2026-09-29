@@ -363,6 +363,10 @@ const pages: Record<string, string> = {
       const pw = document.getElementById("pw")
       if (document.activeElement === pw && pw.selectionStart === 0 && pw.selectionEnd === pw.value.length) document.getElementById("notes").focus()
     })</script>`,
+  // A password row that fades in place to opacity 0 (still named by Playwright).
+  "/fade-row": `<!doctype html><title>Fade row</title>
+    <table><tr id="r"><td>Password <input type="password" aria-label="Password"></td></tr></table>
+    <button onclick="document.getElementById('r').style.opacity='0'">Fade</button>`,
   // A login in a drawer closed with visibility:hidden (MUI keepMounted): the field stays attached.
   "/drawer-login": `<!doctype html><title>Drawer login</title>
     <div id="dlg"><label>Password <input type="password"></label><button onclick="document.getElementById('dlg').style.visibility='hidden'">Sign in</button></div>
