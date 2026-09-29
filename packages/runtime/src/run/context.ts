@@ -46,6 +46,8 @@ export type RunnerEvent =
       secret?: string | undefined
       /** When the run switched to this page (`now()`): a secret field's region starts after. */
       shown?: number | undefined
+      /** The viewport `box` was measured in. */
+      viewport?: Viewport | undefined
       /** With a secret: the id of its sensitive region (later `secret_field` events use it). */
       sensitiveId?: string | undefined
       box?: Box | undefined
@@ -218,13 +220,14 @@ export interface Ctx {
      */
     handle?: ElementHandle
     page: Page
-    /** Its type_start was reported: followed from then on (never while the cursor travels to it). */
-    typed?: boolean
-    /** Its region has an open box (a box reported, no "gone" or leave since). */
-    onScreen?: boolean
-    /** Left with its page: its next box is dated from the switch back. */
-    leftPage?: boolean
-    /** When the last read that found it gone started (a return is dated from it). */
+    /**
+     * Where it stands (SECRETS-DESIGN T2–T4): not typed yet (never followed while the cursor
+     * travels to it); on screen (its region has an open box); gone (a read found it gone, at
+     * `goneReadAt`: a return is dated from there); left with its page (its next box is dated
+     * from the switch back).
+     */
+    state: "pending" | "on" | "gone" | "left"
+    /** When the last read that found it gone started. */
     goneReadAt?: number
     /** The viewport its last real box was measured in. */
     lastViewport?: Viewport | undefined

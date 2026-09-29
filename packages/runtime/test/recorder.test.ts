@@ -526,6 +526,31 @@ steps:
     expect(back?.rect).toEqual(before?.rect)
   })
 
+  it("reads the page once more before the capture leaves it (a last-moment move is covered)", async () => {
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+    const page = await context.newPage()
+    const take = await recordScenario(
+      page,
+      parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: /shift-open }]
+steps:
+  - { id: key, action: type, target: { by: label, name: API key }, value: "{{secrets.acme.key}}" }
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: look, action: pause, ms: 200 }
+`),
+      project(),
+      { outDir, scope: "test", sceneId: "test", resolveSecret: () => "k-123456" },
+    )
+    await context.close()
+    const key = take.events.find((e) => e.kind === "sensitive" && e.id.includes("acme.key"))
+    const ys = key?.kind === "sensitive" ? key.boxes.map((b) => b.rect.y) : []
+    // Pushed down 200 px (of 800) before the popup opened: a box there, on the opener. (A tick
+    // during the click's settle may read it too: this shows the behavior, the switch's own last
+    // read is what guarantees it when no tick falls in between.)
+    expect(Math.max(...ys) - Math.min(...ys)).toBeGreaterThan(0.2)
+  })
+
   it("marks a handled interrupt as a span that the generators cut", async () => {
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
