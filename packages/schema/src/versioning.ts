@@ -40,8 +40,8 @@ export const MIGRATIONS: MigrationRegistry = {
       // Secret masks left the composition (drawn from the take at render time, SECRETS-DESIGN I4).
       1: (doc) => {
         const tracks = (doc.tracks ?? {}) as Record<string, unknown>
-        // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start,
-        // an end anchor its step's end (rounded outwards: a mask never gets shorter).
+        // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start;
+        // a mask's end anchor its step's end (rounded outwards: a mask never gets shorter).
         const anchor = (x: unknown, edge: "start" | "end"): unknown => {
           const event = (x as { event?: unknown } | null)?.event
           const match = typeof event === "string" ? /^(.+):sensitive(?::\d+)?$/.exec(event) : null
@@ -69,8 +69,9 @@ export const MIGRATIONS: MigrationRegistry = {
             .map((m) => {
               if (typeof m !== "object" || m === null) return m
               const seg = { ...(m as Record<string, unknown>) }
+              // A mask is rounded outwards (never shorter); any other segment keeps its length.
               if ("at" in seg) seg.at = anchor(seg.at, "start")
-              if ("until" in seg) seg.until = anchor(seg.until, "end")
+              if ("until" in seg) seg.until = anchor(seg.until, name === "masks" ? "end" : "start")
               return seg
             })
         }

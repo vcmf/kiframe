@@ -132,6 +132,7 @@ export async function runScenario(
     secretFields: [],
     pageShownAt: now(),
     switching: false,
+    stuckRead: undefined,
     fieldsInflight: undefined,
     secretWritten: secrets.written,
     secretText: {
@@ -179,8 +180,8 @@ export async function runScenario(
           if (ctx.switching) return
           followSecretText(ctx, current).catch(() => undefined)
           // Fields too, between step boundaries (a move's hull spans one tick, not a whole step);
-          // never mid-switch, and never piled up.
-          if (!ctx.switching && ctx.fieldsInflight === undefined) {
+          // never piled up.
+          if (ctx.fieldsInflight === undefined) {
             followSecretFields(ctx, current).catch(() => undefined)
           }
         }, TEXT_SCAN_MS)

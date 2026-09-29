@@ -18,7 +18,7 @@ type Sensitive = Extract<TakeEvent, { kind: "sensitive" }>
 export interface Read {
   start: number
   end: number
-  /** When the capture could first show the page read (T3); by default the last page switch. */
+  /** When the run switched to the page read (T3): nothing it saw was on screen before. */
   floor?: number
 }
 
@@ -45,17 +45,10 @@ const same = (a: ViewportRect, b: ViewportRect) =>
 
 export class Regions {
   readonly #open = new Map<string, Open>()
-  /** When the capture last switched pages: no region is backdated before it. */
-  #switched = 0
-
-  /** The capture switched pages at `at`. */
-  switched(at: number): void {
-    this.#switched = Math.max(this.#switched, at)
-  }
 
   /** T3: the earliest a box first seen by a read could have been on screen. */
   #appear(t: number, read: Read): number {
-    return Math.min(Math.max(t - FRAME_MARGIN_MS, read.floor ?? this.#switched), read.end)
+    return Math.min(Math.max(t - FRAME_MARGIN_MS, read.floor ?? 0), read.end)
   }
 
   /**

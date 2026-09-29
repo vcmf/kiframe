@@ -30,9 +30,10 @@ import { now } from "./clock.ts"
 // page, and writes a take: frames.webm, events.jsonl, cursor.jsonl, shots/<stepId>.jpg, meta.json.
 // Every record is validated against @kiframe/schema before it's written.
 //
-// Clock: `page.screencast` frame timestamps are epoch milliseconds, the same clock as Date.now()
-// (Phase 0 finding F1), so frames, runner events and cursor samples share one clock. t = 0 is the
-// start of the capture.
+// Clock: `page.screencast` frame timestamps are epoch milliseconds on the wall clock (Phase 0
+// finding F1); runner events, reads and cursor samples are on the monotonic clock (`now()`). Each is
+// counted from its own reading at the start of the capture (t = 0), so they agree through the take
+// (SECRETS-DESIGN T1).
 
 export interface RecordOptions extends RunOptions {
   /** The take directory to create (must not contain anything worth keeping: it's overwritten). */
@@ -82,7 +83,10 @@ export async function recordScenario(
     // The viewport rects are normalized against: the driven page's (a popup can have its own size).
     let current = viewport
     const recordedAt = new Date()
+    // The take's start on both clocks (T1): reads and events on the monotonic one, frames on the
+    // browser's wall clock (both from here: no drift from before the take, a laptop's sleep).
     const t0 = now()
+    const wall0 = Date.now()
     const at = () => Math.max(0, now() - t0)
     const norm = (x: number, y: number) => ({
       x: clamp01(x / current.width),
@@ -137,7 +141,7 @@ export async function recordScenario(
       const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
       // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
       pendingWrites.push(track(writeFile(join(framesDir, file), data)))
-      frames.push({ file, t: Math.max(0, timestamp - t0, switchedAt) })
+      frames.push({ file, t: Math.max(0, timestamp - wall0, switchedAt) })
       const size = jpegSize(data)
       if (size !== undefined) {
         if (
@@ -162,7 +166,6 @@ export async function recordScenario(
     const onPageSwitch = async (next: Page) => {
       // Frames before now show the previous page: a region of this one starts here at the earliest.
       switchedAt = at()
-      regions.switched(switchedAt)
       const of = ++generation
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
@@ -208,19 +211,16 @@ export async function recordScenario(
       why: "secret-field" | "secret-text",
       step: StepRef,
       box: Box | undefined,
-      viewport?: { width: number; height: number },
-      since?: number,
-      read?: { at: number; end: number; shown: number },
+      viewport: { width: number; height: number } | undefined,
+      since: number | undefined,
+      read: { at: number; end: number; shown: number },
     ) => {
-      // Take time (T1); a box measured by the event's own sender (type_start) is read now.
-      const when =
-        read === undefined
-          ? { start: at(), end: at() }
-          : {
-              start: Math.max(0, read.at - t0),
-              end: Math.max(0, read.end - t0),
-              floor: Math.max(0, read.shown - t0),
-            }
+      // Take time (T1).
+      const when = {
+        start: Math.max(0, read.at - t0),
+        end: Math.max(0, read.end - t0),
+        floor: Math.max(0, read.shown - t0),
+      }
       if (box === undefined || box.width === 0 || box.height === 0) regions.gone(id, when)
       else {
         const where = {
@@ -295,10 +295,13 @@ export async function recordScenario(
             const id = e.sensitiveId ?? `secret:${e.secret}`
             // A box of no size (a field still scaling in) is no box: the whole frame.
             const seen = box === undefined || box.width === 0 || box.height === 0 ? undefined : box
+            // Read now, on the page the run switched to at `shown` (T3).
+            const t = now()
+            const typed = { at: t, end: t, shown: e.kind === "type_start" ? (e.shown ?? t) : t }
             if (seen === undefined) {
               const whole = { x: 0, y: 0, width: current.width, height: current.height }
-              measured(id, "secret-field", e.step, whole, undefined, at())
-            } else measured(id, "secret-field", e.step, seen, undefined, at())
+              measured(id, "secret-field", e.step, whole, undefined, at(), typed)
+            } else measured(id, "secret-field", e.step, seen, undefined, at(), typed)
           }
           break
         }

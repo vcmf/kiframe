@@ -18,6 +18,8 @@ export type RunnerEvent =
       kind: "type_start"
       step: StepRef
       secret?: string | undefined
+      /** When the run switched to this page (`now()`): a secret field's region starts after. */
+      shown?: number | undefined
       /** With a secret: the id of its sensitive region (later `secret_field` events use it). */
       sensitiveId?: string | undefined
       box?: Box | undefined
@@ -194,6 +196,8 @@ export interface Ctx {
   secretWritten: { page: Page; handle: ElementHandle }[]
   /** When the driven page became the one on screen (`now()`): a field back on it since then. */
   pageShownAt: number
+  /** A read that took too long, still pending in the page: no new read starts until it settles. */
+  stuckRead: Promise<unknown> | undefined
   /** A page switch is under way (the capture hasn't followed yet): the tick measures nothing. */
   switching: boolean
   /** The field measurement running, if any (one at a time). */

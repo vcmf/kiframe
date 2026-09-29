@@ -153,6 +153,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
             step,
             secret,
             sensitiveId,
+            shown: ctx.pageShownAt,
             box: fieldBox ?? undefined,
           })
           // Checked again right before the text is sent: the page may have navigated while the
