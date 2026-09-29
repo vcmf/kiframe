@@ -336,13 +336,12 @@ export async function liveWritten(page: Page): Promise<ElementHandle<Element>[]>
 }
 
 /**
- * The page's side of the check (runs in the page): whether a written field is still attached, and
- * the text-like fields' values (read out, matched in Node; never hidden inputs). Visible or not:
+ * The page's side of the check (runs in the page): the text-like fields' values (read out, matched in Node; never hidden inputs). Visible or not:
  * Playwright names hidden elements through `aria-labelledby`, labels and shadow hosts, so a hidden
  * field isn't taken out of every name (fails closed; a login kept mounted but hidden keeps exact
  * names on).
  */
-function fieldsOnPage(written: Element[]): { writtenRendered: boolean; values: string[] } {
+function fieldsOnPage(): string[] {
   const values: string[] = []
   const nonText = new Set([
     "hidden",
@@ -367,7 +366,7 @@ function fieldsOnPage(written: Element[]): { writtenRendered: boolean; values: s
     }
   }
   visit(document)
-  return { writtenRendered: written.some((e) => e.isConnected), values }
+  return values
 }
 
 /** Whether a locator matches a name partially (the only kind the exact-names rule changes). */
@@ -396,11 +395,11 @@ export interface ExactNames {
 export async function refreshExactNames(page: Page): Promise<ExactNames> {
   const state = secretsOf(page.context())
   if (state.values.size === 0) return { exact: false, unsure: false }
-  const found = await page.evaluate(fieldsOnPage, await liveWritten(page)).catch(() => undefined)
-  if (found === undefined) return { exact: true, unsure: true }
-  const exact =
-    found.writtenRendered || found.values.some((v) => containsKnownValue(state.values, v))
-  return { exact, unsure: false }
+  // A written field still attached decides it (no need to read the page's fields).
+  if ((await liveWritten(page)).length > 0) return { exact: true, unsure: false }
+  const values = await page.evaluate(fieldsOnPage).catch(() => undefined)
+  if (values === undefined) return { exact: true, unsure: true }
+  return { exact: values.some((v) => containsKnownValue(state.values, v)), unsure: false }
 }
 
 /** The hint every error adds when the exact-names rule (§3 A8) was on. */

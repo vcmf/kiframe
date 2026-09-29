@@ -9,7 +9,7 @@ import type { ElementHandle, Locator } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
-import { viewportOf } from "../targets.ts"
+import { isNavigationError, viewportOf } from "../targets.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import {
   containsKnownValue,
@@ -569,7 +569,12 @@ export async function writeSecret(
     // Read back in a later turn: a framework that resets or reformats the field in its own
     // microtask or frame (Vue's nextTick, Lit's update) is caught. A field that submitted or
     // navigated on input can't be read again: the page took the value, as read in the write's turn.
-    const landed = await write.input.evaluate((el) => el.value).catch(() => result.landed)
+    const landed = await write.input
+      .evaluate((el) => el.value)
+      .catch((error: unknown) => {
+        if (isNavigationError(error) || ctx.page.isClosed()) return result.landed
+        throw error
+      })
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
     if (write.field !== undefined) write.field.handle = write.input

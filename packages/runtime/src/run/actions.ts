@@ -192,8 +192,14 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
         // After a secret, on the element it was written to (the found locator would re-run its
         // query with the names of before the write, §3 A8).
         const on = secretWrite?.input ?? target
-        await guard(step, () => on.press("Enter", { timeout: ctx.timeoutMs }))
-        ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
+        // A field that submitted itself on input (the page left with the value): nothing to press.
+        const gone =
+          secretWrite !== undefined &&
+          !(await secretWrite.input.evaluate((e) => e.isConnected).catch(() => false))
+        if (!gone) {
+          await guard(step, () => on.press("Enter", { timeout: ctx.timeoutMs }))
+          ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
+        }
       }
       return
     }
