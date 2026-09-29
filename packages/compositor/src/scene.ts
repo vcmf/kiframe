@@ -92,6 +92,8 @@ export interface Prepared {
   map: TimeMap
   style: Style
   composition: Composition
+  /** The take's secret regions (drawn at every frame, whatever the composition says). */
+  regions: Region[]
   /** Output duration in ms. */
   duration: number
   /**
@@ -138,6 +140,7 @@ export function prepare(
     map,
     style: s,
     composition,
+    regions: timeline.events.filter((e): e is Region => e.kind === "sensitive"),
     duration: map.outputDuration,
   }
   const moves = cameraMoves(base)
@@ -188,12 +191,13 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   // By source time, both ends included: the frame shown is what must be covered. Secret regions
   // straight from the take, each box over its own span (SECRETS-DESIGN I4: no composition edit
   // removes or shortens them, and no timing rule of the compositor's own).
-  const blurs: NRect[] = secretRects(tl, sourceT)
+  const blurs: NRect[] = secretRects(p.regions, sourceT)
   for (const m of tracks.masks) {
     if (m.kind !== "blur" && m.kind !== "pixelate") continue
     const a = resolveAnchor(m.at, tl)
     const b = resolveAnchor(m.until, tl)
-    if (a === undefined || b === undefined || sourceT < a || sourceT > b) continue
+    // Past its end too: frames just after it can still show what it hid (the capture lags the DOM).
+    if (a === undefined || b === undefined || sourceT < a || sourceT > b + MASK_TAIL_MS) continue
     if ("rect" in m.target) blurs.push(m.target.rect)
     // Framed-element rects aren't recorded yet (P0-6 backlog): a privacy mask fails closed.
     else blurs.push({ x: 0, y: 0, w: 1, h: 1 })
@@ -228,11 +232,16 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   }
 }
 
+/** A composition mask lasts this long past its end (its `until` is DOM or step timing). */
+const MASK_TAIL_MS = 250
+
+type Region = Extract<Timeline["events"][number], { kind: "sensitive" }>
+
 /** The boxes of the take's secret regions on screen at source time `t`. */
-function secretRects(tl: Timeline, t: number): NRect[] {
+function secretRects(regions: readonly Region[], t: number): NRect[] {
   const out: NRect[] = []
-  for (const e of tl.events) {
-    if (e.kind !== "sensitive" || t < e.t || t > e.until) continue
+  for (const e of regions) {
+    if (t < e.t || t > e.until) continue
     for (const box of e.boxes) {
       if (t < box.from || t > box.until) continue
       const rect = clipRect(box.rect)

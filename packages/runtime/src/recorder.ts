@@ -265,7 +265,9 @@ export async function recordScenario(
           // whole frame is marked (fails closed: better a blurred frame than a visible secret).
           if (e.secret !== undefined && e.kind === "type_start") {
             const id = e.sensitiveId ?? `secret:${e.secret}`
-            measured(id, "secret-field", e.step, box === undefined ? fullFrame : rect(box))
+            // A box of no size (a field still scaling in) is no box: the whole frame.
+            const seen = box === undefined || box.width === 0 || box.height === 0 ? undefined : box
+            measured(id, "secret-field", e.step, seen === undefined ? fullFrame : rect(seen))
           }
           break
         }
@@ -366,7 +368,8 @@ export async function recordScenario(
       if (writeError !== undefined) throw writeError
       // The secret regions, closed at the end of the scene; in time order (a region starts
       // backdated; stable: same-time events keep their order).
-      for (const region of regions.finish(durationMs)) push(region)
+      const frameAfter = (t: number) => frames.find((f) => f.t > t)?.t
+      for (const region of regions.finish(durationMs, frameAfter)) push(region)
       events.sort((a, b) => a.t - b.t)
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
       writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))

@@ -128,6 +128,7 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
+    pageShownAt: Date.now(),
     secretWritten: secrets.written,
     secretText: {
       shown: new Map(),
