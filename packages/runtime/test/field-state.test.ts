@@ -108,8 +108,9 @@ describe("secret field state through real reads", () => {
       width: 100,
       height: 30,
     }
+    let matches = 1
     const locator = {
-      count: () => Promise.resolve(box === null ? 0 : 1),
+      count: () => Promise.resolve(box === null ? 0 : matches),
       boundingBox: () => Promise.resolve(box),
     }
     const events: RunnerEvent[] = []
@@ -137,7 +138,10 @@ describe("secret field state through real reads", () => {
     const set = (b: typeof box) => {
       box = b
     }
-    return { ctx, step, reports, set }
+    const twice = () => {
+      matches = 2
+    }
+    return { ctx, step, reports, set, twice }
   }
 
   it("reports gone once, reads it again, and dates a return from the last read that found it gone", async () => {
@@ -165,6 +169,14 @@ describe("secret field state through real reads", () => {
     ctx.pageShownAt = 9000
     await followSecretFields(ctx, step, { page: left, shown: 100 })
     expect(reports().at(-1)).toMatchObject({ state: "at", shown: 100, box: { width: 100 } })
+  })
+
+  it("treats a target matching two elements as gone (never a stuck 'unknown')", async () => {
+    const { ctx, step, reports, twice } = live()
+    await followSecretFields(ctx, step)
+    twice()
+    await followSecretFields(ctx, step)
+    expect(reports().at(-1)?.state).toBe("gone")
   })
 
   it("treats a box of no size as gone", async () => {

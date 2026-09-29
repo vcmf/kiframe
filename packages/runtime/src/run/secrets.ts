@@ -21,17 +21,18 @@ import { now } from "../clock.ts"
 
 // Everything about secret values: resolution, origin checks, the scrubber, field tracking and the text scan.
 
-/**
- * Re-reads every field a secret was typed into, on the driven page, and reports where it is (the
- * blur follows it) or that it's gone (navigated away, removed: nothing left to blur). A field on
- * another page was left with its page (`leaveSecretFields`). Bounded, never fails a step.
- */
 /** The page a read is of, and when the run switched to it (T3); by default the driven page. */
 export interface ReadOf {
   page: Page
   shown: number
 }
 
+/**
+ * Re-reads every field a secret was typed into, on a page (the driven one by default, or the one
+ * the capture is about to leave: `of`), and reports where it is (the blur follows it) or that it's
+ * gone (navigated away, removed: nothing left to blur). A field on another page was left with its
+ * page (`leaveSecretFields`). Bounded, never fails a step.
+ */
 export async function followSecretFields(ctx: Ctx, step: StepRef, of?: ReadOf): Promise<void> {
   // One at a time (the recording tick reads too): a later one waits for the one running.
   const previous = ctx.fieldsInflight
@@ -47,9 +48,9 @@ export async function followSecretFields(ctx: Ctx, step: StepRef, of?: ReadOf): 
   }
 }
 
-/** Reads the driven page's fields and moves each through its state (`Ctx` secretFields, T2–T4). */
+/** Reads a page's fields and moves each through its state (`Ctx` secretFields, T2–T4). */
 async function readFields(ctx: Ctx, step: StepRef, of: ReadOf): Promise<void> {
-  // The driven page as of now, throughout (a switch may start while this runs). Followed from its
+  // The page read, fixed throughout (a switch may start while this runs). Followed from its
   // type_start only (T3: the empty field isn't blurred before typing). A field known gone is read
   // too: a re-mounted one comes back mid-step (the switch read settles a field left with its page).
   const { page } = of
@@ -114,11 +115,7 @@ export function placed(
   viewport: Viewport | undefined,
 ): Extract<RegionReport, { state: "at" }> {
   if (box === undefined || viewport === undefined || !usableBox(box)) {
-    return {
-      state: "at",
-      box: { x: 0, y: 0, width: 1, height: 1 },
-      viewport: { width: 1, height: 1 },
-    }
+    return { state: "at", ...WHOLE_FRAME }
   }
   return { state: "at", box, viewport }
 }
@@ -349,36 +346,27 @@ async function measureSecretField(
   let box: Box | null | "unknown"
   if (handle !== undefined && (await handle.evaluate((e) => e.isConnected).catch(() => false))) {
     box = (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
-    // Attached but not rendered (a form swapping inputs): a visible twin counts when the target
-    // finds exactly one element (never a strict-mode "unknown" that would hold the blur forever).
-    if (box === null) box = await measureTwin(field.locator)
+    // Attached but not rendered (a form swapping inputs): a visible twin the target finds counts.
+    if (box === null) box = await measureField(field.locator)
   } else box = await measureField(field.locator)
   // A box of no size shows nothing: gone (one definition for the runtime and the regions).
   return box !== null && box !== "unknown" && !usableBox(box) ? null : box
 }
 
 /**
- * Where a secret field is now: its box, null when it's known to be gone (detached or not rendered),
- * "unknown" when measuring failed (timeout, several matches): the blur stays where it was.
+ * Where the target finds the field: its box when it finds exactly one element (rendered), null when
+ * none or several (a re-mounted field is one element; two matches are other fields, a change-password
+ * form: never a strict-mode "unknown" that would hold a blur forever; password fields show dots and
+ * the text scan covers text values), "unknown" when measuring failed (a timeout): the blur stays.
  */
 async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
   try {
     // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
     // boundingBox's attach timeout on every later step.
-    if ((await locator.count()) === 0) return null
-    return await locator.boundingBox({ timeout: 300 })
-  } catch {
-    return "unknown"
-  }
-}
-
-/** The target's one element, when it finds exactly one: its box (null otherwise, or not rendered). */
-async function measureTwin(locator: Locator): Promise<Box | null> {
-  try {
     if ((await locator.count()) !== 1) return null
     return await locator.boundingBox({ timeout: 300 })
   } catch {
-    return null
+    return "unknown"
   }
 }
 

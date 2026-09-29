@@ -164,7 +164,9 @@ export async function recordScenario(
     await capturing.screencast.start(castOptions)
     const onPageSwitch = async (next: Page) => {
       // Frames before now show the previous page: a region of this one starts here at the earliest.
-      switchedAt = at()
+      // Never before a frame of the page it leaves (a frame drawn within this millisecond, already
+      // kept): the next page's frames sort after it, and a left region lasts past it.
+      switchedAt = Math.max(at(), (frames.at(-1)?.t ?? 0) + 0.001)
       const of = ++generation
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
