@@ -117,12 +117,14 @@ async function matchingInterrupt(
   const partialHit = rules.some((r, i) => (counts[i] ?? 0) > 0 && isPartialName(whenLocator(r)))
   if (!names.exact && partialHit && (await exactNamesFor(ctx.page, rules.map(whenLocator))).exact) {
     const exact = { exact: true, unsure: false }
-    for (const [i, rule] of rules.entries()) {
-      if ((counts[i] ?? 0) === 0 || !isPartialName(whenLocator(rule))) continue
-      counts[i] =
-        (await countUnderRule(ctx.page, whenLocator(rule), exact).catch(() => undefined))?.count ??
-        0
-    }
+    await Promise.all(
+      rules.map(async (rule, i) => {
+        if ((counts[i] ?? 0) === 0 || !isPartialName(whenLocator(rule))) return
+        counts[i] =
+          (await countUnderRule(ctx.page, whenLocator(rule), exact).catch(() => undefined))
+            ?.count ?? 0
+      }),
+    )
   }
   return rules.find((_, i) => (counts[i] ?? 0) > 0)
 }

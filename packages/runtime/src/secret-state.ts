@@ -55,13 +55,12 @@ const PSEUDOS = new Set([
 const NTH_PSEUDOS = new Set(["nth-child", "nth-of-type"])
 const ATTRIBUTE_OPS = ["~=", "|=", "^=", "$=", "*=", "="]
 /**
- * Attribute names a selector may test (§3 A8), in two classes. Identity attributes never hold what
- * a user typed or who they are: any operator. Text-bearing ones often hold the signed-in user's
- * name or email (an avatar's `alt`, a `mailto:` `href`, "Account bob@acme.com"): only presence and
- * whole-value tests (`=`, `~=`), so a guess must be a whole value, like exact names. Frameworks copy
- * a field's value into `value`, `ng-reflect-model`, `aria-valuetext`: never allowed.
+ * Attribute names a selector may test (§3 A8): an allowlist (frameworks copy a field's value into
+ * `value`, `ng-reflect-model`, `aria-valuetext`: never allowed). Tests are presence or a whole
+ * value (`=`), so a guess must be a whole value, like exact names; only `class` and `id` also take
+ * the partial operators (hashed CSS-module classes, vendor ids: `[class*=CookieBanner_]`).
  */
-const IDENTITY_ATTRIBUTES = new Set([
+const ATTRIBUTE_NAMES = new Set([
   "id",
   "class",
   "name",
@@ -128,23 +127,31 @@ const ARIA_STATES = new Set([
   "aria-readonly",
   "aria-multiselectable",
   "aria-autocomplete",
+  "aria-rowindex",
+  "aria-colindex",
+  "aria-posinset",
+  "aria-setsize",
+  "aria-rowcount",
+  "aria-colcount",
+  "aria-rowspan",
+  "aria-colspan",
+  "aria-atomic",
+  "aria-relevant",
+  "aria-errormessage",
+  "aria-details",
+  "aria-flowto",
 ])
 
-/** Which operators an attribute takes: "any", "whole" (presence, `=`, `~=`), or none. */
-const attributeClass = (name: string): "any" | "whole" | undefined => {
+/** Attributes that take the partial operators too (`^=`, `$=`, `*=`, `|=`). */
+const PARTIAL_OK = new Set(["class", "id"])
+const allowedAttribute = (name: string) => {
   const n = name.toLowerCase()
-  if (IDENTITY_ATTRIBUTES.has(n)) return "any"
-  if (TEXT_ATTRIBUTES.has(n)) return "whole"
-  if (ARIA_STATES.has(n)) return "any"
-  return undefined
+  return ATTRIBUTE_NAMES.has(n) || TEXT_ATTRIBUTES.has(n) || ARIA_STATES.has(n)
 }
 
 /** The A8 grammar in words, for every message that refuses a selector. */
-export const SAFE_SELECTOR_RULES = [
-  "tags and *, #ids, .classes",
-  `the attributes ${[...IDENTITY_ATTRIBUTES, ...ARIA_STATES, ...TEXT_ATTRIBUTES].join(", ")}, with = or ~= only (or presence)`,
-  `the combinators, :not(), :has(), ${[...NTH_PSEUDOS].map((p) => `:${p}()`).join(", ")}, ${[...PSEUDOS].map((p) => `:${p}`).join(", ")}`,
-].join("; ")
+export const SAFE_SELECTOR_RULES =
+  "tags, *, #ids, .classes; attribute tests are presence or a whole value (=) on a fixed list (id, class, name, type, role, data-testid, alt, title, href, aria-label, the ARIA states…), partial operators (^= $= *= |=) on class and id only; combinators, :not(), :has(), :nth-child(), a few states; no selector engines, no escapes outside names"
 
 /**
  * The allowlisted CSS subset of A8 (a tiny recursive-descent parser). Exported for its tests.
@@ -197,15 +204,14 @@ export function isSafeSelector(selector: string): boolean {
     i++ // [
     ws()
     const name = ident()
-    const kind = name === undefined ? undefined : attributeClass(name)
-    if (kind === undefined) return false
+    if (name === undefined || !allowedAttribute(name)) return false
     ws()
     if (peek() === "]") return (i++, true)
     const op = ATTRIBUTE_OPS.find((o) => s.startsWith(o, i))
     if (op === undefined) return false
-    // Whole-value tests only, on every attribute (§3 A8): a partial operator could test a displayed
-    // identity (a slug in a test id, an email in an alt), `:has()` included.
-    if (op !== "=" && op !== "~=") return false
+    // Whole-value tests (§3 A8): a partial operator (or `~=`, one word of a value) could test a
+    // displayed identity, `:has()` included; only `class` and `id` take them.
+    if (op !== "=" && !PARTIAL_OK.has((name ?? "").toLowerCase())) return false
     i += op.length
     ws()
     if (!attributeValue()) return false
