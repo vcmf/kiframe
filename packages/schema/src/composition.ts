@@ -7,6 +7,18 @@ import { StyleOverride } from "./style.ts"
 // The edit: parallel typed tracks of segments (docs/OBJECT-MODEL.md §4).
 // Segments are anchored to steps/events in SOURCE time. `clips` maps source → output time.
 
+/**
+ * An event anchor's parts: `<stepId>:<kind>` or `<stepId>:<kind>:<n>` names the step's n-th event of
+ * that kind (no `n`: the first, 0). One parser for the renderer and the migrations.
+ */
+export function parseEventAnchor(
+  event: string,
+): { step: string; kind: string; n: number } | undefined {
+  const match = /^(.+):([a-z_]+)(?::(\d+))?$/.exec(event)
+  if (match === null) return undefined
+  return { step: match[1] ?? "", kind: match[2] ?? "", n: Number(match[3] ?? 0) }
+}
+
 export const Anchor = z.union([
   z.strictObject({
     step: StepId,
@@ -170,7 +182,7 @@ export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 /** Unguarded: internal only, use the guarded export. */
 const CompositionBase = z
   .strictObject({
-    version: z.literal(2),
+    version: z.literal(1),
     /** The take the auto segments were generated from. */
     take: z.strictObject({ key: z.string().min(1) }).optional(),
     /** Scene-level style overrides (between the project's and the output's; never the size). */

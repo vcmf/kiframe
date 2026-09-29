@@ -50,7 +50,7 @@ export function generate(
     segments.filter((s) => s.until === undefined || !isCertainlyNotAfter(s.until, s.at))
 
   const composition = Composition.parse({
-    version: 2,
+    version: 1,
     take: { key: take.meta.takeKey },
     tracks: {
       clips: nonEmpty(clips.clips),

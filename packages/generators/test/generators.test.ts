@@ -39,7 +39,7 @@ function take(
     ...extra.map((e) => ({ phase: "steps", ...e })),
   ].sort((a, b) => a.t - b.t) as TakeEvent[]
   const meta: TakeMeta = {
-    version: 2,
+    version: 1,
     takeKey: "k-1",
     scenarioHash: "h",
     recordedAt: "2026-09-27T00:00:00.000Z",

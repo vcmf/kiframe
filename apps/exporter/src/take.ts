@@ -11,7 +11,7 @@ export function readTake(dir: string): TakeInput {
       .filter((l) => l.trim() !== "")
       .map((l) => JSON.parse(l) as unknown)
   return {
-    // A version 1 take is refused by the schema (its secret regions have no spans: re-record it).
+    // A take from before secret regions had spans fails validation: re-record it.
     meta: TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"))),
     events: lines("events.jsonl").map((e) => TakeEvent.parse(e)),
     cursor: lines("cursor.jsonl").map((c) => CursorSample.parse(c)),

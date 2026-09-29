@@ -463,7 +463,7 @@ Modeled on Cap's `TimelineConfiguration` (parallel typed tracks) and OpenScreen'
 
 ```ts
 type Composition = {
-  version: 2;                      // 2: secret masks left the composition (SECRETS-DESIGN T7 migrates 1)
+  version: 1;
   take?: { key: TakeKey };         // the take the auto segments were generated from (recording / still-capture only)
   style?: Partial<Style>;          // scene-level overrides (output format comes from the Output, §0.5)
   tracks: {

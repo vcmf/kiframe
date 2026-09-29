@@ -24,80 +24,18 @@ export interface MigrationRegistry {
   migrations: Partial<Record<DocumentKind, Record<number, Migration>>>
 }
 
-/** The versions this Kiframe writes, and the migrations it knows. */
+/** The versions this Kiframe writes, and the migrations it knows (none yet: every kind is v1). */
 export const MIGRATIONS: MigrationRegistry = {
   current: {
     project: 1,
     "project-config": 1,
     scene: 1,
     scenario: 1,
-    composition: 2,
+    composition: 1,
     "org-settings": 1,
     "user-preferences": 1,
   },
-  migrations: {
-    composition: {
-      // Secret masks left the composition (drawn from the take at render time, SECRETS-DESIGN I4).
-      1: (doc) => {
-        const tracks = (doc.tracks ?? {}) as Record<string, unknown>
-        // T7: an anchor to a `sensitive` event (now a span, not a moment) becomes its step's start;
-        // a mask's end anchor its step's end (rounded outwards: a mask never gets shorter).
-        // An anchor to a region event: its step and index (`step:sensitive` is `step:sensitive:0`).
-        const regionEvent = (x: unknown): { step: string; n: number } | undefined => {
-          const event = (x as { event?: unknown } | null)?.event
-          const match = typeof event === "string" ? /^(.+):sensitive(?::(\d+))?$/.exec(event) : null
-          return match === null ? undefined : { step: match[1] ?? "", n: Number(match[2] ?? 0) }
-        }
-        const anchor = (x: unknown, edge: "start" | "end"): unknown => {
-          const event = regionEvent(x)
-          if (event === undefined) return x
-          const { offsetMs } = x as { offsetMs?: unknown }
-          return { step: event.step, edge, ...(offsetMs !== undefined && { offsetMs }) }
-        }
-        const out: Record<string, unknown> = {}
-        for (const [name, list] of Object.entries(tracks)) {
-          if (!Array.isArray(list)) {
-            out[name] = list
-            continue
-          }
-          out[name] = (list as unknown[])
-            .filter((m) => {
-              if (name !== "masks") return true
-              const { target, kind, source } = (m ?? {}) as Record<string, unknown>
-              if (!(typeof target === "object" && target !== null && "sensitiveId" in target)) {
-                return true
-              }
-              // T7: the take draws an auto mask's region now; a user's blur of one is kept (it only
-              // adds); a highlight or spotlight on one hid nothing and was never drawn.
-              return source === "manual" && (kind === "blur" || kind === "pixelate")
-            })
-            .map((m) => {
-              if (typeof m !== "object" || m === null) return m
-              const seg = { ...(m as Record<string, unknown>) }
-              // A mask is rounded outwards (never shorter). Any other segment keeps its length when
-              // both ends were the same event (its offsets in order), else its end goes to the step's
-              // end: it never ends before it starts.
-              const at = regionEvent(seg.at)
-              const until = regionEvent(seg.until)
-              const offset = (x: unknown) => Number((x as { offsetMs?: unknown }).offsetMs ?? 0)
-              const keeps =
-                name !== "masks" &&
-                at !== undefined &&
-                until !== undefined &&
-                at.step === until.step &&
-                at.n === until.n &&
-                offset(seg.until) >= offset(seg.at)
-              if ("at" in seg) seg.at = anchor(seg.at, "start")
-              if ("until" in seg) {
-                seg.until = anchor(seg.until, keeps ? "start" : "end")
-              }
-              return seg
-            })
-        }
-        return { ...doc, tracks: out }
-      },
-    },
-  },
+  migrations: {},
 }
 
 const LABELS: Record<DocumentKind, string> = {
