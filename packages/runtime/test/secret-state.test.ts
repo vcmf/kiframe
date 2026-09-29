@@ -24,7 +24,11 @@ describe("isSafeSelector", () => {
     "*",
     // Whole-value tests on text attributes; any operator on identity ones.
     'a[href="/login"]',
-    "img[alt~=avatar]",
+    "img[alt=avatar]",
+    // Hashed CSS-module classes and vendor ids: partial operators on class and id.
+    "[class*=CookieBanner_]",
+    "[id^=onetrust]",
+    "[role=row][aria-rowindex='2'] button",
     "[aria-expanded=true]",
     "[data-testid=row-1]",
     "div[contenteditable='true']",
@@ -48,6 +52,8 @@ describe("isSafeSelector", () => {
     "[data-testid^='avatar-b']",
     "ul:not(:has([data-testid*=bob]))",
     "input[name^=pass]",
+    // One word of a multi-word value.
+    "[title~=Bob]",
     // Text-bearing ARIA attributes aren't states: refused.
     "[aria-braillelabel^='b']",
     "[aria-rowindextext^=b]",

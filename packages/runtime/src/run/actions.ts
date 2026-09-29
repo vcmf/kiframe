@@ -417,11 +417,9 @@ async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | unde
   const locator = stripExtras(target)
   const fileInput = (l: Locator) => l.and(ctx.page.locator("input[type=file]"))
   // Counted through the one helper (§3 A8), hidden matches included: a hidden file input.
-  const r = await countUnderRule(ctx.page, locator, undefined, {
-    refine: fileInput,
-    hidden: true,
-  }).catch(() => undefined)
-  if (r?.count !== 1) return undefined
+  // (Errors surface: countUnderRule already reads a navigation as no count.)
+  const r = await countUnderRule(ctx.page, locator, undefined, { refine: fileInput, hidden: true })
+  if (r.count !== 1) return undefined
   const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact))
   const visible = await candidates.isVisible().catch(() => true)
   return visible ? undefined : candidates
