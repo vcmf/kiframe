@@ -50,6 +50,8 @@ export async function followSecretFields(
     // unsure measurement keeps the current rect; only a field known to be gone ends its blur.
     if (box === "unknown" && field.away === true && !elsewhere) box = field.lastBox ?? "unknown"
     if (box === undefined || box === "unknown") continue
+    // Back on its page: on screen from now (the capture is switching to it), not since it left.
+    const back = field.away === true && !elsewhere && box !== null
     field.away = elsewhere
     if (box !== null) field.lastBox = box
     const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
@@ -61,6 +63,7 @@ export async function followSecretFields(
       id: field.id,
       box: box ?? undefined,
       viewport,
+      ...(back && { since: Date.now() }),
     })
   }
 }

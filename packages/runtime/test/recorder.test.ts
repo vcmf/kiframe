@@ -508,18 +508,20 @@ steps:
       (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive",
     )
     // The popup is 800×600: its field at (300..500, 285..315) is centred at (0.5, 0.5).
-    const code = sensitive.find((e) => e.id.includes("acme.code") && e.rect.w > 0)
-    expect(code?.rect.x).toBeCloseTo(300 / 800, 2)
-    expect(code?.rect.y).toBeCloseTo(285 / 600, 2)
-    // Back on the opener (in the "done" step), the API key's blur is back before the next step.
+    const code = sensitive.find((e) => e.id.includes("acme.code"))?.boxes[0]?.rect
+    expect(code?.x).toBeCloseTo(300 / 800, 2)
+    expect(code?.y).toBeCloseTo(285 / 600, 2)
+    // Back on the opener (in the "done" step), the API key's blur is back before the next step,
+    // and not before the switch back (the frames before it show the popup).
     const lookStart =
       take.events.find((e) => e.kind === "step_start" && e.stepId === "look")?.t ?? 0
-    const keyEvents = sensitive.filter((e) => e.id.includes("acme.key"))
-    const goneAt = keyEvents.find((e) => e.rect.w === 0)?.t ?? Infinity
-    const back = keyEvents.find((e) => e.t > goneAt && e.rect.w > 0)
-    expect(back?.t ?? Infinity).toBeLessThanOrEqual(lookStart)
+    const key = sensitive.find((e) => e.id.includes("acme.key"))
+    const [before, ...later] = key?.boxes ?? []
+    const back = later.at(-1)
+    expect(back?.from ?? Infinity).toBeLessThanOrEqual(lookStart)
+    const codeStart = sensitive.find((e) => e.id.includes("acme.code"))?.t ?? Infinity
+    expect(back?.from ?? 0).toBeGreaterThan(codeStart)
     // Same field, same opener viewport: the same rect as before the popup (not scaled to 800×600).
-    const before = keyEvents.find((e) => e.rect.w > 0)
     expect(back?.rect).toEqual(before?.rect)
   })
 
@@ -571,10 +573,13 @@ steps:
       { outDir, scope: "test", sceneId: "test", resolveSecret: () => SECRET },
     )
     await context.close()
-    const rects = take.events.flatMap((e) => (e.kind === "sensitive" ? [e.rect.y] : []))
-    // Logged at type_start, then again after each step; after the scroll it's higher on screen.
-    expect(rects.length).toBeGreaterThanOrEqual(3)
-    expect(Math.min(...rects)).toBeLessThan(Math.max(...rects))
+    const [region, ...others] = take.events.filter((e) => e.kind === "sensitive")
+    expect(others).toEqual([])
+    // Measured at type_start, then after each step; after the scroll it's higher on screen (a
+    // box before, the hull of the move, a box after).
+    const ys = region?.kind === "sensitive" ? region.boxes.map((b) => b.rect.y) : []
+    expect(ys.length).toBeGreaterThanOrEqual(3)
+    expect(Math.min(...ys)).toBeLessThan(Math.max(...ys))
   })
 
   it("ends the blur once when the secret field is gone, and doesn't stall later steps", async () => {
@@ -596,9 +601,13 @@ steps:
     )
     await context.close()
     const sensitive = take.events.filter((e) => e.kind === "sensitive")
-    const gone = sensitive.filter((e) => e.rect.w === 0 && e.rect.h === 0)
-    expect(gone.length).toBe(1)
-    expect(sensitive.at(-1)).toBe(gone[0])
+    // One region, ended after the goto (plus the capture lag), well before the end of the take.
+    expect(sensitive).toHaveLength(1)
+    const away = take.events.find((e) => e.kind === "step_end" && e.stepId === "away")?.t ?? 0
+    expect(sensitive[0]?.kind === "sensitive" && sensitive[0].until).toBeLessThanOrEqual(away + 600)
+    expect(sensitive[0]?.kind === "sensitive" && sensitive[0].until).toBeLessThan(
+      take.meta.durationMs,
+    )
     expect(Date.now() - started).toBeLessThan(15_000)
   })
 

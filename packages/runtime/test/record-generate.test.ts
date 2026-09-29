@@ -10,7 +10,7 @@ import { startFixtureServer } from "./fixture-server.ts"
 
 // End to end: a real take goes through the generators and gives a valid composition.
 describe("record → generate", { timeout: 60_000 }, () => {
-  it("generates camera, ripples, captions and a blur from a recorded take", async () => {
+  it("generates camera, ripples and captions from a recorded take, its secret region in the take", async () => {
     const server = await startFixtureServer()
     const browser = await chromium.launch()
     try {
@@ -39,7 +39,9 @@ steps:
       expect(tracks.camera.length).toBeGreaterThan(0)
       expect(tracks.cursor.filter((c) => c.kind === "click-ripple")).toHaveLength(2)
       expect(tracks.captions.map((c) => c.id)).toEqual(["caption:open-new"])
-      expect(tracks.masks.map((m) => m.kind)).toEqual(["blur"])
+      // The secret field is a region of the take (drawn at render time), never a mask here.
+      expect(tracks.masks).toEqual([])
+      expect(take.events.filter((e) => e.kind === "sensitive")).toHaveLength(1)
       expect(tracks.clips.some((c) => c.mode === "cut" && c.reason === "setup")).toBe(true)
     } finally {
       await browser.close()

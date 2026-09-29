@@ -121,8 +121,9 @@ export type CaptionSegment = z.infer<typeof CaptionSegment>
 export const MaskSegment = z.strictObject({
   ...segmentBase,
   kind: z.enum(["blur", "pixelate", "highlight", "spotlight"]),
+  // Secret regions aren't masks of the composition: the compositor draws them from the take
+  // (SECRETS-DESIGN I4). A composition can only add masks.
   target: z.union([
-    z.strictObject({ sensitiveId: z.string().min(1) }),
     z.strictObject({ frameRef: z.string().min(1) }),
     z.strictObject({ rect: NRect }),
   ]),
@@ -163,7 +164,7 @@ export type KeystrokeSegment = z.infer<typeof KeystrokeSegment>
 /** Unguarded: internal only, use the guarded export. */
 const CompositionBase = z
   .strictObject({
-    version: z.literal(1),
+    version: z.literal(2),
     /** The take the auto segments were generated from. */
     take: z.strictObject({ key: z.string().min(1) }).optional(),
     /** Scene-level style overrides (between the project's and the output's; never the size). */

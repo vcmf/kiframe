@@ -24,18 +24,31 @@ export interface MigrationRegistry {
   migrations: Partial<Record<DocumentKind, Record<number, Migration>>>
 }
 
-/** The versions this Kiframe writes, and the migrations it knows (none yet: every kind is v1). */
+/** The versions this Kiframe writes, and the migrations it knows. */
 export const MIGRATIONS: MigrationRegistry = {
   current: {
     project: 1,
     "project-config": 1,
     scene: 1,
     scenario: 1,
-    composition: 1,
+    composition: 2,
     "org-settings": 1,
     "user-preferences": 1,
   },
-  migrations: {},
+  migrations: {
+    composition: {
+      // Secret masks left the composition (drawn from the take at render time, SECRETS-DESIGN I4).
+      1: (doc) => {
+        const tracks = (doc.tracks ?? {}) as Record<string, unknown>
+        if (!Array.isArray(tracks.masks)) return { ...doc }
+        const kept = (tracks.masks as unknown[]).filter((m) => {
+          const target = (m as { target?: unknown } | null)?.target
+          return !(typeof target === "object" && target !== null && "sensitiveId" in target)
+        })
+        return { ...doc, tracks: { ...tracks, masks: kept } }
+      },
+    },
+  },
 }
 
 const LABELS: Record<DocumentKind, string> = {
