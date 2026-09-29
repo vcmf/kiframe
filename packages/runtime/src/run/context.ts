@@ -43,9 +43,11 @@ export type RunnerEvent =
       box?: Box | undefined
       viewport?: { width: number; height: number } | undefined
       since?: number | undefined
-      /** The read (`Date.now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
+      /** The read (`now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
       at: number
       end: number
+      /** When the run switched to the page read (T3: nothing it saw was on screen before). */
+      shown: number
     }
   /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
   | {
@@ -55,10 +57,12 @@ export type RunnerEvent =
       box?: Box | undefined
       /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
       viewport?: { width: number; height: number } | undefined
-      /** The read (`Date.now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
+      /** The read (`now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
       at: number
       end: number
-      /** Back on screen since (ms, `Date.now()`): a page switch back. By default, since it left. */
+      /** When the run switched to the page read (T3: nothing it saw was on screen before). */
+      shown: number
+      /** Back on screen since (ms, `now()`): a page switch back. By default, since it left. */
       since?: number | undefined
     }
   /** A key combination was pressed (`press` action). */
@@ -188,7 +192,7 @@ export interface Ctx {
   }
   /** Elements a secret was written to in this run (SECRETS-DESIGN §3 A5: no copy or drag from them). */
   secretWritten: { page: Page; handle: ElementHandle }[]
-  /** When the driven page became the one on screen (`Date.now()`): a field back on it since then. */
+  /** When the driven page became the one on screen (`now()`): a field back on it since then. */
   pageShownAt: number
   /** A page switch is under way (the capture hasn't followed yet): the tick measures nothing. */
   switching: boolean

@@ -17,6 +17,7 @@ import {
   liveWritten,
   SAFE_SELECTOR_RULES,
 } from "../secret-state.ts"
+import { now } from "../clock.ts"
 
 // Everything about secret values: resolution, origin checks, the scrubber, field tracking and the text scan.
 
@@ -57,8 +58,10 @@ async function measureFields(
     (f) => f.typed === true && (which === "all" || (which === "here") === (f.page === page)),
   )
   if (fields.length === 0) return
-  // When the read started (T2; the events are handled later: a move's hull starts here).
-  const at = Date.now()
+  // When the read started (T2; the events are handled later: a move's hull starts here), and when
+  // the run switched to its page (nothing it saw was on screen before: T3).
+  const at = now()
+  const shown = ctx.pageShownAt
   // In parallel: every field costs a round trip or two after each step.
   // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
   // and comes back if the run returns to that page.
@@ -70,7 +73,7 @@ async function measureFields(
   const viewport = await viewportOf(page).catch(() => undefined)
   // Its end (T2): once the page drew what it read. No drawing: unsure, nothing changes.
   const here = fields.some((f) => f.page === page)
-  const end = here ? await drawnSince(page) : Date.now()
+  const end = here ? await drawnSince(page) : now()
   if (end === undefined) return
   for (const [i, field] of fields.entries()) {
     let box = measured[i]
@@ -91,7 +94,8 @@ async function measureFields(
       viewport,
       at,
       end,
-      ...(back && { since: ctx.pageShownAt }),
+      shown,
+      ...(back && { since: shown }),
     })
   }
 }
@@ -102,21 +106,34 @@ async function measureFields(
  * Undefined when it didn't draw within a second (a throttled or closing page: the read is unsure).
  */
 export async function drawnSince(page: Page): Promise<number | undefined> {
-  const drew = await page
-    .evaluate(
-      () =>
-        new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => resolve(false), 1000)
-          requestAnimationFrame(() =>
-            requestAnimationFrame(() => {
-              clearTimeout(timer)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const drew = await Promise.race([
+    page
+      .evaluate(
+        () =>
+          new Promise<boolean>((resolve) => {
+            // A hidden page draws no frames (nothing to film until it shows, and then from the
+            // DOM of that moment): drawn as of now.
+            if (document.visibilityState !== "visible") {
               resolve(true)
-            }),
-          )
-        }),
-    )
-    .catch(() => false)
-  return drew ? Date.now() : undefined
+              return
+            }
+            const t = setTimeout(() => resolve(false), 1000)
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                clearTimeout(t)
+                resolve(true)
+              }),
+            )
+          }),
+      )
+      .catch(() => false),
+    // A frozen page never runs the timer above: bounded here too (never hangs a step or the run).
+    new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), 1200)
+    }),
+  ]).finally(() => clearTimeout(timer))
+  return drew ? now() : undefined
 }
 
 /** How often the page is scanned for secret text while recording, and how long a scan may take. */
@@ -137,7 +154,8 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     if (!fresh) return
   }
   const run = async () => {
-    const started = Date.now()
+    const started = now()
+    const shown = ctx.pageShownAt
     // A value new to the scan (resolved just now) may have been on screen all along: its first
     // regions are blurred from the run's start (over-blurring that box is safe).
     if (ctx.secretValues.size !== state.values) {
@@ -156,12 +174,13 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     ])
       .catch(() => undefined)
       .finally(() => clearTimeout(timer))
-    if (boxes === undefined || page !== ctx.page) return
+    // (A switch waits for this scan: what it saw of its page is reported, never dropped.)
+    if (boxes === undefined) return
     const viewport = await viewportOf(page).catch(() => undefined)
     // T2: the read's end, once the page drew what it read (else unsure: nothing changes).
     const end = await drawnSince(page)
     if (end === undefined) return
-    const read = { at: started, end }
+    const read = { at: started, end, shown }
     const current = new Map<string, Box>()
     for (const b of boxes) if (b !== null) current.set(`${b.x},${b.y},${b.width},${b.height}`, b)
     for (const [key, box] of current) {

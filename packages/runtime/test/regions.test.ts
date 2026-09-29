@@ -64,6 +64,14 @@ describe("Regions (SECRETS-DESIGN §5 T2–T4)", () => {
     expect(f?.boxes.at(-1)?.from).toBe(1900 - M)
   })
 
+  it("backdates against the read's own page, not a switch that came after it", () => {
+    const r = new Regions()
+    // A scan of page A (shown since 100) handled after the capture switched to B at 900.
+    r.switched(900)
+    r.seen("t", "secret-text", base, { start: 800, end: 950, floor: 100 }, A, 500)
+    expect(r.finish(3000)[0]?.boxes[0]?.from).toBe(500 - M)
+  })
+
   it("lets an older read only add coverage, never replace the box", () => {
     const r = new Regions()
     r.seen("f", "secret-field", base, read(1000), B)

@@ -12,6 +12,7 @@ import {
   screenshotForModel,
   scrubSecrets,
 } from "../src/index.ts"
+import { drawnSince } from "../src/run/secrets.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -167,5 +168,24 @@ steps: [{ id: wait, action: pause, ms: 1500 }]
     // Both occurrences are on screen at the end: they last until the end of the take (so may one
     // gone after the last frame: the video holds that frame).
     expect(regions.filter((r) => r.until === take.meta.durationMs).length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe("drawnSince (SECRETS-DESIGN T2)", () => {
+  it("ends a read once the page drew, and is unsure (bounded) on a frozen page", async () => {
+    await page.setContent("<p>hi</p>")
+    expect(await drawnSince(page)).toBeGreaterThan(0)
+    // The page's main thread stuck for 5 s: its own timer can't fire, the Node side bounds it.
+    await page.evaluate(() => {
+      setTimeout(() => {
+        const until = Date.now() + 5000
+        while (Date.now() < until) {
+          // busy
+        }
+      }, 0)
+    })
+    const started = Date.now()
+    expect(await drawnSince(page)).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(2500)
   })
 })

@@ -17,6 +17,7 @@ import {
 import { expandSetup, runSetupEntry } from "./run/setup.ts"
 import { perform } from "./run/actions.ts"
 import { runOne } from "./run/step.ts"
+import { now } from "./clock.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
 // expanded, session presets skipped when the page already has their state, `ensure`), steps,
@@ -129,15 +130,15 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
-    pageShownAt: Date.now(),
+    pageShownAt: now(),
     switching: false,
     fieldsInflight: undefined,
     secretWritten: secrets.written,
     secretText: {
       shown: new Map(),
       next: 0,
-      lastScan: Date.now(),
-      runStart: Date.now(),
+      lastScan: now(),
+      runStart: now(),
       values: 0,
       inflight: undefined,
     },
@@ -174,6 +175,8 @@ export async function runScenario(
     options.recording === true
       ? setInterval(() => {
           if (current === undefined) return
+          // Never mid-switch (a scan of the next page would end the regions of the one still filmed).
+          if (ctx.switching) return
           followSecretText(ctx, current).catch(() => undefined)
           // Fields too, between step boundaries (a move's hull spans one tick, not a whole step);
           // never mid-switch, and never piled up.
