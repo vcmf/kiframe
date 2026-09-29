@@ -41,19 +41,11 @@ export const MIGRATIONS: MigrationRegistry = {
       1: (doc) => {
         const tracks = (doc.tracks ?? {}) as Record<string, unknown>
         if (!Array.isArray(tracks.masks)) return { ...doc }
+        // Every mask on a secret region goes: a blur of one is drawn from the take now, and a
+        // highlight or spotlight on one hid nothing and was never drawn (no renderer yet).
         const kept = (tracks.masks as unknown[]).filter((m) => {
-          const { target, kind, id } = (m ?? {}) as {
-            target?: unknown
-            kind?: unknown
-            id?: unknown
-          }
-          if (!(typeof target === "object" && target !== null && "sensitiveId" in target))
-            return true
-          // A blur of a secret region: the take draws it now. Anything else on one can't be kept.
-          if (kind === "blur" || kind === "pixelate") return false
-          throw new VersionError(
-            `mask "${String(id)}" (${String(kind)}) points at a secret region, which compositions can't do any more: remove it`,
-          )
+          const { target } = (m ?? {}) as { target?: unknown }
+          return !(typeof target === "object" && target !== null && "sensitiveId" in target)
         })
         return { ...doc, tracks: { ...tracks, masks: kept } }
       },

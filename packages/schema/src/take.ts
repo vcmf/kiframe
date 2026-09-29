@@ -23,6 +23,13 @@ const base = {
   stepId: StepId.optional(),
 }
 
+/**
+ * Frames can show the page as it was up to this long before (the capture lags the DOM): what the
+ * page stopped showing at `s` stays covered until the first frame at or after `s` plus this
+ * (SECRETS-DESIGN §5 R4; the R8 budget until the lag is measured).
+ */
+export const CAPTURE_LAG_MS = 500
+
 /** A box of a secret region, over its own span. */
 const RegionBox = z
   .strictObject({ from: Timestamp, until: Timestamp, rect: ViewportRect })
@@ -115,7 +122,10 @@ export type CursorSample = z.infer<typeof CursorSampleBase>
 /** Unguarded: internal only, use the guarded export. */
 const TakeMetaBase = z.strictObject({
   /** 2: secret regions carry their spans (SECRETS-DESIGN §5); version 1 takes are re-recorded. */
-  version: z.literal(2),
+  version: z.literal(2, {
+    error:
+      "recorded by an older Kiframe (take version 1: secret regions without spans): record it again",
+  }),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),

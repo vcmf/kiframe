@@ -276,7 +276,7 @@ describe("overlays", () => {
             source: "manual",
             kind: "blur",
             at: { ms: 5200 },
-            until: { ms: 5450 },
+            until: { ms: 5250 },
             target: { rect: { x: 0, y: 0, w: 0.1, h: 0.1 } },
           },
         ],
@@ -286,7 +286,7 @@ describe("overlays", () => {
     const at = (source: number) => sceneAt(p, p.map.toOutput(source)).blurs.length
     expect(at(1200)).toBe(2)
     expect(at(5400)).toBe(2)
-    // After the manual mask and its 250 ms tail (source 5800): the region only.
+    // After the manual mask and its tail (source 5800): the region only.
     expect(at(6000)).toBe(1)
   })
 

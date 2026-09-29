@@ -7,6 +7,7 @@ import { type Ctx, firstLine, MIN_TIMEOUT_MS, type RunOptions } from "./run/cont
 import { applyHide, hideCss } from "./run/interrupts.ts"
 import { switchPage } from "./run/pages.ts"
 import {
+  followSecretFields,
   followSecretText,
   pathOnly,
   scrubError,
@@ -129,6 +130,8 @@ export async function runScenario(
     secretValues,
     secretFields: [],
     pageShownAt: Date.now(),
+    switching: false,
+    fieldsInflight: undefined,
     secretWritten: secrets.written,
     secretText: {
       shown: new Map(),
@@ -170,7 +173,13 @@ export async function runScenario(
   const scan =
     options.recording === true
       ? setInterval(() => {
-          if (current !== undefined) followSecretText(ctx, current).catch(() => undefined)
+          if (current === undefined) return
+          followSecretText(ctx, current).catch(() => undefined)
+          // Fields too, between step boundaries (a move's hull spans one tick, not a whole step);
+          // never mid-switch, and never piled up.
+          if (!ctx.switching && ctx.fieldsInflight === undefined) {
+            followSecretFields(ctx, current).catch(() => undefined)
+          }
         }, TEXT_SCAN_MS)
       : undefined
   try {
