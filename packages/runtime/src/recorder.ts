@@ -21,16 +21,20 @@ import {
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import type { Box } from "./motion.ts"
+import { Regions } from "./regions.ts"
+import type { ReadTimes, RegionReport } from "./run/context.ts"
+import { placed as placeBox } from "./run/secrets.ts"
 import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
+import { now } from "./clock.ts"
 
 // The recorder (docs/OBJECT-MODEL.md §3): replays a scenario through the runner while capturing the
 // page, and writes a take: frames.webm, events.jsonl, cursor.jsonl, shots/<stepId>.jpg, meta.json.
 // Every record is validated against @kiframe/schema before it's written.
 //
 // Clock: `page.screencast` frame timestamps are epoch milliseconds, the same clock as Date.now()
-// (Phase 0 finding F1), so frames, runner events and cursor samples share one clock. t = 0 is the
-// start of the capture.
+// (`now()`, Phase 0 finding F1), so frames, runner events, reads and cursor samples share one clock
+// (SECRETS-DESIGN T1). t = 0 is the start of the capture.
 
 export interface RecordOptions extends RunOptions {
   /** The take directory to create (must not contain anything worth keeping: it's overwritten). */
@@ -80,8 +84,9 @@ export async function recordScenario(
     // The viewport rects are normalized against: the driven page's (a popup can have its own size).
     let current = viewport
     const recordedAt = new Date()
-    const t0 = Date.now()
-    const at = () => Math.max(0, Date.now() - t0)
+    // The take's start (T1): frames, reads and events on one clock.
+    const t0 = now()
+    const at = () => Math.max(0, now() - t0)
     const norm = (x: number, y: number) => ({
       x: clamp01(x / current.width),
       y: clamp01(y / current.height),
@@ -123,36 +128,50 @@ export async function recordScenario(
     const castOptions: Parameters<Page["screencast"]["start"]>[0] = {
       size: await castSize(page, viewport),
       quality: options.quality ?? 85,
-      onFrame: ({ data, timestamp }) => {
-        // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
-        if (stopped) return
-        const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
-        // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
-        pendingWrites.push(track(writeFile(join(framesDir, file), data)))
-        frames.push({ file, t: Math.max(0, timestamp - t0) })
-        const size = jpegSize(data)
-        if (size !== undefined) {
-          if (
-            frameSize !== undefined &&
-            !sizeChanged &&
-            (size.width !== frameSize.width || size.height !== frameSize.height)
-          ) {
-            sizeChanged = true
-            warnings.push(
-              `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
-            )
-          }
-          frameSize ??= size
+      onFrame: (frame) => onFrame(frame, 0),
+    }
+    // Which capture is current (T4): a page's frames arriving after the capture left it are dropped,
+    // and the next page's count from the switch.
+    let generation = 0
+    let switchedAt = 0
+    let lastFrameT = 0
+    function onFrame({ data, timestamp }: { data: Buffer; timestamp: number }, of: number) {
+      // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
+      if (stopped || of !== generation) return
+      const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
+      // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
+      pendingWrites.push(track(writeFile(join(framesDir, file), data)))
+      // Kept in one order (T4): each frame at or after the one before (the video is encoded in this
+      // order, and a region's end is found in it), the next page's from the switch.
+      lastFrameT = Math.max(0, timestamp - t0, switchedAt, lastFrameT)
+      frames.push({ file, t: lastFrameT })
+      const size = jpegSize(data)
+      if (size !== undefined) {
+        if (
+          frameSize !== undefined &&
+          !sizeChanged &&
+          (size.width !== frameSize.width || size.height !== frameSize.height)
+        ) {
+          sizeChanged = true
+          warnings.push(
+            `frame size changed mid-take (${frameSize.width}×${frameSize.height} → ${size.width}×${size.height})`,
+          )
         }
-        lastFrame = data
-        for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
-      },
+        frameSize ??= size
+      }
+      lastFrame = data
+      for (const stepId of shotsAwaitingFrame.splice(0)) writeShot(stepId, data)
     }
     // The page being filmed: the runner may follow a tab or popup (and come back), the capture
     // follows it on the same clock (frame timestamps are epoch milliseconds whatever the page).
     let capturing = page
     await capturing.screencast.start(castOptions)
     const onPageSwitch = async (next: Page) => {
+      // Frames before now show the previous page: a region of this one starts here at the earliest.
+      // After every frame of the page it leaves (one drawn within this millisecond, already kept):
+      // the next page's frames come after it, and a left region lasts past it.
+      switchedAt = Math.max(at(), lastFrameT + 0.001)
+      const of = ++generation
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
       // The next step's shot must be of this page, not the last frame of the previous one.
@@ -163,7 +182,11 @@ export async function recordScenario(
       // A popup that closed right after loading: nothing to film (the runner returns to its
       // opener at the next step boundary).
       await next.screencast
-        .start({ ...castOptions, size: await castSize(next, current) })
+        .start({
+          ...castOptions,
+          onFrame: (f) => onFrame(f, of),
+          size: await castSize(next, current),
+        })
         .catch((error: unknown) => {
           if (!next.isClosed()) throw error
         })
@@ -186,7 +209,47 @@ export async function recordScenario(
           `dropped a ${(event as { kind?: string }).kind ?? "?"} event: ${parsed.error.issues[0]?.message ?? "invalid"}`,
         )
     }
-    const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
+    // Secret regions, written once with their spans when the take ends (SECRETS-DESIGN §5).
+    const regions = new Regions()
+    // A read's report of a region (SECRETS-DESIGN T2–T4), on the take's clock (T1).
+    const measured = (
+      id: string,
+      why: "secret-field" | "secret-text",
+      step: StepRef,
+      read: ReadTimes & RegionReport,
+    ) => {
+      const when = {
+        start: Math.max(0, read.at - t0),
+        end: Math.max(0, read.end - t0),
+        floor: Math.max(0, read.shown - t0),
+      }
+      switch (read.state) {
+        case "left":
+          // Left with its page (T4): until the next page's first frame, from the capture's own
+          // switch time (a leave is sent right after the capture switched).
+          regions.leave(id, switchedAt)
+          return
+        case "gone":
+          regions.gone(id, when)
+          return
+        case "at": {
+          const where = {
+            phase: step.phase,
+            ...(step.stepId !== undefined && { stepId: step.stepId }),
+          }
+          // T8: padded 4 CSS pixels on each side (glyph edges, sub-pixel moves).
+          const { box } = read
+          const padded = {
+            x: box.x - 4,
+            y: box.y - 4,
+            width: box.width + 8,
+            height: box.height + 8,
+          }
+          const since = read.since === undefined ? undefined : Math.max(0, read.since - t0)
+          regions.seen(id, why, where, when, rect(padded, read.viewport), since)
+        }
+      }
+    }
     const interruptStarts = new Map<string, number>()
     const clickedSteps = new Set<string>()
     const handle = (e: RunnerEvent) => {
@@ -247,39 +310,27 @@ export async function recordScenario(
           // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
           // whole frame is marked (fails closed: better a blurred frame than a visible secret).
           if (e.secret !== undefined && e.kind === "type_start") {
-            push({
-              ...base(e.step),
-              kind: "sensitive",
-              id: e.sensitiveId ?? `secret:${e.secret}`,
-              rect: box === undefined ? fullFrame : rect(box),
-              why: "secret-field",
+            const id = e.sensitiveId ?? `secret:${e.secret}`
+            // A box of no size (a field still scaling in) is no box: the whole frame. Read now, on
+            // the page the run switched to at `shown` (T3).
+            const t = now()
+            const read = { at: t, end: t, shown: e.shown ?? t }
+            measured(id, "secret-field", e.step, {
+              ...read,
+              ...placeBox(box, e.viewport),
+              since: t,
             })
           }
           break
         }
         case "secret_text":
-          push({
-            ...base(e.step),
-            // Backdated to the last scan that didn't see it: no frame shows it unblurred. (Its end
-            // needs no margin: the compositor keeps a mask past it for the capture's lag.)
-            ...(e.since !== undefined && { t: Math.max(0, e.since - t0) }),
-            kind: "sensitive",
-            id: e.id,
-            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
-            why: "secret-text",
-          })
+          // A new region is backdated to the last scan that didn't see it (T3).
+          measured(e.id, "secret-text", e.step, e)
           break
         case "secret_field":
-          // The blur follows the field: a new rect where it is now. A field that's gone (no box)
-          // shows nothing: an empty rect ends its blur.
-          push({
-            ...base(e.step),
-            kind: "sensitive",
-            id: e.id,
-            // Normalized in the viewport it was measured in (measured before the capture switched).
-            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
-            why: "secret-field",
-          })
+          // The blur follows the field (normalized in the viewport it was measured in, before the
+          // capture switched).
+          measured(e.id, "secret-field", e.step, e)
           break
         case "key":
           push({ ...base(e.step), kind: "key", key: e.keys })
@@ -354,8 +405,39 @@ export async function recordScenario(
     try {
       await Promise.all(pendingWrites)
       if (writeError !== undefined) throw writeError
-      // In time order: a secret-text region is reported backdated (stable: same-time events keep
-      // their order).
+      // The secret regions, closed at the end of the scene; in time order (a region starts
+      // backdated; stable: same-time events keep their order).
+      // The first frame at or after `t` (frames sorted once; they may arrive out of order).
+      const times = frames.map((f) => f.t).sort((a, b) => a - b)
+      const frameAfter = (t: number) => {
+        let lo = 0
+        let hi = times.length
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1
+          if ((times[mid] ?? Infinity) < t) lo = mid + 1
+          else hi = mid
+        }
+        return times[lo]
+      }
+      for (const region of regions.finish(durationMs, frameAfter)) {
+        if (TakeEvent.safeParse(region).success) push(region)
+        else {
+          // Never dropped (the secret would show): the whole frame over its whole span.
+          warnings.push(`secret region ${region.id}: invalid box, the whole frame is blurred`)
+          const whole = { x: 0, y: 0, w: 1, h: 1 }
+          const from = Number.isFinite(region.t) ? region.t : 0
+          const until = Number.isFinite(region.until) ? region.until : durationMs
+          push({
+            t: from,
+            phase: "setup",
+            kind: "sensitive",
+            id: region.id,
+            why: region.why,
+            until,
+            boxes: [{ from, until, rect: whole }],
+          })
+        }
+      }
       events.sort((a, b) => a.t - b.t)
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
       writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))

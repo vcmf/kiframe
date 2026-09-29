@@ -12,6 +12,7 @@ import {
   screenshotForModel,
   scrubSecrets,
 } from "../src/index.ts"
+import { drawnSince } from "../src/run/secrets.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -158,20 +159,36 @@ steps: [{ id: wait, action: pause, ms: 1500 }]
       project,
       { outDir: dir, knownSecretValues: [SECRET], timeoutMs: 1500 },
     )
-    const regions = new Map<string, boolean[]>()
-    for (const e of take.events) {
-      if (e.kind !== "sensitive" || e.why !== "secret-text") continue
-      const shown = e.rect.w > 0 && e.rect.h > 0
-      regions.set(e.id, [...(regions.get(e.id) ?? []), shown])
-    }
-    // Each region: shown once, then at most gone once.
-    for (const states of regions.values()) {
-      expect(states[0]).toBe(true)
-      expect(states.slice(1).every((s) => !s)).toBe(true)
-      expect(states.length).toBeLessThanOrEqual(2)
-    }
-    // Both occurrences are on screen at the end: two regions still open.
-    const open = [...regions.values()].filter((s) => s.length === 1)
-    expect(open).toHaveLength(2)
+    const regions = take.events.filter(
+      (e): e is Extract<typeof e, { kind: "sensitive" }> =>
+        e.kind === "sensitive" && e.why === "secret-text",
+    )
+    // Each region: one box, never back once gone.
+    for (const region of regions) expect(region.boxes).toHaveLength(1)
+    // Both occurrences are on screen at the end: they last until the end of the take (so may one
+    // gone after the last frame: the video holds that frame).
+    expect(regions.filter((r) => r.until === take.meta.durationMs).length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe("drawnSince (SECRETS-DESIGN T2)", () => {
+  it("ends a read once the page drew, and is unsure (bounded) on a frozen page", async () => {
+    // Its own page: left busy for seconds after the test.
+    const frozen = await browser.newPage()
+    await frozen.setContent("<p>hi</p>")
+    expect(await drawnSince(frozen)).toBeGreaterThan(0)
+    // The page's main thread stuck for 5 s: its own timer can't fire, the Node side bounds it.
+    await frozen.evaluate(() => {
+      setTimeout(() => {
+        const until = Date.now() + 5000
+        while (Date.now() < until) {
+          // busy
+        }
+      }, 0)
+    })
+    const started = Date.now()
+    expect(await drawnSince(frozen)).toBeUndefined()
+    expect(Date.now() - started).toBeLessThan(2500)
+    void frozen.close({ runBeforeUnload: false }).catch(() => undefined)
   })
 })

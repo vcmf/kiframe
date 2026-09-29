@@ -1,11 +1,12 @@
-import type {
-  Anchor,
-  ClipSegment,
-  CursorSample,
-  Scenario,
-  Step,
-  TakeEvent,
-  TakeMeta,
+import {
+  type Anchor,
+  type ClipSegment,
+  type CursorSample,
+  parseEventAnchor,
+  type Scenario,
+  type Step,
+  type TakeEvent,
+  type TakeMeta,
 } from "@kiframe/schema"
 
 // A take seen as a timeline: where each on-camera step starts and ends, and how anchors
@@ -31,7 +32,10 @@ export interface Timeline {
   steps: StepSpan[]
   byId: Map<string, StepSpan>
   duration: number
+  /** The take's events, but its secret regions (spans, not moments: nothing anchors to them). */
   events: TakeEvent[]
+  /** The take's secret regions: drawn at render time, whatever the composition says (I4). */
+  regions: Extract<TakeEvent, { kind: "sensitive" }>[]
   cursor: CursorSample[]
 }
 
@@ -71,7 +75,10 @@ export function buildTimeline(
       steps,
       byId: new Map(steps.map((s) => [s.id, s])),
       duration,
-      events: take.events,
+      events: take.events.filter((e) => e.kind !== "sensitive"),
+      regions: take.events.filter(
+        (e): e is Extract<TakeEvent, { kind: "sensitive" }> => e.kind === "sensitive",
+      ),
       cursor: take.cursor,
     },
     missing,
@@ -97,10 +104,11 @@ export function resolveAnchor(anchor: Anchor, tl: Timeline): number | undefined 
     if (span === undefined) return undefined
     return clamp((anchor.edge === "start" ? span.start : span.end) + offset)
   }
-  const match = /^(.+):([a-z_]+)(?::(\d+))?$/.exec(anchor.event)
-  if (match === null) return undefined
-  const [, stepId, kind, n] = match
-  const found = tl.events.filter((e) => e.stepId === stepId && e.kind === kind)[Number(n ?? 0)]
+  const parsed = parseEventAnchor(anchor.event)
+  if (parsed === undefined) return undefined
+  const found = tl.events.filter((e) => e.stepId === parsed.step && e.kind === parsed.kind)[
+    parsed.n
+  ]
   return found === undefined ? undefined : clamp(found.t + offset)
 }
 

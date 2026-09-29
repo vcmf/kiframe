@@ -336,11 +336,23 @@ describe("round 3: observed rects", () => {
       kind: "sensitive",
       id: "pw",
       why: "secret-field",
+      until: 10,
     }
-    expect(TakeEvent.safeParse({ ...e, rect: { x: 0.2, y: -0.05, w: 0.3, h: 0.1 } }).success).toBe(
-      true,
-    )
-    expect(TakeEvent.safeParse({ ...e, rect: { x: 0.2, y: 0.3, w: 0.3, h: 0 } }).success).toBe(true)
+    const boxes = (rect: object) => [{ from: 0, until: 10, rect }]
+    expect(
+      TakeEvent.safeParse({ ...e, boxes: boxes({ x: 0.2, y: -0.05, w: 0.3, h: 0.1 }) }).success,
+    ).toBe(true)
+    expect(
+      TakeEvent.safeParse({ ...e, boxes: boxes({ x: 0.2, y: 0.3, w: 0.3, h: 0 }) }).success,
+    ).toBe(true)
+    // A box outside its region's span, or a region without boxes, is refused.
+    expect(
+      TakeEvent.safeParse({
+        ...e,
+        boxes: [{ from: 0, until: 11, rect: { x: 0, y: 0, w: 1, h: 1 } }],
+      }).success,
+    ).toBe(false)
+    expect(TakeEvent.safeParse({ ...e, boxes: [] }).success).toBe(false)
   })
 })
 
@@ -1140,5 +1152,33 @@ describe("round 13", () => {
       CursorSample.safeParse({ t: 0, p: { x: 0.1, y: 0.1 }, pressed: false, css: "{{secrets.x}}" })
         .success,
     ).toBe(false)
+  })
+})
+
+describe("secret regions and the composition (SECRETS-DESIGN I4, T7)", () => {
+  it("only lets a blur or pixelate name a secret region (it only adds)", () => {
+    const mask = (kind: string) => ({
+      id: "m",
+      source: "manual",
+      kind,
+      at: { ms: 0 },
+      until: { ms: 10 },
+      target: { sensitiveId: "secret:x" },
+    })
+    const ok = (m: object) => Composition.safeParse({ version: 1, tracks: { masks: [m] } }).success
+    expect(ok(mask("blur"))).toBe(true)
+    expect(ok(mask("spotlight"))).toBe(false)
+  })
+
+  it("refuses a take event of the old format (a region without its span): re-record", () => {
+    const old = {
+      t: 0,
+      phase: "setup",
+      kind: "sensitive",
+      id: "s",
+      rect: { x: 0, y: 0, w: 1, h: 1 },
+      why: "secret-field",
+    }
+    expect(TakeEvent.safeParse(old).success).toBe(false)
   })
 })

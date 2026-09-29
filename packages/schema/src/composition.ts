@@ -7,6 +7,18 @@ import { StyleOverride } from "./style.ts"
 // The edit: parallel typed tracks of segments (docs/OBJECT-MODEL.md §4).
 // Segments are anchored to steps/events in SOURCE time. `clips` maps source → output time.
 
+/**
+ * An event anchor's parts: `<stepId>:<kind>` or `<stepId>:<kind>:<n>` names the step's n-th event of
+ * that kind (no `n`: the first, 0). One parser wherever anchors are read.
+ */
+export function parseEventAnchor(
+  event: string,
+): { step: string; kind: string; n: number } | undefined {
+  const match = /^(.+):([a-z_]+)(?::(\d+))?$/.exec(event)
+  if (match === null) return undefined
+  return { step: match[1] ?? "", kind: match[2] ?? "", n: Number(match[3] ?? 0) }
+}
+
 export const Anchor = z.union([
   z.strictObject({
     step: StepId,
@@ -118,15 +130,28 @@ export const CaptionSegment = z.strictObject({
 })
 export type CaptionSegment = z.infer<typeof CaptionSegment>
 
-export const MaskSegment = z.strictObject({
-  ...segmentBase,
-  kind: z.enum(["blur", "pixelate", "highlight", "spotlight"]),
-  target: z.union([
-    z.strictObject({ sensitiveId: z.string().min(1) }),
-    z.strictObject({ frameRef: z.string().min(1) }),
-    z.strictObject({ rect: NRect }),
-  ]),
-})
+export const MaskSegment = z
+  .strictObject({
+    ...segmentBase,
+    kind: z.enum(["blur", "pixelate", "highlight", "spotlight"]),
+    // Secret regions are drawn from the take whatever the composition says (SECRETS-DESIGN I4): a
+    // mask naming one only adds (a user's longer blur, drawn at the region's box of the moment).
+    target: z.union([
+      z.strictObject({ sensitiveId: z.string().min(1) }),
+      z.strictObject({ frameRef: z.string().min(1) }),
+      z.strictObject({ rect: NRect }),
+    ]),
+  })
+  .refine(
+    (m) =>
+      !("sensitiveId" in m.target) ||
+      (m.source === "manual" && (m.kind === "blur" || m.kind === "pixelate")),
+    {
+      // (An auto one is an older composition's: the take draws its regions now, T7.)
+      message: "only a user's blur or pixelate names a secret region (the take draws them)",
+      path: ["target"],
+    },
+  )
 export type MaskSegment = z.infer<typeof MaskSegment>
 
 export const CursorSegment = z.strictObject({

@@ -7,6 +7,7 @@ import { type Ctx, firstLine, MIN_TIMEOUT_MS, type RunOptions } from "./run/cont
 import { applyHide, hideCss } from "./run/interrupts.ts"
 import { switchPage } from "./run/pages.ts"
 import {
+  followSecretFields,
   followSecretText,
   pathOnly,
   scrubError,
@@ -16,6 +17,7 @@ import {
 import { expandSetup, runSetupEntry } from "./run/setup.ts"
 import { perform } from "./run/actions.ts"
 import { runOne } from "./run/step.ts"
+import { now } from "./clock.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
 // expanded, session presets skipped when the page already has their state, `ensure`), steps,
@@ -128,12 +130,17 @@ export async function runScenario(
     setCurrent: (step) => (current = step),
     secretValues,
     secretFields: [],
+    secretFieldCount: 0,
+    pageShownAt: now(),
+    switching: false,
+    stuckReads: new WeakMap(),
+    fieldsInflight: undefined,
     secretWritten: secrets.written,
     secretText: {
       shown: new Map(),
       next: 0,
-      lastScan: Date.now(),
-      runStart: Date.now(),
+      lastScan: now(),
+      runStart: now(),
       values: 0,
       inflight: undefined,
     },
@@ -169,7 +176,15 @@ export async function runScenario(
   const scan =
     options.recording === true
       ? setInterval(() => {
-          if (current !== undefined) followSecretText(ctx, current).catch(() => undefined)
+          if (current === undefined) return
+          // Never mid-switch (a scan of the next page would end the regions of the one still filmed).
+          if (ctx.switching) return
+          followSecretText(ctx, current).catch(() => undefined)
+          // Fields too, between step boundaries (a move's hull spans one tick, not a whole step);
+          // never piled up.
+          if (ctx.fieldsInflight === undefined) {
+            followSecretFields(ctx, current).catch(() => undefined)
+          }
         }, TEXT_SCAN_MS)
       : undefined
   try {
@@ -270,6 +285,8 @@ export async function runScenario(
     clearInterval(scan)
     // A scan still running reports before the run ends (the recorder writes right after).
     await ctx.secretText.inflight?.catch(() => undefined)
+    // And a field read (T5).
+    await ctx.fieldsInflight?.catch(() => undefined)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)

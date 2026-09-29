@@ -5,69 +5,261 @@ import {
   SceneId,
   type Target,
 } from "@kiframe/schema"
-import type { ElementHandle, Locator } from "playwright"
+import type { ElementHandle, Locator, Page } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { isNavigationError, viewportOf } from "../targets.ts"
-import { type Ctx, firstLine, guard } from "./context.ts"
+import { type Ctx, firstLine, guard, type RegionReport, type Viewport } from "./context.ts"
 import {
   containsKnownValue,
   isSafeSelector,
   liveWritten,
   SAFE_SELECTOR_RULES,
 } from "../secret-state.ts"
+import { now } from "../clock.ts"
 
 // Everything about secret values: resolution, origin checks, the scrubber, field tracking and the text scan.
 
+/** The page a read is of, and when the run switched to it (T3); by default the driven page. */
+export interface ReadOf {
+  page: Page
+  shown: number
+}
+
 /**
- * Re-measures every field a secret was typed into and reports when it moved (the blur follows it)
- * or is gone (navigated away, removed: nothing left to blur). Only changes are reported. Bounded,
- * never fails a step.
+ * Re-reads every field a secret was typed into, on a page (the driven one by default, or the one
+ * the capture is about to leave: `of`), and reports where it is (the blur follows it) or that it's
+ * gone (navigated away, removed: nothing left to blur). A field on another page was left with its
+ * page (`leaveSecretFields`). Bounded, never fails a step.
  */
-export async function followSecretFields(
-  ctx: Ctx,
-  step: StepRef,
-  which: "all" | "here" | "elsewhere" = "all",
-): Promise<void> {
-  const fields = ctx.secretFields.filter(
-    (f) => which === "all" || (which === "here") === (f.page === ctx.page),
-  )
+export async function followSecretFields(ctx: Ctx, step: StepRef, of?: ReadOf): Promise<void> {
+  // One at a time (the recording tick reads too): a later one waits for the one running.
+  const previous = ctx.fieldsInflight
+  const run = (async () => {
+    await previous?.catch(() => undefined)
+    await readFields(ctx, step, of ?? { page: ctx.page, shown: ctx.pageShownAt })
+  })()
+  ctx.fieldsInflight = run
+  try {
+    await run
+  } finally {
+    if (ctx.fieldsInflight === run) ctx.fieldsInflight = undefined
+  }
+}
+
+/** Reads a page's fields and moves each through its state (`Ctx` secretFields, T2–T4). */
+async function readFields(ctx: Ctx, step: StepRef, of: ReadOf): Promise<void> {
+  // The page read, fixed throughout (a switch may start while this runs). Followed from its
+  // type_start only (T3: the empty field isn't blurred before typing). A field known gone is read
+  // too: a re-mounted one comes back mid-step (the switch read settles a field left with its page).
+  const { page } = of
+  const fields = ctx.secretFields.filter((f) => f.state !== "pending" && f.page === page)
   if (fields.length === 0) return
-  // In parallel: every field costs a round trip or two after each step.
-  // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
-  // and comes back if the run returns to that page.
-  const measured = await Promise.all(
-    fields.map((field) =>
-      field.page === ctx.page ? measureSecretField(field) : Promise.resolve(null),
-    ),
-  )
-  const viewport = await viewportOf(ctx.page).catch(() => undefined)
+  // When the read started (T2; the events are handled later: a move's hull starts here), and when
+  // the run switched to its page (nothing it saw was on screen before: T3).
+  const times = { at: now(), shown: of.shown }
+  // Bounded as a whole (a frozen page): what it read is used only if it finished in time. The page
+  // is only waited on (its viewport, its drawing) when the read has something to report.
+  const read = await boundedRead(ctx, page, async () => {
+    const measured = await Promise.all(fields.map((field) => measureSecretField(field)))
+    const reports = measured.some((m, i) => m !== null || fields[i]?.state === "on")
+    if (!reports) return { measured, viewport: undefined, end: now() }
+    const viewport = await viewportOf(page).catch(() => undefined)
+    // Its end (T2): once the page drew what it read. No drawing: unsure.
+    const end = await drawnSince(page)
+    return end === undefined ? undefined : { measured, viewport, end }
+  })
+  const end = read?.end ?? now()
   for (const [i, field] of fields.entries()) {
-    let box = measured[i]
-    const elsewhere = field.page !== ctx.page
-    // Unsure, just back on its page: the last real rect comes back (fails closed). Otherwise an
-    // unsure measurement keeps the current rect; only a field known to be gone ends its blur.
-    if (box === "unknown" && field.away === true && !elsewhere) box = field.lastBox ?? "unknown"
-    if (box === undefined || box === "unknown") continue
-    field.away = elsewhere
-    if (box !== null) field.lastBox = box
-    const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
-    if (key === field.last) continue
-    field.last = key
+    const report = (r: RegionReport, at = times.at) =>
+      ctx.options.onEvent?.({ kind: "secret_field", step, id: field.id, ...times, at, end, ...r })
+    // An unsure read: every field "unknown" (never `??`: null is "gone").
+    const box = read === undefined ? "unknown" : read.measured[i]
+    if (box === "unknown" || box === undefined) {
+      // Unsure, just back on its page: its last box comes back (the whole frame without one), as
+      // read from the switch (a move's hull then covers from there too). Fails closed.
+      if (field.state === "left") {
+        report({ ...placed(field.lastBox, field.lastViewport), since: times.shown }, times.shown)
+        field.state = "on"
+      }
+      continue
+    }
+    if (box === null) {
+      // Gone: reported only while its region is open (a removed field is read again and again);
+      // a return is dated from the last read that found it gone (T3).
+      if (field.state === "on") report({ state: "gone" })
+      field.state = "gone"
+      field.goneReadAt = times.at
+      continue
+    }
+    // Back on its page: on screen since the run switched to it; back after a "gone": since the
+    // last read that found it gone.
+    const since =
+      field.state === "left" ? times.shown : field.state === "gone" ? field.goneReadAt : undefined
+    report({ ...placed(box, read?.viewport), ...(since !== undefined && { since }) })
+    field.state = "on"
+    // Its last placement: a box with the viewport it was measured in; without one, none (an
+    // unsure return then falls back to the whole frame, never to an older, stale box).
+    field.lastBox = read?.viewport === undefined ? undefined : box
+    field.lastViewport = read?.viewport
+  }
+}
+
+/**
+ * A box to report: where it was measured, or the whole frame when there's no usable box or no
+ * viewport to place it in (fails closed: a box normalized in another page's viewport would miss).
+ */
+export function placed(
+  box: Box | undefined,
+  viewport: Viewport | undefined,
+): Extract<RegionReport, { state: "at" }> {
+  if (box === undefined || viewport === undefined || !usableBox(box)) {
+    return { state: "at", ...WHOLE_FRAME }
+  }
+  return { state: "at", box, viewport }
+}
+
+/** The whole frame, as a box in its own unit viewport (the fallback without a placed box). */
+export const WHOLE_FRAME = {
+  box: { x: 0, y: 0, width: 1, height: 1 },
+  viewport: { width: 1, height: 1 },
+} as const
+
+/** A page's viewport, or undefined when it can't be read within `ms` (the timer cleared). */
+export async function viewportWithin(page: Page, ms: number): Promise<Viewport | undefined> {
+  const fixed = page.viewportSize()
+  if (fixed !== null) return fixed
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    viewportOf(page).catch(() => undefined),
+    new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ms)
+    }),
+  ]).finally(() => clearTimeout(timer))
+}
+
+/** A box that shows something (the one definition of "no size": gone at the source). */
+export function usableBox(box: Box): boolean {
+  return Number.isFinite(box.x + box.y + box.width + box.height) && box.width > 0 && box.height > 0
+}
+
+/**
+ * The capture left the fields' page (T4): their open regions are left now (they last until the
+ * next page's first frame), then the fields of pages that closed are dropped (their handles
+ * released). No read of any page: a stuck page never keeps them open.
+ */
+export function leaveSecretFields(ctx: Ctx, step: StepRef): void {
+  const t = now()
+  for (const field of ctx.secretFields) {
+    if (field.page === ctx.page || field.state !== "on") continue
+    field.state = "left"
     ctx.options.onEvent?.({
       kind: "secret_field",
       step,
       id: field.id,
-      box: box ?? undefined,
-      viewport,
+      at: t,
+      end: t,
+      shown: ctx.pageShownAt,
+      state: "left",
     })
+  }
+  for (const field of ctx.secretFields.filter((f) => f.page.isClosed())) {
+    ctx.secretFields.splice(ctx.secretFields.indexOf(field), 1)
+    void field.handle?.dispose().catch(() => undefined)
   }
 }
 
-/** How often the page is scanned for secret text while recording, and how long a scan may take. */
+/**
+ * T2: the end of a read of `page`: when the page has run two rendering updates since (a busy page
+ * can't draw before its task is done, so frames after it show at least what the read saw).
+ * Undefined when it didn't draw within a second (a throttled or closing page: the read is unsure).
+ */
+export async function drawnSince(page: Page): Promise<number | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const drew = await Promise.race([
+    page
+      .evaluate(
+        () =>
+          new Promise<boolean>((resolve) => {
+            // A hidden page draws no frames (nothing to film until it shows, and then from the
+            // DOM of that moment): drawn as of now.
+            if (document.visibilityState !== "visible") {
+              resolve(true)
+              return
+            }
+            const t = setTimeout(() => resolve(false), 1000)
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                clearTimeout(t)
+                resolve(true)
+              }),
+            )
+          }),
+      )
+      .catch(() => false),
+    // A frozen page never runs the timer above: bounded here too (never hangs a step or the run).
+    new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), 1200)
+    }),
+  ]).finally(() => clearTimeout(timer))
+  return drew ? now() : undefined
+}
+
+/** How often the page is scanned for secret text while recording. */
 export const TEXT_SCAN_MS = 300
-const SCAN_TIMEOUT_MS = 2000
+/** How long a read may take in all (a scan, a field read: a frozen page makes it unsure). */
+const READ_TIMEOUT_MS = 3500
+
+/**
+ * A read of `page` bounded in time: undefined (unsure) when it took longer than READ_TIMEOUT_MS.
+ * While one that took too long is still pending in the page, no new read of it starts (they'd pile
+ * up in a frozen page's queue and all run when it wakes): those are unsure too.
+ */
+export async function boundedRead<T>(
+  ctx: Pick<Ctx, "stuckReads">,
+  page: Page,
+  read: () => Promise<T>,
+): Promise<T | undefined> {
+  if ((ctx.stuckReads.get(page) ?? 0) > 0) return undefined
+  const pending = read()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const result = await Promise.race([
+    pending.then((value) => ({ value })),
+    new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), READ_TIMEOUT_MS)
+    }),
+  ]).finally(() => clearTimeout(timer))
+  if (result !== undefined) return result.value
+  // Only this page's reads wait (a stuck opener never blinds the reads of a popup), until every
+  // read of it that took too long has settled.
+  ctx.stuckReads.set(page, (ctx.stuckReads.get(page) ?? 0) + 1)
+  void pending
+    .catch(() => undefined)
+    .finally(() => ctx.stuckReads.set(page, (ctx.stuckReads.get(page) ?? 1) - 1))
+  return undefined
+}
+
+/**
+ * The capture left the page (T4): its text regions are left now (they last until the next page's
+ * first frame). A later scan of the page, back on it, finds them again.
+ */
+export function leaveSecretText(ctx: Ctx, step: StepRef): void {
+  const state = ctx.secretText
+  const t = now()
+  for (const id of state.shown.values()) {
+    ctx.options.onEvent?.({
+      kind: "secret_text",
+      step,
+      id,
+      at: t,
+      end: t,
+      shown: ctx.pageShownAt,
+      state: "left",
+    })
+  }
+  state.shown.clear()
+}
 
 /**
  * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`). A region is one
@@ -76,41 +268,56 @@ const SCAN_TIMEOUT_MS = 2000
  * it). An unsure occurrence (re-rendered mid-scan) ends nothing that scan; a failed scan changes
  * nothing. `fresh`: a scan that starts now (a running one read the page earlier). Never fails.
  */
-export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): Promise<void> {
+export async function followSecretText(
+  ctx: Ctx,
+  step: StepRef,
+  fresh = false,
+  of?: ReadOf,
+): Promise<void> {
   const state = ctx.secretText
   if (state.inflight !== undefined) {
     await state.inflight
     if (!fresh) return
   }
   const run = async () => {
-    const started = Date.now()
+    const started = now()
+    const page = of?.page ?? ctx.page
+    const shown = of?.shown ?? ctx.pageShownAt
     // A value new to the scan (resolved just now) may have been on screen all along: its first
     // regions are blurred from the run's start (over-blurring that box is safe).
     if (ctx.secretValues.size !== state.values) {
       state.values = ctx.secretValues.size
       state.lastScan = state.runStart
     }
-    if (ctx.secretValues.size === 0 || ctx.page.isClosed()) return
-    const page = ctx.page
-    // Bounded: a frozen page never hangs the step (or the end of the run) waiting for a scan.
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const boxes = await Promise.race([
-      scanSecretTextPartly(page, ctx.secretValues),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), SCAN_TIMEOUT_MS)
-      }),
-    ])
-      .catch(() => undefined)
-      .finally(() => clearTimeout(timer))
-    if (boxes === undefined || page !== ctx.page) return
-    const viewport = await viewportOf(page).catch(() => undefined)
+    if (ctx.secretValues.size === 0 || page.isClosed()) return
+    // Bounded as a whole: a frozen page never hangs the step (or the end of the run), and what a
+    // scan read is used only if it finished in time. (A switch waits for this scan: what it saw
+    // of its page is reported, never dropped.)
+    const scanned = await boundedRead(ctx, page, async () => {
+      const boxes = await scanSecretTextPartly(page, ctx.secretValues).catch(() => undefined)
+      if (boxes === undefined) return undefined
+      const viewport = await viewportOf(page).catch(() => undefined)
+      // T2: the read's end, once the page drew what it read (else unsure: nothing changes).
+      const end = await drawnSince(page)
+      return end === undefined ? undefined : { boxes, viewport, end }
+    })
+    if (scanned === undefined) return
+    const { boxes, viewport, end } = scanned
+    const read = { at: started, end, shown }
     const current = new Map<string, Box>()
     for (const b of boxes) if (b !== null) current.set(`${b.x},${b.y},${b.width},${b.height}`, b)
     for (const [key, box] of current) {
       if (state.shown.has(key)) continue
       const id = `text:${state.next++}`
       state.shown.set(key, id)
-      ctx.options.onEvent?.({ kind: "secret_text", step, id, box, viewport, since: state.lastScan })
+      ctx.options.onEvent?.({
+        kind: "secret_text",
+        step,
+        id,
+        ...read,
+        ...placed(box, viewport),
+        since: state.lastScan,
+      })
     }
     // Unsure about one: the others' boxes may be it, re-rendered. End nothing this time, and the
     // next scan's new regions are still blurred from before this one.
@@ -118,7 +325,7 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     for (const [key, id] of state.shown) {
       if (current.has(key)) continue
       state.shown.delete(key)
-      ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
+      ctx.options.onEvent?.({ kind: "secret_text", step, id, ...read, state: "gone" })
     }
     state.lastScan = started
   }
@@ -136,23 +343,46 @@ async function measureSecretField(
   field: Ctx["secretFields"][number],
 ): Promise<Box | null | "unknown"> {
   const handle = field.handle
-  if (handle !== undefined) {
-    const connected = await handle.evaluate((e) => e.isConnected).catch(() => false)
-    if (connected) return (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
-  }
-  return measureField(field.locator)
+  let box: Box | null | "unknown"
+  if (handle !== undefined && (await handle.evaluate((e) => e.isConnected).catch(() => false))) {
+    box = (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
+    // Attached but not rendered (a form swapping inputs): a visible twin the target finds counts.
+    if (box === null) box = await measureField(field.locator)
+  } else box = await measureField(field.locator)
+  // A box of no size shows nothing: gone (one definition for the runtime and the regions).
+  return box !== null && box !== "unknown" && !usableBox(box) ? null : box
 }
 
 /**
- * Where a secret field is now: its box, null when it's known to be gone (detached or not rendered),
- * "unknown" when measuring failed (timeout, several matches): the blur stays where it was.
+ * Where the target finds the field: its box (null when it finds nothing rendered), "unknown" when
+ * measuring failed (a timeout): the blur stays. Several matches (a responsive duplicate, the field
+ * re-mounted next to another): the union of the rendered ones, fails closed and follows them (never
+ * a strict-mode "unknown" that would hold a blur forever).
  */
 async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
   try {
     // count() doesn't wait: a field that's gone (after a login submit) costs one round trip, not
     // boundingBox's attach timeout on every later step.
-    if ((await locator.count()) === 0) return null
-    return await locator.boundingBox({ timeout: 300 })
+    const n = await locator.count()
+    if (n === 0) return null
+    if (n === 1) return await locator.boundingBox({ timeout: 300 })
+    const boxes = await Promise.all(
+      Array.from({ length: Math.min(n, 5) }, (_, i) =>
+        locator.nth(i).boundingBox({ timeout: 300 }),
+      ),
+    )
+    const shown = boxes.filter((b): b is Box => b !== null)
+    if (shown.length === 0) return null
+    return shown.reduce((a, b) => {
+      const x = Math.min(a.x, b.x)
+      const y = Math.min(a.y, b.y)
+      return {
+        x,
+        y,
+        width: Math.max(a.x + a.width, b.x + b.width) - x,
+        height: Math.max(a.y + a.height, b.y + b.height) - y,
+      }
+    })
   } catch {
     return "unknown"
   }
@@ -362,9 +592,14 @@ export function followSecretField(
   target: Locator,
 ): { id: string; field: Ctx["secretFields"][number] | undefined } {
   // Unique per write (an `ensure` replays several steps under one index): one region per field.
-  const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}:${ctx.secretFields.length}`
+  const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}:${ctx.secretFieldCount++}`
   if (ctx.options.recording !== true) return { id, field: undefined }
-  const field = { id, locator: target, page: ctx.page }
+  const field: Ctx["secretFields"][number] = {
+    id,
+    locator: target,
+    page: ctx.page,
+    state: "pending",
+  }
   ctx.secretFields.push(field)
   return { id, field }
 }
