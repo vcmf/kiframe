@@ -352,7 +352,7 @@ const pages: Record<string, string> = {
     <script>setTimeout(() => document.getElementById("f").remove(), 400); setTimeout(() => document.getElementById("s").remove(), 800)</script>`,
   // A page the exact-names check can't read (its in-page API broken), with a leftover heading.
   "/unreadable": `<!doctype html><title>Unreadable</title><input value="bob@acme.com"><h1>Q4 Launch</h1>
-    <script>delete Element.prototype.checkVisibility; Element.prototype.checkVisibility = undefined</script>`,
+    <script>Document.prototype.querySelectorAll = () => { throw new Error("no") }</script>`,
   // Truncates what's typed to 4 characters (a JS maxlength).
   "/truncating": `<!doctype html><title>Truncating</title><label>Password <input id="pw" type="password"></label>
     <script>document.getElementById("pw").addEventListener("input", (e) => { e.target.value = e.target.value.slice(0, 4) })</script>`,
@@ -375,6 +375,24 @@ const pages: Record<string, string> = {
   "/dialog-login": `<!doctype html><title>Dialog login</title>
     <dialog open><form method="dialog"><label>Password <input type="password"></label><button>Sign in</button></form></dialog>
     <button>New project</button>`,
+  // A hidden label holding the password field names a visible checkbox (Playwright includes it).
+  "/hidden-label": `<!doctype html><title>Hidden label</title>
+    <input type="checkbox" id="cb"><label for="cb" id="l">Remember <input type="password" aria-label="Password"
+      onchange="document.getElementById('l').style.display='none'"></label>`,
+  // A hidden box in a shadow root holding the password, named by a button of that shadow root.
+  "/shadow-named": `<!doctype html><title>Shadow named</title><div id="host"></div>
+    <script>
+      const root = document.getElementById("host").attachShadow({ mode: "open" })
+      root.innerHTML = '<label>Password <input type="password"></label><div id="box" style="display:none"></div><span id="lbl">Sign</span><button aria-labelledby="lbl box">x</button>'
+      root.querySelector("input").addEventListener("change", (e) => {
+        const box = root.getElementById("box")
+        box.appendChild(e.target.closest("label"))
+      })
+    </script>`,
+  // A code field that submits its form on input, once full (the page leaves with the value).
+  "/submit-on-input": `<!doctype html><title>Submit on input</title>
+    <form action="/fade-row"><label>Password <input type="password" name="p"
+      oninput="if (this.value.length >= 6) this.form.submit()"></label></form>`,
   // A table-layout login: the password box inside a cell (its value is part of the cell's name).
   "/cell-login": `<!doctype html><title>Cell login</title>
     <table><tr><td><input type="password" aria-label="Password"></td></tr></table>

@@ -7,7 +7,8 @@ import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
-import { envSecretResolver, loadDotEnv, sceneIdOf } from "./lib/secrets.ts"
+import { sceneIdOf } from "./lib/scenes.ts"
+import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
 
 const { values } = parseArgs({
   options: {

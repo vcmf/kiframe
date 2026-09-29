@@ -823,9 +823,9 @@ steps: [{ id: a, action: pause, ms: 1 }]
       expect(error.message).toMatch(/couldn't confirm the absence/)
     })
 
-    it("turns exact names off once the written field is visibility:hidden (a closed drawer)", async () => {
+    it("keeps exact names on while a written field is visibility:hidden (a drawer kept mounted)", async () => {
       const vault = await vaultWithPassword()
-      await run(
+      const error = await failure(
         `setup: [{ action: goto, url: /drawer-login }]
 steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
@@ -834,6 +834,7 @@ steps:
 `,
         approving(vault, []),
       )
+      expect(error.message).toMatch(/names match exactly/)
     })
 
     it("keeps exact names on for a secret field faded to opacity 0 (still named)", async () => {
@@ -851,6 +852,40 @@ steps:
       expect(error.message).toMatch(/names match exactly/)
     })
 
+    it("keeps exact names on for a field inside a hidden label or a hidden shadow box", async () => {
+      const vault = await vaultWithPassword()
+      const label = await failure(
+        `setup: [{ action: goto, url: /hidden-label }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: p, action: expect, that: { visible: { by: role, role: checkbox, name: "Remember h" } } }
+`,
+        approving(vault, []),
+      )
+      expect(label.message).toMatch(/names match exactly/)
+      const shadow = await failure(
+        `setup: [{ action: goto, url: /shadow-named }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: p, action: expect, that: { visible: { by: role, role: button, name: "Sign Password h" } } }
+`,
+        approving(vault, []),
+      )
+      expect(shadow.message).toMatch(/names match exactly/)
+    })
+
+    it("writes into a field that submits the form on input (the page leaves with it)", async () => {
+      const vault = await vaultWithPassword()
+      await run(
+        `setup: [{ action: goto, url: /submit-on-input }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: gone, action: waitFor, until: { url: /fade-row } }
+`,
+        approving(vault, []),
+      )
+    })
+
     it("refuses a host scene id that isn't one", async () => {
       const vault = await vaultWithPassword()
       const error = await failure(into(password), {
@@ -860,9 +895,9 @@ steps:
       expect(error.message).toMatch(/isn't a scene id/)
     })
 
-    it("turns exact names off once the written field is hidden (a closed login dialog)", async () => {
+    it("keeps exact names on while a written field is hidden (a closed login dialog)", async () => {
       const vault = await vaultWithPassword()
-      await run(
+      const error = await failure(
         `setup: [{ action: goto, url: /dialog-login }]
 steps:
   - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
@@ -871,6 +906,7 @@ steps:
 `,
         approving(vault, []),
       )
+      expect(error.message).toMatch(/names match exactly/)
     })
 
     it("keeps a field that took only part of the secret as holding one", async () => {
