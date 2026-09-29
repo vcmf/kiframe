@@ -34,6 +34,7 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions"
 import { chromium, type Browser, type Page } from "playwright"
+import { sceneIdOf } from "../lib/scenes.ts"
 
 const { values } = parseArgs({
   options: {
@@ -121,6 +122,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const model = values.model
+// The scene being grounded (its steps and its replays are one scene: they share approvals).
+const sceneId = sceneIdOf(values.out)
 const maxTurns = Number(values["max-turns"])
 if (!Number.isInteger(maxTurns) || maxTurns < 1) {
   console.error("--max-turns takes a positive whole number")
@@ -253,7 +256,7 @@ async function runStep(input: unknown): Promise<string> {
   try {
     await runScenario(page, scenario, quickProject, {
       scope: "phase0",
-      sceneId: "grounding",
+      sceneId,
       resolveSecret,
       approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,
@@ -322,7 +325,7 @@ async function replay(yaml: string): Promise<string> {
   try {
     await runScenario(fresh, scenario, quickProject, {
       scope: "phase0",
-      sceneId: "grounding",
+      sceneId,
       resolveSecret,
       approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,

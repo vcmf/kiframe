@@ -194,21 +194,21 @@ steps:
 })
 
 describe("recordBatch scene ids", () => {
-  it("refuses two scenes sharing an id, or an id that isn't one", async () => {
+  it("fails a scene reusing an earlier scene's id, not the batch", async () => {
     const s = scene(signedIn)
-    await expect(
-      recordBatch(
-        browser,
-        [
-          { scenario: s, outDir: "/tmp/a", sceneId: "same" },
-          { scenario: s, outDir: "/tmp/b", sceneId: "same" },
-        ],
-        project(),
-      ),
-    ).rejects.toThrow(/share the id "same"/)
-    await expect(
-      recordBatch(browser, [{ scenario: s, outDir: "/tmp/a", sceneId: "a/b.yaml" }], project()),
-    ).rejects.toThrow(/isn't a scene id/)
+    const results = await recordBatch(
+      browser,
+      [
+        { scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "same" },
+        { scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "same" },
+        { scenario: s, outDir: mkdtempSync(join(tmpdir(), "kiframe-batch-")), sceneId: "other" },
+      ],
+      project(),
+    )
+    expect(results.map((r) => r.ok)).toEqual([true, false, true])
+    expect(String(results[1]?.ok === false ? results[1].error : "")).toMatch(
+      /earlier scene .* "same"/,
+    )
   })
 })
 

@@ -442,7 +442,7 @@ type ElementInfo = { tag: "input" | "textarea"; type: string; label: string | nu
 function fieldWrite(
   el: HTMLInputElement | HTMLTextAreaElement,
   arg: { expected?: ElementInfo; value?: string },
-): { info: ElementInfo; written: boolean } {
+): { info: ElementInfo; written: boolean; landed?: string } {
   const text = (s: string | null | undefined) => {
     const t = s?.replace(/\s+/g, " ").trim().slice(0, 200)
     return t === undefined || t === "" ? null : t
@@ -480,7 +480,7 @@ function fieldWrite(
   Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, value)
   el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }))
   el.dispatchEvent(new Event("change", { bubbles: true }))
-  return { info, written: true }
+  return { info, written: true, landed: el.value }
 }
 
 /**
@@ -567,8 +567,9 @@ export async function writeSecret(
       throw new StepError(step, "secret-refused", "the field changed while the secret was resolved")
     }
     // Read back in a later turn: a framework that resets or reformats the field in its own
-    // microtask or frame (Vue's nextTick, Lit's update) is caught.
-    const landed = await write.input.evaluate((el) => el.value)
+    // microtask or frame (Vue's nextTick, Lit's update) is caught. A field that submitted or
+    // navigated on input can't be read again: the page took the value, as read in the write's turn.
+    const landed = await write.input.evaluate((el) => el.value).catch(() => result.landed)
     // Whatever it holds now may be part of the secret: the field counts as holding one (A5, A8).
     ctx.secretWritten.push({ page: ctx.page, handle: write.input })
     if (write.field !== undefined) write.field.handle = write.input

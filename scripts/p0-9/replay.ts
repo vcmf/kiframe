@@ -7,7 +7,7 @@
 //          [--dirty 2,4] [--headed]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import { sceneIdOf } from "../lib/secrets.ts"
+import { sceneIdOf } from "../lib/scenes.ts"
 import { parseArgs } from "node:util"
 import { recordScenario, type RunnerEvent } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"

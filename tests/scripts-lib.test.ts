@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { sceneIdOf } from "../scripts/lib/secrets.ts"
+import { sceneIdOf } from "../scripts/lib/scenes.ts"
 
 describe("sceneIdOf", () => {
   it("makes a kebab-case id from the folder and the name, never empty", () => {
