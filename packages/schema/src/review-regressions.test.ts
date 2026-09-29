@@ -1156,36 +1156,55 @@ describe("round 13", () => {
   })
 })
 
-describe("secret regions left the composition (SECRETS-DESIGN I4)", () => {
-  it("drops a version 1 composition's secret masks on read, keeps the others", () => {
-    const rect = { x: 0, y: 0, w: 0.1, h: 0.1 }
-    const mask = (id: string, target: object) => ({
-      id,
-      source: "auto",
-      kind: "blur",
-      at: { ms: 0 },
-      until: { ms: 10 },
-      target,
-    })
+describe("secret regions left the composition (SECRETS-DESIGN I4, T7)", () => {
+  const rect = { x: 0, y: 0, w: 0.1, h: 0.1 }
+  const mask = (id: string, target: object, extra: object = {}) => ({
+    id,
+    source: "auto",
+    kind: "blur",
+    at: { ms: 0 },
+    until: { ms: 10 },
+    target,
+    ...extra,
+  })
+  const region = { sensitiveId: "secret:x" }
+
+  it("drops auto masks and highlights on secret regions, keeps a user's blur of one", () => {
     const { doc } = migrate("composition", {
       version: 1,
-      tracks: { masks: [mask("s", { sensitiveId: "secret:x" }), mask("r", { rect })] },
+      tracks: {
+        masks: [
+          mask("auto", region),
+          mask("mine", region, { source: "manual" }),
+          mask("spot", region, { source: "manual", kind: "spotlight" }),
+          mask("r", { rect }),
+        ],
+      },
     })
     const c = Composition.parse(doc)
     expect(c.version).toBe(2)
-    expect(c.tracks.masks.map((m) => m.id)).toEqual(["r"])
-    // A spotlight on one goes too (it hid nothing and was never drawn): the composition still opens.
-    const spot = migrate("composition", {
-      version: 1,
-      tracks: { masks: [{ ...mask("h", { sensitiveId: "secret:x" }), kind: "spotlight" }] },
+    expect(c.tracks.masks.map((m) => m.id)).toEqual(["mine", "r"])
+  })
+
+  it("moves an anchor to a region to the start of its step", () => {
+    const caption = {
+      id: "c",
+      source: "manual",
+      text: "Hi",
+      at: { event: "login:sensitive:1", offsetMs: 100 },
+      until: { step: "login", edge: "end" },
+    }
+    const { doc } = migrate("composition", { version: 1, tracks: { captions: [caption] } })
+    expect(Composition.parse(doc).tracks.captions[0]?.at).toEqual({
+      step: "login",
+      edge: "start",
+      offsetMs: 100,
     })
-    expect(Composition.parse(spot.doc).tracks.masks).toEqual([])
-    // A version 2 composition can't point a mask at a secret region at all.
-    expect(
-      Composition.safeParse({
-        version: 2,
-        tracks: { masks: [mask("s", { sensitiveId: "secret:x" })] },
-      }).success,
-    ).toBe(false)
+  })
+
+  it("only lets a blur or pixelate name a secret region", () => {
+    const v2 = (m: object) => Composition.safeParse({ version: 2, tracks: { masks: [m] } }).success
+    expect(v2(mask("b", region, { source: "manual" }))).toBe(true)
+    expect(v2(mask("s", region, { source: "manual", kind: "spotlight" }))).toBe(false)
   })
 })

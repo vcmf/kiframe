@@ -5,7 +5,7 @@ import {
   SceneId,
   type Target,
 } from "@kiframe/schema"
-import type { ElementHandle, Locator } from "playwright"
+import type { ElementHandle, Locator, Page } from "playwright"
 import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
@@ -52,11 +52,12 @@ async function measureFields(
 ): Promise<void> {
   // The driven page as of now, throughout (a switch may start while this runs).
   const page = ctx.page
+  // Followed from its type_start only (T3: the empty field isn't blurred before typing).
   const fields = ctx.secretFields.filter(
-    (f) => which === "all" || (which === "here") === (f.page === page),
+    (f) => f.typed === true && (which === "all" || (which === "here") === (f.page === page)),
   )
   if (fields.length === 0) return
-  // When the page was read (the events are handled later: a move's hull starts here).
+  // When the read started (T2; the events are handled later: a move's hull starts here).
   const at = Date.now()
   // In parallel: every field costs a round trip or two after each step.
   // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
@@ -67,6 +68,10 @@ async function measureFields(
     ),
   )
   const viewport = await viewportOf(page).catch(() => undefined)
+  // Its end (T2): once the page drew what it read. No drawing: unsure, nothing changes.
+  const here = fields.some((f) => f.page === page)
+  const end = here ? await drawnSince(page) : Date.now()
+  if (end === undefined) return
   for (const [i, field] of fields.entries()) {
     let box = measured[i]
     const elsewhere = field.page !== page
@@ -85,9 +90,33 @@ async function measureFields(
       box: box ?? undefined,
       viewport,
       at,
+      end,
       ...(back && { since: ctx.pageShownAt }),
     })
   }
+}
+
+/**
+ * T2: the end of a read of `page`: when the page has run two rendering updates since (a busy page
+ * can't draw before its task is done, so frames after it show at least what the read saw).
+ * Undefined when it didn't draw within a second (a throttled or closing page: the read is unsure).
+ */
+export async function drawnSince(page: Page): Promise<number | undefined> {
+  const drew = await page
+    .evaluate(
+      () =>
+        new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), 1000)
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              clearTimeout(timer)
+              resolve(true)
+            }),
+          )
+        }),
+    )
+    .catch(() => false)
+  return drew ? Date.now() : undefined
 }
 
 /** How often the page is scanned for secret text while recording, and how long a scan may take. */
@@ -129,13 +158,25 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
       .finally(() => clearTimeout(timer))
     if (boxes === undefined || page !== ctx.page) return
     const viewport = await viewportOf(page).catch(() => undefined)
+    // T2: the read's end, once the page drew what it read (else unsure: nothing changes).
+    const end = await drawnSince(page)
+    if (end === undefined) return
+    const read = { at: started, end }
     const current = new Map<string, Box>()
     for (const b of boxes) if (b !== null) current.set(`${b.x},${b.y},${b.width},${b.height}`, b)
     for (const [key, box] of current) {
       if (state.shown.has(key)) continue
       const id = `text:${state.next++}`
       state.shown.set(key, id)
-      ctx.options.onEvent?.({ kind: "secret_text", step, id, box, viewport, since: state.lastScan })
+      ctx.options.onEvent?.({
+        kind: "secret_text",
+        step,
+        id,
+        box,
+        viewport,
+        since: state.lastScan,
+        ...read,
+      })
     }
     // Unsure about one: the others' boxes may be it, re-rendered. End nothing this time, and the
     // next scan's new regions are still blurred from before this one.
@@ -143,7 +184,7 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     for (const [key, id] of state.shown) {
       if (current.has(key)) continue
       state.shown.delete(key)
-      ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport })
+      ctx.options.onEvent?.({ kind: "secret_text", step, id, viewport, ...read })
     }
     state.lastScan = started
   }

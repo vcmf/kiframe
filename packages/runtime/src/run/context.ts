@@ -43,6 +43,9 @@ export type RunnerEvent =
       box?: Box | undefined
       viewport?: { width: number; height: number } | undefined
       since?: number | undefined
+      /** The read (`Date.now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
+      at: number
+      end: number
     }
   /** Where a field holding a secret is now (`box`), or that it's gone (no `box`). Recording only. */
   | {
@@ -52,8 +55,9 @@ export type RunnerEvent =
       box?: Box | undefined
       /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
       viewport?: { width: number; height: number } | undefined
-      /** When the page was read (`Date.now()`). */
+      /** The read (`Date.now()`): started, and ended once the page drew (SECRETS-DESIGN T2). */
       at: number
+      end: number
       /** Back on screen since (ms, `Date.now()`): a page switch back. By default, since it left. */
       since?: number | undefined
     }
@@ -201,6 +205,8 @@ export interface Ctx {
      */
     handle?: ElementHandle
     page: Page
+    /** Its type_start was reported: followed from then on (never while the cursor travels to it). */
+    typed?: boolean
     /** The last real box (kept while the run is on another page). */
     lastBox?: Box
     /** Blur ended only because the run left its page (not because the field went away). */

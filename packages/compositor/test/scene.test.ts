@@ -290,6 +290,34 @@ describe("overlays", () => {
     expect(at(6000)).toBe(1)
   })
 
+  it("draws a user's blur naming a region at the region's box of the moment, past its end", () => {
+    const { scenario, take, composition } = fixture()
+    const withMine: Composition = {
+      ...composition,
+      tracks: {
+        ...composition.tracks,
+        masks: [
+          {
+            id: "mine",
+            source: "manual",
+            kind: "blur",
+            at: { ms: 1000 },
+            until: { ms: 6500 },
+            target: { sensitiveId: "s1" },
+          },
+        ],
+      },
+    }
+    const p = prepare(withMine, scenario, take)
+    const ys = (source: number) =>
+      sceneAt(p, p.map.toOutput(source))
+        .blurs.map((r) => Math.round(r.y * 100) / 100)
+        .sort()
+    // Before the region: its first box; later, its box of the moment (plus the region's own).
+    expect(ys(1050)).toEqual([0.3])
+    expect(ys(5400)).toEqual([0.5, 0.5])
+  })
+
   it("shows a ripple at the click, and the cursor rests between moves", () => {
     const { scenario, take, composition } = fixture()
     const p = prepare(composition, scenario, take)

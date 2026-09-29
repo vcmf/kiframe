@@ -280,6 +280,8 @@ export async function runScenario(
     clearInterval(scan)
     // A scan still running reports before the run ends (the recorder writes right after).
     await ctx.secretText.inflight?.catch(() => undefined)
+    // And a field read (T5).
+    await ctx.fieldsInflight?.catch(() => undefined)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
     ctx.detach(ctx.page)

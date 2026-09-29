@@ -118,16 +118,22 @@ export const CaptionSegment = z.strictObject({
 })
 export type CaptionSegment = z.infer<typeof CaptionSegment>
 
-export const MaskSegment = z.strictObject({
-  ...segmentBase,
-  kind: z.enum(["blur", "pixelate", "highlight", "spotlight"]),
-  // Secret regions aren't masks of the composition: the compositor draws them from the take
-  // (SECRETS-DESIGN I4). A composition can only add masks.
-  target: z.union([
-    z.strictObject({ frameRef: z.string().min(1) }),
-    z.strictObject({ rect: NRect }),
-  ]),
-})
+export const MaskSegment = z
+  .strictObject({
+    ...segmentBase,
+    kind: z.enum(["blur", "pixelate", "highlight", "spotlight"]),
+    // Secret regions are drawn from the take whatever the composition says (SECRETS-DESIGN I4): a
+    // mask naming one only adds (a user's longer blur, drawn at the region's box of the moment).
+    target: z.union([
+      z.strictObject({ sensitiveId: z.string().min(1) }),
+      z.strictObject({ frameRef: z.string().min(1) }),
+      z.strictObject({ rect: NRect }),
+    ]),
+  })
+  .refine((m) => !("sensitiveId" in m.target) || m.kind === "blur" || m.kind === "pixelate", {
+    message: "only a blur or pixelate names a secret region",
+    path: ["target"],
+  })
 export type MaskSegment = z.infer<typeof MaskSegment>
 
 export const CursorSegment = z.strictObject({

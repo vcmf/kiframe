@@ -147,6 +147,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
               .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
               .catch(() => null)
           }
+          if (followed?.field !== undefined) followed.field.typed = true
           ctx.options.onEvent?.({
             kind: "type_start",
             step,

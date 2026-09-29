@@ -1,14 +1,26 @@
 import { CAPTURE_LAG_MS, rectUnion, type TakeEvent, type ViewportRect } from "@kiframe/schema"
 
-// Secret regions with their whole time spans (SECRETS-DESIGN §5): the recorder reports what it
-// measured, when; this writes each region once, at the end, as one `sensitive` event whose boxes the
-// compositor draws exactly (no timing rules of its own).
+// Secret regions with their whole time spans (SECRETS-DESIGN §5, T1–T8): the recorder reports what
+// the runtime read, when; this writes each region once, at the end, as one `sensitive` event whose
+// boxes the compositor draws exactly (no timing rules of its own).
 
 export { CAPTURE_LAG_MS }
 
+/**
+ * T3/T4: what is displayed can run up to this far from what the page reports (a compositor
+ * scroll ahead of the DOM, a frame drawn just after a read from the state before it).
+ */
+export const FRAME_MARGIN_MS = 50
+
 type Sensitive = Extract<TakeEvent, { kind: "sensitive" }>
 
-/** A box, and when the page left it (`left`: its end waits for the capture to catch up). */
+/** A read of the page (T2): what it saw held at some moment in `[start, end]`. */
+export interface Read {
+  start: number
+  end: number
+}
+
+/** A box, and when the page left it (`left`: its end waits for a frame that shows the change). */
 interface Box {
   from: number
   until: number
@@ -22,8 +34,8 @@ interface Open {
   boxes: Box[]
   /** The box it's in now (its `until` still open), if it's on screen. */
   current: { from: number; rect: ViewportRect } | undefined
-  /** When it was last measured (on screen or not). */
-  measured: number
+  /** Its last read (on screen or not). */
+  last: Read
 }
 
 const same = (a: ViewportRect, b: ViewportRect) =>
@@ -39,64 +51,75 @@ export class Regions {
     this.#switched = Math.max(this.#switched, at)
   }
 
+  /** T3: the earliest a box first seen by a read could have been on screen. */
+  #appear(t: number, read: Read): number {
+    return Math.min(Math.max(t - FRAME_MARGIN_MS, this.#switched), read.end)
+  }
+
   /**
-   * Region `id` measured at `rect` at time `at`. `since`: the earliest it may have been on screen
-   * (the last measurement that didn't see it); by default its own last measurement, or `at`. Never
-   * before the last page switch (the frames before it show another page: a region is only measured
-   * on the page being captured). Moved since the last measurement `p`: the hull of both boxes
-   * covers `[p, at]` (it may have been anywhere between), and the old box and the hull stay for the
-   * capture lag.
+   * Region `id` read at `rect` (T2–T4). `since`: when its first box may have appeared (T3: the
+   * last scan that didn't see it, a field's `type_start`); by default its previous read's start.
+   * Moved since its previous read: the hull of both boxes covers the way between, and the old box
+   * and the hull are left at this read's end. A read older than the region's last one only adds
+   * coverage.
    */
   seen(
     id: string,
     why: Sensitive["why"],
     base: Open["base"],
-    at: number,
+    read: Read,
     rect: ViewportRect,
     since?: number,
   ): void {
     const region = this.#open.get(id)
     if (region === undefined) {
-      const from = Math.min(Math.max(since ?? at, this.#switched), at)
-      this.#open.set(id, { base, why, boxes: [], current: { from, rect }, measured: at })
+      const from = this.#appear(since ?? read.start, read)
+      this.#open.set(id, { base, why, boxes: [], current: { from, rect }, last: read })
       return
     }
-    // Never before its last measurement (a wall clock stepping back can't invert a box).
-    const now = Math.max(at, region.measured)
+    if (read.start < region.last.start) {
+      // Older information: what it saw may have been on screen then (never replaces the box).
+      if (region.current === undefined || !same(region.current.rect, rect)) {
+        const from = this.#appear(read.start, read)
+        region.boxes.push({ from, until: read.end, rect, left: read.end })
+      }
+      return
+    }
+    const end = Math.max(read.end, region.last.end)
     const { current } = region
     if (current === undefined) {
-      const from = Math.max(since ?? region.measured, this.#switched)
-      region.current = { from: Math.min(from, now), rect }
+      region.current = { from: this.#appear(since ?? region.last.start, read), rect }
     } else if (!same(current.rect, rect)) {
-      region.boxes.push({ from: current.from, until: now, rect: current.rect, left: now })
+      const from = this.#appear(region.last.start, read)
+      region.boxes.push({ from: current.from, until: end, rect: current.rect, left: end })
       // (A hull that is the old box itself, a full-frame fallback, adds nothing.)
       const between = rectUnion(current.rect, rect)
       if (!same(between, current.rect)) {
-        region.boxes.push({ from: region.measured, until: now, rect: between, left: now })
+        region.boxes.push({ from, until: end, rect: between, left: end })
       }
-      region.current = { from: now, rect }
+      region.current = { from, rect }
     }
-    region.measured = now
+    region.last = { start: read.start, end }
   }
 
-  /** Region `id` measured gone at `at`: covered until the capture has caught up. */
-  gone(id: string, at: number): void {
+  /** Region `id` read gone: its box is left at the read's end (T4). */
+  gone(id: string, read: Read): void {
     const region = this.#open.get(id)
-    if (region === undefined) return
-    const now = Math.max(at, region.measured)
+    if (region === undefined || read.start < region.last.start) return
+    const end = Math.max(read.end, region.last.end)
     const { current } = region
     if (current !== undefined) {
-      region.boxes.push({ from: current.from, until: now, rect: current.rect, left: now })
+      region.boxes.push({ from: current.from, until: end, rect: current.rect, left: end })
       region.current = undefined
     }
-    region.measured = now
+    region.last = { start: read.start, end }
   }
 
   /**
    * Every region, each box closed by `end` (the end of the scene) at the latest. A box the page
-   * left at `s` lasts until the first frame at or after `s` plus the capture lag
-   * (`frameAfter`; undefined: none came, it lasts to the end): the video holds the last frame
-   * until a new one comes. By default a frame comes at once.
+   * left at `s` lasts until the first frame drawn at or after `s + FRAME_MARGIN_MS`, rounded up
+   * to the millisecond (`frameAfter`; undefined: none came, it lasts to the end): the video holds
+   * the last frame until a new one comes. By default a frame comes at once.
    */
   finish(end: number, frameAfter: (t: number) => number | undefined = (t) => t): Sensitive[] {
     const out: Sensitive[] = []
@@ -107,9 +130,9 @@ export class Regions {
       }
       const closed = boxes
         .map(({ from, until, rect, left }) => {
-          // The first frame at or after `left` plus the lag replaces what may be stale.
-          const tail = left === undefined ? until : (frameAfter(left + CAPTURE_LAG_MS) ?? end)
-          const f = Math.min(from, end)
+          const next = left === undefined ? until : frameAfter(left + FRAME_MARGIN_MS)
+          const tail = next === undefined ? end : Math.ceil(Math.max(next, until))
+          const f = Math.max(0, Math.min(from, end))
           return { from: f, until: Math.max(f, Math.min(tail, end)), rect }
         })
         .sort((a, b) => a.from - b.from)
