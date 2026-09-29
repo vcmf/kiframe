@@ -15,9 +15,10 @@ describe("Regions (SECRETS-DESIGN §5)", () => {
     expect(others).toEqual([])
     expect(region).toMatchObject({ t: 100, until: 2000, id: "f", why: "secret-field" })
     const [a, hull, b] = region?.boxes ?? []
-    expect(a).toEqual({ from: 100, until: 900, rect: A })
+    // The old box and the hull stay for the capture lag after the move was seen.
+    expect(a).toEqual({ from: 100, until: 900 + CAPTURE_LAG_MS, rect: A })
     // Between the last measurement at A (400) and the first at B (900): anywhere between.
-    expect(hull).toMatchObject({ from: 400, until: 900, rect: { x: 0.1, y: 0.1 } })
+    expect(hull).toMatchObject({ from: 400, until: 900 + CAPTURE_LAG_MS, rect: { x: 0.1, y: 0.1 } })
     expect(hull?.rect.w).toBeCloseTo(0.2, 9)
     expect(hull?.rect.h).toBeCloseTo(0.45, 9)
     expect(b).toEqual({ from: 900, until: 2000, rect: B })
@@ -55,9 +56,27 @@ describe("Regions (SECRETS-DESIGN §5)", () => {
     r.seen("f", "secret-field", base, 100, { x: 0, y: 0, w: 1, h: 1 })
     r.seen("f", "secret-field", base, 900, B)
     expect(r.finish(2000)[0]?.boxes).toEqual([
-      { from: 100, until: 900, rect: { x: 0, y: 0, w: 1, h: 1 } },
+      { from: 100, until: 900 + CAPTURE_LAG_MS, rect: { x: 0, y: 0, w: 1, h: 1 } },
       { from: 900, until: 2000, rect: B },
     ])
+  })
+
+  it("keeps a left box until the first frame after it when frames come late", () => {
+    const r = new Regions()
+    r.seen("f", "secret-field", base, 100, A)
+    r.gone("f", 500)
+    expect(r.finish(5000, (t) => (t < 2000 ? 2000 : undefined))[0]?.boxes).toEqual([
+      { from: 100, until: 2000, rect: A },
+    ])
+  })
+
+  it("never writes an inverted box when the clock steps back", () => {
+    const r = new Regions()
+    r.seen("f", "secret-field", base, 1000, A)
+    r.seen("f", "secret-field", base, 400, B)
+    const [region] = r.finish(3000)
+    for (const box of region?.boxes ?? []) expect(box.until).toBeGreaterThanOrEqual(box.from)
+    expect(region?.boxes.every((b) => b.from >= (region?.t ?? 0))).toBe(true)
   })
 
   it("clamps every box to the end of the scene", () => {

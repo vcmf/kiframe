@@ -22,7 +22,8 @@ import {
 
 /**
  * Re-measures every field a secret was typed into and reports when it moved (the blur follows it)
- * or is gone (navigated away, removed: nothing left to blur). Only changes are reported. Bounded,
+ * or is gone (navigated away, removed: nothing left to blur). Every measurement is reported (a
+ * move's hull starts at the last one, not at the last change). Bounded,
  * never fails a step.
  */
 export async function followSecretFields(
@@ -50,20 +51,17 @@ export async function followSecretFields(
     // unsure measurement keeps the current rect; only a field known to be gone ends its blur.
     if (box === "unknown" && field.away === true && !elsewhere) box = field.lastBox ?? "unknown"
     if (box === undefined || box === "unknown") continue
-    // Back on its page: on screen from now (the capture is switching to it), not since it left.
+    // Back on its page: on screen since the run switched to it, not since it left.
     const back = field.away === true && !elsewhere && box !== null
     field.away = elsewhere
     if (box !== null) field.lastBox = box
-    const key = box === null ? "gone" : `${box.x},${box.y},${box.width},${box.height}`
-    if (key === field.last) continue
-    field.last = key
     ctx.options.onEvent?.({
       kind: "secret_field",
       step,
       id: field.id,
       box: box ?? undefined,
       viewport,
-      ...(back && { since: Date.now() }),
+      ...(back && { since: ctx.pageShownAt }),
     })
   }
 }

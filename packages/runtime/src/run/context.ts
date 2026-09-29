@@ -182,6 +182,8 @@ export interface Ctx {
   }
   /** Elements a secret was written to in this run (SECRETS-DESIGN §3 A5: no copy or drag from them). */
   secretWritten: { page: Page; handle: ElementHandle }[]
+  /** When the driven page became the one on screen (`Date.now()`): a field back on it since then. */
+  pageShownAt: number
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
@@ -193,7 +195,6 @@ export interface Ctx {
      */
     handle?: ElementHandle
     page: Page
-    last?: string
     /** The last real box (kept while the run is on another page). */
     lastBox?: Box
     /** Blur ended only because the run left its page (not because the field went away). */

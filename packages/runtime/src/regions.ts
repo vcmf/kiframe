@@ -1,17 +1,25 @@
-import type { TakeEvent, ViewportRect } from "@kiframe/schema"
+import { rectUnion, type TakeEvent, type ViewportRect } from "@kiframe/schema"
 
 // Secret regions with their whole time spans (SECRETS-DESIGN §5): the recorder reports what it
 // measured, when; this writes each region once, at the end, as one `sensitive` event whose boxes the
 // compositor draws exactly (no timing rules of its own).
 
 /**
- * Frames can show the page as it was up to this long before (the capture lags the DOM): a region
- * gone at `s` stays covered until `s` plus this (§5 R4; the R8 budget until the lag is measured).
+ * Frames can show the page as it was up to this long before (the capture lags the DOM): a box left
+ * at `s` (moved away, gone) stays covered until `s` plus this (§5 R4; the R8 budget until the lag
+ * is measured).
  */
 export const CAPTURE_LAG_MS = 500
 
 type Sensitive = Extract<TakeEvent, { kind: "sensitive" }>
-type Box = Sensitive["boxes"][number]
+
+/** A box, and when the page left it (`left`: its end waits for the capture to catch up). */
+interface Box {
+  from: number
+  until: number
+  rect: ViewportRect
+  left?: number
+}
 
 interface Open {
   base: Pick<Sensitive, "phase" | "stepId">
@@ -19,24 +27,12 @@ interface Open {
   boxes: Box[]
   /** The box it's in now (its `until` still open), if it's on screen. */
   current: { from: number; rect: ViewportRect } | undefined
-  /** When it was last measured. */
+  /** When it was last measured (on screen or not). */
   measured: number
 }
 
 const same = (a: ViewportRect, b: ViewportRect) =>
   a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h
-
-/** The smallest rect holding both. */
-export function hull(a: ViewportRect, b: ViewportRect): ViewportRect {
-  const x = Math.min(a.x, b.x)
-  const y = Math.min(a.y, b.y)
-  return {
-    x,
-    y,
-    w: Math.max(a.x + a.w, b.x + b.w) - x,
-    h: Math.max(a.y + a.h, b.y + b.h) - y,
-  }
-}
 
 export class Regions {
   readonly #open = new Map<string, Open>()
@@ -52,9 +48,9 @@ export class Regions {
    * Region `id` measured at `rect` at time `at`. `since`: the earliest it may have been on screen
    * (the last measurement that didn't see it); by default its own last measurement, or `at`. Never
    * before the last page switch (the frames before it show another page: a region is only measured
-   * on the page being captured).
-   * Moved since the last measurement `p`: the hull of both boxes covers `[p, at]` (it may have been
-   * anywhere between).
+   * on the page being captured). Moved since the last measurement `p`: the hull of both boxes
+   * covers `[p, at]` (it may have been anywhere between), and the old box and the hull stay for the
+   * capture lag.
    */
   seen(
     id: string,
@@ -70,56 +66,67 @@ export class Regions {
       this.#open.set(id, { base, why, boxes: [], current: { from, rect }, measured: at })
       return
     }
+    // Never before its last measurement (a wall clock stepping back can't invert a box).
+    const now = Math.max(at, region.measured)
     const { current } = region
     if (current === undefined) {
-      region.current = {
-        from: Math.min(Math.max(since ?? region.measured, this.#switched), at),
-        rect,
-      }
+      const from = Math.max(since ?? region.measured, this.#switched)
+      region.current = { from: Math.min(from, now), rect }
     } else if (!same(current.rect, rect)) {
-      region.boxes.push({ from: current.from, until: at, rect: current.rect })
+      region.boxes.push({ from: current.from, until: now, rect: current.rect, left: now })
       // (A hull that is the old box itself, a full-frame fallback, adds nothing.)
-      const between = hull(current.rect, rect)
+      const between = rectUnion(current.rect, rect)
       if (!same(between, current.rect)) {
-        region.boxes.push({ from: region.measured, until: at, rect: between })
+        region.boxes.push({ from: region.measured, until: now, rect: between, left: now })
       }
-      region.current = { from: at, rect }
+      region.current = { from: now, rect }
     }
-    region.measured = at
+    region.measured = now
   }
 
   /** Region `id` measured gone at `at`: covered until the capture has caught up. */
   gone(id: string, at: number): void {
     const region = this.#open.get(id)
     if (region === undefined) return
+    const now = Math.max(at, region.measured)
     const { current } = region
     if (current !== undefined) {
-      region.boxes.push({ from: current.from, until: at + CAPTURE_LAG_MS, rect: current.rect })
+      region.boxes.push({ from: current.from, until: now, rect: current.rect, left: now })
       region.current = undefined
     }
-    region.measured = at
+    region.measured = now
   }
 
-  /** Every region, each box closed by `end` (the end of the scene) at the latest. */
-  finish(end: number): Sensitive[] {
+  /**
+   * Every region, each box closed by `end` (the end of the scene) at the latest. A box the page
+   * left at `s` lasts until `s` plus the capture lag, and at least until the first frame after `s`
+   * (`frameAfter`; undefined: none came, it lasts to the end): the video holds the last frame
+   * until a new one comes. By default a frame comes at once.
+   */
+  finish(end: number, frameAfter: (t: number) => number | undefined = (t) => t): Sensitive[] {
     const out: Sensitive[] = []
     for (const [id, region] of this.#open) {
-      const boxes = [...region.boxes]
+      const boxes: Box[] = [...region.boxes]
       if (region.current !== undefined) {
         boxes.push({ from: region.current.from, until: end, rect: region.current.rect })
       }
-      const clamped = boxes
-        .map((b) => ({ ...b, from: Math.min(b.from, end), until: Math.min(b.until, end) }))
+      const closed = boxes
+        .map(({ from, until, rect, left }) => {
+          const tail =
+            left === undefined ? until : Math.max(left + CAPTURE_LAG_MS, frameAfter(left) ?? end)
+          const f = Math.min(from, end)
+          return { from: f, until: Math.max(f, Math.min(tail, end)), rect }
+        })
         .sort((a, b) => a.from - b.from)
-      if (clamped.length === 0) continue
+      if (closed.length === 0) continue
       out.push({
         ...region.base,
-        t: Math.min(...clamped.map((b) => b.from)),
+        t: Math.min(...closed.map((b) => b.from)),
         kind: "sensitive",
         id,
         why: region.why,
-        until: Math.max(...clamped.map((b) => b.until)),
-        boxes: clamped,
+        until: Math.max(...closed.map((b) => b.until)),
+        boxes: closed,
       })
     }
     this.#open.clear()

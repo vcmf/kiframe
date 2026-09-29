@@ -100,6 +100,8 @@ export function resolveAnchor(anchor: Anchor, tl: Timeline): number | undefined 
   const match = /^(.+):([a-z_]+)(?::(\d+))?$/.exec(anchor.event)
   if (match === null) return undefined
   const [, stepId, kind, n] = match
+  // A secret region is a span, not a moment (and its start is backdated): nothing anchors to it.
+  if (kind === "sensitive") return undefined
   const found = tl.events.filter((e) => e.stepId === stepId && e.kind === kind)[Number(n ?? 0)]
   return found === undefined ? undefined : clamp(found.t + offset)
 }

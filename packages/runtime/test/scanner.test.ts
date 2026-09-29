@@ -164,7 +164,8 @@ steps: [{ id: wait, action: pause, ms: 1500 }]
     )
     // Each region: one box, never back once gone.
     for (const region of regions) expect(region.boxes).toHaveLength(1)
-    // Both occurrences are on screen at the end: two regions last until the end of the take.
-    expect(regions.filter((r) => r.until === take.meta.durationMs)).toHaveLength(2)
+    // Both occurrences are on screen at the end: they last until the end of the take (so may one
+    // gone after the last frame: the video holds that frame).
+    expect(regions.filter((r) => r.until === take.meta.durationMs).length).toBeGreaterThanOrEqual(2)
   })
 })

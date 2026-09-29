@@ -20,7 +20,9 @@ export async function switchPage(ctx: Ctx, next: Page, step: StepRef): Promise<v
   await applyHide(ctx, next)
   ctx.cursor = ctx.cursors.get(next)
   // This page's secret fields are measured BEFORE the capture moves here (its first frame is
-  // already covered); the other pages' blurs end only AFTER the capture left them.
+  // already covered); the other pages' blurs end only AFTER the capture left them. A field back on
+  // this page is on screen from now, whenever it's measured.
+  ctx.pageShownAt = Date.now()
   if (ctx.options.recording === true) await followSecretFields(ctx, step, "here")
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
   if (ctx.options.recording === true) await followSecretFields(ctx, step, "elsewhere")

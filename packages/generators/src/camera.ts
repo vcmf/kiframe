@@ -4,6 +4,7 @@ import {
   type CameraDirective,
   type CameraSegment,
   type NRect,
+  rectUnion,
   type ViewportRect,
 } from "@kiframe/schema"
 import { anchorFor, type StepSpan, type Timeline } from "./timeline.ts"
@@ -261,11 +262,7 @@ export function clipRect(r: ViewportRect): NRect | undefined {
   return w > 0 && h > 0 ? { x, y, w, h } : undefined
 }
 
-function unionRect(p: NRect, q: NRect): NRect {
-  const x = Math.min(p.x, q.x)
-  const y = Math.min(p.y, q.y)
-  return { x, y, w: Math.max(p.x + p.w, q.x + q.w) - x, h: Math.max(p.y + p.h, q.y + q.h) - y }
-}
+const unionRect = (p: NRect, q: NRect): NRect => rectUnion(p, q)
 
 /**
  * The zoom that shows `rect` with room around it: the element takes at most ~60% of the frame
