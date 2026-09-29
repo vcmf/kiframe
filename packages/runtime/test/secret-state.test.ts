@@ -44,6 +44,10 @@ describe("isSafeSelector", () => {
     "[title$=com]",
     "[placeholder|=bob]",
     "form[action*='bob']",
+    // Text-bearing ARIA attributes aren't states: refused.
+    "[aria-braillelabel^='b']",
+    "[aria-rowindextext^=b]",
+    "[aria-keyshortcuts^=b]",
     "input[aria-valuetext=x]",
     "form:has(input[value^='h']) button",
     'input[\\76 alue^="hun"]',

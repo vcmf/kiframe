@@ -43,10 +43,6 @@ export function assertNotProbing(context: BrowserContext, selector: string): voi
   }
 }
 
-/** The A8 grammar in words, for every message that refuses a selector. */
-export const SAFE_SELECTOR_RULES =
-  "tags, *, #ids, .classes, identity attributes (id, class, name, type, role, for, the states, aria-* states, data-testid/-test/-qa/-cy/-state) with any operator, text attributes (alt, title, href, src, placeholder, aria-label…) with = or ~= only, the combinators, and :not(), :has(), :nth-child() and a few states"
-
 const PSEUDOS = new Set([
   "first-child",
   "last-child",
@@ -106,15 +102,50 @@ const TEXT_ATTRIBUTES = new Set([
   "aria-placeholder",
   "aria-roledescription",
 ])
+/** ARIA states and relations (ids, booleans, tokens): never page text. Any other aria-* is refused. */
+const ARIA_STATES = new Set([
+  "aria-expanded",
+  "aria-selected",
+  "aria-checked",
+  "aria-pressed",
+  "aria-disabled",
+  "aria-hidden",
+  "aria-current",
+  "aria-haspopup",
+  "aria-modal",
+  "aria-invalid",
+  "aria-busy",
+  "aria-live",
+  "aria-orientation",
+  "aria-sort",
+  "aria-level",
+  "aria-controls",
+  "aria-owns",
+  "aria-labelledby",
+  "aria-describedby",
+  "aria-activedescendant",
+  "aria-required",
+  "aria-readonly",
+  "aria-multiselectable",
+  "aria-autocomplete",
+])
+
 /** Which operators an attribute takes: "any", "whole" (presence, `=`, `~=`), or none. */
 const attributeClass = (name: string): "any" | "whole" | undefined => {
   const n = name.toLowerCase()
   if (IDENTITY_ATTRIBUTES.has(n)) return "any"
   if (TEXT_ATTRIBUTES.has(n)) return "whole"
-  // The other aria-* are states and relations (aria-expanded, aria-controls), never page text.
-  if (n.startsWith("aria-") && !n.includes("value")) return "any"
+  if (ARIA_STATES.has(n)) return "any"
   return undefined
 }
+
+/** The A8 grammar in words, for every message that refuses a selector. */
+export const SAFE_SELECTOR_RULES = [
+  "tags and *, #ids, .classes",
+  `attributes with any operator: ${[...IDENTITY_ATTRIBUTES, ...ARIA_STATES].join(", ")}`,
+  `attributes with = or ~= only: ${[...TEXT_ATTRIBUTES].join(", ")}`,
+  `the combinators, :not(), :has(), ${[...NTH_PSEUDOS].map((p) => `:${p}()`).join(", ")}, ${[...PSEUDOS].map((p) => `:${p}`).join(", ")}`,
+].join("; ")
 
 /**
  * The allowlisted CSS subset of A8 (a tiny recursive-descent parser). Exported for its tests.
