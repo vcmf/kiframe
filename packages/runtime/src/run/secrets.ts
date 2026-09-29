@@ -65,16 +65,21 @@ async function measureFields(
   // In parallel: every field costs a round trip or two after each step.
   // A field on another page (the run followed a tab or popup) isn't on screen: its blur ends,
   // and comes back if the run returns to that page.
-  const measured = await Promise.all(
-    fields.map((field) =>
-      field.page === page ? measureSecretField(field) : Promise.resolve(null),
-    ),
-  )
-  const viewport = await viewportOf(page).catch(() => undefined)
-  // Its end (T2): once the page drew what it read. No drawing: unsure, nothing changes.
+  // Bounded as a whole (a frozen page): what it read is used only if it finished in time.
   const here = fields.some((f) => f.page === page)
-  const end = here ? await drawnSince(page) : now()
-  if (end === undefined) return
+  const read = await boundedRead(ctx, async () => {
+    const measured = await Promise.all(
+      fields.map((field) =>
+        field.page === page ? measureSecretField(field) : Promise.resolve(null),
+      ),
+    )
+    const viewport = await viewportOf(page).catch(() => undefined)
+    // Its end (T2): once the page drew what it read. No drawing: unsure, nothing changes.
+    const end = here ? await drawnSince(page) : now()
+    return end === undefined ? undefined : { measured, viewport, end }
+  })
+  if (read === undefined) return
+  const { measured, viewport, end } = read
   for (const [i, field] of fields.entries()) {
     let box = measured[i]
     const elsewhere = field.page !== page
@@ -136,9 +141,48 @@ export async function drawnSince(page: Page): Promise<number | undefined> {
   return drew ? now() : undefined
 }
 
-/** How often the page is scanned for secret text while recording, and how long a scan may take. */
+/** How often the page is scanned for secret text while recording. */
 export const TEXT_SCAN_MS = 300
-const SCAN_TIMEOUT_MS = 2000
+/** How long a read may take in all (a scan, a field read: a frozen page makes it unsure). */
+const READ_TIMEOUT_MS = 3500
+
+/**
+ * A read bounded in time: undefined (unsure) when it took longer than READ_TIMEOUT_MS. While one
+ * that took too long is still pending in the page, no new read starts (they'd pile up in a frozen
+ * page's queue and all run when it wakes): those are unsure too.
+ */
+async function boundedRead<T>(ctx: Ctx, read: () => Promise<T>): Promise<T | undefined> {
+  if (ctx.stuckRead !== undefined) return undefined
+  const pending = read()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const result = await Promise.race([
+    pending.then((value) => ({ value })),
+    new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), READ_TIMEOUT_MS)
+    }),
+  ]).finally(() => clearTimeout(timer))
+  if (result !== undefined) return result.value
+  const stuck: Promise<unknown> = pending
+    .catch(() => undefined)
+    .finally(() => {
+      if (ctx.stuckRead === stuck) ctx.stuckRead = undefined
+    })
+  ctx.stuckRead = stuck
+  return undefined
+}
+
+/**
+ * The capture left the page (T4): its text regions are left now (they last until the next page's
+ * first frame). A later scan of the page, back on it, finds them again.
+ */
+export function leaveSecretText(ctx: Ctx, step: StepRef): void {
+  const state = ctx.secretText
+  const t = now()
+  for (const id of state.shown.values()) {
+    ctx.options.onEvent?.({ kind: "secret_text", step, id, at: t, end: t, shown: ctx.pageShownAt })
+  }
+  state.shown.clear()
+}
 
 /**
  * Secret values shown as text on the driven page (DOM-text scan, `scanner.ts`). A region is one
@@ -164,22 +208,19 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
     }
     if (ctx.secretValues.size === 0 || ctx.page.isClosed()) return
     const page = ctx.page
-    // Bounded: a frozen page never hangs the step (or the end of the run) waiting for a scan.
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const boxes = await Promise.race([
-      scanSecretTextPartly(page, ctx.secretValues),
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), SCAN_TIMEOUT_MS)
-      }),
-    ])
-      .catch(() => undefined)
-      .finally(() => clearTimeout(timer))
-    // (A switch waits for this scan: what it saw of its page is reported, never dropped.)
-    if (boxes === undefined) return
-    const viewport = await viewportOf(page).catch(() => undefined)
-    // T2: the read's end, once the page drew what it read (else unsure: nothing changes).
-    const end = await drawnSince(page)
-    if (end === undefined) return
+    // Bounded as a whole: a frozen page never hangs the step (or the end of the run), and what a
+    // scan read is used only if it finished in time. (A switch waits for this scan: what it saw
+    // of its page is reported, never dropped.)
+    const scanned = await boundedRead(ctx, async () => {
+      const boxes = await scanSecretTextPartly(page, ctx.secretValues).catch(() => undefined)
+      if (boxes === undefined) return undefined
+      const viewport = await viewportOf(page).catch(() => undefined)
+      // T2: the read's end, once the page drew what it read (else unsure: nothing changes).
+      const end = await drawnSince(page)
+      return end === undefined ? undefined : { boxes, viewport, end }
+    })
+    if (scanned === undefined) return
+    const { boxes, viewport, end } = scanned
     const read = { at: started, end, shown }
     const current = new Map<string, Box>()
     for (const b of boxes) if (b !== null) current.set(`${b.x},${b.y},${b.width},${b.height}`, b)

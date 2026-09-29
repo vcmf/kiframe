@@ -48,16 +48,16 @@ describe("Regions (SECRETS-DESIGN §5 T2–T4)", () => {
     expect(s.finish(5000, () => undefined)[0]?.until).toBe(5000)
   })
 
-  it("never backdates before a page switch, and takes the runtime's own `since`", () => {
+  it("never backdates before the run switched to the page read, and takes the runtime's `since`", () => {
     const r = new Regions()
+    const onB = (t: number) => ({ start: t, end: t, floor: 1000 })
     r.seen("t", "secret-text", base, read(100), A)
     r.gone("t", read(200))
-    r.switched(1000)
-    r.seen("t", "secret-text", base, read(1200), A)
-    r.seen("u", "secret-text", base, read(1200), B, 50)
-    r.seen("f", "secret-field", base, read(1300), A)
-    r.gone("f", read(1400))
-    r.seen("f", "secret-field", base, read(2000), A, 1900)
+    r.seen("t", "secret-text", base, onB(1200), A)
+    r.seen("u", "secret-text", base, onB(1200), B, 50)
+    r.seen("f", "secret-field", base, onB(1300), A)
+    r.gone("f", onB(1400))
+    r.seen("f", "secret-field", base, onB(2000), A, 1900)
     const [t, u, f] = r.finish(3000)
     expect(t?.boxes.at(-1)?.from).toBe(1000)
     expect(u?.boxes).toEqual([{ from: 1000, until: 3000, rect: B }])
@@ -67,7 +67,6 @@ describe("Regions (SECRETS-DESIGN §5 T2–T4)", () => {
   it("backdates against the read's own page, not a switch that came after it", () => {
     const r = new Regions()
     // A scan of page A (shown since 100) handled after the capture switched to B at 900.
-    r.switched(900)
     r.seen("t", "secret-text", base, { start: 800, end: 950, floor: 100 }, A, 500)
     expect(r.finish(3000)[0]?.boxes[0]?.from).toBe(500 - M)
   })

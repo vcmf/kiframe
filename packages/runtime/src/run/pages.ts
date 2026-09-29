@@ -2,7 +2,7 @@ import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { applyHide } from "./interrupts.ts"
-import { followSecretFields, pathOnly, scrubSecrets } from "./secrets.ts"
+import { followSecretFields, leaveSecretText, pathOnly, scrubSecrets } from "./secrets.ts"
 import { settle } from "./settle.ts"
 import { now } from "../clock.ts"
 
@@ -38,7 +38,10 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   ctx.pageShownAt = now()
   if (ctx.options.recording === true) await followSecretFields(ctx, step, "here")
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
-  if (ctx.options.recording === true) await followSecretFields(ctx, step, "elsewhere")
+  if (ctx.options.recording === true) {
+    await followSecretFields(ctx, step, "elsewhere")
+    leaveSecretText(ctx, step)
+  }
   ctx.options.onEvent?.({
     kind: "navigate",
     step,

@@ -173,10 +173,12 @@ steps: [{ id: wait, action: pause, ms: 1500 }]
 
 describe("drawnSince (SECRETS-DESIGN T2)", () => {
   it("ends a read once the page drew, and is unsure (bounded) on a frozen page", async () => {
-    await page.setContent("<p>hi</p>")
-    expect(await drawnSince(page)).toBeGreaterThan(0)
+    // Its own page: left busy for seconds after the test.
+    const frozen = await browser.newPage()
+    await frozen.setContent("<p>hi</p>")
+    expect(await drawnSince(frozen)).toBeGreaterThan(0)
     // The page's main thread stuck for 5 s: its own timer can't fire, the Node side bounds it.
-    await page.evaluate(() => {
+    await frozen.evaluate(() => {
       setTimeout(() => {
         const until = Date.now() + 5000
         while (Date.now() < until) {
@@ -185,7 +187,8 @@ describe("drawnSince (SECRETS-DESIGN T2)", () => {
       }, 0)
     })
     const started = Date.now()
-    expect(await drawnSince(page)).toBeUndefined()
+    expect(await drawnSince(frozen)).toBeUndefined()
     expect(Date.now() - started).toBeLessThan(2500)
+    void frozen.close({ runBeforeUnload: false }).catch(() => undefined)
   })
 })
