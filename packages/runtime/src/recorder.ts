@@ -21,6 +21,7 @@ import {
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import type { Box } from "./motion.ts"
+import { Regions } from "./regions.ts"
 import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
 
@@ -153,6 +154,8 @@ export async function recordScenario(
     let capturing = page
     await capturing.screencast.start(castOptions)
     const onPageSwitch = async (next: Page) => {
+      // Frames before now show the previous page: a region of this one starts here at the earliest.
+      regions.switched(at())
       await capturing.screencast.stop().catch(() => undefined)
       capturing = next
       // The next step's shot must be of this page, not the last frame of the previous one.
@@ -187,6 +190,20 @@ export async function recordScenario(
         )
     }
     const fullFrame = { x: 0, y: 0, w: 1, h: 1 }
+    // Secret regions, written once with their spans when the take ends (SECRETS-DESIGN §5).
+    const regions = new Regions()
+    const measured = (
+      id: string,
+      why: "secret-field" | "secret-text",
+      step: StepRef,
+      box: ReturnType<typeof rect> | undefined,
+      since?: number,
+    ) => {
+      const { phase, stepId } = base(step)
+      if (box === undefined || box.w === 0 || box.h === 0) regions.gone(id, at())
+      else
+        regions.seen(id, why, { phase, ...(stepId !== undefined && { stepId }) }, at(), box, since)
+    }
     const interruptStarts = new Map<string, number>()
     const clickedSteps = new Set<string>()
     const handle = (e: RunnerEvent) => {
@@ -247,39 +264,32 @@ export async function recordScenario(
           // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
           // whole frame is marked (fails closed: better a blurred frame than a visible secret).
           if (e.secret !== undefined && e.kind === "type_start") {
-            push({
-              ...base(e.step),
-              kind: "sensitive",
-              id: e.sensitiveId ?? `secret:${e.secret}`,
-              rect: box === undefined ? fullFrame : rect(box),
-              why: "secret-field",
-            })
+            const id = e.sensitiveId ?? `secret:${e.secret}`
+            measured(id, "secret-field", e.step, box === undefined ? fullFrame : rect(box))
           }
           break
         }
         case "secret_text":
-          push({
-            ...base(e.step),
-            // Backdated to the last scan that didn't see it: no frame shows it unblurred. (Its end
-            // needs no margin: the compositor keeps a mask past it for the capture's lag.)
-            ...(e.since !== undefined && { t: Math.max(0, e.since - t0) }),
-            kind: "sensitive",
-            id: e.id,
-            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
-            why: "secret-text",
-          })
+          // Backdated to the last scan that didn't see it: no frame shows it unblurred. Gone: kept
+          // for the capture's lag.
+          measured(
+            e.id,
+            "secret-text",
+            e.step,
+            e.box === undefined ? undefined : rect(e.box, e.viewport),
+            e.since === undefined ? undefined : Math.max(0, e.since - t0),
+          )
           break
         case "secret_field":
-          // The blur follows the field: a new rect where it is now. A field that's gone (no box)
-          // shows nothing: an empty rect ends its blur.
-          push({
-            ...base(e.step),
-            kind: "sensitive",
-            id: e.id,
-            // Normalized in the viewport it was measured in (measured before the capture switched).
-            rect: e.box === undefined ? { x: 0, y: 0, w: 0, h: 0 } : rect(e.box, e.viewport),
-            why: "secret-field",
-          })
+          // The blur follows the field (normalized in the viewport it was measured in, before the
+          // capture switched). A field that's gone (no box) shows nothing.
+          measured(
+            e.id,
+            "secret-field",
+            e.step,
+            e.box === undefined ? undefined : rect(e.box, e.viewport),
+            e.since === undefined ? undefined : Math.max(0, e.since - t0),
+          )
           break
         case "key":
           push({ ...base(e.step), kind: "key", key: e.keys })
@@ -354,8 +364,9 @@ export async function recordScenario(
     try {
       await Promise.all(pendingWrites)
       if (writeError !== undefined) throw writeError
-      // In time order: a secret-text region is reported backdated (stable: same-time events keep
-      // their order).
+      // The secret regions, closed at the end of the scene; in time order (a region starts
+      // backdated; stable: same-time events keep their order).
+      for (const region of regions.finish(durationMs)) push(region)
       events.sort((a, b) => a.t - b.t)
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
       writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))
@@ -366,7 +377,7 @@ export async function recordScenario(
       const size = frameSize ?? viewport
       const scenarioHash = sha256(JSON.stringify(scenario))
       meta = TakeMeta.parse({
-        version: 1,
+        version: 2,
         takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
         scenarioHash,
         recordedAt: recordedAt.toISOString(),

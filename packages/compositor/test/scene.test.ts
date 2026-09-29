@@ -34,28 +34,25 @@ function fixture(extra: string = "") {
   const events = [
     { t: 500, phase: "steps", stepId: "a", kind: "step_start" },
     click("a", 1000, 0.1, 0.1),
+    // A secret field, as the recorder writes it: measured at 1.1 s, moved by the next measurement
+    // (5 s: the hull covers the way between), on screen until the end.
     {
       t: 1100,
       phase: "steps",
       stepId: "a",
       kind: "sensitive",
       id: "s1",
-      rect: { x: 0.3, y: 0.3, w: 0.2, h: 0.05 },
       why: "secret-field",
+      until: 7000,
+      boxes: [
+        { from: 1100, until: 5000, rect: { x: 0.3, y: 0.3, w: 0.2, h: 0.05 } },
+        { from: 1100, until: 5000, rect: { x: 0.3, y: 0.3, w: 0.2, h: 0.25 } },
+        { from: 5000, until: 7000, rect: { x: 0.3, y: 0.5, w: 0.2, h: 0.05 } },
+      ],
     },
     { t: 1500, phase: "steps", stepId: "a", kind: "step_end" },
     { t: 4000, phase: "steps", stepId: "b", kind: "step_start" },
     click("b", 4500, 0.8, 0.8),
-    // The field moved during step b: reported at its end, like the runner does.
-    {
-      t: 5000,
-      phase: "steps",
-      stepId: "b",
-      kind: "sensitive",
-      id: "s1",
-      rect: { x: 0.3, y: 0.5, w: 0.2, h: 0.05 },
-      why: "secret-field",
-    },
     { t: 5000, phase: "steps", stepId: "b", kind: "step_end" },
   ] as TakeEvent[]
   const move = (end: number, from: number, to: number) =>
@@ -65,7 +62,7 @@ function fixture(extra: string = "") {
       pressed: false,
     }))
   const meta: TakeMeta = {
-    version: 1,
+    version: 2,
     takeKey: "k",
     scenarioHash: "h",
     recordedAt: "2026-09-27T00:00:00.000Z",
@@ -252,55 +249,44 @@ describe("overlays", () => {
     expect(sceneAt(p, start + ms + 50).captions.map((c) => c.text)).toEqual(["Then this"])
   })
 
-  it("blurs both positions around a move (the frame can lag the DOM)", () => {
-    const { scenario, take, composition } = fixture()
-    const p = prepare(composition, scenario, take)
-    const ys = (source: number) =>
-      sceneAt(p, p.map.toOutput(source))
-        .blurs.map((r) => Math.round(r.y * 100) / 100)
-        .sort()
-    // Before step b: the old position only.
-    expect(ys(3900)).toEqual([0.3])
-    // During step b (the move is reported at its end): both.
-    expect(ys(4200)).toEqual([0.3, 0.5])
-    // Just after the report (capture lag): both; then the new one only.
-    expect(ys(5100)).toEqual([0.3, 0.5])
-    expect(ys(5400)).toEqual([0.5])
-  })
-
-  it("keeps blurring the last rect just after the region is gone (capture lag)", () => {
-    const { scenario, take } = fixture()
-    const gone = {
-      t: 5300,
-      phase: "steps",
-      stepId: "b",
-      kind: "sensitive",
-      id: "s1",
-      rect: { x: 0, y: 0, w: 0, h: 0 },
-      why: "secret-field",
-    } as TakeEvent
-    const events = [...take.events, gone].sort((x, y) => x.t - y.t)
-    const withGone = { ...take, events }
-    const { composition: c } = generate(project, scenario, withGone)
-    const p = prepare(c, scenario, withGone)
-    const at = (source: number) => sceneAt(p, p.map.toOutput(source)).blurs.length
-    expect(at(5400)).toBeGreaterThan(0)
-    expect(at(5700)).toBe(0)
-  })
-
-  it("blurs the sensitive region at its latest rect", () => {
+  it("draws a secret region's boxes exactly over their spans, from the take", () => {
     const { scenario, take, composition } = fixture()
     const p = prepare(composition, scenario, take)
     const round = (n: number) => Math.round(n * 1e6) / 1e6
     const at = (source: number) =>
-      sceneAt(p, p.map.toOutput(source)).blurs.map((r) => ({
-        x: round(r.x),
-        y: round(r.y),
-        w: round(r.w),
-        h: round(r.h),
-      }))
-    expect(at(1200)).toEqual([{ x: 0.3, y: 0.3, w: 0.2, h: 0.05 }])
-    expect(at(5400)).toEqual([{ x: 0.3, y: 0.5, w: 0.2, h: 0.05 }])
+      sceneAt(p, source === 500 ? 0 : p.map.toOutput(source))
+        .blurs.map((r) => `${round(r.y)}+${round(r.h)}`)
+        .sort()
+    expect(at(500)).toEqual([])
+    // The old box and the hull of the move, both ends included; then the new box only.
+    expect(at(1200)).toEqual(["0.3+0.05", "0.3+0.25"])
+    expect(at(5000)).toEqual(["0.3+0.05", "0.3+0.25", "0.5+0.05"])
+    expect(at(5400)).toEqual(["0.5+0.05"])
+  })
+
+  it("keeps secret regions whatever the composition says (it can only add masks)", () => {
+    const { scenario, take, composition } = fixture()
+    const edited: Composition = {
+      ...composition,
+      tracks: {
+        ...composition.tracks,
+        masks: [
+          {
+            id: "m",
+            source: "manual",
+            kind: "blur",
+            at: { ms: 5200 },
+            until: { ms: 5600 },
+            target: { rect: { x: 0, y: 0, w: 0.1, h: 0.1 } },
+          },
+        ],
+      },
+    }
+    const p = prepare(edited, scenario, take)
+    const at = (source: number) => sceneAt(p, p.map.toOutput(source)).blurs.length
+    expect(at(1200)).toBe(2)
+    expect(at(5400)).toBe(2)
+    expect(at(6000)).toBe(1)
   })
 
   it("shows a ripple at the click, and the cursor rests between moves", () => {

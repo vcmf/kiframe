@@ -440,7 +440,8 @@ type TakeEvent = { t: number; phase: "setup" | "steps" | "teardown"; stepId?: st
   | { kind: "navigate"; url: string }                                  // origin + path only (no query/hash), scrubbed
   | { kind: "settled" }                                                // network idle + DOM stable
   | { kind: "frame_target"; ref: string; rect: ViewportRect }                 // rects for `camera.frame` / `emphasis` locators
-  | { kind: "sensitive"; id: string; rect: ViewportRect; why: "secret-field" | "secret-text" | "redaction" }  // re-logged when it moves
+  | { kind: "sensitive"; id: string; why: "secret-field" | "secret-text"; until: number;  // t = from
+      boxes: { from: number; until: number; rect: ViewportRect }[] }  // one event per region, whole span (SECRETS-DESIGN §5)
   | { kind: "interrupt"; rule: string; until: number }                 // span to cut (§2b); rule = InterruptRule.id
 );
 
@@ -470,7 +471,7 @@ type Composition = {
     camera:     CameraSegment[];   // zoom and pan
     cursor:     CursorSegment[];   // visibility, click effects
     captions:   CaptionSegment[];
-    masks:      MaskSegment[];     // blur/pixelate (sensitive) or highlight/spotlight
+    masks:      MaskSegment[];     // blur/pixelate or highlight/spotlight (secret regions aren't here: drawn from the take)
     callouts:   CalloutSegment[];  // arrows, text boxes, step badges
     keystrokes: KeystrokeSegment[];
     // later: audio (voiceover, music)
@@ -511,7 +512,7 @@ type CaptionSegment = SegmentBase & { text: string; position?: "bottom" | "top" 
 
 type MaskSegment = SegmentBase & {
   kind: "blur" | "pixelate" | "highlight" | "spotlight";
-  target: { sensitiveId: string } | { frameRef: string } | { rect: NRect };  // ids follow the element as it moves
+  target: { frameRef: string } | { rect: NRect };  // a composition can only add masks
 };
 ```
 
@@ -541,7 +542,7 @@ generate(scenario, take, style) → auto segments
 - **camera:** from each step's `camera` directive. With `auto`, group nearby actions into clusters, and give each cluster a `target`-style framing with timing rules (≥600ms to settle in, ≥1.3s hold, a lead-in that grows with distance, from programatic-demo). Zoom out on scroll and navigation.
 - **clips:** apply the time-model rules above (cut, speed-up, freeze).
 - **captions:** one segment per step caption, anchored to the step. Reading time is guaranteed by rule 4.
-- **masks:** one blur segment per `sensitive` event (secret fields, secret text found on screen, redaction selectors). One highlight/spotlight per `emphasis`.
+- **masks:** one highlight/spotlight per `emphasis`. Secret regions (`sensitive` events) are never masks: the compositor draws them straight from the take, each box over its own span, so no composition edit removes or shortens them (SECRETS-DESIGN I4).
 - **cursor:** click ripple on each click. Hidden in cut spans.
 
 Regenerating (for example after a re-record) = delete the `auto` segments, run the generators, keep the `manual` ones, and set `take.key` to the new take. If a manual segment's anchor no longer exists, it's **flagged as orphaned**, never silently dropped.

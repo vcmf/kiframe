@@ -158,20 +158,13 @@ steps: [{ id: wait, action: pause, ms: 1500 }]
       project,
       { outDir: dir, knownSecretValues: [SECRET], timeoutMs: 1500 },
     )
-    const regions = new Map<string, boolean[]>()
-    for (const e of take.events) {
-      if (e.kind !== "sensitive" || e.why !== "secret-text") continue
-      const shown = e.rect.w > 0 && e.rect.h > 0
-      regions.set(e.id, [...(regions.get(e.id) ?? []), shown])
-    }
-    // Each region: shown once, then at most gone once.
-    for (const states of regions.values()) {
-      expect(states[0]).toBe(true)
-      expect(states.slice(1).every((s) => !s)).toBe(true)
-      expect(states.length).toBeLessThanOrEqual(2)
-    }
-    // Both occurrences are on screen at the end: two regions still open.
-    const open = [...regions.values()].filter((s) => s.length === 1)
-    expect(open).toHaveLength(2)
+    const regions = take.events.filter(
+      (e): e is Extract<typeof e, { kind: "sensitive" }> =>
+        e.kind === "sensitive" && e.why === "secret-text",
+    )
+    // Each region: one box, never back once gone.
+    for (const region of regions) expect(region.boxes).toHaveLength(1)
+    // Both occurrences are on screen at the end: two regions last until the end of the take.
+    expect(regions.filter((r) => r.until === take.meta.durationMs)).toHaveLength(2)
   })
 })

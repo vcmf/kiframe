@@ -128,7 +128,7 @@ The milestones below can partly run in parallel. Recommended order: **M1 → M2 
 ### M3: Rendering and outputs
 | PR | Objective | Scope | Cx | LOC |
 |---|---|---|---|---|
-| M3-1 | Generators complete | All v0 rules (camera directives, emphasis, masks from sensitive events, keystrokes), rebase on re-record (auto replaced, manual kept, orphans flagged) | M | 900 |
+| M3-1 | Generators complete | All v0 rules (camera directives, emphasis, keystrokes; secret regions drawn from the take, not masks), rebase on re-record (auto replaced, manual kept, orphans flagged) | M | 900 |
 | M3-2 | Compositor complete | Styles, fake window frame, masks (blur/highlight/spotlight), callouts, keystroke overlay, transitions, `card` scenes (templates) | L | 1800 |
 | M3-3 | Export pipeline | Render queue, progress/cancel, codec detection + fallback (H.264 → VP9/AV1), presets landscape/vertical/square, `exports/*.json` + pinning | M | 800 |
 | M3-4 | Guide output | Sections per scene, numbered instructions, shots + highlight boxes, Markdown / HTML / PDF | M | 800 |

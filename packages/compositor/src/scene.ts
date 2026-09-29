@@ -185,18 +185,18 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   const tracks = p.composition.tracks
   const tl = p.timeline
 
-  // Masks by source time, both ends included: the frame shown is what must be covered.
-  const blurs: NRect[] = []
+  // By source time, both ends included: the frame shown is what must be covered. Secret regions
+  // straight from the take, each box over its own span (SECRETS-DESIGN I4: no composition edit
+  // removes or shortens them, and no timing rule of the compositor's own).
+  const blurs: NRect[] = secretRects(tl, sourceT)
   for (const m of tracks.masks) {
     if (m.kind !== "blur" && m.kind !== "pixelate") continue
     const a = resolveAnchor(m.at, tl)
     const b = resolveAnchor(m.until, tl)
-    // Past its end too, for the capture lag: frames just after "gone" can still show the region.
-    if (a === undefined || b === undefined || sourceT < a || sourceT > b + MOVE_OVERLAP_MS) continue
+    if (a === undefined || b === undefined || sourceT < a || sourceT > b) continue
     if ("rect" in m.target) blurs.push(m.target.rect)
     // Framed-element rects aren't recorded yet (P0-6 backlog): a privacy mask fails closed.
-    else if (!("sensitiveId" in m.target)) blurs.push({ x: 0, y: 0, w: 1, h: 1 })
-    else blurs.push(...maskRects(tl, m.target.sensitiveId, sourceT))
+    else blurs.push({ x: 0, y: 0, w: 1, h: 1 })
   }
 
   const hidden = tracks.cursor.some((c) => c.kind === "hidden" && active(p, c, sourceT, frozen))
@@ -228,30 +228,17 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   }
 }
 
-/**
- * Around a move, the frame on screen can still show the region where it was (capture lags the
- * DOM): both the previous and the new rect are blurred for MOVE_OVERLAP_MS on each side.
- */
-const MOVE_OVERLAP_MS = 250
-
-/** The rects of a sensitive region at source time `t` (it follows the element). */
-function maskRects(tl: Timeline, id: string, t: number): NRect[] {
-  const events = tl.events.filter(
-    (e): e is Extract<typeof e, { kind: "sensitive" }> => e.kind === "sensitive" && e.id === id,
-  )
+/** The boxes of the take's secret regions on screen at source time `t`. */
+function secretRects(tl: Timeline, t: number): NRect[] {
   const out: NRect[] = []
-  events.forEach((e, i) => {
-    const rect = clipRect(e.rect)
-    if (rect === undefined) return
-    // From the start of the step that reported it (the field is measured at step end: it may have
-    // moved anywhere in that step), at least MOVE_OVERLAP_MS early...
-    const step = e.stepId === undefined ? undefined : tl.byId.get(e.stepId)
-    const from = Math.min(e.t - MOVE_OVERLAP_MS, step?.start ?? Infinity)
-    // ...until MOVE_OVERLAP_MS after the next report replaced it (frames lag the DOM).
-    const next = events[i + 1]
-    const until = next === undefined ? Infinity : next.t + MOVE_OVERLAP_MS
-    if (t >= from && t < until) out.push(rect)
-  })
+  for (const e of tl.events) {
+    if (e.kind !== "sensitive" || t < e.t || t > e.until) continue
+    for (const box of e.boxes) {
+      if (t < box.from || t > box.until) continue
+      const rect = clipRect(box.rect)
+      if (rect !== undefined) out.push(rect)
+    }
+  }
   return out
 }
 

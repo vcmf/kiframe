@@ -23,6 +23,11 @@ const base = {
   stepId: StepId.optional(),
 }
 
+/** A box of a secret region, over its own span. */
+const RegionBox = z
+  .strictObject({ from: Timestamp, until: Timestamp, rect: ViewportRect })
+  .refine((b) => b.until >= b.from, { message: "a box's `until` must not be before its `from`" })
+
 const TakeEventVariants = z.discriminatedUnion("kind", [
   z.strictObject({ ...base, kind: z.enum(["step_start", "step_end"]) }),
   z.strictObject({
@@ -62,13 +67,18 @@ const TakeEventVariants = z.discriminatedUnion("kind", [
     ref: z.string().min(1),
     rect: ViewportRect,
   }),
-  /** Re-logged whenever the element moves. */
+  /**
+   * A secret region with its whole time span (SECRETS-DESIGN §5), from `t` to `until`: each box is
+   * drawn exactly over its own span (source time, both ends included). The runtime writes the spans
+   * (a move's hull, the capture lag after "gone"); the compositor adds no timing of its own.
+   */
   z.strictObject({
     ...base,
     kind: z.literal("sensitive"),
     id: z.string().min(1),
-    rect: ViewportRect,
-    why: z.enum(["secret-field", "secret-text", "redaction"]),
+    why: z.enum(["secret-field", "secret-text"]),
+    until: Timestamp,
+    boxes: z.array(RegionBox).min(1),
   }),
   /** An interrupt handled off camera between `t` and `until`: becomes a cut. */
   z.strictObject({ ...base, kind: z.literal("interrupt"), rule: RuleName, until: Timestamp }),
@@ -78,10 +88,15 @@ const TakeEventBase = TakeEventVariants.refine(
   // Interrupts are handled between steps, so they may have no step even on camera.
   (e) => e.phase !== "steps" || e.kind === "interrupt" || e.stepId !== undefined,
   { message: "on-camera events (phase `steps`) need a stepId", path: ["stepId"] },
-).refine((e) => e.kind !== "interrupt" || e.until >= e.t, {
-  message: "interrupt `until` must not be before `t`",
-  path: ["until"],
-})
+)
+  .refine((e) => e.kind !== "interrupt" || e.until >= e.t, {
+    message: "interrupt `until` must not be before `t`",
+    path: ["until"],
+  })
+  .refine(
+    (e) => e.kind !== "sensitive" || e.boxes.every((b) => b.from >= e.t && b.until <= e.until),
+    { message: "a region's boxes lie within its span (`t` to `until`)", path: ["boxes"] },
+  )
 /** A take event, with whole-document guards (forbidden keys, secret references). */
 export const TakeEvent = guarded(TakeEventBase)
 export type TakeEvent = z.infer<typeof TakeEventBase>
@@ -99,7 +114,8 @@ export type CursorSample = z.infer<typeof CursorSampleBase>
 
 /** Unguarded: internal only, use the guarded export. */
 const TakeMetaBase = z.strictObject({
-  version: z.literal(1),
+  /** 2: secret regions carry their spans (SECRETS-DESIGN §5); version 1 takes are re-recorded. */
+  version: z.literal(2),
   takeKey: z.string().min(1),
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),

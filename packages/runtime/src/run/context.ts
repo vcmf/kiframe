@@ -52,6 +52,8 @@ export type RunnerEvent =
       box?: Box | undefined
       /** The CSS viewport the box was measured in (pages can differ: a popup has its own). */
       viewport?: { width: number; height: number } | undefined
+      /** Back on screen since (ms, `Date.now()`): a page switch back. By default, since it left. */
+      since?: number | undefined
     }
   /** A key combination was pressed (`press` action). */
   | { kind: "key"; step: StepRef; keys: string }
