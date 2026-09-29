@@ -17,27 +17,91 @@ export const Origin = z.string().refine((s) => {
   }
 }, "an origin is scheme://host[:port], nothing after it")
 
-/**
- * The kind of field a secret was first typed into (an input's `type`, `textarea`…). A later use
- * must be the same kind: a password never goes into a text or search box. Deliberately not the
- * locator nor `autocomplete`: they change with healing, fallbacks and anti-autofill tricks.
- */
-export const FieldBinding = z.strictObject({ inputType: z.string().min(1).max(40) })
-export type FieldBinding = z.infer<typeof FieldBinding>
-
-export const SecretMeta = z.strictObject({
-  name: SecretName,
-  kind: SecretKind,
-  /** Where it may be typed. */
-  origins: z.array(Origin).min(1).max(20),
-  /** Bound at first use; cleared only by the user (`unbind`). */
-  field: FieldBinding.optional(),
-  updatedAt: z.iso.datetime(),
+/** What an element a secret goes into is (SECRETS-DESIGN §3 A1): checked at every use. */
+export const ElementInfo = z.strictObject({
+  tag: z.enum(["input", "textarea"]),
+  /** An input's `type`; "textarea" for a textarea. */
+  type: z.string().min(1).max(40),
+  /** From a `<label>`, `aria-label` or `aria-labelledby` (not a placeholder); null without one. */
+  label: z.string().max(200).nullable(),
 })
+export type ElementInfo = z.infer<typeof ElementInfo>
+
+/** A pathname pattern (plain, as the user saw it): `*` for any one segment, or `*` for every path. */
+export const PathPattern = z
+  .string()
+  .max(2000)
+  .regex(/^(\*|\/[^\s?#]*)$/, "a path pattern is a pathname (`*` for any one segment), or `*`")
+
+/** A keyed hash (HMAC-SHA256, hex) of page-derived text: never stored in the clear (§3 A1). */
+const Hash = z.string().regex(/^[0-9a-f]{64}$/)
+
+/**
+ * A stored path pattern: `*` (every path), or segments that are `*` (any one segment) or the keyed
+ * hash of a literal segment.
+ */
+export const HashedPathPattern = z
+  .string()
+  .max(6000)
+  .regex(/^(\*|(\/(\*|[0-9a-f]{64})?)+)$/)
+
+/** A grant's element: its tag and type, and its label as a keyed hash. */
+export const GrantElement = z.strictObject({
+  tag: ElementInfo.shape.tag,
+  type: ElementInfo.shape.type,
+  label: Hash.nullable(),
+})
+export type GrantElement = z.infer<typeof GrantElement>
+
+/**
+ * A step key (§3 A1): `scene:<scene>/<phase>/<step>`, `preset:<name>/<step>`, `interrupt:<rule>`
+ * or `org:<org>/interrupt:<rule>`.
+ */
+export const StepKey = z
+  .string()
+  .max(300)
+  .regex(
+    /^(scene:[^/\s]+\/(setup|steps|teardown)\/[^/\s]+|preset:[^/\s]+\/[^/\s]+|interrupt:[^/\s]+|org:[^/\s]+\/interrupt:[^/\s]+)$/,
+  )
+
+/**
+ * A user's approval (§3 A1): this step may type this secret into this target, on this origin and
+ * paths, into this kind of element. Only the host's approval UI creates one.
+ */
+export const Grant = z.strictObject({
+  /** The host's id for the project folder (or the org, for an org interrupt rule). */
+  scope: z.string().min(1).max(200),
+  stepKey: StepKey,
+  secret: SecretName,
+  origin: Origin,
+  pathPattern: HashedPathPattern,
+  /** `canonicalTarget` of the step's target when approved (agent-written: not page text). */
+  target: z.string().min(2).max(4000),
+  element: GrantElement,
+  grantedAt: z.iso.datetime(),
+})
+export type Grant = z.infer<typeof Grant>
+
+export const SecretMeta = z.preprocess(
+  // An M1-5 file's field binding (replaced by grants): dropped on read, never an unreadable vault.
+  (v) => {
+    if (typeof v !== "object" || v === null || !("field" in v)) return v
+    const { field: _, ...rest } = v as Record<string, unknown>
+    return rest
+  },
+  z.strictObject({
+    name: SecretName,
+    kind: SecretKind,
+    /** Where it may be typed. */
+    origins: z.array(Origin).min(1).max(20),
+    updatedAt: z.iso.datetime(),
+  }),
+)
 export type SecretMeta = z.infer<typeof SecretMeta>
 
 export const VaultFile = z.strictObject({
   version: z.literal(1),
   secrets: z.array(SecretMeta).max(1000),
+  grants: z.array(Grant).max(10_000).default([]),
 })
 export type VaultFile = z.infer<typeof VaultFile>

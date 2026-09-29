@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { parseArgs } from "node:util"
-import { runScenario, scrubSecrets, StepError, visibleOnly, toPlaywright } from "@kiframe/runtime"
+import { runScenario, scrubSecrets, StepError, visibleOnly, locatorFor } from "@kiframe/runtime"
 import {
   checkScenarioAgainstProject,
   parseProjectYaml,
@@ -34,6 +34,7 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions"
 import { chromium, type Browser, type Page } from "playwright"
+import { sceneIdOf } from "../lib/scenes.ts"
 
 const { values } = parseArgs({
   options: {
@@ -121,6 +122,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const model = values.model
+// The scene being grounded (its steps and its replays are one scene: they share approvals).
+const sceneId = sceneIdOf(values.out)
 const maxTurns = Number(values["max-turns"])
 if (!Number.isInteger(maxTurns) || maxTurns < 1) {
   console.error("--max-turns takes a positive whole number")
@@ -252,6 +255,8 @@ async function runStep(input: unknown): Promise<string> {
     : { version: 1 as const, setup: [setupItem!.data!], steps: [] }
   try {
     await runScenario(page, scenario, quickProject, {
+      scope: "phase0",
+      sceneId,
       resolveSecret,
       approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,
@@ -285,7 +290,12 @@ async function snapshot(within?: unknown): Promise<string> {
       const issue = parsed.error.issues[0]
       return `invalid \`within\` locator: ${formatIssue(issue)}`
     }
-    root = visibleOnly(toPlaywright(page, parsed.data)).first()
+    try {
+      root = visibleOnly(await locatorFor(page, parsed.data)).first()
+    } catch (e) {
+      // A selector the secrets rules refuse (SECRETS-DESIGN §3 A8): the model gets the reason.
+      return `refused \`within\` locator: ${String(e)}`
+    }
   }
   const text = await root
     .ariaSnapshot({ timeout: 5000 })
@@ -314,6 +324,8 @@ async function replay(yaml: string): Promise<string> {
   const fresh = await context.newPage()
   try {
     await runScenario(fresh, scenario, quickProject, {
+      scope: "phase0",
+      sceneId,
       resolveSecret,
       approveRisky: logApproval,
       timeoutMs: STEP_TIMEOUT_MS,

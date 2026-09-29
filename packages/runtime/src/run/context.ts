@@ -1,8 +1,9 @@
 import type { Action, ProjectConfig, Step } from "@kiframe/schema"
-import type { Locator, Page } from "playwright"
-import { type SecretUse, StepError, type StepRef } from "../errors.ts"
+import type { ElementHandle, Locator, Page } from "playwright"
+import { type ApprovalRequest, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
 import type { NetworkTracker } from "../network.ts"
+import { ProbeRefusal } from "../secret-state.ts"
 
 // The runner's shared state (Ctx), its options and events, and small helpers every part uses.
 
@@ -71,11 +72,26 @@ export type RunnerEvent =
 
 export interface RunOptions {
   /**
-   * Resolves a secret NAME to its value, at the moment of the fill, for this use (the page's origin,
-   * the focused field): the vault's resolver (`Vault.resolver`). Throw if unavailable or refused (a
+   * Resolves a secret NAME to its value, at the moment of the write, for this use (step, page,
+   * target, element): the vault's resolver (`Vault.resolver`). Throw if unavailable or refused (a
    * `SecretRefusal`'s message is reported; any other error's never is).
    */
   resolveSecret?: (name: string, use: SecretUse) => string | Promise<string>
+  /**
+   * An interactive run (grounding, a re-record in the app) asks the user when a use has no grant
+   * yet (SECRETS-DESIGN §3 A3): true once the host recorded their approval (`Vault.approve`).
+   * Headless runs don't pass it: an ungranted use fails.
+   */
+  requestApproval?: (request: ApprovalRequest) => boolean | Promise<boolean>
+  /** The host's id of the project folder: the scope of its approvals. Never read from project.json. */
+  scope?: string
+  /**
+   * The host's id for this scene (kept outside the project; a deleted scene's replacement gets a
+   * new one, even if the agent reuses its ids): the approval keys of the scene's own steps.
+   */
+  sceneId?: string
+  /** The org interrupt rules this run's config kept from the org (their approvals are the org's). */
+  orgInterrupts?: { orgId: string; ruleIds: readonly string[] }
   /** Resolves an `upload` step's project asset (`<sha256>.<ext>`) to a file path. */
   resolveAsset?: (file: string) => string | Promise<string>
   /**
@@ -162,10 +178,18 @@ export interface Ctx {
     values: number
     inflight: Promise<void> | undefined
   }
+  /** Elements a secret was written to in this run (SECRETS-DESIGN §3 A5: no copy or drag from them). */
+  secretWritten: { page: Page; handle: ElementHandle }[]
   /** Fields a secret was typed into (recording): re-measured after every step. */
   secretFields: {
     id: string
+    /** The target as the type step found it (a fallback when the handle's element is replaced). */
     locator: Locator
+    /**
+     * The element the secret was written to: followed first (not re-found by name: the field
+     * itself turns exact names on, A8). Blur tracking is never reported to the agent.
+     */
+    handle?: ElementHandle
     page: Page
     last?: string
     /** The last real box (kept while the run is on another page). */
@@ -205,6 +229,7 @@ export async function guard<T>(step: StepRef, fn: () => Promise<T>): Promise<T> 
     return await fn()
   } catch (cause) {
     if (cause instanceof StepError) throw cause
+    if (cause instanceof ProbeRefusal) throw new StepError(step, "secret-refused", cause.message)
     throw new StepError(step, "action-failed", firstLine(cause), { cause })
   }
 }

@@ -3,10 +3,12 @@ import {
   type ProjectConfig,
   type ResolvedEnvironment,
   type Scenario,
+  SceneId,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
+import { secretsOf } from "./secret-state.ts"
 
 // A recording batch (APPROACHES §7.2): several scenes of one project, one after another. Each scene
 // gets a fresh browser context (nothing leaks from one take to the next but the session), and
@@ -33,11 +35,13 @@ export interface BatchScene {
   scenario: Scenario
   /** The scene's take directory (see `RecordOptions.outDir`). */
   outDir: string
+  /** The host's id for this scene: the approval keys of its own secret steps (never shared). */
+  sceneId: string
 }
 
 export interface BatchOptions extends Omit<
   RecordOptions,
-  "outDir" | "skipSessionPresets" | "onSessionReady" | "sessionLandings"
+  "outDir" | "skipSessionPresets" | "onSessionReady" | "sessionLandings" | "sceneId"
 > {
   /**
    * The environment the batch runs against: risky steps go through its `approvalPolicy`, with
@@ -74,6 +78,13 @@ export async function recordBatch(
   options: BatchOptions = {},
 ): Promise<BatchResult[]> {
   const { context: contextOptions, onScene, environment, ...record } = options
+  // Each scene's own approval keys (§3 A1): a scene with an invalid id, or an earlier scene's, fails.
+  const ids = new Set<string>()
+  // Never clipboard access for the page (SECRETS-DESIGN §3 A5).
+  const clipboard = (contextOptions?.permissions ?? []).filter((p) => p.startsWith("clipboard"))
+  if (clipboard.length > 0) {
+    throw new Error(`recording contexts never get clipboard permissions (${clipboard.join(", ")})`)
+  }
   if (environment !== undefined) {
     record.approveRisky = approvalPolicy(environment, options.approveRisky)
   }
@@ -82,6 +93,7 @@ export async function recordBatch(
   // The session presets the saved state holds, and the page each one ended on.
   let landings: Record<string, string> = {}
   const results: BatchResult[] = []
+  const seenValues = new Set<string>()
   for (const [index, scene] of scenes.entries()) {
     const uses = sessionPresetsOf(scene.scenario, project)
     // Only a scene using the saved session starts from it (a signed-out scene stays signed out).
@@ -93,6 +105,14 @@ export async function recordBatch(
     let context: BrowserContext | undefined
     let result: BatchResult
     try {
+      // Before anything runs (a login, risky setup): a bad id would only surface at a secret step.
+      if (!SceneId.safeParse(scene.sceneId).success) {
+        throw new Error(`scene id "${scene.sceneId}" isn't a scene id (kebab-case)`)
+      }
+      if (ids.has(scene.sceneId)) {
+        throw new Error(`an earlier scene of the batch has the id "${scene.sceneId}"`)
+      }
+      ids.add(scene.sceneId)
       context = await browser.newContext({
         viewport: {
           width: project.target.viewport.width,
@@ -107,6 +127,10 @@ export async function recordBatch(
       const take = await recordScenario(page, scene.scenario, project, {
         ...record,
         outDir: scene.outDir,
+        sceneId: scene.sceneId,
+        // The values earlier scenes resolved (they share a session): a scene whose login was
+        // skipped still refuses paste and blurs "Signed in as bob@acme.com" (§5 R6).
+        knownSecretValues: [...(record.knownSecretValues ?? []), ...seenValues],
         skipSessionPresets: reuse ? uses : [],
         sessionLandings: landings,
         onSessionReady: async (preset, at) => {
@@ -128,11 +152,19 @@ export async function recordBatch(
       result = { ok: false, error }
       // A step failing on the reused session may be the session (expired, signed out): the next
       // scene logs in again rather than failing the same way. Not for a setup error or a file one.
-      if (reuse && error instanceof StepError && error.reason !== "invalid-setup") {
+      // Not a refusal: approvals and risky steps say nothing about the session.
+      const notSession = [
+        "invalid-setup",
+        "secret-refused",
+        "secret-declined",
+        "risky-not-approved",
+      ]
+      if (reuse && error instanceof StepError && !notSession.includes(error.reason)) {
         state = undefined
         landings = {}
       }
     } finally {
+      if (context !== undefined) for (const v of secretsOf(context).values) seenValues.add(v)
       await context?.close().catch(() => undefined)
     }
     results.push(result)

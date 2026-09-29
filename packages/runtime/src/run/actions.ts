@@ -1,6 +1,7 @@
 import { isGrounded, secretRefName, type Target } from "@kiframe/schema"
 import type { ElementHandle, FileChooser, Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
+import { EXACT_NAMES_HINT } from "../secret-state.ts"
 import {
   type Box,
   clickPoint,
@@ -9,7 +10,14 @@ import {
   seededRandom,
   typingDelays,
 } from "../motion.ts"
-import { isOnScreen, resolveTarget, stripExtras, toPlaywright, viewportOf } from "../targets.ts"
+import {
+  countUnderRule,
+  isOnScreen,
+  resolveTarget,
+  stripExtras,
+  toPlaywright,
+  viewportOf,
+} from "../targets.ts"
 import { waitForCondition } from "./conditions.ts"
 import {
   type AnyAction,
@@ -24,6 +32,10 @@ import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
 import { clickAtCursor, moveCursorTo, travel, visiblePart } from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
+  abandonSecretWrite,
+  assertSecretTarget,
+  assertDragKeepsSecrets,
+  assertKeysKeepSecrets,
   assertSecretOrigin,
   followSecretField,
   prepareSecretWrite,
@@ -92,79 +104,107 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       return
     }
     case "type": {
-      const target = await find(ctx, action.target, step)
       const secret = secretRefName(action.value)
+      // Before anything touches the page (`find`, `clear`): a secret step's target is one exact
+      // locator (the schema says so; a scenario built in code skips the schema).
+      if (secret !== undefined) assertSecretTarget(action.target, step, secret)
+      const target = await find(ctx, action.target, step)
       assertSecretOrigin(ctx, secret, step)
       // A secret is resolved at the last moment, once the field it goes into is focused.
       const text = secret === undefined ? action.value : ""
       let secretWrite: SecretWrite | undefined
-      const sensitiveId =
+      const followed =
         secret === undefined ? undefined : followSecretField(ctx, step, secret, target)
+      const sensitiveId = followed?.id
       if (step.phase === "steps") await moveCursorTo(ctx, target, step)
       let fieldBox: Box | null = null
-      await guard(step, async () => {
-        const timeout = ctx.timeoutMs
-        // Same semantics on and off camera: the text is added at the end of the field's content,
-        // unless `clear` empties the field first.
-        if (action.clear === true) await target.fill("", { timeout })
-        await target.focus({ timeout })
-        // The text goes to the focused element: make sure it's the target, never the field focused
-        // before (a secret would land there, on camera).
-        if (!(await target.evaluate(hasFocus, undefined, { timeout }))) {
-          throw new StepError(
-            step,
-            "action-failed",
-            "target can't take keyboard focus (use a locator for the input itself)",
-          )
-        }
-        await target.evaluate(moveCaretToEnd, undefined, { timeout })
-        if (secret !== undefined) secretWrite = await prepareSecretWrite(ctx, target, step, secret)
-        // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
-        if (ctx.options.recording === true) {
-          fieldBox = await target
-            .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
-            .catch(() => null)
-        }
-        ctx.options.onEvent?.({
-          kind: "type_start",
-          step,
-          secret,
-          sensitiveId,
-          box: fieldBox ?? undefined,
-        })
-        // Checked again right before the text is sent: the page may have navigated while the
-        // secret was being resolved.
-        assertSecretOrigin(ctx, secret, step)
-        if (secretWrite !== undefined) {
-          await writeSecret(secretWrite, timeout)
-        } else if (action.instant === true) {
-          await page.keyboard.insertText(text)
-        } else {
-          // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
-          // caret to the start when the window doesn't have OS focus (headed, Electron).
-          const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
-          if (pacing === "instant") {
-            await page.keyboard.type(text)
-          } else {
-            const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
-            // delays[i] is the pause BEFORE character i (word and sentence boundaries).
-            for (const [i, char] of [...text].entries()) {
-              const delay = delays[i] ?? 0
-              if (delay > 0) await sleep(delay)
-              await page.keyboard.type(char)
+      try {
+        await guard(step, async () => {
+          const timeout = ctx.timeoutMs
+          // Same semantics on and off camera: the text is added at the end of the field's content,
+          // unless `clear` empties the field first.
+          if (action.clear === true) await target.fill("", { timeout })
+          await target.focus({ timeout })
+          // The text goes to the focused element: make sure it's the target, never the field focused
+          // before (a secret would land there, on camera).
+          if (!(await target.evaluate(hasFocus, undefined, { timeout }))) {
+            throw new StepError(
+              step,
+              "action-failed",
+              "target can't take keyboard focus (use a locator for the input itself)",
+            )
+          }
+          await target.evaluate(moveCaretToEnd, undefined, { timeout })
+          if (secret !== undefined) {
+            secretWrite = {
+              ...(await prepareSecretWrite(ctx, target, step, secret, action.target)),
+              field: followed?.field,
             }
           }
+          // The field as it is now (focus and clear can scroll or re-lay out): what the blur must cover.
+          if (ctx.options.recording === true) {
+            fieldBox = await target
+              .boundingBox({ timeout: Math.min(ctx.timeoutMs, 500) })
+              .catch(() => null)
+          }
+          ctx.options.onEvent?.({
+            kind: "type_start",
+            step,
+            secret,
+            sensitiveId,
+            box: fieldBox ?? undefined,
+          })
+          // Checked again right before the text is sent: the page may have navigated while the
+          // secret was being resolved.
+          assertSecretOrigin(ctx, secret, step)
+          if (secretWrite !== undefined) {
+            await writeSecret(ctx, secretWrite, step, timeout)
+          } else if (action.instant === true) {
+            await page.keyboard.insertText(text)
+          } else {
+            // The keyboard, not locator.pressSequentially: it would re-focus the field and reset the
+            // caret to the start when the window doesn't have OS focus (headed, Electron).
+            const pacing = step.phase === "steps" ? ctx.pacing.typing : "instant"
+            if (pacing === "instant") {
+              await page.keyboard.type(text)
+            } else {
+              const delays = typingDelays(text, pacing, seededRandom(`${seedOf(step)}:typing`))
+              // delays[i] is the pause BEFORE character i (word and sentence boundaries).
+              for (const [i, char] of [...text].entries()) {
+                const delay = delays[i] ?? 0
+                if (delay > 0) await sleep(delay)
+                await page.keyboard.type(char)
+              }
+            }
+          }
+        })
+      } catch (error) {
+        // A prepared write the step never made (it failed in between): its handle is released.
+        const written = secretWrite
+        if (written !== undefined && !ctx.secretWritten.some((w) => w.handle === written.input)) {
+          await abandonSecretWrite(written)
         }
-      })
+        throw error
+      }
       // End of typing (before the submit, which may navigate or re-lay out the page).
       ctx.options.onEvent?.({ kind: "type", step, secret, box: fieldBox ?? undefined })
       if (action.submit === true) {
-        await guard(step, () => target.press("Enter", { timeout: ctx.timeoutMs }))
-        ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
+        // After a secret, on the element it was written to (the found locator would re-run its
+        // query with the names of before the write, §3 A8).
+        const on = secretWrite?.input ?? target
+        // A field that submitted itself on input (the page left with the value): nothing to press.
+        const gone =
+          secretWrite !== undefined &&
+          !(await secretWrite.input.evaluate((e) => e.isConnected).catch(() => false))
+        if (!gone) {
+          await guard(step, () => on.press("Enter", { timeout: ctx.timeoutMs }))
+          ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
+        }
       }
       return
     }
     case "press":
+      await assertKeysKeepSecrets(ctx, step, action.keys)
       await guard(step, () => page.keyboard.press(toPlaywrightKeys(action.keys)))
       ctx.options.onEvent?.({ kind: "key", step, keys: action.keys })
       return
@@ -263,6 +303,7 @@ async function drag(
   step: StepRef,
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
+  await assertDragKeepsSecrets(ctx, step, source)
   const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
   // Playwright's own drag (its actionability and hit checks), several moves: pointer drag
   // libraries ignore the move that starts a drag. The cursor ends where the drop was.
@@ -379,11 +420,13 @@ async function drag(
 /** The target, if it resolves to exactly one hidden `<input type=file>` (primary locator only). */
 async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
-  const candidates = toPlaywright(ctx.page, stripExtras(target)).and(
-    ctx.page.locator("input[type=file]"),
-  )
-  const count = await candidates.count().catch(() => 0)
-  if (count !== 1) return undefined
+  const locator = stripExtras(target)
+  const fileInput = (l: Locator) => l.and(ctx.page.locator("input[type=file]"))
+  // Counted through the one helper (§3 A8), hidden matches included: a hidden file input.
+  // (Errors surface: countUnderRule already reads a navigation as no count.)
+  const r = await countUnderRule(ctx.page, locator, undefined, { refine: fileInput, hidden: true })
+  if (r.count !== 1) return undefined
+  const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact))
   const visible = await candidates.isVisible().catch(() => true)
   return visible ? undefined : candidates
 }
@@ -407,7 +450,7 @@ async function upload(
   }
   const file = await guard(step, async () => resolver(action.file))
   // A file input is often hidden behind a styled button: `setInputFiles` works on it anyway.
-  const hidden = await hiddenFileInput(ctx, action.target)
+  const hidden = await guard(step, () => hiddenFileInput(ctx, action.target))
   if (hidden !== undefined) {
     await guard(step, () => hidden.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return
@@ -417,7 +460,8 @@ async function upload(
     target = await find(ctx, action.target, step)
   } catch (error) {
     // Nothing visible: the hidden input may have rendered late (checked once more now).
-    const late = await hiddenFileInput(ctx, action.target)
+    // A refusal there (§3 A8) mustn't hide the real error.
+    const late = await hiddenFileInput(ctx, action.target).catch(() => undefined)
     if (late === undefined) throw error
     await guard(step, () => late.setInputFiles(file, { timeout: ctx.timeoutMs }))
     return
@@ -471,7 +515,12 @@ async function upload(
 
 async function find(ctx: Ctx, target: Target, step: StepRef): Promise<Locator> {
   const result = await guard(step, () => resolveTarget(ctx.page, target, ctx.timeoutMs))
-  if (!result.ok) throw new StepError(step, result.reason, result.detail)
+  if (!result.ok) {
+    // Names are exact while a field holding a secret is on the page (§3 A8): say so.
+    const exact = result.exact && result.reason === "target-not-found"
+    const hint = exact ? EXACT_NAMES_HINT : ""
+    throw new StepError(step, result.reason, result.detail + hint)
+  }
   if (result.fallbackIndex !== undefined) {
     ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
   }
@@ -569,17 +618,21 @@ async function scrollUntil(
   let lastDirection = 0
   let reversals = 0
   let reportedFallback = false
+  // Whether names were exact at the last poll (§3 A8): the errors say so.
+  let exact = false
+  const hint = () => (exact ? EXACT_NAMES_HINT : "")
   for (;;) {
     const left = deadline - Date.now()
     if (left <= 0) {
       throw new StepError(
         step,
         "target-not-found",
-        `target not on screen after scrolling for ${ctx.timeoutMs} ms`,
+        `target not on screen after scrolling for ${ctx.timeoutMs} ms${hint()}`,
       )
     }
     // One polling round per page (no waiting): the scroll itself is what makes the target appear.
     const result = await guard(step, () => resolveTarget(ctx.page, until, 0))
+    exact = result.exact
     if (result.ok && result.fallbackIndex !== undefined && !reportedFallback) {
       reportedFallback = true
       ctx.options.onEvent?.({ kind: "target_fallback", step, fallbackIndex: result.fallbackIndex })
@@ -628,7 +681,7 @@ async function scrollUntil(
       throw new StepError(
         step,
         "target-not-found",
-        "scrolled until the end, target never appeared on screen",
+        `scrolled until the end, target never appeared on screen${hint()}`,
       )
     }
     lazyRetry = false

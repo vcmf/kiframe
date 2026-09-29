@@ -1,26 +1,35 @@
+import { assertNotProbing, exactNamesFor, isPartialName } from "./secret-state.ts"
 import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 
-/** Builds the Playwright locator for one schema locator (roles, labels, text first; CSS last). */
-export function toPlaywright(page: Page, locator: SchemaLocator): Locator {
+/**
+ * The Playwright locator for a schema locator, with the exact-names rule of the moment (SECRETS-
+ * DESIGN §3 A8): refreshed now, so no caller can build one with a stale decision.
+ */
+export async function locatorFor(page: Page, locator: SchemaLocator): Promise<Locator> {
+  return toPlaywright(page, locator, (await exactNamesFor(page, [locator])).exact)
+}
+
+/** Builds the Playwright locator; `forced`: exact names (A8), decided by the caller just now. */
+export function toPlaywright(page: Page, locator: SchemaLocator, forced: boolean): Locator {
+  const exact = (own: boolean | undefined) =>
+    forced ? { exact: true } : own !== undefined ? { exact: own } : {}
   switch (locator.by) {
     case "role":
+      // Spliced into Playwright's selector unescaped: only a role name, never selector syntax.
+      if (!/^[a-z]{2,40}$/.test(locator.role)) throw new Error(`not an ARIA role: ${locator.role}`)
       return page.getByRole(locator.role as Parameters<Page["getByRole"]>[0], {
-        ...(locator.name !== undefined && { name: locator.name }),
-        ...(locator.exact !== undefined && { exact: locator.exact }),
+        ...(locator.name !== undefined && { name: locator.name, ...exact(locator.exact) }),
       })
     case "label":
-      return page.getByLabel(locator.name, {
-        ...(locator.exact !== undefined && { exact: locator.exact }),
-      })
+      return page.getByLabel(locator.name, exact(locator.exact))
     case "text":
-      return page.getByText(locator.text, {
-        ...(locator.exact !== undefined && { exact: locator.exact }),
-      })
+      return page.getByText(locator.text, exact(locator.exact))
     case "placeholder":
-      return page.getByPlaceholder(locator.text)
+      return page.getByPlaceholder(locator.text, exact(undefined))
     case "css":
+      assertNotProbing(page.context(), locator.selector)
       return page.locator(locator.selector)
   }
 }
@@ -41,9 +50,21 @@ export function describeLocator(locator: SchemaLocator): string {
   }
 }
 
+/** `exact`: whether names were matched exactly at the last poll (SECRETS-DESIGN §3 A8). */
 export type ResolveResult =
-  | { ok: true; locator: Locator; used: SchemaLocator; fallbackIndex: number | undefined }
-  | { ok: false; reason: "not-grounded" | "target-not-found" | "target-ambiguous"; detail: string }
+  | {
+      ok: true
+      locator: Locator
+      used: SchemaLocator
+      fallbackIndex: number | undefined
+      exact: boolean
+    }
+  | {
+      ok: false
+      reason: "not-grounded" | "target-not-found" | "target-ambiguous"
+      detail: string
+      exact: boolean
+    }
 
 /** Only the elements that are actually rendered: hidden duplicates (a display:none mobile menu…) don't count. */
 export function visibleOnly(locator: Locator): Locator {
@@ -65,6 +86,7 @@ export async function resolveTarget(
   if (!isGrounded(target)) {
     return {
       ok: false,
+      exact: false,
       reason: "not-grounded",
       detail: `target not grounded yet — intent "${target.intent}"`,
     }
@@ -75,39 +97,61 @@ export async function resolveTarget(
     { locator: stripExtras(target), nth },
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
+  let exact: boolean
   const deadline = Date.now() + timeoutMs
   // Ambiguity can be transient (a dialog fading out while a new one fades in): keep polling and
   // only report it if it's still the state at the deadline.
   let ambiguous: string | undefined
-  for (;;) {
+  let retried = false
+  polls: for (;;) {
     ambiguous = undefined
+    // Exact names while a field holding a secret is on the page (§3 A8), decided at every poll (a
+    // field that renders mid-step is seen at once), and counted through the one helper.
+    const names = await exactNamesFor(
+      page,
+      candidates.map((c) => c.locator),
+    )
+    exact = names.exact
     for (const [i, candidate] of candidates.entries()) {
-      const visible = visibleOnly(toPlaywright(page, candidate.locator))
-      const count = await visible.count().catch((error: unknown) => {
-        // A navigation (client-side redirect…) replaced the page mid-poll: retry on the new one.
-        if (isNavigationError(error)) return 0
-        throw error
-      })
+      const r = await countUnderRule(page, candidate.locator, names)
+      exact ||= r.exact
+      // The helper's confirmation turned the rule on: every candidate again, at once, exactly
+      // (once per poll: a field that keeps flapping waits for the next one).
+      if (r.exact && !names.exact && !retried) {
+        retried = true
+        continue polls
+      }
+      const count = r.count ?? 0
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
         ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
         break
       }
+      const visible = visibleOnly(toPlaywright(page, candidate.locator, r.exact))
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       return {
         ok: true,
+        exact,
         locator,
         used: candidate.locator,
         fallbackIndex: i === 0 ? undefined : i - 1,
       }
     }
+    retried = false
     if (Date.now() >= deadline) break
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
-  if (ambiguous !== undefined) return { ok: false, reason: "target-ambiguous", detail: ambiguous }
+  if (ambiguous !== undefined) {
+    return { ok: false, reason: "target-ambiguous", detail: ambiguous, exact }
+  }
   const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
-  return { ok: false, reason: "target-not-found", detail: `target not found — tried ${tried}` }
+  return {
+    ok: false,
+    reason: "target-not-found",
+    detail: `target not found — tried ${tried}`,
+    exact,
+  }
 }
 
 /** The locator part of a grounded target, without the healing metadata. */
@@ -266,4 +310,48 @@ export function pointProbe(
     .replace(/\s+/g, " ")
     .trim()
   return { hits, label, sameAsMarked }
+}
+
+/**
+ * A locator's visible matches under the exact-names rule of the moment (SECRETS-DESIGN §3 A8): the
+ * rule checked, the locator counted, and a partial match confirmed by a second check (a field
+ * holding a secret may render in between: then only an exact match counts). `count` is undefined
+ * when a navigation replaced the page mid-count. The one way every check counts a locator.
+ */
+export async function countUnderRule(
+  page: Page,
+  locator: SchemaLocator,
+  /** The rule already decided for this poll (several locators counted at once). */
+  decided?: { exact: boolean; unsure: boolean },
+  o: {
+    /** Narrows the locator (the upload's `input[type=file]`). */
+    refine?: (l: Locator) => Locator
+    /** Count hidden matches too (a hidden file input). */
+    hidden?: boolean
+    /** Skip the confirmation (the caller confirms once for several counts). */
+    confirm?: boolean
+  } = {},
+): Promise<{ count: number | undefined; exact: boolean; unsure: boolean }> {
+  const build = (exact: boolean) => {
+    const base = (o.refine ?? ((l: Locator) => l))(toPlaywright(page, locator, exact))
+    return o.hidden === true ? base : visibleOnly(base)
+  }
+  const countWith = (exact: boolean) =>
+    build(exact)
+      .count()
+      .catch((error: unknown) => {
+        if (isNavigationError(error)) return undefined
+        throw error
+      })
+  const names = decided ?? (await exactNamesFor(page, [locator]))
+  let { exact, unsure } = names
+  let count = await countWith(exact)
+  if (o.confirm !== false && count !== undefined && count > 0 && !exact && isPartialName(locator)) {
+    const again = await exactNamesFor(page, [locator])
+    if (again.exact) {
+      ;({ exact, unsure } = again)
+      count = await countWith(true)
+    }
+  }
+  return { count, exact, unsure }
 }

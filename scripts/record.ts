@@ -7,6 +7,7 @@ import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
+import { sceneIdOf } from "./lib/scenes.ts"
 import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
 
 const { values } = parseArgs({
@@ -56,6 +57,9 @@ try {
     deviceScaleFactor: dpr,
   })
   const take = await recordScenario(page, scenario, project, {
+    // Approvals are the host's (SECRETS-DESIGN §3); the .env resolver here ignores them.
+    scope: "phase0",
+    sceneId: sceneIdOf(values.scenario),
     outDir: values.out,
     resolveSecret,
     ...(values.assets !== undefined && {

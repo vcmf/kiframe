@@ -18,7 +18,8 @@ import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from ".
 
 const RoleLocator = z.strictObject({
   by: z.literal("role"),
-  role: z.string().min(1),
+  /** An ARIA role name (lowercase letters): nothing else reaches Playwright's selector. */
+  role: z.string().regex(/^[a-z]{2,40}$/, "an ARIA role name (button, textbox, menuitemcheckbox…)"),
   name: z.string().optional(),
   exact: z.boolean().optional(),
 })
@@ -72,6 +73,27 @@ export type UngroundedTarget = z.infer<typeof UngroundedTarget>
 
 export const Target = z.union([GroundedTarget, UngroundedTarget])
 export type Target = z.infer<typeof Target>
+
+/**
+ * A grounded target as a stable string (SECRETS-DESIGN §3 A1): what a secret approval binds. Its
+ * healing metadata (`intent`, `fingerprint`) is left out; keys sorted; the default `exact: false`
+ * dropped, so the same target written two ways is the same string.
+ */
+export function canonicalTarget(target: GroundedTarget): string {
+  const { intent: _intent, fingerprint: _fingerprint, ...rest } = target
+  const stable = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(stable)
+    if (value === null || typeof value !== "object") return value
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(value).sort()) {
+      const v = (value as Record<string, unknown>)[key]
+      if (v === undefined || (key === "exact" && v === false)) continue
+      out[key] = stable(v)
+    }
+    return out
+  }
+  return JSON.stringify(stable(rest))
+}
 
 export function isGrounded(target: Target): target is GroundedTarget {
   return "by" in target
@@ -227,6 +249,49 @@ const scrollHasExactlyOneMode = (s: {
 }) => s.action !== "scroll" || [s.to, s.by, s.until].filter((v) => v !== undefined).length === 1
 const scrollModeError = { message: "scroll needs exactly one of `to`, `by` or `until`" }
 
+/** Whether an action types a secret (its step then needs an id: approvals are keyed by it). */
+export function typesSecret(a: { action: string; value?: unknown }): boolean {
+  return a.action === "type" && typeof a.value === "string" && secretRefName(a.value) !== undefined
+}
+
+/**
+ * A step typing a secret targets exactly one element, as the user approved it (SECRETS-DESIGN §3
+ * A2): no fallbacks and no `nth` (either could reach another field). A draft's intent-only target
+ * is fine: it's grounded (and approved) before it can run.
+ */
+const secretTargetIsExact = (s: { action: string; value?: unknown; target?: unknown }) => {
+  if (!typesSecret(s) || typeof s.target !== "object" || s.target === null) return true
+  const t = s.target as { fallbacks?: unknown; nth?: unknown }
+  return t.fallbacks === undefined && t.nth === undefined
+}
+const secretTargetError = {
+  message: "a step typing a secret needs one exact target: no fallbacks, no `nth`",
+  path: ["target"],
+}
+
+/** Issues for off-camera items typing a secret without an id (their approvals refer to it). */
+export function requireSecretStepIds(
+  items: readonly unknown[],
+  path: readonly (string | number)[],
+  ctx: z.RefinementCtx,
+): void {
+  for (const [i, item] of items.entries()) {
+    if (
+      typeof item === "object" &&
+      item !== null &&
+      "action" in item &&
+      typesSecret(item as { action: string; value?: unknown }) &&
+      (item as { id?: unknown }).id === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "a step typing a secret needs an id (its approval refers to it)",
+        path: [...path, i, "id"],
+      })
+    }
+  }
+}
+
 /** Off-camera fields (setup, teardown, presets): IDs are optional there. */
 const offCamera = { id: StepId.optional(), risky: z.boolean().optional() }
 
@@ -247,6 +312,7 @@ export const Action = z
     Expect.extend(offCamera),
   ])
   .refine(scrollHasExactlyOneMode, scrollModeError)
+  .refine(secretTargetIsExact, secretTargetError)
 export type Action = z.infer<typeof Action>
 
 /** On-camera fields: a stable ID plus presentation directives. */
@@ -269,6 +335,7 @@ export const Step = z
     Expect.extend(onCamera),
   ])
   .refine(scrollHasExactlyOneMode, scrollModeError)
+  .refine(secretTargetIsExact, secretTargetError)
 export type Step = z.infer<typeof Step>
 
 // ─── Setup / teardown items ───────────────────────────────────────────────────
@@ -332,6 +399,9 @@ const ScenarioBase = z
     teardown: z.array(Action).optional(),
   })
   .superRefine((s, ctx) => {
+    // Off-camera steps typing a secret need an id too: approvals are keyed by it (§3 A1).
+    requireSecretStepIds(s.setup ?? [], ["setup"], ctx)
+    requireSecretStepIds(s.teardown ?? [], ["teardown"], ctx)
     // IDs are unique across setup, steps and teardown, so anchors are never ambiguous.
     // (Preset step ids are checked against these by `checkScenarioAgainstProject`.)
     const claims = claimIds(s.setup, ["setup"], ctx)
