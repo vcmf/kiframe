@@ -29,12 +29,8 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   // Reads already running finish on the page they started on (the tick starts none mid-switch).
   await ctx.fieldsInflight?.catch(() => undefined)
   await ctx.secretText.inflight?.catch(() => undefined)
-  // A last read of the page the capture is about to leave: a move since its last tick is covered
-  // (the next reads are of another page). A closed page can't be read: its last boxes stay.
-  if (ctx.options.recording === true && !ctx.page.isClosed()) {
-    await followSecretFields(ctx, step)
-    await followSecretText(ctx, step, true)
-  }
+  // The page the capture leaves, and since when it was shown (its last read comes after the switch).
+  const leaving = { page: ctx.page, shown: ctx.pageShownAt }
   ctx.detach(ctx.page)
   // Headed and CDP runs: the driven page is the visible tab (a background tab is throttled).
   await next.bringToFront().catch(() => undefined)
@@ -52,6 +48,13 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
   if (ctx.options.recording === true) await followSecretFields(ctx, step)
   await guard(step, async () => ctx.options.onPageSwitch?.(next))
   if (ctx.options.recording === true) {
+    // A last read of the page the capture just left, then its regions are left (T4): a move since
+    // its last tick, up to the switch, is covered (its frames after the switch are dropped, so this
+    // read covers the whole window). A closed page can't be read: its last boxes stay until left.
+    if (!leaving.page.isClosed()) {
+      await followSecretFields(ctx, step, leaving)
+      await followSecretText(ctx, step, true, leaving)
+    }
     leaveSecretFields(ctx, step)
     leaveSecretText(ctx, step)
   }

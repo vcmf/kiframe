@@ -26,12 +26,18 @@ import { now } from "../clock.ts"
  * blur follows it) or that it's gone (navigated away, removed: nothing left to blur). A field on
  * another page was left with its page (`leaveSecretFields`). Bounded, never fails a step.
  */
-export async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void> {
+/** The page a read is of, and when the run switched to it (T3); by default the driven page. */
+export interface ReadOf {
+  page: Page
+  shown: number
+}
+
+export async function followSecretFields(ctx: Ctx, step: StepRef, of?: ReadOf): Promise<void> {
   // One at a time (the recording tick reads too): a later one waits for the one running.
   const previous = ctx.fieldsInflight
   const run = (async () => {
     await previous?.catch(() => undefined)
-    await readFields(ctx, step)
+    await readFields(ctx, step, of ?? { page: ctx.page, shown: ctx.pageShownAt })
   })()
   ctx.fieldsInflight = run
   try {
@@ -42,16 +48,16 @@ export async function followSecretFields(ctx: Ctx, step: StepRef): Promise<void>
 }
 
 /** Reads the driven page's fields and moves each through its state (`Ctx` secretFields, T2–T4). */
-async function readFields(ctx: Ctx, step: StepRef): Promise<void> {
+async function readFields(ctx: Ctx, step: StepRef, of: ReadOf): Promise<void> {
   // The driven page as of now, throughout (a switch may start while this runs). Followed from its
   // type_start only (T3: the empty field isn't blurred before typing). A field known gone is read
   // too: a re-mounted one comes back mid-step (the switch read settles a field left with its page).
-  const page = ctx.page
+  const { page } = of
   const fields = ctx.secretFields.filter((f) => f.state !== "pending" && f.page === page)
   if (fields.length === 0) return
   // When the read started (T2; the events are handled later: a move's hull starts here), and when
   // the run switched to its page (nothing it saw was on screen before: T3).
-  const times = { at: now(), shown: ctx.pageShownAt }
+  const times = { at: now(), shown: of.shown }
   // Bounded as a whole (a frozen page): what it read is used only if it finished in time. The page
   // is only waited on (its viewport, its drawing) when the read has something to report.
   const read = await boundedRead(ctx, page, async () => {
@@ -92,11 +98,10 @@ async function readFields(ctx: Ctx, step: StepRef): Promise<void> {
       field.state === "left" ? times.shown : field.state === "gone" ? field.goneReadAt : undefined
     report({ ...placed(box, read?.viewport), ...(since !== undefined && { since }) })
     field.state = "on"
-    // Its last good placement: a box with the viewport it was measured in (never one without).
-    if (read?.viewport !== undefined) {
-      field.lastBox = box
-      field.lastViewport = read.viewport
-    }
+    // Its last placement: a box with the viewport it was measured in; without one, none (an
+    // unsure return then falls back to the whole frame, never to an older, stale box).
+    field.lastBox = read?.viewport === undefined ? undefined : box
+    field.lastViewport = read?.viewport
   }
 }
 
@@ -266,7 +271,12 @@ export function leaveSecretText(ctx: Ctx, step: StepRef): void {
  * it). An unsure occurrence (re-rendered mid-scan) ends nothing that scan; a failed scan changes
  * nothing. `fresh`: a scan that starts now (a running one read the page earlier). Never fails.
  */
-export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): Promise<void> {
+export async function followSecretText(
+  ctx: Ctx,
+  step: StepRef,
+  fresh = false,
+  of?: ReadOf,
+): Promise<void> {
   const state = ctx.secretText
   if (state.inflight !== undefined) {
     await state.inflight
@@ -274,15 +284,15 @@ export async function followSecretText(ctx: Ctx, step: StepRef, fresh = false): 
   }
   const run = async () => {
     const started = now()
-    const shown = ctx.pageShownAt
+    const page = of?.page ?? ctx.page
+    const shown = of?.shown ?? ctx.pageShownAt
     // A value new to the scan (resolved just now) may have been on screen all along: its first
     // regions are blurred from the run's start (over-blurring that box is safe).
     if (ctx.secretValues.size !== state.values) {
       state.values = ctx.secretValues.size
       state.lastScan = state.runStart
     }
-    if (ctx.secretValues.size === 0 || ctx.page.isClosed()) return
-    const page = ctx.page
+    if (ctx.secretValues.size === 0 || page.isClosed()) return
     // Bounded as a whole: a frozen page never hangs the step (or the end of the run), and what a
     // scan read is used only if it finished in time. (A switch waits for this scan: what it saw
     // of its page is reported, never dropped.)
@@ -339,8 +349,9 @@ async function measureSecretField(
   let box: Box | null | "unknown"
   if (handle !== undefined && (await handle.evaluate((e) => e.isConnected).catch(() => false))) {
     box = (await handle.boundingBox().catch(() => "unknown" as const)) ?? null
-    // Attached but not rendered (a form swapping inputs): a visible twin the target finds counts.
-    if (box === null) box = await measureField(field.locator)
+    // Attached but not rendered (a form swapping inputs): a visible twin counts when the target
+    // finds exactly one element (never a strict-mode "unknown" that would hold the blur forever).
+    if (box === null) box = await measureTwin(field.locator)
   } else box = await measureField(field.locator)
   // A box of no size shows nothing: gone (one definition for the runtime and the regions).
   return box !== null && box !== "unknown" && !usableBox(box) ? null : box
@@ -358,6 +369,16 @@ async function measureField(locator: Locator): Promise<Box | null | "unknown"> {
     return await locator.boundingBox({ timeout: 300 })
   } catch {
     return "unknown"
+  }
+}
+
+/** The target's one element, when it finds exactly one: its box (null otherwise, or not rendered). */
+async function measureTwin(locator: Locator): Promise<Box | null> {
+  try {
+    if ((await locator.count()) !== 1) return null
+    return await locator.boundingBox({ timeout: 300 })
+  } catch {
+    return null
   }
 }
 
