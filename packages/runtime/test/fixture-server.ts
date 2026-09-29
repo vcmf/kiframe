@@ -363,6 +363,10 @@ const pages: Record<string, string> = {
       const pw = document.getElementById("pw")
       if (document.activeElement === pw && pw.selectionStart === 0 && pw.selectionEnd === pw.value.length) document.getElementById("notes").focus()
     })</script>`,
+  // A login in a drawer closed with visibility:hidden (MUI keepMounted): the field stays attached.
+  "/drawer-login": `<!doctype html><title>Drawer login</title>
+    <div id="dlg"><label>Password <input type="password"></label><button onclick="document.getElementById('dlg').style.visibility='hidden'">Sign in</button></div>
+    <button>New project</button>`,
   // A login in a dialog that closes: the password field stays attached, hidden.
   "/dialog-login": `<!doctype html><title>Dialog login</title>
     <dialog open><form method="dialog"><label>Password <input type="password"></label><button>Sign in</button></form></dialog>

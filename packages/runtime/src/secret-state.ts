@@ -47,12 +47,16 @@ const PSEUDOS = new Set([
   "first-child",
   "last-child",
   "only-child",
+  "first-of-type",
+  "last-of-type",
+  "only-of-type",
+  "empty",
   "checked",
   "disabled",
   "enabled",
   "focus",
 ])
-const NTH_PSEUDOS = new Set(["nth-child", "nth-of-type"])
+const NTH_PSEUDOS = new Set(["nth-child", "nth-of-type", "nth-last-child", "nth-last-of-type"])
 const ATTRIBUTE_OPS = ["~=", "|=", "^=", "$=", "*=", "="]
 /**
  * Attribute names a selector may test (§3 A8): an allowlist (frameworks copy a field's value into
@@ -144,14 +148,16 @@ const ARIA_STATES = new Set([
 
 /** Attributes that take the partial operators too (`^=`, `$=`, `*=`, `|=`). */
 const PARTIAL_OK = new Set(["class", "id"])
-const allowedAttribute = (name: string) => {
-  const n = name.toLowerCase()
-  return ATTRIBUTE_NAMES.has(n) || TEXT_ATTRIBUTES.has(n) || ARIA_STATES.has(n)
-}
+const ALLOWED_ATTRIBUTES = new Set([...ATTRIBUTE_NAMES, ...TEXT_ATTRIBUTES, ...ARIA_STATES])
+const allowedAttribute = (name: string) => ALLOWED_ATTRIBUTES.has(name.toLowerCase())
 
 /** The A8 grammar in words, for every message that refuses a selector. */
-export const SAFE_SELECTOR_RULES =
-  "tags, *, #ids, .classes; attribute tests are presence or a whole value (=) on a fixed list (id, class, name, type, role, data-testid, alt, title, href, aria-label, the ARIA states…), partial operators (^= $= *= |=) on class and id only; combinators, :not(), :has(), :nth-child(), a few states; no selector engines, no escapes outside names"
+export const SAFE_SELECTOR_RULES = [
+  "tags, *, #ids, .classes",
+  `attribute tests: presence or = on ${[...ALLOWED_ATTRIBUTES].join(", ")}; ^= $= *= |= on ${[...PARTIAL_OK].join(" and ")} only`,
+  `the combinators; :not() :has() :is() :where(); ${[...NTH_PSEUDOS].map((p) => `:${p}()`).join(" ")}; ${[...PSEUDOS].map((p) => `:${p}`).join(" ")}`,
+  "no selector engines, no escapes outside names",
+].join("; ")
 
 /**
  * The allowlisted CSS subset of A8 (a tiny recursive-descent parser). Exported for its tests.
@@ -211,7 +217,7 @@ export function isSafeSelector(selector: string): boolean {
     if (op === undefined) return false
     // Whole-value tests (§3 A8): a partial operator (or `~=`, one word of a value) could test a
     // displayed identity, `:has()` included; only `class` and `id` take them.
-    if (op !== "=" && !PARTIAL_OK.has((name ?? "").toLowerCase())) return false
+    if (op !== "=" && !PARTIAL_OK.has(name.toLowerCase())) return false
     i += op.length
     ws()
     if (!attributeValue()) return false
@@ -231,7 +237,7 @@ export function isSafeSelector(selector: string): boolean {
       i = end + 1
       return true
     }
-    if (name === "not" || name === "has") {
+    if (name === "not" || name === "has" || name === "is" || name === "where") {
       if (peek() !== "(") return false
       i++
       // `:has` takes relative selectors (`:has(> .banner)`).
@@ -353,7 +359,11 @@ function renderedFields(written: Element[]): { writtenRendered: boolean; values:
       const field =
         (el instanceof HTMLInputElement && !nonText.has(el.type)) ||
         el instanceof HTMLTextAreaElement
-      if (field && (el as HTMLInputElement).value !== "" && el.checkVisibility()) {
+      if (
+        field &&
+        (el as HTMLInputElement).value !== "" &&
+        el.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+      ) {
         values.push((el as HTMLInputElement).value)
       }
       if (el.shadowRoot !== null) visit(el.shadowRoot)
@@ -361,7 +371,13 @@ function renderedFields(written: Element[]): { writtenRendered: boolean; values:
   }
   visit(document)
   // A written field hidden (a closed login dialog) is in no accessible name: it doesn't count.
-  return { writtenRendered: written.some((e) => e.isConnected && e.checkVisibility()), values }
+  return {
+    writtenRendered: written.some(
+      (e) =>
+        e.isConnected && e.checkVisibility({ visibilityProperty: true, opacityProperty: true }),
+    ),
+    values,
+  }
 }
 
 /** Whether a locator matches a name partially (the only kind the exact-names rule changes). */

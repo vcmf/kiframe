@@ -29,6 +29,11 @@ describe("isSafeSelector", () => {
     "[class*=CookieBanner_]",
     "[id^=onetrust]",
     "[role=row][aria-rowindex='2'] button",
+    // Structural pseudo-classes (common hide rules), the same grammar inside :is()/:where().
+    "footer > div:last-of-type",
+    ":is(#intercom-container, .crisp-client)",
+    ":where(li):nth-last-child(2)",
+    "p:empty",
     "[aria-expanded=true]",
     "[data-testid=row-1]",
     "div[contenteditable='true']",
@@ -74,6 +79,7 @@ describe("isSafeSelector", () => {
     "form >> input",
     // Playwright's CSS extensions and anything outside the subset.
     'div:has-text("x")',
+    ":is([title^=b])",
     "input:visible",
     "a\\:b",
     "[\\76 alue]",
