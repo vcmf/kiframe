@@ -30,6 +30,8 @@ export type StepErrorReason =
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"
+  /** The run's signal was aborted (the user stopped it): no later step ran, but the teardown. */
+  | "stopped"
 
 /**
  * A step failed. The message says which step and why, in words a user (or the agent) can act on:

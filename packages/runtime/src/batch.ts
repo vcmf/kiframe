@@ -95,6 +95,21 @@ export async function recordBatch(
   const results: BatchResult[] = []
   const seenValues = new Set<string>()
   for (const [index, scene] of scenes.entries()) {
+    // Stopped: the scenes left aren't recorded (each says so).
+    if (options.signal?.aborted === true) {
+      const step = { phase: "setup" as const, index: 0, action: "start the scene" }
+      const result: BatchResult = {
+        ok: false,
+        error: new StepError(step, "stopped", "the batch was stopped"),
+      }
+      results.push(result)
+      try {
+        onScene?.(index, result)
+      } catch {
+        // a progress callback never stops the batch
+      }
+      continue
+    }
     const uses = sessionPresetsOf(scene.scenario, project)
     // Only a scene using the saved session starts from it (a signed-out scene stays signed out).
     // And only with a page to go back to for each (the setup may rely on it).
@@ -158,6 +173,7 @@ export async function recordBatch(
         "secret-refused",
         "secret-declined",
         "risky-not-approved",
+        "stopped",
       ]
       if (reuse && error instanceof StepError && !notSession.includes(error.reason)) {
         state = undefined

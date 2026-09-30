@@ -85,6 +85,11 @@ export type RunnerEvent =
 
 export interface RunOptions {
   /**
+   * Stops the run at its next step (the step running finishes; the teardown still runs: the app
+   * is left clean): a `StepError` with reason `stopped`.
+   */
+  signal?: AbortSignal
+  /**
    * Resolves a secret NAME to its value, at the moment of the write, for this use (step, page,
    * target, element): the vault's resolver (`Vault.resolver`). Throw if unavailable or refused (a
    * `SecretRefusal`'s message is reported; any other error's never is).

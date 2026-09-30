@@ -1,4 +1,4 @@
-import type { StepRef } from "../errors.ts"
+import { StepError, type StepRef } from "../errors.ts"
 import { perform } from "./actions.ts"
 import { type AnyAction, type Ctx, guard } from "./context.ts"
 import { handleInterrupts } from "./interrupts.ts"
@@ -11,6 +11,10 @@ import { settle } from "./settle.ts"
 
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 export async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
+  // Stopped: no later step, but the teardown (it leaves the app clean).
+  if (ctx.options.signal?.aborted === true && step.phase !== "teardown") {
+    throw new StepError(step, "stopped", "the run was stopped")
+  }
   ctx.setCurrent(step)
   // Before step_start: the step's storyboard shot (taken at step_start) is of the page it acts on.
   await syncPage(ctx, step)
