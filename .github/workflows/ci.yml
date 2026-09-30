@@ -1,9 +1,11 @@
 name: CI
 
+# Pushes to main and to epic branches, and PRs into them (epic/** covers nested names too).
 on:
   push:
-    branches: [main]
+    branches: [main, "epic/**"]
   pull_request:
+    branches: [main, "epic/**"]
 
 permissions:
   contents: read
