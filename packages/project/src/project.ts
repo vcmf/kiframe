@@ -256,8 +256,8 @@ export function saveScene(
 
 /**
  * Deletes a scene: its place in the sequence and outputs first (the project file), then its folder
- * (a crash in between leaves a folder outside the sequence, reported on open). Its takes are the
- * take store's (`TakeStore.removeScene`).
+ * (a crash in between leaves a folder outside the sequence, reported on open). Its takes stay in
+ * the take store (another git branch may still name them; retention is M1-8's).
  */
 export function removeScene(opened: OpenedProject, id: string): void {
   const valid = SceneId.parse(id)

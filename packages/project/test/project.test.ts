@@ -202,7 +202,8 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     const second = await record(store, "login", "  - { id: b, action: pause, ms: 50 }\n")
     expect(first.error).toBeUndefined()
     expect(second.take?.dir).toBe(second.dir)
-    expect(statSync(second.dir).mode & 0o777).toBe(0o700)
+    // Private through its root: nothing inside is reachable by other users.
+    expect(statSync(store.root).mode & 0o777).toBe(0o700)
     expect(store.takes("p1", "login").map((t) => t.dir)).toEqual([second.dir, first.dir])
     expect(store.latest("p1", "login")?.dir).toBe(second.dir)
     const key = first.take?.meta.takeKey ?? ""
@@ -210,7 +211,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(store.latest("p1", "other")).toBeUndefined()
   })
 
-  it("deletes a failed recording's raw frames, and a scene's takes with the scene", async () => {
+  it("deletes a failed recording's frames, keeps why it failed, and a private store", async () => {
     const store = newStore()
     const failed = await record(
       store,
@@ -219,11 +220,13 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     )
     expect(failed.error).toBeDefined()
     expect(failed.take).toBeUndefined()
-    const scene = join(store.root, "takes", "p1", "login")
-    expect(readdirSync(scene)).toEqual([])
-    await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
-    store.removeScene("p1", "login")
-    expect(existsSync(scene)).toBe(false)
+    // Only its meta.json (the reason) and warnings are left: no frames, no shots.
+    const left = readdirSync(`${failed.dir}.failed`).sort()
+    expect(left.every((n) => n === "meta.json" || n === "warnings.json")).toBe(true)
+    expect(left).toContain("meta.json")
+    expect(statSync(store.root).mode & 0o777).toBe(0o700)
+    // Only a folder the store named is settled.
+    expect(() => store.settle(join(store.root, "..", "elsewhere"))).toThrow(/not a take folder/)
   })
 
   it("sweeps a crash's leftovers at start, and nothing else", async () => {
@@ -232,9 +235,15 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     const scene = join(store.root, "takes", "p1", "login")
     const name = "take-1790000000000-deadbeef0000"
     mkdirSync(join(scene, `${name}.failed`))
+    writeFileSync(join(scene, `${name}.failed`, "frames.webm"), "raw")
+    writeFileSync(join(scene, `${name}.failed`, "meta.json"), "{}")
     mkdirSync(join(scene, `.${name}.recording-1-2`))
+    mkdirSync(join(scene, `${basename(kept.dir)}.old-1-2`))
     writeFileSync(join(scene, "notes.txt"), "not ours")
     store.sweep()
-    expect(readdirSync(scene).sort()).toEqual([basename(kept.dir), "notes.txt"].sort())
+    expect(readdirSync(scene).sort()).toEqual(
+      [basename(kept.dir), `${name}.failed`, "notes.txt"].sort(),
+    )
+    expect(readdirSync(join(scene, `${name}.failed`))).toEqual(["meta.json"])
   })
 })
