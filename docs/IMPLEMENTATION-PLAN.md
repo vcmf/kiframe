@@ -97,6 +97,17 @@ Dependencies: P0-1 → P0-2 → (P0-3, P0-4) → P0-5 → P0-6 → P0-7. P0-8 ne
 
 The milestones below can partly run in parallel. Recommended order: **M1 → M2 → M3**, with **M4** starting after M1, and **M5 / M6** in parallel.
 
+**Revised order (2026-09-30): a vertical slice first.** `epic/app-slice` builds a thin version of each layer so the product can be clicked through early, then each layer deepens:
+
+| PR | Scope | From |
+|---|---|---|
+| S1 | Project store (minimal): create and open a `.kiframe` folder (`project.json`, `scenes/<id>/scene.json`, `scenario.yaml`, `composition.json`), a minimal take store in app data (private, outside the project; encryption with M1-8) | M1-9, M1-8 |
+| S2 | `packages/agent`: cooldown's loop and OpenRouter client with the essential fixes (cancellation, call ids, max-turns event, retries), scene tools, a record tool (grounding from P0-8 + recording), approvals through `requestUser` | M2-1…M2-4, M2-7 (basic) |
+| S3 | `apps/desktop`: Electron, the agent in the main process, typed IPC, React chat (streaming, tool steps, approval dialogs), the OpenRouter key in the keychain | M4-1, M4-2, M4-5 (basic) |
+| S4 | Preview: the scene strip and a player rendering takes through the compositor | M4-3, M4-4 (basic) |
+
+Then the visual rebuild V2–V4 (SECRETS-DESIGN §5), then M1-8, M1-10 and the rest of M2–M4.
+
 ### M1: Core engine (spike → production)
 | PR | Objective | Scope | Cx | LOC |
 |---|---|---|---|---|

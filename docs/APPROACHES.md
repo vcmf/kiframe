@@ -32,6 +32,9 @@
 | Phase 0 test apps | Web: **app.dim0.net** (ours). Electron: **smterm** (github.com/vcmf/smterm, ours) for P0-10. Plus one third-party web app for grounding (P0-8), chosen then | 2026-09-26 |
 | Phase 0 review rule | Spike PRs: `/code-review medium`. A finding is **severe** only if it blocks the Phase 0 exit criteria on the test apps. Everything else goes to the backlog / failure catalogue and is fixed when a real app hits it. `high` review from v0 and for security PRs | 2026-09-26 |
 | Versions | **v0** = first release (Sequence list, no canvas). **v0.1** = canvas + Electron targets (§11) | 2026-09-26 |
+| Order after M1's secrets work | **A vertical slice first** (`epic/app-slice`: minimal project store, agent loop, Electron shell + chat, preview player), then the visual rebuild V2–V4 (SECRETS-DESIGN §5). Until V2–V4 land, the app records only on throwaway accounts | 2026-09-30 |
+| App window (v0) | **Chat left, stage right:** the chat is a fixed side column; the main area has the preview player on top and the scene strip (the sequence) below | 2026-09-30 |
+| Branches | **Epics:** `epic/<name>` branches collect a milestone's PRs (CI and review on each), then merge into `main` | 2026-09-30 |
 
 ---
 
