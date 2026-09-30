@@ -111,14 +111,16 @@ export const defineTool = <C, S extends z.ZodType>(def: {
 /**
  * What a run yields, in order. Every tool event carries its call's id (parallel calls of one tool
  * stay paired). A run ends with exactly one of `done` (with the messages it added: the structured
- * history to store and replay), `aborted`, `turn_limit` or `error`.
+ * history to store and replay, every call with its result), `aborted`, `turn_limit` or `error`.
+ * History is this engine's own output (a run's `messages`), replayed as is.
  */
 export type AgentEvent =
   | { type: "assistant_text"; text: string }
   | { type: "reasoning"; text: string }
   /**
-   * A call's name is known, its arguments still streaming: shown at once. Every pending call is
-   * followed by its `tool_start` (in order, per tool name) and `tool_result`, a stopped one too.
+   * A call's name is known, its arguments still streaming: shown at once. A call that reaches the
+   * loop gets its `tool_start` (same id, when the provider sent one) and `tool_result`, a stopped
+   * one too; the run's end closes any pending call that didn't (the reply failed or was stopped).
    */
   | { type: "tool_pending"; toolName: string; callId?: string | undefined }
   | { type: "tool_start"; callId: string; toolName: string; args: unknown }

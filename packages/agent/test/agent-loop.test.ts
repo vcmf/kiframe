@@ -432,3 +432,70 @@ describe("runAgent: review fixes", () => {
     expect(assistant?.role === "assistant" && assistant.reasoningDetails).toEqual(details)
   })
 })
+
+describe("runAgent: round 3", () => {
+  it("ends aborted at once when stopped, even if the tool ignores its signal", async () => {
+    const controller = new AbortController()
+    const deaf = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "wait",
+      description: "Waits for an answer that never comes",
+      parameters: z.object({}),
+      run: () => {
+        setTimeout(() => controller.abort(), 10)
+        return new Promise(() => undefined)
+      },
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [deaf],
+        llm,
+        context: { log: [] },
+        signal: controller.signal,
+      }),
+    )
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      result: { error: "aborted" },
+    })
+    expect(events.at(-1)?.type).toBe("aborted")
+  })
+
+  it("gives a call its result when the run ends in error mid-turn (the history stays replayable)", async () => {
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "echo", { text: "a" })] }])
+    const run = runAgent({ userMessage: "go", tools: [echo], llm, context: { log: [] } })
+    let end: AgentEvent | undefined
+    for (let next = await run.next(); !next.done;) {
+      const e = next.value
+      if (e.type === "tool_start") {
+        next = await run.throw(new Error("the host failed"))
+        continue
+      }
+      end = e
+      next = await run.next()
+    }
+    expect(end?.type).toBe("error")
+    const messages = end?.type === "error" ? end.messages : []
+    expect(
+      messages.filter((m) => m.role === "tool").map((m) => m.role === "tool" && m.toolCallId),
+    ).toEqual(["c1"])
+  })
+
+  it("keeps the provider's call ids (a thought signature is bound to them), the pending one included", async () => {
+    const llm: LlmClient = {
+      complete: () => Promise.reject(new Error("unused")),
+      async *completeStream() {
+        yield await Promise.resolve({ kind: "tool_start" as const, name: "echo", id: "toolu_1" })
+        yield {
+          kind: "final" as const,
+          turn: { kind: "tool_calls" as const, calls: [call("toolu_1", "echo", { text: "a" })] },
+        }
+      },
+    }
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [echo], llm, context: { log: [] }, maxTurns: 1 }),
+    )
+    expect(events[0]).toEqual({ type: "tool_pending", toolName: "echo", callId: "toolu_1" })
+    expect(events.find((e) => e.type === "tool_start")).toMatchObject({ callId: "toolu_1" })
+  })
+})

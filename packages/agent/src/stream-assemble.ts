@@ -11,8 +11,8 @@ export async function* assembleStreamedTurn(
   chunks: AsyncIterable<ChatCompletionChunk>,
 ): AsyncGenerator<LlmStreamEvent> {
   let text = ""
-  // The provider's opaque reasoning state (OpenRouter `reasoning_details`), kept to send back:
-  // streamed fragments of one entry (same `index`) are joined, as the provider concatenates them.
+  // The provider's opaque reasoning state (OpenRouter `reasoning_details`), kept to send back as
+  // received: every streamed fragment, in order, unmodified (OpenRouter's rule for sending it back).
   const reasoningDetails: unknown[] = []
   let finishReason: string | null | undefined
   const calls = new Map<number, { id: string; name: string; arguments: string }>()
@@ -36,7 +36,7 @@ export async function* assembleStreamedTurn(
       reasoning_details?: unknown
     }
     if (Array.isArray(r.reasoning_details)) {
-      for (const entry of r.reasoning_details as unknown[]) mergeDetail(reasoningDetails, entry)
+      reasoningDetails.push(...(r.reasoning_details as unknown[]))
     }
     // Prefer whichever field carries actual text: an empty `reasoning_content`
     // must not mask a populated `reasoning` in the same delta.
@@ -61,6 +61,10 @@ export async function* assembleStreamedTurn(
   }
 
   // Text that came with tool calls is kept (the model's note to the user before it acts).
+  // No finish reason: the stream was cut short (a closed connection, a timeout), never a whole turn.
+  if (finishReason === undefined || finishReason === null) {
+    throw new Error("the model's reply ended before it was complete")
+  }
   const extra = {
     ...(reasoningDetails.length > 0 && { reasoningDetails }),
     ...(finishReason === "length" && { truncated: true }),
@@ -70,21 +74,4 @@ export async function* assembleStreamedTurn(
       ? { kind: "tool_calls", calls: [...calls.values()] as LlmToolCall[], text, ...extra }
       : { kind: "text", text, ...extra }
   yield { kind: "final", turn }
-}
-
-/** Adds a streamed `reasoning_details` fragment: joined to the entry of the same index, if any. */
-function mergeDetail(details: unknown[], entry: unknown): void {
-  const e = entry as Record<string, unknown> | null
-  const index = typeof e?.index === "number" ? e.index : undefined
-  const last = details.at(-1) as Record<string, unknown> | undefined
-  if (e === null || index === undefined || last?.index !== index || last.type !== e.type) {
-    details.push(entry)
-    return
-  }
-  for (const [key, value] of Object.entries(e)) {
-    const prev = last[key]
-    const joined = key === "text" || key === "summary" || key === "data" || key === "signature"
-    if (joined && typeof value === "string" && typeof prev === "string") last[key] = prev + value
-    else if (prev === undefined) last[key] = value
-  }
 }

@@ -66,21 +66,43 @@ export async function executeToolCall<C>(
 }
 
 /** A tool result as the model reads it: never empty, and never an exception (a circular object). */
-function serializeToolResult(
-  output: unknown,
-  toolName: string,
-): { content: string; shown: unknown } {
+function serializeToolResult(output: unknown, toolName: string): string {
   try {
-    const s = JSON.stringify(output)
-    return s === undefined
-      ? { content: emptyResultText(toolName), shown: output }
-      : { content: s, shown: output }
+    return JSON.stringify(output) ?? emptyResultText(toolName)
   } catch (error) {
-    const failure = toolThrew(
-      toolName,
-      new Error(`its result couldn't be read: ${errorMessage(error)}`),
-    )
-    return { content: JSON.stringify(failure), shown: failure }
+    const reason = new Error(`its result couldn't be read: ${errorMessage(error)}`)
+    return JSON.stringify(toolThrew(toolName, reason))
+  }
+}
+
+/** A result for the UI: the plain value the model read (safe to send across IPC). */
+function plain(content: string): unknown {
+  try {
+    return JSON.parse(content) as unknown
+  } catch {
+    return content
+  }
+}
+
+/** Resolves once the signal is aborted (never, if it isn't). */
+const aborted = (signal: AbortSignal): Promise<void> =>
+  new Promise((resolve) => {
+    if (signal.aborted) resolve()
+    else signal.addEventListener("abort", () => resolve(), { once: true })
+  })
+
+/** Gives every call of the last assistant turn a result (an error cut the turn short). */
+function closeCalls(added: LlmMessage[], error: unknown): void {
+  const index = added.findLastIndex((m) => m.role === "assistant")
+  const assistant = added[index]
+  if (assistant?.role !== "assistant") return
+  const answered = new Set(
+    added.slice(index + 1).flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])),
+  )
+  for (const c of assistant.toolCalls ?? []) {
+    if (answered.has(c.id)) continue
+    const content = JSON.stringify(toolThrew(c.name, new Error(errorMessage(error))))
+    added.push({ role: "tool", toolCallId: c.id, toolName: c.name, content })
   }
 }
 
@@ -119,7 +141,9 @@ export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<Age
   try {
     yield* run(opts, added)
   } catch (error) {
-    // Nothing escapes without an end (a tool's schema that can't become JSON Schema…).
+    // Nothing escapes without an end (a tool's schema that can't become JSON Schema…), and every
+    // call keeps a result (the stored history stays replayable).
+    closeCalls(added, error)
     yield { type: "error", message: errorMessage(error), messages: added }
   }
 }
@@ -143,17 +167,13 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
     keepFull: keepFullNames.has(m.toolName ?? ""),
   })
   // History's results were shown in their own runs: old bulky ones are elided by recency.
-  const usedIds = new Set<string>(prior.flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])))
-  const shownBulky = new Set<string>(usedIds)
-  // A call id nobody has used, in this chat (a provider may send none, or repeat one).
+  const shownBulky = new Set<string>(
+    prior.flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])),
+  )
+  // Ids as the provider gave them (a thought signature is bound to its call's id): only a missing
+  // one, or one repeated within its turn, gets a new one.
   const runId = Math.random().toString(36).slice(2, 8)
   let made = 0
-  const freshId = (id: string) => {
-    let out = id
-    while (out === "" || usedIds.has(out)) out = `call-${runId}-${(made += 1)}`
-    usedIds.add(out)
-    return out
-  }
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
     if (signal.aborted) {
@@ -186,11 +206,14 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
       yield { type: "done", messages: added, ...(result.truncated === true && { truncated: true }) }
       return
     }
+    const inTurn = new Set<string>()
     const turnCalls = result.calls.map((c) => {
       const read = readArgs(c.arguments)
       // Stored replayable: whole JSON, `{}` for none or broken ones.
       const stored = read.whole && c.arguments.trim() !== "" ? c.arguments : "{}"
-      return { ...c, id: freshId(c.id), ...read, stored }
+      const id = c.id === "" || inTurn.has(c.id) ? `call-${runId}-${(made += 1)}` : c.id
+      inTurn.add(id)
+      return { ...c, id, ...read, stored }
     })
     added.push({
       role: "assistant",
@@ -212,10 +235,14 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
       } else if (signal.aborted) {
         output = toolAborted(call.name)
       } else {
-        output = await executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
+        // The stop ends the run at once, even if the tool doesn't heed it (an approval dialog).
+        output = await Promise.race([
+          executeToolCall(call.name, call.args, opts.tools, opts.context, signal),
+          aborted(signal).then(() => toolAborted(call.name)),
+        ])
       }
-      const { content, shown } = serializeToolResult(output, call.name)
-      yield { type: "tool_result", callId: call.id, toolName: call.name, result: shown }
+      const content = serializeToolResult(output, call.name)
+      yield { type: "tool_result", callId: call.id, toolName: call.name, result: plain(content) }
       added.push({ role: "tool", toolCallId: call.id, toolName: call.name, content })
     }
   }

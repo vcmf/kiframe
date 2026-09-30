@@ -59,7 +59,7 @@ const BASE_URLS: Record<Provider, string> = {
  */
 export const toOpenAiMessages = (
   messages: LlmMessage[],
-  reasoning = true,
+  reasoning = false,
 ): ChatCompletionMessageParam[] =>
   messages.map((m): ChatCompletionMessageParam => {
     if (m.role === "system") return { role: "system", content: m.content }
@@ -117,6 +117,16 @@ export const fromOpenAiMessage = (
     : { kind: "text", text, ...extra }
 }
 
+/** Whether a config reaches OpenRouter (the one API that takes `reasoning_details` back). */
+export const isOpenRouter = (config: LlmConfig): boolean => {
+  const url = config.baseURL ?? BASE_URLS[config.provider ?? "openrouter"]
+  try {
+    return new URL(url).hostname === "openrouter.ai"
+  } catch {
+    return false
+  }
+}
+
 /** The SDK behind a completer, from the config. */
 export const makeCompleter = (config: LlmConfig): ChatCompleter => {
   const client = new OpenAI({
@@ -143,8 +153,7 @@ export class OpenAiCompatibleClient implements LlmClient {
   }
 
   static fromConfig(config: LlmConfig): OpenAiCompatibleClient {
-    const openRouter = (config.provider ?? "openrouter") === "openrouter"
-    return new OpenAiCompatibleClient(makeCompleter(config), config.model, openRouter)
+    return new OpenAiCompatibleClient(makeCompleter(config), config.model, isOpenRouter(config))
   }
 
   #params(messages: LlmMessage[], tools: LlmToolDef[]) {

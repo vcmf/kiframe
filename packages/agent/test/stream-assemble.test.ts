@@ -3,8 +3,12 @@ import type { ChatCompletionChunk } from "openai/resources/chat/completions"
 import type { LlmStreamEvent } from "../src/types.ts"
 import { assembleStreamedTurn } from "../src/stream-assemble.ts"
 
+// A stream as a provider sends it: the chunks, then one that finishes the turn.
 async function* chunksOf(...cs: unknown[]): AsyncGenerator<ChatCompletionChunk> {
   for (const c of cs) yield await Promise.resolve(c as ChatCompletionChunk)
+  yield {
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+  } as unknown as ChatCompletionChunk
 }
 
 const textChunk = (content: string) => ({

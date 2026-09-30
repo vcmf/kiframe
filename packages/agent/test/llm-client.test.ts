@@ -69,7 +69,7 @@ describe("reasoning state on the wire", () => {
   it("sends reasoning_details back on the assistant message, and reads them from a reply", () => {
     const details = [{ type: "reasoning.encrypted", data: "sig" }]
     expect(
-      toOpenAiMessages([{ role: "assistant", content: "", reasoningDetails: details }])[0],
+      toOpenAiMessages([{ role: "assistant", content: "", reasoningDetails: details }], true)[0],
     ).toMatchObject({ reasoning_details: details })
     expect(
       fromOpenAiMessage({
@@ -92,24 +92,37 @@ describe("reasoning state: OpenRouter only, fragments joined", () => {
     expect(m).not.toHaveProperty("reasoning_details")
   })
 
-  it("joins streamed fragments of one entry (same index), keeps others apart", async () => {
+  it("keeps streamed fragments as received, in order, and refuses a stream cut short", async () => {
     const { assembleStreamedTurn } = await import("../src/stream-assemble.ts")
-    const chunk = (details: unknown[]) => ({
-      choices: [{ index: 0, delta: { reasoning_details: details } }],
+    const chunk = (details: unknown[], finish: string | null = null) => ({
+      choices: [{ index: 0, delta: { reasoning_details: details }, finish_reason: finish }],
     })
-    async function* chunks() {
-      yield await Promise.resolve(chunk([{ type: "reasoning.text", index: 0, text: "Think" }]))
-      yield chunk([{ type: "reasoning.text", index: 0, text: "ing" }])
-      yield chunk([{ type: "reasoning.encrypted", index: 1, data: "sig" }])
+    const fragments = [
+      { type: "reasoning.text", index: 0, text: "Think", signature: null },
+      { type: "reasoning.text", index: 0, text: "ing", signature: "sig" },
+    ]
+    async function* whole() {
+      yield await Promise.resolve(chunk([fragments[0]]))
+      yield chunk([fragments[1]], "stop")
     }
     let final: unknown
-    for await (const ev of assembleStreamedTurn(chunks() as never))
+    for await (const ev of assembleStreamedTurn(whole() as never))
       if (ev.kind === "final") final = ev.turn
-    expect(final).toMatchObject({
-      reasoningDetails: [
-        { type: "reasoning.text", index: 0, text: "Thinking" },
-        { type: "reasoning.encrypted", index: 1, data: "sig" },
-      ],
-    })
+    expect(final).toMatchObject({ reasoningDetails: fragments })
+    async function* cut() {
+      yield await Promise.resolve(chunk([fragments[0]]))
+    }
+    await expect(async () => {
+      for await (const ev of assembleStreamedTurn(cut() as never)) void ev
+    }).rejects.toThrow(/ended before it was complete/)
+  })
+
+  it("sends reasoning back only to OpenRouter's endpoint", async () => {
+    const { isOpenRouter } = await import("../src/llm-client.ts")
+    expect(isOpenRouter({ apiKey: "k", model: "m" })).toBe(true)
+    expect(isOpenRouter({ apiKey: "k", model: "m", provider: "openai" })).toBe(false)
+    expect(isOpenRouter({ apiKey: "k", model: "m", baseURL: "http://litellm.local/v1" })).toBe(
+      false,
+    )
   })
 })
