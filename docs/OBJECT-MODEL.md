@@ -138,7 +138,7 @@ q4-release.kiframe/
 ```
 **Takes are not in the project folder.** They live in the app's **take store**, in the protected app-data directory, encrypted at rest (§0.7, §3):
 ```
-<app-data>/Kiframe/takes/<projectId>/<sceneId>/<takeKey>/
+<app-data>/Kiframe/takes/<projectId>/<sceneId>/take-<time>-<id>/   (looked up by meta.takeKey)
   frames.webm  events.jsonl  cursor.jsonl  shots/<stepId>.jpg  meta.json  pin.json?
 ```
 Why outside the folder: takes are **heavy**, and they're **sensitive**, since raw frames aren't blurred (APPROACHES §7.4). They must never end up in git or in a folder shared by mistake.
@@ -413,7 +413,7 @@ camera: { …, until: done }                 # keep this framing until step `don
 One replay of a scene produces a **take** in the take store (§0.6):
 
 ```
-<app-data>/Kiframe/takes/<projectId>/<sceneId>/<takeKey>/
+<app-data>/Kiframe/takes/<projectId>/<sceneId>/take-<time>-<id>/   (looked up by meta.takeKey)
   frames.webm          raw video at DPR 2, WITHOUT a cursor (the cursor is drawn at render time). NOT blurred → sensitive, encrypted at rest
   events.jsonl         timestamped semantic events
   cursor.jsonl         cursor samples (real mouse positions, so hover states happened in the app)

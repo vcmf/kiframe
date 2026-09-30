@@ -539,10 +539,27 @@ export async function recordScenario(
 }
 
 /**
+ * Whether `name` is something the recorder leaves next to the take folder `take` while recording
+ * or when a recording fails or is cut short: its staging folder (`.<take>.recording-…`), its failed
+ * take (`<take>.failed`), or a replaced take set aside (`<take>.old-…`, `<take>.failed.old-…`). For a
+ * take store sweeping what a crash left: never the take itself. A set-aside take is only a leftover
+ * once `take` exists (a crash mid-swap may leave the aside as the only copy of the previous take).
+ */
+export function isRecorderLeftover(name: string, take: string): boolean {
+  return (
+    name.startsWith(`.${take}.recording-`) ||
+    name === `${take}.failed` ||
+    name.startsWith(`${take}.old-`) ||
+    name.startsWith(`${take}.failed.old-`)
+  )
+}
+
+/**
  * Puts the take at `src` in place of `dest`: the old take is moved aside first, the new one renamed
  * in, then the old one deleted; if the rename fails, the old take is put back. `dest` is re-checked
  * (it must still be a take or absent). Returns the old take's path if it couldn't be deleted.
  */
+
 function swapInto(src: string, dest: string): string | undefined {
   checkReplaceable(dest)
   const aside = existsSync(dest) ? `${dest}.old-${process.pid}-${Date.now()}` : undefined

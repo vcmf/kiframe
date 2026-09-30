@@ -17,6 +17,9 @@ importers:
       '@kiframe/generators':
         specifier: workspace:*
         version: link:packages/generators
+      '@kiframe/project':
+        specifier: workspace:*
+        version: link:packages/project
       '@kiframe/runtime':
         specifier: workspace:*
         version: link:packages/runtime
@@ -106,6 +109,22 @@ importers:
       '@kiframe/schema':
         specifier: workspace:*
         version: link:../schema
+
+  packages/project:
+    dependencies:
+      '@kiframe/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@kiframe/schema':
+        specifier: workspace:*
+        version: link:../schema
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
+    devDependencies:
+      playwright:
+        specifier: 1.63.0
+        version: 1.63.0
 
   packages/runtime:
     dependencies:
