@@ -11,6 +11,9 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.11.0)
+      '@kiframe/agent':
+        specifier: workspace:*
+        version: link:packages/agent
       '@kiframe/compositor':
         specifier: workspace:*
         version: link:packages/compositor
@@ -81,6 +84,15 @@ importers:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+
+  packages/agent:
+    dependencies:
+      openai:
+        specifier: 7.23.0
+        version: 7.23.0(undici@7.30.0)(zod@4.6.5)
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
 
   packages/compositor:
     dependencies:

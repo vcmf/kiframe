@@ -207,3 +207,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Take retention (with M1-8):** every re-record keeps its take (raw, unblurred, unencrypted until M1-8): keep the takes a composition or export names plus the last few, and evict the rest (the LRU of OBJECT-MODEL §0.7).
 - **Take durability:** the recorder's files aren't fsynced (a power loss right after a recording can leave a take whose frames are truncated while its meta survived). fsync in the recorder's swap, or check frames.webm on read.
 - **Staleness: which take is a scene's current one (M1-8, needs a design):** today `latest()` is the newest complete take. The rule needs the inputs that shape footage (the scenario's actions, not its captions; the presets it uses, pacing, interrupt/hide/redaction rules, the app and viewport), in a canonical, versioned form (record key order, defaults across Kiframe updates). A review of a first attempt (whole config hashed) found it both over-stale and non-deterministic.
+
+## @kiframe/agent (S2a)
+
+- **A provider repeating call ids across turns:** the loop keeps the provider's ids (a thought signature in `reasoning_details` is bound to its call's id) and renames only a missing one or one repeated within a turn. A provider numbering calls per turn (`call_0` every turn) would repeat ids in the history: rename both the call and its reasoning entry's id then, once such a provider is used.
+- **History is the engine's own output:** a history from another client isn't normalized (duplicate ids, dangling calls). Validate it on import, once one exists.
+- **Reasoning history size:** streamed `reasoning_details` fragments are kept as received (OpenRouter's rule), which makes stored chats larger with thinking models. Compaction of old turns if it matters.

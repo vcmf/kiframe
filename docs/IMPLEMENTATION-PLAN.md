@@ -102,8 +102,8 @@ The milestones below can partly run in parallel. Recommended order: **M1 → M2 
 | PR | Scope | From |
 |---|---|---|
 | S1 | Project store (minimal): create and open a `.kiframe` folder (`project.json`, `scenes/<id>/scene.json`, `scenario.yaml`, `composition.json`), a minimal take store in app data (private, outside the project; encryption with M1-8) | M1-9, M1-8 |
-| S2 | `packages/agent`: cooldown's loop and OpenRouter client with the essential fixes (cancellation, call ids, max-turns event, retries), scene tools, a record tool (grounding from P0-8 + recording), approvals through `requestUser` | M2-1…M2-4, M2-7 (basic) |
-| S3 | `apps/desktop`: Electron, the agent in the main process, typed IPC, React chat (streaming, tool steps, approval dialogs), the OpenRouter key in the keychain. One app instance (Electron's single-instance lock: the take store relies on one process), leftovers swept at start | M4-1, M4-2, M4-5 (basic) |
+| S2 | `packages/agent`: cooldown's loop and OpenRouter client with the essential fixes (cancellation, call ids, max-turns event, retries), scene tools, a record tool (grounding from P0-8 + recording), approvals through `requestUser`. Every tool heeds the run's signal: the runtime's `recordScenario` / `recordBatch` get an abort path (a stop ends a recording at its next step) | M2-1…M2-4, M2-7 (basic) |
+| S3 | `apps/desktop`: Electron, the agent in the main process, typed IPC, React chat (streaming, tool steps, approval dialogs), the OpenRouter key in the keychain. One app instance (Electron's single-instance lock: the take store relies on one process), leftovers swept at start. Every tool and `requestUser` dialog heeds the run's signal (a stop closes the dialog) | M4-1, M4-2, M4-5 (basic) |
 | S4 | Preview: the scene strip and a player rendering takes through the compositor | M4-3, M4-4 (basic) |
 
 Then the visual rebuild V2–V4 (SECRETS-DESIGN §5), then M1-8, M1-10 and the rest of M2–M4.
