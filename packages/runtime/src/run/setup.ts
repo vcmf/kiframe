@@ -78,6 +78,11 @@ export async function runSetupEntry(
   entry: SetupEntry,
 ): Promise<void> {
   if (entry.kind === "preset_done") {
+    // Stopped in the preset's last step: its session isn't followed nor saved.
+    if (ctx.options.signal?.aborted === true) {
+      const ref: StepRef = { phase: "setup", index: Math.max(0, entry.index), action: "preset" }
+      throw new StepError(ref, "stopped", "the run was stopped")
+    }
     ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
     const ready = ctx.options.onSessionReady
     if (entry.session && ready !== undefined) {

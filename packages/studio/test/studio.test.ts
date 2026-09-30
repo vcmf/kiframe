@@ -430,4 +430,43 @@ presets:
     const { studio } = makeStudio(undefined, { knownValues: () => new Set(["127.0.0.1"]) })
     expect(systemPrompt(studio)).not.toContain("127.0.0.1")
   })
+
+  it("stops a tool's dialog when the studio closes", async () => {
+    const { studio } = makeStudio(
+      (_r, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason as Error))
+        }),
+    )
+    const pending = tool("ask_user").run({ question: "Which?" }, studio, never)
+    await studio.close()
+    await expect(pending).rejects.toThrow()
+  })
+
+  it("aborts a stopped step's call, and refuses an on-camera step without id", async () => {
+    const { studio } = makeStudio()
+    const stopped = new AbortController()
+    stopped.abort()
+    await expect(
+      tool("run_step").run(
+        { scene: "s", step: { id: "a", action: "pause", ms: 1 } },
+        studio,
+        stopped.signal,
+      ),
+    ).rejects.toThrow(/stopped/)
+    expect(
+      await tool("run_step").run({ scene: "s", step: { action: "pause", ms: 1 } }, studio, never),
+    ).toMatch(/needs an id/)
+    await studio.close()
+  }, 30_000)
+
+  it("opens one live page for callers at once", async () => {
+    const { studio } = makeStudio()
+    const [a, b] = await Promise.all([studio.livePage(), studio.livePage()])
+    expect(a).toBe(b)
+    expect(browser.contexts().filter((c) => c.pages().includes(a))).toHaveLength(1)
+    const before = browser.contexts().length
+    await studio.close()
+    expect(browser.contexts().length).toBe(before - 1)
+  }, 30_000)
 })

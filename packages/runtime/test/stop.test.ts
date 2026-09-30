@@ -163,4 +163,36 @@ teardown: [{ action: pause, ms: 1 }]
     expect(started.some((s) => s.phase === "teardown")).toBe(false)
     await page.close()
   })
+
+  it("reports a stop during the teardown as a stop, even after a failure", async () => {
+    const page = await browser.newPage()
+    const project = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+    const scenario = parseScenarioYaml(`version: 1
+setup: [{ action: goto, url: / }]
+steps:
+  - { id: fails, action: expect, that: { url: /nowhere } }
+teardown:
+  - { action: pause, ms: 1 }
+  - { action: pause, ms: 1 }
+`)
+    const controller = new AbortController()
+    const events: RunnerEvent[] = []
+    const error = await runScenario(page, scenario, project, {
+      signal: controller.signal,
+      timeoutMs: 300,
+      onEvent: (e) => {
+        events.push(e)
+        if (e.kind === "step_end" && e.step.phase === "teardown") controller.abort()
+      },
+    }).catch((e: unknown) => e)
+    expect((error as StepError).reason).toBe("stopped")
+    const teardown = events.flatMap((e) =>
+      e.kind === "step_start" && e.step.phase === "teardown" ? [e.step] : [],
+    )
+    expect(teardown).toHaveLength(1)
+    await page.close()
+  })
 })

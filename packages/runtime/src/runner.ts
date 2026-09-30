@@ -291,11 +291,21 @@ export async function runScenario(
         }
       }
     }
+    let thrown = failure ?? teardownFailure ?? listenerError
+    // Stopped by then (in the teardown, after a failure): a stop, whatever failed first.
+    if (
+      options.signal?.aborted === true &&
+      !(thrown instanceof StepError && thrown.reason === "stopped")
+    ) {
+      const at =
+        thrown instanceof StepError
+          ? thrown.step
+          : (current ?? { phase: "teardown" as const, index: 0, action: "teardown" })
+      thrown = new StepError(at, "stopped", "the run was stopped", { cause: thrown })
+    }
     // Errors leave the runner scrubbed of every secret value (a Playwright message can quote a URL
     // or a value that carries one).
-    if (failure !== undefined) throw scrubError(failure, secretValues)
-    if (teardownFailure !== undefined) throw scrubError(teardownFailure, secretValues)
-    if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
+    if (thrown !== undefined) throw scrubError(thrown, secretValues)
   } finally {
     clearInterval(scan)
     // A scan still running reports before the run ends (the recorder writes right after).

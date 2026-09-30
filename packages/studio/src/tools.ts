@@ -144,7 +144,8 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
     run: async (args, studio, signal) => {
       let result: unknown
       try {
-        result = await tool.run(args, studio, signal)
+        // The run's signal, and the studio's: closing it stops every tool and dialog.
+        result = await tool.run(args, studio, AbortSignal.any([signal, studio.closed]))
       } catch (error) {
         // A new error of the same name (the caught one may not be writable: a DOMException), and
         // no cause: that's the unscrubbed one.

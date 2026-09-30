@@ -80,8 +80,10 @@ export const SNAPSHOT_MAX = 14_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
-  /** Aborted when the studio closes (a first navigation still running is then dropped). */
+  /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
+  /** The live page being opened (one at a time: a second caller waits for it). */
+  #opening: Promise<Page> | undefined
 
   constructor(options: StudioOptions) {
     this.options = options
@@ -123,13 +125,24 @@ export class Studio {
     return this.scrubber()(text)
   }
 
+  /** Aborted once the studio is closed. */
+  get closed(): AbortSignal {
+    return this.#lifetime.signal
+  }
+
   /** The page the agent explores and grounds on (opened at the app on first use). */
   async livePage(): Promise<Page> {
     if (this.#live !== undefined && !this.#live.page.isClosed()) return this.#live.page
     // The page the runner followed may have closed (a popup): back on another page still open.
     const back = this.#backPage()
     if (back !== undefined) return back
+    this.#opening ??= this.#open().finally(() => {
+      this.#opening = undefined
+    })
+    return this.#opening
+  }
 
+  async #open(): Promise<Page> {
     await this.#live?.context.close().catch(() => undefined)
     this.#live = undefined
     const context = await this.options.browser.newContext({ viewport: this.#viewport() })
@@ -203,14 +216,22 @@ export class Studio {
     }
     // Run in the part it's for: its approvals are keyed there, as the replay's will be (A1).
     const step = part === "steps" ? Step.safeParse(raw) : { success: false as const }
-    const setupItem = step.success || part === "teardown" ? undefined : SetupItem.safeParse(raw)
+    // In the steps, only a preset or an ensure runs as the setup (they're setup-only).
+    const setupOnly = "preset" in raw || "ensure" in raw
+    const setupItem =
+      step.success || part === "teardown" || (part === "steps" && !setupOnly)
+        ? undefined
+        : SetupItem.safeParse(raw)
     const teardownItem = part === "teardown" ? Action.safeParse(raw) : undefined
     if (teardownItem !== undefined && !teardownItem.success) {
       return `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}`
     }
     if (teardownItem === undefined && !step.success && setupItem?.success !== true) {
-      // Parsed against the shape the agent meant (a union's error only says "Invalid input").
       const r = raw as Record<string, unknown>
+      if (part === "steps" && !("id" in r) && Action.safeParse(raw).success) {
+        return "invalid step: an on-camera step needs an id (a setup or teardown action: give its part)"
+      }
+      // Parsed against the shape the agent meant (a union's error only says "Invalid input").
       const [what, schema] =
         "preset" in r
           ? (["preset", PresetRef] as const)
@@ -237,8 +258,14 @@ export class Studio {
           if (this.#live !== undefined) this.#live.page = next
         },
       })
-      return `ok. url: ${new URL((await this.livePage()).url()).pathname}`
+      const now = this.#live?.page.isClosed() === false ? this.#live.page : this.#backPage()
+      if (now === undefined) {
+        return "ok, but it closed every page: the next tool opens the app fresh (signed out, nothing kept)"
+      }
+      return `ok. url: ${new URL(now.url()).pathname}`
     } catch (error) {
+      // Stopped: the call is aborted, not a failure to fix.
+      if (isStopped(error)) throw error
       // The item closed the popup this run started on: its opener, still open, is live again.
       // Done if it was one step; an item of several (a preset) stopped there.
       const back =
@@ -281,6 +308,7 @@ export class Studio {
       await runScenario(await context.newPage(), scenario, this.#quick, this.#run(scene, signal))
       return "ok"
     } catch (error) {
+      if (isStopped(error)) throw error
       return `replay failed: ${failure(error)}`
     } finally {
       await context.close().catch(() => undefined)
@@ -306,12 +334,14 @@ export class Studio {
     })
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
     let failed: string | undefined
+    let stopped: StepError | undefined
     try {
       recorded = await recordScenario(await context.newPage(), scenario, config, {
         ...this.#run(sceneId, signal),
         outDir: dir,
       })
     } catch (error) {
+      if (isStopped(error)) stopped = error as StepError
       failed = failure(error)
     } finally {
       await context.close().catch(() => undefined)
@@ -320,16 +350,24 @@ export class Studio {
     try {
       take = takes.settle(dir)
     } catch (error) {
+      if (stopped !== undefined) throw stopped
       return `recording failed: ${failed ?? failure(error)}`
     }
+    if (stopped !== undefined) throw stopped
     if (take === undefined || recorded === undefined) {
       // A complete take the recorder failed after (a file error) is kept, but without its result
       // no composition is made from it: filmed again.
       const kept = take !== undefined ? " (its take was kept, but record again)" : ""
       return `recording failed: ${failed ?? "no complete take"}${kept}`
     }
-    const { composition, warnings } = generate(config, scenario, recorded)
-    saveScene(this.project, stored.scene, { composition })
+    let made: ReturnType<typeof generate>
+    try {
+      made = generate(config, scenario, recorded)
+      saveScene(this.project, stored.scene, { composition: made.composition })
+    } catch (error) {
+      return `recorded, but its composition wasn't saved (the take was kept): ${String(error)}`
+    }
+    const { warnings } = made
     const notes = [...recorded.warnings, ...warnings]
     return (
       `recorded (${Math.round(take.meta.durationMs / 100) / 10} s)` +
@@ -337,7 +375,7 @@ export class Studio {
     )
   }
 
-  /** Closes the live page (the browser is the host's), and every dialog still open for it. */
+  /** Closes the live page (the browser is the host's); every tool and dialog still running stops. */
   async close(): Promise<void> {
     this.#lifetime.abort()
     await this.#live?.context.close().catch(() => undefined)
@@ -387,6 +425,8 @@ async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<
   signal.throwIfAborted()
   return open()
 }
+
+const isStopped = (error: unknown) => error instanceof StepError && error.reason === "stopped"
 
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"
