@@ -184,7 +184,9 @@ export class OpenAiCompatibleClient implements LlmClient {
     const body = res as { choices?: ChatCompletion["choices"]; error?: { message?: unknown } }
     const choice = body.choices?.[0] as
       (ChatCompletion["choices"][number] & { error?: { message?: unknown } }) | undefined
-    const failure = [choice?.error?.message, body.error?.message].find((m) => typeof m === "string")
+    const failure = [choice?.error?.message, body.error?.message].find(
+      (m) => typeof m === "string" && m !== "",
+    )
     if (typeof failure === "string") throw new Error(`${CUT_SHORT}: ${failure}`)
     const reason = choice?.finish_reason as string | null | undefined
     if (choice === undefined || reason === undefined || reason === null || reason === "error") {

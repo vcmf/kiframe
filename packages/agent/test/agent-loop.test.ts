@@ -434,103 +434,6 @@ describe("runAgent: review fixes", () => {
 })
 
 describe("runAgent: round 3", () => {
-  it("ends aborted at once when stopped, even if the tool ignores its signal", async () => {
-    const controller = new AbortController()
-    const deaf = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
-      name: "wait",
-      description: "Waits for an answer that never comes",
-      parameters: z.object({}),
-      run: () => {
-        setTimeout(() => controller.abort(), 10)
-        return new Promise(() => undefined)
-      },
-    })
-    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
-    const left: Promise<void>[] = []
-    const events = await collect(
-      runAgent({
-        userMessage: "go",
-        tools: [deaf],
-        llm,
-        context: { log: [] },
-        signal: controller.signal,
-        onLeftBehind: (settled) => left.push(settled),
-      }),
-    )
-    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
-      result: { error: "aborted" },
-    })
-    expect(events.at(-1)?.type).toBe("aborted")
-    // The host is told a tool is still running (its next run waits for it).
-    expect(left).toHaveLength(1)
-  })
-
-  it("tells the host of a tool left running before the end event, and settles when the tool does", async () => {
-    const controller = new AbortController()
-    let finish: () => void = () => undefined
-    const deaf = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
-      name: "wait",
-      description: "Finishes only when told",
-      parameters: z.object({}),
-      run: () => {
-        setTimeout(() => controller.abort(), 5)
-        return new Promise<{ ok: true }>((resolve) => {
-          finish = () => resolve({ ok: true })
-        })
-      },
-    })
-    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
-    let settled: Promise<void> | undefined
-    const seenAtEnd: boolean[] = []
-    for await (const e of runAgent({
-      userMessage: "go",
-      tools: [deaf],
-      llm,
-      context: { log: [] },
-      signal: controller.signal,
-      onLeftBehind: (s) => {
-        settled = s
-      },
-    })) {
-      if (e.type === "aborted") seenAtEnd.push(settled !== undefined)
-    }
-    expect(seenAtEnd).toEqual([true])
-    let resolved = false
-    void settled?.then(() => (resolved = true))
-    await Promise.resolve()
-    expect(resolved).toBe(false)
-    finish()
-    await settled
-    expect(resolved).toBe(true)
-  })
-
-  it("doesn't report a tool that heeded the stop", async () => {
-    const controller = new AbortController()
-    const polite = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
-      name: "polite",
-      description: "Stops when asked",
-      parameters: z.object({}),
-      run: (_a, _c, signal) =>
-        new Promise((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(new Error("stopped")))
-          controller.abort()
-        }),
-    })
-    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "polite", {})] }])
-    let reported = false
-    await collect(
-      runAgent({
-        userMessage: "go",
-        tools: [polite],
-        llm,
-        context: { log: [] },
-        signal: controller.signal,
-        onLeftBehind: () => (reported = true),
-      }),
-    )
-    expect(reported).toBe(false)
-  })
-
   it("stores a result before showing it (a host throwing at it never makes a run call look unrun)", async () => {
     const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "echo", { text: "a" })] }])
     const ctx = { log: [] as string[] }
@@ -547,26 +450,6 @@ describe("runAgent: round 3", () => {
     const results = end?.type === "error" ? end.messages.filter((m) => m.role === "tool") : []
     expect(results).toHaveLength(1)
     expect(results[0]?.content).toMatch(/echoed/)
-  })
-
-  it("ends at the stop even when the model client ignores its signal", async () => {
-    const controller = new AbortController()
-    const deafLlm: LlmClient = {
-      complete: () => {
-        setTimeout(() => controller.abort(), 5)
-        return new Promise(() => undefined)
-      },
-    }
-    const events = await collect(
-      runAgent({
-        userMessage: "go",
-        tools: [],
-        llm: deafLlm,
-        context: {},
-        signal: controller.signal,
-      }),
-    )
-    expect(events.at(-1)?.type).toBe("aborted")
   })
 
   it("gives a call its result when the run ends in error mid-turn (the history stays replayable)", async () => {
@@ -651,31 +534,6 @@ describe("runAgent: round 6", () => {
     })
   })
 
-  it("ends at the stop when a streaming client ignores its signal, and closes the stream", async () => {
-    const controller = new AbortController()
-    let closed = false
-    const llm: LlmClient = {
-      complete: () => Promise.reject(new Error("unused")),
-      completeStream: () => ({
-        [Symbol.asyncIterator]: () => ({
-          next: () => {
-            setTimeout(() => controller.abort(), 5)
-            return new Promise<IteratorResult<never>>(() => undefined)
-          },
-          return: () => {
-            closed = true
-            return Promise.resolve({ done: true as const, value: undefined })
-          },
-        }),
-      }),
-    }
-    const events = await collect(
-      runAgent({ userMessage: "go", tools: [], llm, context: {}, signal: controller.signal }),
-    )
-    expect(events.at(-1)?.type).toBe("aborted")
-    expect(closed).toBe(true)
-  })
-
   it("leaves no unhandled rejection when stopped while an event is handled", async () => {
     const unhandled: unknown[] = []
     const onUnhandled = (reason: unknown) => unhandled.push(reason)
@@ -704,8 +562,40 @@ describe("runAgent: round 6", () => {
       process.off("unhandledRejection", onUnhandled)
     }
   })
+})
 
-  it("keeps the real result of a tool that finishes after the stop, within the grace period", async () => {
+describe("runAgent: the stop is the signal (clients and tools heed it)", () => {
+  it("ends promptly when a tool heeds the stop", async () => {
+    const controller = new AbortController()
+    const heeds = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "wait",
+      description: "Waits until stopped",
+      parameters: z.object({}),
+      run: (_a, _c, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("stopped")))
+          setTimeout(() => controller.abort(), 5)
+        }),
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
+    const started = Date.now()
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [heeds],
+        llm,
+        context: { log: [] },
+        signal: controller.signal,
+      }),
+    )
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      result: { error: "aborted" },
+    })
+    expect(events.at(-1)?.type).toBe("aborted")
+  })
+
+  it("keeps the real result of a tool that finishes after the stop (a recording it finalized)", async () => {
     const controller = new AbortController()
     const finishing = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
       name: "record",
@@ -714,13 +604,12 @@ describe("runAgent: round 6", () => {
       run: (_a, _c, signal) =>
         new Promise((resolve) => {
           signal.addEventListener("abort", () =>
-            setTimeout(() => resolve({ take: "t-1", stopped: true }), 50),
+            setTimeout(() => resolve({ take: "t-1", stopped: true }), 20),
           )
           controller.abort()
         }),
     })
     const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "record", {})] }])
-    let reported = false
     const events = await collect(
       runAgent({
         userMessage: "go",
@@ -728,40 +617,46 @@ describe("runAgent: round 6", () => {
         llm,
         context: { log: [] },
         signal: controller.signal,
-        onLeftBehind: () => (reported = true),
       }),
     )
     expect(events.find((e) => e.type === "tool_result")).toMatchObject({ result: { take: "t-1" } })
-    expect(reported).toBe(false)
+    expect(events.at(-1)?.type).toBe("aborted")
   })
 
-  it("never lets the host's onLeftBehind misrecord a call", async () => {
-    const controller = new AbortController()
-    const deaf = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
-      name: "wait",
-      description: "Never finishes",
-      parameters: z.object({}),
-      run: () => {
-        setTimeout(() => controller.abort(), 5)
-        return new Promise(() => undefined)
+  it("closes the model stream at a stop mid-stream, and when the host throws at an event", async () => {
+    const opened: { closed: boolean }[] = []
+    const endless: LlmClient = {
+      complete: () => Promise.reject(new Error("unused")),
+      async *completeStream() {
+        const state = { closed: false }
+        opened.push(state)
+        try {
+          for (let i = 0; ; i += 1)
+            yield await Promise.resolve({ kind: "delta" as const, text: `${i}` })
+        } finally {
+          state.closed = true
+        }
       },
-    })
-    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
-    const events = await collect(
-      runAgent({
-        userMessage: "go",
-        tools: [deaf],
-        llm,
-        context: { log: [] },
-        signal: controller.signal,
-        onLeftBehind: () => {
-          throw new Error("host failed")
-        },
-      }),
+    }
+    const controller = new AbortController()
+    const stopped = await collect(
+      (async function* () {
+        for await (const e of runAgent({
+          userMessage: "go",
+          tools: [],
+          llm: endless,
+          context: {},
+          signal: controller.signal,
+        })) {
+          if (e.type === "assistant_text") controller.abort()
+          yield e
+        }
+      })(),
     )
-    const end = events.at(-1)
-    expect(end?.type).toBe("aborted")
-    const results = end?.type === "aborted" ? end.messages.filter((m) => m.role === "tool") : []
-    expect(results[0]?.content).toMatch(/"aborted"/)
+    expect(stopped.at(-1)?.type).toBe("aborted")
+    const run = runAgent({ userMessage: "go", tools: [], llm: endless, context: {} })
+    await run.next()
+    await run.throw(new Error("ipc failed")).catch(() => undefined)
+    expect(opened.map((o) => o.closed)).toEqual([true, true])
   })
 })

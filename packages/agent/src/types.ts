@@ -55,6 +55,7 @@ export type LlmStreamEvent =
   | { kind: "tool_start"; name: string; id?: string | undefined }
   | { kind: "final"; turn: LlmTurn }
 
+/** A model client: it heeds the signal (a stop aborts its request, streamed or not). */
 export interface LlmClient {
   /** One turn, resolved atomically (tests, and the non-streaming fallback). */
   complete(messages: LlmMessage[], tools: LlmToolDef[], signal?: AbortSignal): Promise<LlmTurn>
@@ -68,7 +69,7 @@ export interface LlmClient {
 
 /**
  * A tool of a host whose context is `C` (passed as is: a class instance keeps its methods), with the
- * run's cancellation signal.
+ * run's cancellation signal, which it heeds (a stop ends its work; a wait for the user too).
  */
 export type Tool<C> = {
   name: string
@@ -109,8 +110,8 @@ export const defineTool = <C, S extends z.ZodType>(def: {
 })
 
 /**
- * What a run yields, in order. The end event comes as soon as the run is over (a stop: at once;
- * a tool the stop left running is reported through `onLeftBehind`). Every tool event carries its call's id (parallel calls of one tool
+ * What a run yields, in order. A stop ends the run as soon as the model call or the tool running
+ * heeds it (both get the signal). Every tool event carries its call's id (parallel calls of one tool
  * stay paired). A run ends with exactly one of `done` (with the messages it added: the structured
  * history to store and replay, every call with its result), `aborted`, `turn_limit` or `error`.
  * History is this engine's own output (a run's `messages`), replayed as is.

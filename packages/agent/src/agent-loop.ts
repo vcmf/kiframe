@@ -86,69 +86,6 @@ function plain(content: string): unknown {
   }
 }
 
-/** How long a stopped tool may take to finish on its own (its real result kept). */
-export const STOP_GRACE_MS = 2000
-
-/** One abort listener for a stretch of work (removed once it's over: none left on the signal). */
-interface StopWatch {
-  promise: Promise<void>
-  dispose: () => void
-}
-
-function stopWatch(signal: AbortSignal): StopWatch {
-  let listener: (() => void) | undefined
-  const promise = new Promise<void>((resolve) => {
-    if (signal.aborted) resolve()
-    else {
-      listener = () => resolve()
-      signal.addEventListener("abort", listener, { once: true })
-    }
-  })
-  return {
-    promise,
-    dispose: () => {
-      if (listener !== undefined) signal.removeEventListener("abort", listener)
-    },
-  }
-}
-
-/**
- * `work`'s value, or `stopped` if the stop comes first. The work is left to finish, its failure
- * handled (never an unhandled rejection).
- */
-async function orStop<T>(
-  work: Promise<T>,
-  watch: StopWatch,
-): Promise<{ stopped: false; value: T } | { stopped: true }> {
-  work.catch(() => undefined)
-  return Promise.race([
-    work.then((value) => ({ stopped: false as const, value })),
-    watch.promise.then(() => ({ stopped: true as const })),
-  ])
-}
-
-/** The value, or the stop as an error (the run ends aborted). */
-function unlessStopped<T>(result: { stopped: false; value: T } | { stopped: true }): T {
-  if (result.stopped) throw new Error("stopped")
-  return result.value
-}
-
-/** `work`'s value if it settles within `ms` (the timer cleared either way). */
-async function within<T>(
-  work: Promise<T>,
-  ms: number,
-): Promise<{ settled: true; value: T } | { settled: false }> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const late = new Promise<{ settled: false }>((resolve) => {
-    timer = setTimeout(() => resolve({ settled: false }), ms)
-  })
-  try {
-    return await Promise.race([work.then((value) => ({ settled: true as const, value })), late])
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
 /** Gives every call of the last assistant turn a result (an error cut the turn short: not run). */
 function closeCalls(added: LlmMessage[], reason: string): void {
   const index = added.findLastIndex((m) => m.role === "assistant")
@@ -189,14 +126,11 @@ export type RunAgentOptions<C> = {
   /** Images attached to this turn's user message (never stored in history). */
   images?: LlmImage[]
   maxTurns?: number
-  /** Cancels the run: the model call and the running tool get it; the run ends `aborted`. */
-  signal?: AbortSignal
   /**
-   * Called when a stop left a tool running (one that doesn't heed its signal): `settled` resolves
-   * once it has finished. A host starts its next run after that (a recording still writing, an
-   * approval still open), with its own time limit.
+   * Cancels the run: the model call and the running tool get it (both heed it: the SDK aborts its
+   * request, a tool stops its work and a `requestUser` its dialog); the run ends `aborted`.
    */
-  onLeftBehind?: (settled: Promise<void>) => void
+  signal?: AbortSignal
 }
 
 /** Runs the agent, yielding events as the answer streams and tools run. Ends with exactly one end. */
@@ -307,28 +241,9 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
       } else if (signal.aborted) {
         output = toolAborted(call.name)
       } else {
-        // At the stop, the tool gets a grace period to finish (its real result is kept: a recording
-        // it finalized); one that doesn't finish in it is left running, reported to the host.
-        const running = executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
-        const watch = stopWatch(signal)
-        try {
-          const first = await orStop(running, watch)
-          if (!first.stopped) output = first.value
-          else {
-            const late = await within(running, STOP_GRACE_MS)
-            if (late.settled) output = late.value
-            else {
-              output = toolAborted(call.name)
-              try {
-                opts.onLeftBehind?.(running.then(() => undefined))
-              } catch {
-                // the host's callback never ends the run (nor misrecords the call)
-              }
-            }
-          }
-        } finally {
-          watch.dispose()
-        }
+        // Awaited to its end: a tool heeds the signal (the stop), and one that finished anyway
+        // keeps its real result (a recording it finalized).
+        output = await executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
       }
       // Stored before it's shown: a host throwing at the event never makes a run call look unrun.
       const content = serializeToolResult(output, call.name)
@@ -343,31 +258,19 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
   yield { type: "turn_limit", maxTurns, messages: added }
 }
 
-/** One model turn, streamed when the client can: text, reasoning and pending calls as they come. */
+/**
+ * One model turn, streamed when the client can: text, reasoning and pending calls as they come.
+ * The client heeds the signal (the OpenAI SDK aborts its request); a stop after any event ends the
+ * turn, and the stream is closed (`for await`: a break, or the host throwing, returns it).
+ */
 async function* modelTurn(
   llm: LlmClient,
   messages: LlmMessage[],
   defs: LlmToolDef[],
   signal: AbortSignal,
 ): AsyncGenerator<AgentEvent, LlmTurn> {
-  // A client that doesn't heed the signal still ends at the stop (one watch for the whole turn).
-  const watch = stopWatch(signal)
-  try {
-    return yield* streamOrComplete(llm, messages, defs, signal, watch)
-  } finally {
-    watch.dispose()
-  }
-}
-
-async function* streamOrComplete(
-  llm: LlmClient,
-  messages: LlmMessage[],
-  defs: LlmToolDef[],
-  signal: AbortSignal,
-  watch: StopWatch,
-): AsyncGenerator<AgentEvent, LlmTurn> {
   if (llm.completeStream === undefined) {
-    const turn = unlessStopped(await orStop(llm.complete(messages, defs, signal), watch))
+    const turn = await llm.complete(messages, defs, signal)
     // The text a model writes with its tool calls is shown (a final text is, by the caller).
     if (turn.kind === "tool_calls" && turn.text !== undefined && turn.text !== "") {
       yield { type: "assistant_text", text: turn.text }
@@ -377,20 +280,7 @@ async function* streamOrComplete(
   let text = ""
   let reasoning = ""
   let final: LlmTurn | undefined
-  const stream = llm.completeStream(messages, defs, signal)[Symbol.asyncIterator]()
-  // Closed at the stop (its own cleanup's failure is no one's to handle), then the stop.
-  const close = () => void Promise.resolve(stream.return?.()).catch(() => undefined)
-  for (;;) {
-    // Stopped while an event was being handled: no step taken.
-    if (signal.aborted) {
-      close()
-      throw new Error("stopped")
-    }
-    const next = await orStop(stream.next(), watch)
-    if (next.stopped) close()
-    const step = unlessStopped(next)
-    if (step.done === true) break
-    const ev = step.value
+  for await (const ev of llm.completeStream(messages, defs, signal)) {
     if (ev.kind === "delta") {
       text += ev.text
       yield { type: "assistant_text", text }
@@ -406,6 +296,7 @@ async function* streamOrComplete(
     } else {
       final = ev.turn
     }
+    if (signal.aborted) throw new Error("stopped")
   }
   // A stream that ended without its turn is cut short: never taken as a complete answer.
   if (final === undefined) throw new Error(CUT_SHORT)
