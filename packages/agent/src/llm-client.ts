@@ -176,11 +176,18 @@ export class OpenAiCompatibleClient implements LlmClient {
       this.#params(messages, tools),
       signal ? { signal } : {},
     )
-    const choice = res.choices[0]
-    // Same rule as a stream: no finish reason, or an error one, is a reply cut short.
+    // A body without choices (OpenRouter's upstream failure as a 200) or an error choice: its
+    // message; no finish reason: cut short (the same rule as a stream).
+    const body = res as { choices?: ChatCompletion["choices"]; error?: { message?: unknown } }
+    const choice = body.choices?.[0] as
+      (ChatCompletion["choices"][number] & { error?: { message?: unknown } }) | undefined
+    const failure = choice?.error?.message ?? body.error?.message
+    if (typeof failure === "string") throw new Error(`${CUT_SHORT}: ${failure}`)
     const reason = choice?.finish_reason as string | null | undefined
-    if (reason === undefined || reason === null || reason === "error") throw new Error(CUT_SHORT)
-    return fromOpenAiMessage(choice?.message, reason)
+    if (choice === undefined || reason === undefined || reason === null || reason === "error") {
+      throw new Error(CUT_SHORT)
+    }
+    return fromOpenAiMessage(choice.message, reason)
   }
 
   /** Streams when the completer can, else one `final` event from `complete`. */

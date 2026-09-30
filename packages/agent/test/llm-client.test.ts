@@ -131,3 +131,30 @@ describe("reasoning state: OpenRouter only, fragments joined", () => {
     )
   })
 })
+
+describe("non-streaming replies", () => {
+  it("keeps the provider's message for a body without choices, or an error choice", async () => {
+    const reply = (body: unknown) =>
+      new OpenAiCompatibleClient(
+        { create: () => Promise.resolve(body as ChatCompletion) },
+        "m",
+      ).complete([{ role: "user", content: "go" }], [])
+    await expect(reply({ error: { message: "Provider returned error" } })).rejects.toThrow(
+      /Provider returned error/,
+    )
+    await expect(
+      reply({
+        choices: [
+          {
+            message: { role: "assistant", content: "hal" },
+            finish_reason: "error",
+            error: { message: "upstream 502" },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/upstream 502/)
+    await expect(
+      reply({ choices: [{ message: { role: "assistant", content: "hal" }, finish_reason: null }] }),
+    ).rejects.toThrow(/ended before it was complete/)
+  })
+})

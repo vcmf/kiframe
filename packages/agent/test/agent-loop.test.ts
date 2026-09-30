@@ -465,6 +465,110 @@ describe("runAgent: round 3", () => {
     expect(left).toHaveLength(1)
   })
 
+  it("tells the host of a tool left running before the end event, and settles when the tool does", async () => {
+    const controller = new AbortController()
+    let finish: () => void = () => undefined
+    const deaf = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "wait",
+      description: "Finishes only when told",
+      parameters: z.object({}),
+      run: () => {
+        setTimeout(() => controller.abort(), 5)
+        return new Promise<{ ok: true }>((resolve) => {
+          finish = () => resolve({ ok: true })
+        })
+      },
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
+    let settled: Promise<void> | undefined
+    const seenAtEnd: boolean[] = []
+    for await (const e of runAgent({
+      userMessage: "go",
+      tools: [deaf],
+      llm,
+      context: { log: [] },
+      signal: controller.signal,
+      onLeftBehind: (s) => {
+        settled = s
+      },
+    })) {
+      if (e.type === "aborted") seenAtEnd.push(settled !== undefined)
+    }
+    expect(seenAtEnd).toEqual([true])
+    let resolved = false
+    void settled?.then(() => (resolved = true))
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+    finish()
+    await settled
+    expect(resolved).toBe(true)
+  })
+
+  it("doesn't report a tool that heeded the stop", async () => {
+    const controller = new AbortController()
+    const polite = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "polite",
+      description: "Stops when asked",
+      parameters: z.object({}),
+      run: (_a, _c, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("stopped")))
+          controller.abort()
+        }),
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "polite", {})] }])
+    let reported = false
+    await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [polite],
+        llm,
+        context: { log: [] },
+        signal: controller.signal,
+        onLeftBehind: () => (reported = true),
+      }),
+    )
+    expect(reported).toBe(false)
+  })
+
+  it("stores a result before showing it (a host throwing at it never makes a run call look unrun)", async () => {
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "echo", { text: "a" })] }])
+    const ctx = { log: [] as string[] }
+    const run = runAgent({ userMessage: "go", tools: [echo], llm, context: ctx })
+    let end: AgentEvent | undefined
+    for (let next = await run.next(); !next.done;) {
+      if (next.value.type === "tool_result") {
+        next = await run.throw(new Error("ipc failed"))
+        continue
+      }
+      end = next.value
+      next = await run.next()
+    }
+    const results = end?.type === "error" ? end.messages.filter((m) => m.role === "tool") : []
+    expect(results).toHaveLength(1)
+    expect(results[0]?.content).toMatch(/echoed/)
+  })
+
+  it("ends at the stop even when the model client ignores its signal", async () => {
+    const controller = new AbortController()
+    const deafLlm: LlmClient = {
+      complete: () => {
+        setTimeout(() => controller.abort(), 5)
+        return new Promise(() => undefined)
+      },
+    }
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [],
+        llm: deafLlm,
+        context: {},
+        signal: controller.signal,
+      }),
+    )
+    expect(events.at(-1)?.type).toBe("aborted")
+  })
+
   it("gives a call its result when the run ends in error mid-turn (the history stays replayable)", async () => {
     const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "echo", { text: "a" })] }])
     const run = runAgent({ userMessage: "go", tools: [echo], llm, context: { log: [] } })
@@ -506,7 +610,7 @@ describe("runAgent: round 3", () => {
     }
     await expect(async () => {
       for await (const ev of assembleStreamedTurn(chunks() as never)) void ev
-    }).rejects.toThrow(/upstream 502/)
+    }).rejects.toThrow(/ended before it was complete/)
   })
 
   it("keeps the provider's call ids (a thought signature is bound to them), the pending one included", async () => {

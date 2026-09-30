@@ -86,21 +86,31 @@ function plain(content: string): unknown {
   }
 }
 
-/** Resolves once the signal is aborted; `dispose` removes its listener (none left behind). */
-function abortedWith(signal: AbortSignal): { promise: Promise<void>; dispose: () => void } {
+/**
+ * `work`, or `onStop()` if the signal aborts first (the work is left to finish on its own). The
+ * abort listener is removed once it's settled (none left behind on a long-lived signal).
+ */
+async function raceStop<T, S>(
+  work: Promise<T>,
+  signal: AbortSignal,
+  onStop: () => S,
+): Promise<T | S> {
+  if (signal.aborted) return onStop()
   let listener: (() => void) | undefined
-  const promise = new Promise<void>((resolve) => {
-    if (signal.aborted) resolve()
-    else {
-      listener = () => resolve()
-      signal.addEventListener("abort", listener, { once: true })
+  const stop = new Promise<S>((resolve, reject) => {
+    listener = () => {
+      try {
+        resolve(onStop())
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
     }
+    signal.addEventListener("abort", listener, { once: true })
   })
-  return {
-    promise,
-    dispose: () => {
-      if (listener !== undefined) signal.removeEventListener("abort", listener)
-    },
+  try {
+    return await Promise.race([work, stop])
+  } finally {
+    if (listener !== undefined) signal.removeEventListener("abort", listener)
   }
 }
 
@@ -157,10 +167,9 @@ export type RunAgentOptions<C> = {
 /** Runs the agent, yielding events as the answer streams and tools run. Ends with exactly one end. */
 export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<AgentEvent> {
   const added: LlmMessage[] = [{ role: "user", content: opts.userMessage }]
-  const left: Promise<unknown>[] = []
   let ended = false
   try {
-    for await (const event of run(opts, added, left)) {
+    for await (const event of run(opts, added)) {
       if (END.has(event.type)) ended = true
       yield event
     }
@@ -171,21 +180,12 @@ export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<Age
     // call keeps a result (the stored history stays replayable).
     closeCalls(added, errorMessage(error))
     yield { type: "error", message: errorMessage(error), messages: added }
-  } finally {
-    // A tool the stop left behind: the host is told when it has settled (its next run waits for it).
-    if (left.length > 0) {
-      opts.onLeftBehind?.(Promise.allSettled(left).then(() => undefined))
-    }
   }
 }
 
 const END = new Set<AgentEvent["type"]>(["done", "aborted", "turn_limit", "error"])
 
-async function* run<C>(
-  opts: RunAgentOptions<C>,
-  added: LlmMessage[],
-  left: Promise<unknown>[],
-): AsyncGenerator<AgentEvent> {
+async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGenerator<AgentEvent> {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS
   const signal = opts.signal ?? new AbortController().signal
   const defs = toDefs(opts.tools)
@@ -272,17 +272,24 @@ async function* run<C>(
       } else if (signal.aborted) {
         output = toolAborted(call.name)
       } else {
-        // The stop ends the run at once, even if the tool doesn't heed it (an approval dialog):
-        // the tool is left to settle (the run's generator returns after it).
+        // The stop ends the run at once, even if the tool doesn't heed it (an approval dialog).
+        // A tool still running then is reported to the host at once (its next run waits for it).
+        let settled = false
         const running = executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
-        const stop = abortedWith(signal)
-        output = await Promise.race([running, stop.promise.then(() => toolAborted(call.name))])
-        stop.dispose()
-        if (signal.aborted) left.push(running)
+        const done = running.then(() => {
+          settled = true
+        })
+        output = await raceStop(running, signal, () => toolAborted(call.name))
+        if (!settled && signal.aborted) {
+          // A tool that heeds the stop settles within a tick: only one that doesn't is left running.
+          await Promise.race([done, new Promise((resolve) => setTimeout(resolve, 0))])
+          if (!settled) opts.onLeftBehind?.(done)
+        }
       }
+      // Stored before it's shown: a host throwing at the event never makes a run call look unrun.
       const content = serializeToolResult(output, call.name)
-      yield { type: "tool_result", callId: call.id, toolName: call.name, result: plain(content) }
       added.push({ role: "tool", toolCallId: call.id, toolName: call.name, content })
+      yield { type: "tool_result", callId: call.id, toolName: call.name, result: plain(content) }
     }
   }
   if (signal.aborted) {
@@ -299,8 +306,12 @@ async function* modelTurn(
   defs: LlmToolDef[],
   signal: AbortSignal,
 ): AsyncGenerator<AgentEvent, LlmTurn> {
+  // A client that doesn't heed the signal still ends at the stop.
+  const stopped = (): never => {
+    throw new Error("stopped")
+  }
   if (llm.completeStream === undefined) {
-    const turn = await llm.complete(messages, defs, signal)
+    const turn = await raceStop(llm.complete(messages, defs, signal), signal, stopped)
     // The text a model writes with its tool calls is shown (a final text is, by the caller).
     if (turn.kind === "tool_calls" && turn.text !== undefined && turn.text !== "") {
       yield { type: "assistant_text", text: turn.text }
@@ -310,7 +321,14 @@ async function* modelTurn(
   let text = ""
   let reasoning = ""
   let final: LlmTurn | undefined
-  for await (const ev of llm.completeStream(messages, defs, signal)) {
+  const stream = llm.completeStream(messages, defs, signal)[Symbol.asyncIterator]()
+  for (;;) {
+    const step = await raceStop(stream.next(), signal, () => {
+      void stream.return?.()
+      return stopped()
+    })
+    if (step.done === true) break
+    const ev = step.value
     if (ev.kind === "delta") {
       text += ev.text
       yield { type: "assistant_text", text }

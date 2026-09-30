@@ -16,15 +16,10 @@ export async function* assembleStreamedTurn(
   // received: every streamed fragment, in order, unmodified (OpenRouter's rule for sending it back).
   const reasoningDetails: unknown[] = []
   let finishReason: string | null | undefined
-  let streamError: string | undefined
   const calls = new Map<number, { id: string; name: string; arguments: string }>()
   const announced = new Set<number>()
 
   for await (const chunk of chunks) {
-    const failed = (chunk as { error?: { message?: unknown } }).error
-    if (failed !== undefined) {
-      streamError = typeof failed.message === "string" ? failed.message : "the provider failed"
-    }
     const choice = chunk.choices[0]
     if (choice?.finish_reason) finishReason = choice.finish_reason
     const delta = choice?.delta
@@ -66,10 +61,10 @@ export async function* assembleStreamedTurn(
     }
   }
 
-  // No finish reason, or an error one (OpenRouter's upstream failure mid-stream, with its `error`):
-  // cut short, never a whole turn.
+  // No finish reason, or an error one: cut short, never a whole turn. (A chunk carrying OpenRouter's
+  // upstream `error` is thrown by the SDK itself, with its message: an error end too.)
   if (finishReason === undefined || finishReason === null || finishReason === "error") {
-    throw new Error(streamError === undefined ? CUT_SHORT : `${CUT_SHORT}: ${streamError}`)
+    throw new Error(CUT_SHORT)
   }
   // Text that came with tool calls is kept (the model's note to the user before it acts).
   const extra = {

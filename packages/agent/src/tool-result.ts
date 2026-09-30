@@ -14,7 +14,7 @@
  * like bad args / not found).
  */
 export type ToolErrorCode =
-  "user_declined" | "unknown_tool" | "tool_error" | "tool_rejected" | "aborted"
+  "user_declined" | "unknown_tool" | "tool_error" | "tool_rejected" | "aborted" | "not_run"
 
 /** A structured tool-call failure fed back to the model as the tool result. */
 export type ToolFailure = {
@@ -103,7 +103,7 @@ export const toolAborted = (tool: string): ToolFailure => ({
 /** The run ended (an error) before this call ran: it didn't run. */
 export const toolNotRun = (tool: string, reason: string): ToolFailure => ({
   ok: false,
-  error: "aborted",
+  error: "not_run",
   tool,
   message: `"${tool}" didn't run: the run ended first (${reason}). Call it again if it's still needed.`,
 })
