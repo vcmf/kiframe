@@ -69,7 +69,8 @@ export interface LlmClient {
 
 /**
  * A tool of a host whose context is `C` (passed as is: a class instance keeps its methods), with the
- * run's cancellation signal, which it heeds (a stop ends its work; a wait for the user too).
+ * run's cancellation signal, which it heeds (a stop ends its work; a wait for the user rejects;
+ * work that can't be cancelled itself goes through `untilStopped`).
  */
 export type Tool<C> = {
   name: string

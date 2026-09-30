@@ -1,6 +1,7 @@
 import { z } from "zod"
 import {
   CUT_SHORT,
+  isToolFailure,
   isToolSoftError,
   toolAborted,
   toolNotRun,
@@ -128,7 +129,8 @@ export type RunAgentOptions<C> = {
   maxTurns?: number
   /**
    * Cancels the run: the model call and the running tool get it (both heed it: the SDK aborts its
-   * request, a tool stops its work and a `requestUser` its dialog); the run ends `aborted`.
+   * request, a tool stops its work, a `requestUser` rejects and closes its dialog); the run ends
+   * `aborted`. Only the signal stops a running tool: a host's `break` or `return()` waits for it.
    */
   signal?: AbortSignal
 }
@@ -231,19 +233,26 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
       // Every call starts and ends, in the history and for the UI (a stopped one too).
       yield { type: "tool_start", callId: call.id, toolName: call.name, args: call.args }
       let output: unknown
-      if (!call.whole) {
+      if (signal.aborted) {
+        // Stopped: never "call again" (a stopped turn's calls are aborted, broken ones too).
+        output = toolAborted(call.name)
+      } else if (!call.whole) {
         output = toolRejected(
           call.name,
           result.truncated === true
             ? "your arguments were cut off (the reply hit its length limit): make the call again, shorter"
             : "your arguments weren't a valid JSON object: make the call again with valid JSON",
         )
-      } else if (signal.aborted) {
-        output = toolAborted(call.name)
       } else {
         // Awaited to its end: a tool heeds the signal (the stop), and one that finished anyway
         // keeps its real result (a recording it finalized).
-        output = await executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
+        // Its own signal (a child of the run's): listeners it leaves behind go with the call.
+        const own = AbortSignal.any([signal])
+        output = await executeToolCall(call.name, call.args, opts.tools, opts.context, own)
+        // A wait for the user answered "no" because the stop closed it: aborted, never declined.
+        if (signal.aborted && isToolFailure(output) && output.error === "user_declined") {
+          output = toolAborted(call.name)
+        }
       }
       // Stored before it's shown: a host throwing at the event never makes a run call look unrun.
       const content = serializeToolResult(output, call.name)
@@ -309,5 +318,24 @@ function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
   } catch {
     return "an error that can't be shown"
+  }
+}
+
+/**
+ * For a tool wrapping work that can't be cancelled itself: `work`'s value, or a rejection at the
+ * stop (the work is left to finish; its own failure is handled, and the abort listener removed).
+ */
+export async function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  work.catch(() => undefined)
+  signal.throwIfAborted()
+  let listener: (() => void) | undefined
+  const stopped = new Promise<never>((_resolve, reject) => {
+    listener = () => reject(new Error("stopped"))
+    signal.addEventListener("abort", listener, { once: true })
+  })
+  try {
+    return await Promise.race([work, stopped])
+  } finally {
+    if (listener !== undefined) signal.removeEventListener("abort", listener)
   }
 }

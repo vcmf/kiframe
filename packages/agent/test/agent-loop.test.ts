@@ -660,3 +660,133 @@ describe("runAgent: the stop is the signal (clients and tools heed it)", () => {
     expect(opened.map((o) => o.closed)).toEqual([true, true])
   })
 })
+
+describe("runAgent: round 8", () => {
+  it("ends aborted when stopped while the real SDK stream waits on the network", async () => {
+    const { OpenAiCompatibleClient } = await import("../src/llm-client.ts")
+    const encoder = new TextEncoder()
+    const fetch = (_url: string | URL | Request, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const chunk = {
+            id: "x",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "m",
+            choices: [{ index: 0, delta: { content: "Hi" }, finish_reason: null }],
+          }
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`))
+          // Then nothing more, until the request is aborted.
+          init?.signal?.addEventListener("abort", () =>
+            controller.error(new DOMException("aborted", "AbortError")),
+          )
+        },
+      })
+      return Promise.resolve(
+        new Response(body, { headers: { "content-type": "text/event-stream" } }),
+      )
+    }
+    const llm = OpenAiCompatibleClient.fromConfig({ apiKey: "k", model: "m", maxRetries: 0, fetch })
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 50)
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [], llm, context: {}, signal: controller.signal }),
+    )
+    expect(events.at(-1)?.type).toBe("aborted")
+  })
+
+  it("ends aborted when stopped while a non-streaming request is pending", async () => {
+    const controller = new AbortController()
+    const heeding: LlmClient = {
+      complete: (_m, _t, signal) =>
+        new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("request aborted")))
+          setTimeout(() => controller.abort(), 5)
+        }),
+    }
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [],
+        llm: heeding,
+        context: {},
+        signal: controller.signal,
+      }),
+    )
+    expect(events.at(-1)?.type).toBe("aborted")
+  })
+
+  it("never records a dialog the stop closed as the user declining", async () => {
+    const { userDeclined } = await import("../src/tool-result.ts")
+    const controller = new AbortController()
+    const asks = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "ask",
+      description: "Asks the user",
+      parameters: z.object({}),
+      run: () => {
+        controller.abort()
+        return Promise.resolve(userDeclined("ask"))
+      },
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "ask", {})] }])
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [asks],
+        llm,
+        context: { log: [] },
+        signal: controller.signal,
+      }),
+    )
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      result: { error: "aborted" },
+    })
+  })
+
+  it("never tells the model to retry a broken call of a stopped turn", async () => {
+    const controller = new AbortController()
+    const stopper = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "stop",
+      description: "Stops",
+      parameters: z.object({}),
+      run: () => {
+        controller.abort()
+        return Promise.resolve({ ok: true })
+      },
+    })
+    const { llm } = scripted([
+      {
+        kind: "tool_calls",
+        truncated: true,
+        calls: [call("c1", "stop", {}), { id: "c2", name: "echo", arguments: '{"te' }],
+      },
+    ])
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [stopper, echo],
+        llm,
+        context: { log: [] },
+        signal: controller.signal,
+      }),
+    )
+    const results = events.filter((e) => e.type === "tool_result")
+    expect(results[1]).toMatchObject({ result: { error: "aborted" } })
+  })
+})
+
+describe("untilStopped", () => {
+  it("rejects at the stop, leaves no listener, and handles the work's own failure", async () => {
+    const { untilStopped } = await import("../src/agent-loop.ts")
+    const controller = new AbortController()
+    const never = new Promise<number>(() => undefined)
+    setTimeout(() => controller.abort(), 5)
+    await expect(untilStopped(never, controller.signal)).rejects.toThrow(/stopped/)
+    const quiet = new AbortController()
+    expect(await untilStopped(Promise.resolve(1), quiet.signal)).toBe(1)
+    const failing = Promise.reject(new Error("late"))
+    const stopped = new AbortController()
+    stopped.abort()
+    await expect(untilStopped(failing, stopped.signal)).rejects.toThrow()
+  })
+})

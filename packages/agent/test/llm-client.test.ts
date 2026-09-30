@@ -158,3 +158,26 @@ describe("non-streaming replies", () => {
     ).rejects.toThrow(/ended before it was complete/)
   })
 })
+
+describe("an error without a message", () => {
+  it("is still a failure, never an empty complete answer", async () => {
+    const client = new OpenAiCompatibleClient(
+      {
+        create: () =>
+          Promise.resolve({
+            choices: [
+              {
+                message: { role: "assistant", content: "" },
+                finish_reason: "stop",
+                error: { code: 502 },
+              },
+            ],
+          } as unknown as ChatCompletion),
+      },
+      "m",
+    )
+    await expect(client.complete([{ role: "user", content: "go" }], [])).rejects.toThrow(
+      /ended before/,
+    )
+  })
+})
