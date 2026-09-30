@@ -8,7 +8,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
-  writeSync,
+  writeFileSync,
 } from "node:fs"
 import { dirname, join } from "node:path"
 
@@ -26,7 +26,8 @@ export function writeAtomic(path: string, content: string): void {
   try {
     const fd = openSync(tmp, "w")
     try {
-      writeSync(fd, content)
+      // (writeFileSync on a descriptor loops until every byte is written: no short write.)
+      writeFileSync(fd, content)
       fsyncSync(fd)
     } finally {
       closeSync(fd)

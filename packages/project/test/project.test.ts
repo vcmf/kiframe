@@ -125,14 +125,35 @@ describe("project store: failures and conflicts", () => {
     ])
   })
 
-  it("saves a scene that didn't read only with both of its parts", () => {
+  it("reads a scene's parts on their own, and repairs only the broken one", () => {
+    const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
+    saveScene(made, scene("login", "Log in"), { scenario })
+    writeFileSync(join(made.dir, "scenes", "login", "composition.json"), "{ bad")
+    const opened = openProject(made.dir)
+    // The good parts still load; the broken one is named.
+    expect(opened.scenes.get("login")?.scenario).toEqual(scenario)
+    expect(opened.problems).toEqual([
+      expect.objectContaining({ sceneId: "login", part: "composition" }),
+    ])
+    expect(() => saveScene(opened, scene("login", "Sign in"))).toThrow(
+      /composition.json didn't read/,
+    )
+    saveScene(opened, scene("login", "Sign in"), { composition: null })
+    const back = openProject(made.dir)
+    expect(back.problems).toEqual([])
+    expect(back.scenes.get("login")?.scenario).toEqual(scenario)
+  })
+
+  it("never overwrites a scene file changed on disk (a hand edit, a git pull)", () => {
     const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
     saveScene(made, scene("login"), { scenario })
-    writeFileSync(join(made.dir, "scenes", "login", "scenario.yaml"), "steps: [")
-    const opened = openProject(made.dir)
-    expect(() => saveScene(opened, scene("login", "Sign in"))).toThrow(/didn't read/)
-    saveScene(opened, scene("login", "Sign in"), { scenario, composition: null })
-    expect(openProject(made.dir).scenes.get("login")?.scenario).toEqual(scenario)
+    const pulled = "version: 1\nsteps:\n  - { id: other, action: goto, url: /other }\n"
+    writeFileSync(join(made.dir, "scenes", "login", "scenario.yaml"), pulled)
+    expect(() => saveScene(made, scene("login", "Sign in"), { scenario })).toThrow(
+      ProjectChangedError,
+    )
+    expect(() => removeScene(made, "login")).toThrow(ProjectChangedError)
+    expect(readFileSync(join(made.dir, "scenes", "login", "scenario.yaml"), "utf8")).toBe(pulled)
   })
 
   it("removes stray temporary files on open", () => {
@@ -172,35 +193,48 @@ describe("take store", () => {
 
   it("files complete takes privately under their key, newest first by time", async () => {
     const store = newStore()
-    await store.record("p1", "login", recorder(meta("k-old", "2026-09-30T11:00:00Z")))
+    await store.record("p1", "login", recorder(meta("aaaa-100", "2026-09-30T11:00:00Z")))
     // Earlier in UTC although it sorts later as text.
-    await store.record("p1", "login", recorder(meta("k-offset", "2026-09-30T12:30:00+02:00")))
+    await store.record("p1", "login", recorder(meta("aaaa-50", "2026-09-30T12:30:00+02:00")))
     const newest = await store.record(
       "p1",
       "login",
-      recorder(meta("k-new", "2026-09-30T11:30:00Z", "h2")),
+      recorder(meta("bbbb-200", "2026-09-30T11:30:00Z")),
     )
+    expect(newest.recorded.meta.takeKey).toBe("bbbb-200")
     expect(store.takes("p1", "login").map((t) => t.meta.takeKey)).toEqual([
-      "k-new",
-      "k-old",
-      "k-offset",
+      "bbbb-200",
+      "aaaa-100",
+      "aaaa-50",
     ])
     expect(statSync(newest.dir).mode & 0o777).toBe(0o700)
-    // Of its current scenario only, and by key.
-    expect(store.latest("p1", "login", "h")?.meta.takeKey).toBe("k-old")
-    expect(store.latest("p1", "login", "none")).toBeUndefined()
-    expect(store.take("p1", "login", "k-offset")?.meta.takeKey).toBe("k-offset")
+    // The current take: its key's prefix (scenario, app, capture settings), newest by its time.
+    expect(store.latest("p1", "login", "aaaa-")?.meta.takeKey).toBe("aaaa-100")
+    expect(store.latest("p1", "login", "cccc-")).toBeUndefined()
+    expect(store.take("p1", "login", "aaaa-50")?.meta.takeKey).toBe("aaaa-50")
     expect(store.take("p1", "login", "../x")).toBeUndefined()
+  })
+
+  it("sweeps what a cut-short recording left, and the takes of scenes no longer in the project", async () => {
+    const store = newStore()
+    await store.record("p1", "login", recorder(meta("aaaa-1", "2026-09-30T11:00:00Z")))
+    await store.record("p1", "gone", recorder(meta("aaaa-2", "2026-09-30T11:00:00Z")))
+    const login = join(store.root, "takes", "p1", "login")
+    mkdirSync(join(login, ".recording-deadbeef0000.recording-1-2"))
+    writeFileSync(join(login, ".recording-deadbeef0000.recording-1-2", "frames.webm"), "raw")
+    store.pruneScenes("p1", ["login"])
+    expect(readdirSync(login)).toEqual(["aaaa-1"])
+    expect(existsSync(join(store.root, "takes", "p1", "gone"))).toBe(false)
   })
 
   it("deletes a failed recording's raw frames, and a scene's takes with it", async () => {
     const store = newStore()
     await expect(
-      store.record("p1", "login", recorder(meta("k", "2026-09-30T11:00:00Z"), true)),
+      store.record("p1", "login", recorder(meta("aaaa-1", "2026-09-30T11:00:00Z"), true)),
     ).rejects.toThrow(/step open failed/)
     const scene = join(store.root, "takes", "p1", "login")
     expect(readdirSync(scene)).toEqual([])
-    await store.record("p1", "login", recorder(meta("k", "2026-09-30T11:00:00Z")))
+    await store.record("p1", "login", recorder(meta("aaaa-1", "2026-09-30T11:00:00Z")))
     store.removeScene("p1", "login")
     expect(existsSync(scene)).toBe(false)
   })

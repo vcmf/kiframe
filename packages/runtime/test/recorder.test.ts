@@ -724,3 +724,20 @@ describe("pathOnly", () => {
     expect(pathOnly("data:text/html;base64,AAAA")).toBe("data:")
   })
 })
+
+describe("takeKeyPrefix", () => {
+  it("is what the recorder's take keys start with, and changes with the scenario or the app", async () => {
+    const { takeKeyPrefix } = await import("../src/recorder.ts")
+    const s = parseScenarioYaml("version: 1\nsteps: [{ id: p, action: pause, ms: 1 }]\n")
+    const p = parseProjectYaml(
+      'version: 1\ntarget: { kind: web, url: "https://app.test", viewport: { width: 800, height: 600 } }\n',
+    )
+    const prefix = takeKeyPrefix(s, p)
+    expect(prefix).toMatch(/^[0-9a-f]{16}-$/)
+    const other = parseScenarioYaml("version: 1\nsteps: [{ id: q, action: pause, ms: 1 }]\n")
+    expect(takeKeyPrefix(other, p)).not.toBe(prefix)
+    const moved = { ...p, target: { ...p.target, url: "https://elsewhere.test" } }
+    expect(takeKeyPrefix(s, moved)).not.toBe(prefix)
+    expect(takeKeyPrefix(s, p, 70)).not.toBe(prefix)
+  })
+})

@@ -17,11 +17,14 @@ import { jsonText, removeStrayTemps, writeAtomic } from "./files.ts"
 // A project folder on disk (docs/OBJECT-MODEL.md §0.7): objects only, never takes.
 //   project.json
 //   scenes/<sceneId>/scene.json, scenario.yaml, composition.json
-// One writer per project (the app's main process); a change made on disk by anyone else since the
-// project was read (a hand edit, a git pull) is never overwritten: `ProjectChangedError`.
+// One writer per project (the app's main process). A file changed on disk by anyone else since this
+// handle read or wrote it (a hand edit, a git pull) is never overwritten: `ProjectChangedError`.
 
 /** The org of a project made without an account (the slice: no server yet). */
 export const LOCAL_ORG = "local"
+
+/** The parts of a scene folder. */
+export type ScenePart = "scene" | "scenario" | "composition"
 
 /** A scene as stored: its object and, for a recording, its scenario and composition. */
 export interface StoredScene {
@@ -33,6 +36,8 @@ export interface StoredScene {
 /** Something wrong in the folder: reported, never dropping the rest of the project. */
 export interface SceneProblem {
   sceneId: string
+  /** The part that didn't read, when it's one. */
+  part?: ScenePart
   message: string
 }
 
@@ -41,14 +46,14 @@ export interface OpenedProject {
   project: Project
   scenes: Map<string, StoredScene>
   problems: SceneProblem[]
-  /** project.json as last read or written by this handle (a save checks the file still says it). */
-  diskText: string
+  /** Every file this handle read or wrote, as it was then (a path: absent when it didn't exist). */
+  disk: Map<string, string>
 }
 
-/** project.json changed on disk since this handle read it: reopen, then apply the change again. */
+/** A file changed on disk since this handle read it: reopen the project, then redo the change. */
 export class ProjectChangedError extends Error {
-  constructor(dir: string) {
-    super(`${dir}/project.json changed on disk since it was opened: reopen the project`)
+  constructor(file: string) {
+    super(`${file} changed on disk since the project was opened: reopen it`)
     this.name = "ProjectChangedError"
   }
 }
@@ -61,13 +66,46 @@ export interface NewProject {
   viewport?: { width: number; height: number }
 }
 
-const sceneDir = (dir: string, id: string) => join(dir, "scenes", id)
+const FILES: Record<ScenePart, string> = {
+  scene: "scene.json",
+  scenario: "scenario.yaml",
+  composition: "composition.json",
+}
+const PROJECT_FILE = "project.json"
+const scenePath = (id: string, part: ScenePart) => join("scenes", id, FILES[part])
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+function readKnown(dir: string, disk: Map<string, string>, rel: string): string | undefined {
+  const path = join(dir, rel)
+  if (!existsSync(path)) {
+    disk.delete(rel)
+    return undefined
+  }
+  const text = readFileSync(path, "utf8")
+  disk.set(rel, text)
+  return text
+}
+
+/** Refuses to touch a file that changed since this handle last saw it. */
+function assertUnchanged(opened: OpenedProject, rel: string): void {
+  const path = join(opened.dir, rel)
+  const now = existsSync(path) ? readFileSync(path, "utf8") : undefined
+  if (now !== opened.disk.get(rel)) throw new ProjectChangedError(rel)
+}
+
+function write(opened: OpenedProject, rel: string, text: string): void {
+  writeAtomic(join(opened.dir, rel), text)
+  opened.disk.set(rel, text)
+}
+
+function remove(opened: OpenedProject, rel: string): void {
+  rmSync(join(opened.dir, rel), { force: true })
+  opened.disk.delete(rel)
+}
 
 /** Creates a project folder (refused if it already holds a project). */
 export function createProject(dir: string, init: NewProject): OpenedProject {
-  const file = join(dir, "project.json")
-  if (existsSync(file)) throw new Error(`${dir} already holds a project`)
+  if (existsSync(join(dir, PROJECT_FILE))) throw new Error(`${dir} already holds a project`)
   const project = Project.parse({
     version: 1,
     id: init.id,
@@ -80,20 +118,20 @@ export function createProject(dir: string, init: NewProject): OpenedProject {
     },
   })
   mkdirSync(join(dir, "scenes"), { recursive: true })
-  const text = jsonText(project)
-  writeAtomic(file, text)
-  return { dir, project, scenes: new Map(), problems: [], diskText: text }
+  const opened: OpenedProject = { dir, project, scenes: new Map(), problems: [], disk: new Map() }
+  write(opened, PROJECT_FILE, jsonText(project))
+  return opened
 }
 
 /**
- * Opens a project folder. The project file must be valid (a SchemaError otherwise); a scene folder
- * that isn't, one the sequence names but that's missing, or one outside the sequence is reported in
- * `problems`, and the rest still opens.
+ * Opens a project folder. The project file must be valid (a SchemaError otherwise). A scene part
+ * that doesn't read, a folder the sequence names but that's missing, or one outside the sequence
+ * is reported in `problems`; the rest still opens (a scene's other parts included).
  */
 export function openProject(dir: string): OpenedProject {
   removeStrayTemps(dir)
-  const diskText = readFileSync(join(dir, "project.json"), "utf8")
-  const project = parseProjectJson(diskText)
+  const disk = new Map<string, string>()
+  const project = parseProjectJson(readKnown(dir, disk, PROJECT_FILE) ?? "")
   const scenes = new Map<string, StoredScene>()
   const problems: SceneProblem[] = []
   const root = join(dir, "scenes")
@@ -103,12 +141,9 @@ export function openProject(dir: string): OpenedProject {
         .map((e) => e.name)
     : []
   for (const id of ids) {
-    removeStrayTemps(sceneDir(dir, id))
-    try {
-      scenes.set(id, readScene(dir, id))
-    } catch (error) {
-      problems.push({ sceneId: id, message: errorText(error) })
-    }
+    removeStrayTemps(join(root, id))
+    const stored = readScene(dir, disk, id, problems)
+    if (stored !== undefined) scenes.set(id, stored)
     if (!project.sequence.includes(id)) {
       problems.push({ sceneId: id, message: "a scene folder that isn't in the sequence" })
     }
@@ -118,42 +153,59 @@ export function openProject(dir: string): OpenedProject {
       problems.push({ sceneId: id, message: "in the sequence, but its folder is missing" })
     }
   }
-  return { dir, project, scenes, problems, diskText }
+  return { dir, project, scenes, problems, disk }
 }
 
-function readScene(dir: string, id: string): StoredScene {
-  const at = sceneDir(dir, id)
-  const scene = parseSceneJson(readFileSync(join(at, "scene.json"), "utf8"))
-  if (scene.id !== id) throw new Error(`scene.json has id "${scene.id}", its folder is "${id}"`)
-  const stored: StoredScene = { scene }
-  if (existsSync(join(at, "scenario.yaml"))) {
-    stored.scenario = parseScenarioYaml(readFileSync(join(at, "scenario.yaml"), "utf8"))
+/** Reads each part on its own: one that doesn't read is reported, the others still load. */
+function readScene(
+  dir: string,
+  disk: Map<string, string>,
+  id: string,
+  problems: SceneProblem[],
+): StoredScene | undefined {
+  const part = <T>(which: ScenePart, parse: (text: string) => T): T | undefined => {
+    try {
+      const text = readKnown(dir, disk, scenePath(id, which))
+      return text === undefined ? undefined : parse(text)
+    } catch (error) {
+      problems.push({ sceneId: id, part: which, message: errorText(error) })
+      return undefined
+    }
   }
-  if (existsSync(join(at, "composition.json"))) {
-    stored.composition = parseCompositionJson(readFileSync(join(at, "composition.json"), "utf8"))
+  const scene = part("scene", (text) => {
+    const s = parseSceneJson(text)
+    if (s.id !== id) throw new Error(`scene.json has id "${s.id}", its folder is "${id}"`)
+    return s
+  })
+  const scenario = part("scenario", parseScenarioYaml)
+  const composition = part("composition", parseCompositionJson)
+  if (scene === undefined) {
+    if (!problems.some((p) => p.sceneId === id && p.part === "scene")) {
+      problems.push({ sceneId: id, part: "scene", message: "scene.json is missing" })
+    }
+    return undefined
   }
-  return stored
+  return {
+    scene,
+    ...(scenario !== undefined && { scenario }),
+    ...(composition !== undefined && { composition }),
+  }
 }
 
-/**
- * Writes the project file: validated first (an invalid project is never written), and only if the
- * file still says what this handle last read or wrote (`ProjectChangedError` otherwise).
- */
+/** Writes the project file: validated first, and only over the version this handle last saw. */
 export function saveProject(opened: OpenedProject, project: Project): void {
-  const file = join(opened.dir, "project.json")
-  const onDisk = existsSync(file) ? readFileSync(file, "utf8") : undefined
-  if (onDisk !== opened.diskText) throw new ProjectChangedError(opened.dir)
   const text = jsonText(Project.parse(project))
-  writeAtomic(file, text)
+  assertUnchanged(opened, PROJECT_FILE)
+  write(opened, PROJECT_FILE, text)
   opened.project = project
-  opened.diskText = text
 }
 
 /**
- * Writes a scene: every part validated before anything is written. A new scene joins the end of
- * the sequence (the project file first: a crash then leaves a scene the sequence names but without
- * its folder, reported on open). A part left out stays as it is on disk; `null` removes it. A scene
- * with a problem on open (a part that didn't read) is saved only with both parts given.
+ * Writes a scene: every part validated, and every file it touches checked unchanged since this
+ * handle saw it, before anything is written. A new scene joins the end of the sequence (the project
+ * file first: a crash then leaves a scene the sequence names but without its folder, reported on
+ * open). A part left out stays as it is on disk; `null` removes it. A part that didn't read on
+ * open must be given (or removed with `null`).
  */
 export function saveScene(
   opened: OpenedProject,
@@ -161,46 +213,55 @@ export function saveScene(
   parts: { scenario?: Scenario | null; composition?: Composition | null } = {},
 ): void {
   const id = SceneId.parse(scene.id)
-  const broken = opened.problems.some((p) => p.sceneId === id && !opened.scenes.has(id))
-  if (broken && (parts.scenario === undefined || parts.composition === undefined)) {
-    throw new Error(
-      `scene "${id}" didn't read: save it with its scenario and composition (or null)`,
-    )
+  const broken = opened.problems.filter((p) => p.sceneId === id && p.part !== undefined)
+  for (const { part } of broken) {
+    if (part === undefined || part === "scene") continue
+    if (parts[part] === undefined) {
+      throw new Error(`scene "${id}": its ${FILES[part]} didn't read: give it (or null)`)
+    }
   }
   // Validated first, all of it.
   const valid = Scene.parse(scene)
   const scenario = parts.scenario == null ? parts.scenario : Scenario.parse(parts.scenario)
   const composition =
     parts.composition == null ? parts.composition : Composition.parse(parts.composition)
-  if (!opened.project.sequence.includes(id)) {
-    saveProject(opened, { ...opened.project, sequence: [...opened.project.sequence, id] })
-  }
-  const at = sceneDir(opened.dir, id)
-  writeAtomic(join(at, "scene.json"), jsonText(valid))
-  if (scenario === null) rmSync(join(at, "scenario.yaml"), { force: true })
-  else if (scenario !== undefined) writeAtomic(join(at, "scenario.yaml"), stringify(scenario))
-  if (composition === null) rmSync(join(at, "composition.json"), { force: true })
+  // Nothing changed on disk behind this handle (a broken part is replaced: it's checked too).
+  const touched: ScenePart[] = ["scene"]
+  if (scenario !== undefined) touched.push("scenario")
+  if (composition !== undefined) touched.push("composition")
+  for (const which of touched) assertUnchanged(opened, scenePath(id, which))
+  const joins = !opened.project.sequence.includes(id)
+  if (joins) assertUnchanged(opened, PROJECT_FILE)
+  if (joins) saveProject(opened, { ...opened.project, sequence: [...opened.project.sequence, id] })
+  write(opened, scenePath(id, "scene"), jsonText(valid))
+  if (scenario === null) remove(opened, scenePath(id, "scenario"))
+  else if (scenario !== undefined) write(opened, scenePath(id, "scenario"), stringify(scenario))
+  if (composition === null) remove(opened, scenePath(id, "composition"))
   else if (composition !== undefined) {
-    writeAtomic(join(at, "composition.json"), jsonText(composition))
+    write(opened, scenePath(id, "composition"), jsonText(composition))
   }
   const previous = opened.scenes.get(id)
-  const stored: StoredScene = { scene: valid }
   const keptScenario = scenario === undefined ? previous?.scenario : (scenario ?? undefined)
   const keptComposition =
     composition === undefined ? previous?.composition : (composition ?? undefined)
-  if (keptScenario !== undefined) stored.scenario = keptScenario
-  if (keptComposition !== undefined) stored.composition = keptComposition
-  opened.scenes.set(id, stored)
+  opened.scenes.set(id, {
+    scene: valid,
+    ...(keptScenario !== undefined && { scenario: keptScenario }),
+    ...(keptComposition !== undefined && { composition: keptComposition }),
+  })
   opened.problems = opened.problems.filter((p) => p.sceneId !== id)
 }
 
 /**
  * Deletes a scene: its place in the sequence and outputs first (the project file), then its folder
  * (a crash in between leaves a folder outside the sequence, reported on open). Its takes are the
- * take store's (`TakeStore.removeScene`).
+ * take store's (`TakeStore.removeScene`; `TakeStore.pruneScenes` on open catches a missed one).
  */
 export function removeScene(opened: OpenedProject, id: string): void {
   const valid = SceneId.parse(id)
+  for (const which of Object.keys(FILES) as ScenePart[]) {
+    assertUnchanged(opened, scenePath(valid, which))
+  }
   saveProject(opened, {
     ...opened.project,
     sequence: opened.project.sequence.filter((s) => s !== valid),
@@ -208,7 +269,8 @@ export function removeScene(opened: OpenedProject, id: string): void {
       o.include === undefined ? o : { ...o, include: o.include.filter((s) => s !== valid) },
     ),
   })
-  rmSync(sceneDir(opened.dir, valid), { recursive: true, force: true })
+  rmSync(join(opened.dir, "scenes", valid), { recursive: true, force: true })
+  for (const which of Object.keys(FILES) as ScenePart[]) opened.disk.delete(scenePath(valid, which))
   opened.scenes.delete(valid)
   opened.problems = opened.problems.filter((p) => p.sceneId !== valid)
 }
