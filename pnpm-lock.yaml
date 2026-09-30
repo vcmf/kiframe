@@ -29,6 +29,9 @@ importers:
       '@kiframe/schema':
         specifier: workspace:*
         version: link:packages/schema
+      '@kiframe/studio':
+        specifier: workspace:*
+        version: link:packages/studio
       '@kiframe/vault':
         specifier: workspace:*
         version: link:packages/vault
@@ -162,6 +165,33 @@ importers:
 
   packages/schema:
     dependencies:
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
+      zod:
+        specifier: ^4.6.5
+        version: 4.6.5
+
+  packages/studio:
+    dependencies:
+      '@kiframe/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@kiframe/generators':
+        specifier: workspace:*
+        version: link:../generators
+      '@kiframe/project':
+        specifier: workspace:*
+        version: link:../project
+      '@kiframe/runtime':
+        specifier: workspace:*
+        version: link:../runtime
+      '@kiframe/schema':
+        specifier: workspace:*
+        version: link:../schema
+      playwright:
+        specifier: 1.63.0
+        version: 1.63.0
       yaml:
         specifier: ^2.9.1
         version: 2.9.1

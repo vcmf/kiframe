@@ -30,6 +30,13 @@ export type StepErrorReason =
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"
+  /** The run's signal was aborted (the user stopped it): nothing more ran, not even the teardown. */
+  | "stopped"
+  /**
+   * A step closed the page it ran on and the run knows no page to return to (a popup a new run
+   * started on: the host's own opener may still be open).
+   */
+  | "page-closed"
 
 /**
  * A step failed. The message says which step and why, in words a user (or the agent) can act on:

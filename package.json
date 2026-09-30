@@ -24,6 +24,7 @@
     "@kiframe/project": "workspace:*",
     "@kiframe/runtime": "workspace:*",
     "@kiframe/schema": "workspace:*",
+    "@kiframe/studio": "workspace:*",
     "@kiframe/vault": "workspace:*",
     "@types/node": "^22.20.4",
     "@vitest/coverage-v8": "5.0.2",
