@@ -67,6 +67,8 @@ export const toOpenAiMessages = (messages: LlmMessage[]): ChatCompletionMessageP
     return {
       role: "assistant",
       content: m.content,
+      // Sent back as the provider gave it (OpenRouter: Gemini's thought signatures, Claude's thinking).
+      ...(m.reasoningDetails !== undefined && { reasoning_details: m.reasoningDetails }),
       ...(m.toolCalls !== undefined &&
         m.toolCalls.length > 0 && {
           tool_calls: m.toolCalls.map((tc) => ({
@@ -94,7 +96,11 @@ export const fromOpenAiMessage = (message?: ChatCompletionMessage): LlmTurn => {
     }
   }
   const text = message?.content ?? ""
-  return calls.length > 0 ? { kind: "tool_calls", calls, text } : { kind: "text", text }
+  const raw = (message as { reasoning_details?: unknown } | undefined)?.reasoning_details
+  const details = Array.isArray(raw) ? { reasoningDetails: raw as unknown[] } : {}
+  return calls.length > 0
+    ? { kind: "tool_calls", calls, text, ...details }
+    : { kind: "text", text, ...details }
 }
 
 /** The SDK behind a completer, from the config. */

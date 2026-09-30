@@ -107,9 +107,9 @@ describe("runAgent", () => {
       name: "stop",
       description: "Stops the run",
       parameters: z.object({}),
-      run: (_args, ctx) => {
+      run: (_args, _ctx, signal) => {
         controller.abort()
-        return Promise.resolve({ signalled: ctx.signal.aborted })
+        return Promise.resolve({ signalled: signal.aborted })
       },
     })
     const { llm } = scripted([
@@ -180,5 +180,167 @@ describe("runAgent", () => {
     expect(texts).toEqual(["Hel", "Hello", "Hello"])
     const done = events.at(-1)
     expect(done?.type === "done" && done.messages[0]).toEqual({ role: "user", content: "hi" })
+  })
+})
+
+describe("runAgent: review fixes", () => {
+  it("turns a result that can't be serialized into an error, and still ends", async () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+    const bad = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "bad",
+      description: "Returns a circular object",
+      parameters: z.object({}),
+      run: () => Promise.resolve(circular),
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "bad", {})] }])
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [bad], llm, context: { log: [] } }),
+    )
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      result: { ok: false, error: "tool_error" },
+    })
+    expect(events.at(-1)?.type).toBe("done")
+  })
+
+  it("elides history's old bulky results by recency (never every one sent whole)", async () => {
+    const bulky = (id: string): LlmMessage[] => [
+      { role: "assistant", content: "", toolCalls: [call(id, "echo", {})] },
+      { role: "tool", toolCallId: id, toolName: "echo", content: "x".repeat(9000) },
+    ]
+    const history = Array.from({ length: 10 }, (_, i) => bulky(`h${i}`)).flat()
+    const { llm, seen } = scripted([{ kind: "text", text: "ok" }])
+    await collect(
+      runAgent({ userMessage: "go", tools: [echo], llm, context: { log: [] }, history }),
+    )
+    const whole = (seen[0] ?? []).filter((m) => m.role === "tool" && m.content.length > 8000)
+    expect(whole.length).toBeLessThanOrEqual(5)
+  })
+
+  it("doesn't run a call stopped while its start was being shown", async () => {
+    const controller = new AbortController()
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "echo", { text: "a" })] }])
+    const ctx = { log: [] as string[] }
+    const events: AgentEvent[] = []
+    for await (const e of runAgent({
+      userMessage: "go",
+      tools: [echo],
+      llm,
+      context: ctx,
+      signal: controller.signal,
+    })) {
+      events.push(e)
+      if (e.type === "tool_start") controller.abort()
+    }
+    expect(ctx.log).toEqual([])
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      result: { error: "aborted" },
+    })
+    expect(events.at(-1)?.type).toBe("aborted")
+  })
+
+  it("gives a stopped tool the aborted result, never a crash to retry", async () => {
+    const controller = new AbortController()
+    const slow = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "slow",
+      description: "Waits for the stop",
+      parameters: z.object({}),
+      run: (_a, _c, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("AbortError")))
+          controller.abort()
+        }),
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "slow", {})] }])
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [slow],
+        llm,
+        context: { log: [] },
+        signal: controller.signal,
+      }),
+    )
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({
+      result: { error: "aborted" },
+    })
+  })
+
+  it("never runs a cut-off call, stores it replayable, and names calls a provider sent without id", async () => {
+    const { llm } = scripted([
+      {
+        kind: "tool_calls",
+        calls: [
+          { id: "", name: "echo", arguments: '{"text":"a"}' },
+          { id: "", name: "echo", arguments: '{"text":"cut' },
+        ],
+      },
+    ])
+    const ctx = { log: [] as string[] }
+    const events = await collect(runAgent({ userMessage: "go", tools: [echo], llm, context: ctx }))
+    expect(ctx.log).toEqual(["a"])
+    const done = events.at(-1)
+    const messages = done?.type === "done" ? done.messages : []
+    const assistant = messages[1]
+    const ids = assistant?.role === "assistant" ? (assistant.toolCalls ?? []).map((c) => c.id) : []
+    expect(new Set(ids).size).toBe(2)
+    expect(ids.every((id) => id !== "")).toBe(true)
+    expect(assistant?.role === "assistant" && assistant.toolCalls?.[1]?.arguments).toBe("{}")
+    const cut = events.filter((e) => e.type === "tool_result")[1]
+    expect(cut).toMatchObject({ result: { ok: false, error: "tool_rejected" } })
+    expect(JSON.stringify(cut)).toMatch(/cut off/)
+  })
+
+  it("shows the text sent with tool calls without streaming, and a pending call as it streams", async () => {
+    const { llm } = scripted([
+      { kind: "tool_calls", text: "Looking first.", calls: [call("c1", "echo", { text: "a" })] },
+    ])
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [echo], llm, context: { log: [] } }),
+    )
+    expect(events[0]).toEqual({ type: "assistant_text", text: "Looking first." })
+    const streaming: LlmClient = {
+      complete: () => Promise.reject(new Error("unused")),
+      async *completeStream() {
+        yield await Promise.resolve({ kind: "tool_start" as const, name: "echo" })
+        yield { kind: "final" as const, turn: { kind: "text" as const, text: "ok" } }
+      },
+    }
+    const streamed = await collect(
+      runAgent({ userMessage: "go", tools: [echo], llm: streaming, context: { log: [] } }),
+    )
+    expect(streamed[0]).toEqual({ type: "tool_pending", toolName: "echo" })
+  })
+
+  it("hands tools the host's context as is (a class keeps its methods and private state)", async () => {
+    class Host {
+      #count = 0
+      bump() {
+        this.#count += 1
+        return this.#count
+      }
+    }
+    const bump = defineTool<Host, z.ZodObject<Record<string, never>>>({
+      name: "bump",
+      description: "Bumps",
+      parameters: z.object({}),
+      run: (_a, host) => Promise.resolve({ count: host.bump() }),
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "bump", {})] }])
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [bump], llm, context: new Host() }),
+    )
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ result: { count: 1 } })
+  })
+
+  it("keeps the provider's reasoning state and sends it back on the next turn", async () => {
+    const details = [{ type: "reasoning.encrypted", data: "sig" }]
+    const { llm, seen } = scripted([
+      { kind: "tool_calls", calls: [call("c1", "echo", { text: "a" })], reasoningDetails: details },
+      { kind: "text", text: "ok" },
+    ])
+    await collect(runAgent({ userMessage: "go", tools: [echo], llm, context: { log: [] } }))
+    const assistant = seen[1]?.find((m) => m.role === "assistant")
+    expect(assistant?.role === "assistant" && assistant.reasoningDetails).toEqual(details)
   })
 })

@@ -64,3 +64,20 @@ describe("OpenAiCompatibleClient", () => {
     })
   })
 })
+
+describe("reasoning state on the wire", () => {
+  it("sends reasoning_details back on the assistant message, and reads them from a reply", () => {
+    const details = [{ type: "reasoning.encrypted", data: "sig" }]
+    expect(
+      toOpenAiMessages([{ role: "assistant", content: "", reasoningDetails: details }])[0],
+    ).toMatchObject({ reasoning_details: details })
+    expect(
+      fromOpenAiMessage({
+        role: "assistant",
+        content: "ok",
+        refusal: null,
+        reasoning_details: details,
+      } as unknown as Parameters<typeof fromOpenAiMessage>[0]),
+    ).toEqual({ kind: "text", text: "ok", reasoningDetails: details })
+  })
+})

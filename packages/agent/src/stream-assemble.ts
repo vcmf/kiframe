@@ -11,6 +11,8 @@ export async function* assembleStreamedTurn(
   chunks: AsyncIterable<ChatCompletionChunk>,
 ): AsyncGenerator<LlmStreamEvent> {
   let text = ""
+  // The provider's opaque reasoning state (OpenRouter `reasoning_details`), kept to send back.
+  const reasoningDetails: unknown[] = []
   const calls = new Map<number, { id: string; name: string; arguments: string }>()
   const announced = new Set<number>()
 
@@ -24,7 +26,13 @@ export async function* assembleStreamedTurn(
     // Provider reasoning/thinking channel — not in OpenAI's chunk type, so read
     // off the raw delta: OpenRouter uses `reasoning`, DeepSeek et al. use
     // `reasoning_content`. Display-only (never fed back to the model).
-    const r = delta as { reasoning?: unknown; reasoning_content?: unknown }
+    const r = delta as {
+      reasoning?: unknown
+      reasoning_content?: unknown
+      reasoning_details?: unknown
+    }
+    if (Array.isArray(r.reasoning_details))
+      reasoningDetails.push(...(r.reasoning_details as unknown[]))
     // Prefer whichever field carries actual text: an empty `reasoning_content`
     // must not mask a populated `reasoning` in the same delta.
     const reasoning =
@@ -48,9 +56,10 @@ export async function* assembleStreamedTurn(
   }
 
   // Text that came with tool calls is kept (the model's note to the user before it acts).
+  const details = reasoningDetails.length > 0 ? { reasoningDetails } : {}
   const turn: LlmTurn =
     calls.size > 0
-      ? { kind: "tool_calls", calls: [...calls.values()] as LlmToolCall[], text }
-      : { kind: "text", text }
+      ? { kind: "tool_calls", calls: [...calls.values()] as LlmToolCall[], text, ...details }
+      : { kind: "text", text, ...details }
   yield { kind: "final", turn }
 }
