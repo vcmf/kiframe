@@ -210,31 +210,42 @@ describe("take store", () => {
       "aaaa-50",
     ])
     expect(statSync(newest.dir).mode & 0o777).toBe(0o700)
-    // The current take: its key's prefix (scenario, app, capture settings), newest by its time.
-    expect(store.latest("p1", "login", "aaaa-")?.meta.takeKey).toBe("aaaa-100")
-    expect(store.latest("p1", "login", "cccc-")).toBeUndefined()
+    // The newest complete take.
+    expect(store.latest("p1", "login")?.meta.takeKey).toBe("bbbb-200")
+    expect(store.latest("p1", "other")).toBeUndefined()
     expect(store.take("p1", "login", "aaaa-50")?.meta.takeKey).toBe("aaaa-50")
     expect(store.take("p1", "login", "../x")).toBeUndefined()
   })
 
-  it("sweeps a dead process's cut-short recording, never one under way", async () => {
+  it("sweeps a crash's cut-short recording, never one under way (whichever store sweeps)", async () => {
     const store = newStore()
     await store.record("p1", "login", recorder(meta("aaaa-1", "2026-09-30T11:00:00Z")))
     const login = join(store.root, "takes", "p1", "login")
-    // A crashed Kiframe's (a pid that isn't running), with the recorder's staging folder.
-    const dead = ".recording-999999-deadbeef0000"
-    mkdirSync(join(login, dead))
-    mkdirSync(join(login, `.${dead}.recording-999999-1`))
+    // A crashed run's, with the recorder's staging folder.
+    mkdirSync(join(login, ".recording-deadbeef0000"))
+    mkdirSync(join(login, "..recording-deadbeef0000.recording-1-2"))
     let during: string[] = []
     await store.record("p1", "login", (outDir) => {
-      // This recording is under way: a sweep now (a reopen) leaves it alone.
+      // Under way: another store of this process sweeping now leaves it alone.
       mkdirSync(outDir, { recursive: true })
-      store.sweepLeftovers("p1")
+      new TakeStore(store.root).sweepLeftovers("p1")
       during = readdirSync(login)
       return recorder(meta("aaaa-2", "2026-09-30T11:05:00Z"))(outDir)
     })
-    expect(during.some((n) => n.startsWith(`.recording-${process.pid}-`))).toBe(true)
+    expect(during.filter((n) => n.startsWith("."))).toHaveLength(1)
     expect(readdirSync(login).sort()).toEqual(["aaaa-1", "aaaa-2"])
+  })
+
+  it("fails only the scene that can't be set up in a batch", async () => {
+    const store = newStore()
+    const results = await store.recordMany("p1", ["login", "Not An Id"], async ([a, b]) => {
+      expect(b).toBeUndefined()
+      return [
+        { ok: true, take: await recorder(meta("aaaa-1", "2026-09-30T11:00:00Z"))(a ?? "") },
+        { ok: false, error: new Error("not recorded") },
+      ]
+    })
+    expect(results.map((r) => r.ok)).toEqual([true, false])
   })
 
   it("records a batch: each complete take filed, each failed one discarded", async () => {
@@ -250,7 +261,7 @@ describe("take store", () => {
       ),
     ])
     expect(results.map((r) => r.ok)).toEqual([true, false])
-    expect(store.latest("p1", "login", "aaaa-")?.meta.takeKey).toBe("aaaa-1")
+    expect(store.latest("p1", "login")?.meta.takeKey).toBe("aaaa-1")
     expect(readdirSync(join(store.root, "takes", "p1", "create"))).toEqual([])
   })
 
