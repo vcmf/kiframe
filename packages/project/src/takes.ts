@@ -21,6 +21,9 @@ export interface StoredTake {
   meta: TakeMeta
 }
 
+/** A take key as a folder name (the recorder's keys: a hash and a timestamp). */
+const TAKE_KEY = /^[A-Za-z0-9_-]{1,128}$/
+
 export class TakeStore {
   readonly root: string
 
@@ -32,46 +35,90 @@ export class TakeStore {
     return join(this.root, "takes", ProjectId.parse(projectId), SceneId.parse(sceneId))
   }
 
-  /** A private folder to record a new take into (the recorder writes it, then `keep` files it). */
-  recordingDir(projectId: string, sceneId: string): string {
+  /**
+   * Records a take of the scene: `run` records into the folder it's given (the runtime's
+   * `recordScenario` outDir) and returns the take's meta. A complete take is filed under its key;
+   * a failed or interrupted one is deleted with its raw frames (never left behind, never listed),
+   * and `run`'s error is thrown.
+   */
+  async record(
+    projectId: string,
+    sceneId: string,
+    run: (outDir: string) => Promise<{ meta: TakeMeta }>,
+  ): Promise<StoredTake> {
     const scene = this.#sceneDir(projectId, sceneId)
     mkdirPrivate(scene)
-    return join(scene, `.recording-${randomBytes(6).toString("hex")}`)
-  }
-
-  /** Files a recorded take under its key (from its meta.json). */
-  keep(recorded: string): StoredTake {
-    const meta = TakeMeta.parse(JSON.parse(readFileSync(join(recorded, "meta.json"), "utf8")))
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(meta.takeKey))
-      throw new Error("take key isn't a folder name")
-    const dir = join(recorded, "..", meta.takeKey)
-    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-    renameSync(recorded, dir)
+    const outDir = join(scene, `.recording-${randomBytes(6).toString("hex")}`)
+    const discard = () => {
+      // The recorder keeps a failed take next to its folder (`<outDir>.failed`): gone too.
+      rmSync(outDir, { recursive: true, force: true })
+      rmSync(`${outDir}.failed`, { recursive: true, force: true })
+    }
+    let meta: TakeMeta
+    try {
+      meta = TakeMeta.parse((await run(outDir)).meta)
+    } catch (error) {
+      discard()
+      throw error
+    }
+    if (meta.outcome.status !== "complete" || !TAKE_KEY.test(meta.takeKey)) {
+      discard()
+      throw new Error("the recording didn't produce a complete take")
+    }
+    const dir = join(scene, meta.takeKey)
+    if (existsSync(dir)) {
+      // Keys carry the recording time: a clash is a bug, never a take to overwrite.
+      discard()
+      throw new Error(`a take "${meta.takeKey}" already exists`)
+    }
+    renameSync(outDir, dir)
     chmodSync(dir, 0o700)
     return { dir, meta }
   }
 
-  /** The scene's takes, newest first (complete ones only; a failed or interrupted one is skipped). */
+  /** The scene's complete takes, newest first. */
   takes(projectId: string, sceneId: string): StoredTake[] {
     const scene = this.#sceneDir(projectId, sceneId)
     if (!existsSync(scene)) return []
     const out: StoredTake[] = []
     for (const entry of readdirSync(scene, { withFileTypes: true })) {
       if (!entry.isDirectory() || entry.name.startsWith(".")) continue
-      const dir = join(scene, entry.name)
-      try {
-        const meta = TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")))
-        if (meta.outcome.status === "complete") out.push({ dir, meta })
-      } catch {
-        // not a take (or one written by an older Kiframe): not listed
-      }
+      const take = readTake(join(scene, entry.name))
+      if (take !== undefined) out.push(take)
     }
-    return out.sort((a, b) => b.meta.recordedAt.localeCompare(a.meta.recordedAt))
+    const time = (t: StoredTake) => Date.parse(t.meta.recordedAt)
+    return out.sort((a, b) => time(b) - time(a))
   }
 
-  /** The scene's newest complete take, if any. */
-  latest(projectId: string, sceneId: string): StoredTake | undefined {
-    return this.takes(projectId, sceneId)[0]
+  /**
+   * The scene's newest complete take, of its current scenario when `scenarioHash` is given (a take
+   * of another scenario isn't this scene's take: the scene is stale).
+   */
+  latest(projectId: string, sceneId: string, scenarioHash?: string): StoredTake | undefined {
+    return this.takes(projectId, sceneId).find(
+      (t) => scenarioHash === undefined || t.meta.scenarioHash === scenarioHash,
+    )
+  }
+
+  /** The take a composition names (`composition.take.key`), if it's still there. */
+  take(projectId: string, sceneId: string, takeKey: string): StoredTake | undefined {
+    if (!TAKE_KEY.test(takeKey)) return undefined
+    return readTake(join(this.#sceneDir(projectId, sceneId), takeKey))
+  }
+
+  /** Deletes every take of a scene (with the scene: a new scene of that id never gets them). */
+  removeScene(projectId: string, sceneId: string): void {
+    rmSync(this.#sceneDir(projectId, sceneId), { recursive: true, force: true })
+  }
+}
+
+function readTake(dir: string): StoredTake | undefined {
+  try {
+    const meta = TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")))
+    return meta.outcome.status === "complete" ? { dir, meta } : undefined
+  } catch {
+    // not a take (or one written by an older Kiframe): not listed
+    return undefined
   }
 }
 

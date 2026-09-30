@@ -1,20 +1,62 @@
 import { randomBytes } from "node:crypto"
-import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from "node:fs"
 import { dirname, join } from "node:path"
 
+const TMP = /^\.[0-9a-f]{12}\.tmp$/
+
 /**
- * Writes a file whole or not at all: to a temporary sibling, then renamed over the target (a crash
- * mid-write never leaves a half-written project file).
+ * Writes a file whole or not at all: to a temporary sibling (synced to disk), renamed over the
+ * target, then the folder synced (a crash or a power loss never leaves a half-written or empty
+ * project file).
  */
-export function writeAtomic(path: string, content: string, mode?: number): void {
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = join(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`)
+export function writeAtomic(path: string, content: string): void {
+  const folder = dirname(path)
+  mkdirSync(folder, { recursive: true })
+  const tmp = join(folder, `.${randomBytes(6).toString("hex")}.tmp`)
   try {
-    writeFileSync(tmp, content, mode === undefined ? undefined : { mode })
+    const fd = openSync(tmp, "w")
+    try {
+      writeSync(fd, content)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
     renameSync(tmp, path)
   } catch (error) {
     rmSync(tmp, { force: true })
     throw error
+  }
+  syncFolder(folder)
+}
+
+function syncFolder(folder: string): void {
+  try {
+    const fd = openSync(folder, "r")
+    try {
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    // not supported everywhere (Windows): the file itself is synced
+  }
+}
+
+/** Removes the temporary files an interrupted write left in a folder. */
+export function removeStrayTemps(folder: string): void {
+  if (!existsSync(folder)) return
+  for (const name of readdirSync(folder)) {
+    if (TMP.test(name)) rmSync(join(folder, name), { force: true })
   }
 }
 

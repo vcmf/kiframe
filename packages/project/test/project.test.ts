@@ -1,11 +1,20 @@
-import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { parseScenarioYaml, type Scene } from "@kiframe/schema"
+import { parseScenarioYaml, type Scenario, type Scene, TakeMeta } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
 import {
   createProject,
   openProject,
+  ProjectChangedError,
   removeScene,
   reorderScenes,
   saveScene,
@@ -81,35 +90,118 @@ describe("project store", () => {
   })
 })
 
-describe("take store", () => {
-  const meta = (key: string, recordedAt: string, status = "complete") => ({
-    version: 1,
-    takeKey: key,
-    scenarioHash: "h",
-    recordedAt,
-    appUrl: "https://app.test",
-    viewport: { width: 800, height: 600, deviceScaleFactor: 1 },
-    frameSize: { width: 800, height: 600 },
-    fps: 30,
-    durationMs: 1000,
-    kiframeVersion: "0",
-    outcome: status === "complete" ? { status } : { status, error: "step open failed" },
+describe("project store: failures and conflicts", () => {
+  it("writes nothing when any part is invalid (a new scene stays out)", () => {
+    const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
+    const bad = { version: 1, steps: [{ id: "x", action: "nope" }] } as unknown as Scenario
+    expect(() => saveScene(made, scene("checkout"), { scenario: bad })).toThrow()
+    expect(existsSync(join(made.dir, "scenes", "checkout"))).toBe(false)
+    expect(openProject(made.dir).project.sequence).toEqual([])
+    // An existing scene: neither its title nor its scenario changes.
+    saveScene(made, scene("login", "Log in"), { scenario })
+    expect(() => saveScene(made, scene("login", "Sign in"), { scenario: bad })).toThrow()
+    const login = openProject(made.dir).scenes.get("login")
+    expect(login?.scene.title).toBe("Log in")
+    expect(login?.scenario).toEqual(scenario)
   })
 
-  it("files recorded takes privately under their key and lists complete ones newest first", () => {
-    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")))
-    const record = (key: string, at: string, status?: string) => {
-      const dir = store.recordingDir("p1", "login")
-      mkdirSync(dir)
-      writeFileSync(join(dir, "meta.json"), JSON.stringify(meta(key, at, status)))
-      return store.keep(dir)
+  it("never overwrites a change made on disk since the project was read", () => {
+    const dir = folder()
+    createProject(dir, { id: "p1", name: "Q4", url: "https://app.test" })
+    const a = openProject(dir)
+    const b = openProject(dir)
+    saveScene(b, scene("intro"))
+    expect(() => saveScene(a, scene("outro"))).toThrow(ProjectChangedError)
+    expect(openProject(dir).project.sequence).toEqual(["intro"])
+  })
+
+  it("reports a scene folder outside the sequence", () => {
+    const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
+    saveScene(made, scene("a"))
+    mkdirSync(join(made.dir, "scenes", "stray"))
+    writeFileSync(join(made.dir, "scenes", "stray", "scene.json"), JSON.stringify(scene("stray")))
+    expect(openProject(made.dir).problems).toEqual([
+      { sceneId: "stray", message: "a scene folder that isn't in the sequence" },
+    ])
+  })
+
+  it("saves a scene that didn't read only with both of its parts", () => {
+    const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
+    saveScene(made, scene("login"), { scenario })
+    writeFileSync(join(made.dir, "scenes", "login", "scenario.yaml"), "steps: [")
+    const opened = openProject(made.dir)
+    expect(() => saveScene(opened, scene("login", "Sign in"))).toThrow(/didn't read/)
+    saveScene(opened, scene("login", "Sign in"), { scenario, composition: null })
+    expect(openProject(made.dir).scenes.get("login")?.scenario).toEqual(scenario)
+  })
+
+  it("removes stray temporary files on open", () => {
+    const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
+    writeFileSync(join(made.dir, ".0123456789ab.tmp"), "x")
+    openProject(made.dir)
+    expect(existsSync(join(made.dir, ".0123456789ab.tmp"))).toBe(false)
+  })
+})
+
+describe("take store", () => {
+  const meta = (key: string, recordedAt: string, hash = "h", status = "complete") =>
+    TakeMeta.parse({
+      version: 1,
+      takeKey: key,
+      scenarioHash: hash,
+      recordedAt,
+      appUrl: "https://app.test",
+      viewport: { width: 800, height: 600, deviceScaleFactor: 1 },
+      frameSize: { width: 800, height: 600 },
+      fps: 30,
+      durationMs: 1000,
+      kiframeVersion: "0",
+      outcome: status === "complete" ? { status } : { status, error: "step open failed" },
+    })
+  // Stands in for recordScenario: writes a take into outDir (or fails like it does).
+  const recorder =
+    (m: TakeMeta, fail = false) =>
+    (outDir: string) => {
+      const dir = fail ? `${outDir}.failed` : outDir
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, "frames.webm"), "raw frames")
+      writeFileSync(join(dir, "meta.json"), JSON.stringify(m))
+      return fail ? Promise.reject(new Error("step open failed")) : Promise.resolve({ meta: m })
     }
-    record("k-old", "2026-09-30T10:00:00.000Z")
-    const newest = record("k-new", "2026-09-30T11:00:00.000Z")
-    record("k-failed", "2026-09-30T12:00:00.000Z", "failed")
-    expect(store.takes("p1", "login").map((t) => t.meta.takeKey)).toEqual(["k-new", "k-old"])
-    expect(store.latest("p1", "login")?.dir).toBe(newest.dir)
+  const newStore = () => new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")))
+
+  it("files complete takes privately under their key, newest first by time", async () => {
+    const store = newStore()
+    await store.record("p1", "login", recorder(meta("k-old", "2026-09-30T11:00:00Z")))
+    // Earlier in UTC although it sorts later as text.
+    await store.record("p1", "login", recorder(meta("k-offset", "2026-09-30T12:30:00+02:00")))
+    const newest = await store.record(
+      "p1",
+      "login",
+      recorder(meta("k-new", "2026-09-30T11:30:00Z", "h2")),
+    )
+    expect(store.takes("p1", "login").map((t) => t.meta.takeKey)).toEqual([
+      "k-new",
+      "k-old",
+      "k-offset",
+    ])
     expect(statSync(newest.dir).mode & 0o777).toBe(0o700)
-    expect(store.latest("p1", "other")).toBeUndefined()
+    // Of its current scenario only, and by key.
+    expect(store.latest("p1", "login", "h")?.meta.takeKey).toBe("k-old")
+    expect(store.latest("p1", "login", "none")).toBeUndefined()
+    expect(store.take("p1", "login", "k-offset")?.meta.takeKey).toBe("k-offset")
+    expect(store.take("p1", "login", "../x")).toBeUndefined()
+  })
+
+  it("deletes a failed recording's raw frames, and a scene's takes with it", async () => {
+    const store = newStore()
+    await expect(
+      store.record("p1", "login", recorder(meta("k", "2026-09-30T11:00:00Z"), true)),
+    ).rejects.toThrow(/step open failed/)
+    const scene = join(store.root, "takes", "p1", "login")
+    expect(readdirSync(scene)).toEqual([])
+    await store.record("p1", "login", recorder(meta("k", "2026-09-30T11:00:00Z")))
+    store.removeScene("p1", "login")
+    expect(existsSync(scene)).toBe(false)
   })
 })
