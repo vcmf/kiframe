@@ -36,7 +36,8 @@ Locators (prefer in this order; they must match exactly ONE visible element):
   Add "nth: <n>" (0-based, visible matches only) only when there is no better way.
 
 Rules:
-- One scene = one idea, 5-15 steps. Give it a short title and a one-line brief (notes).
+- One scene = one idea, 5-15 steps. Give it a short title and a one-line brief (notes). Pick its id first:
+  run_step's \`scene\` is that id (approvals you get while grounding are the scene's), and save_scene uses it.
 - Never invent a locator: take it from a snapshot, and run the step to confirm it.
 - Secrets: never type credentials literally. Use value: "{{secrets.<name>}}" with a name from \`list_secrets\`.
   You can't see secret values; if a needed secret is missing, ask the user.

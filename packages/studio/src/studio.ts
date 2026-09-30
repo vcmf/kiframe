@@ -6,6 +6,8 @@ import {
   runScenario,
   scrubSecrets,
   type SecretUse,
+  knownValuesOf,
+  type RunOptions,
   StepError,
   type StepRef,
   visibleOnly,
@@ -36,6 +38,16 @@ export type UserRequest =
 
 export interface StudioOptions {
   project: OpenedProject
+  /**
+   * The host's id for the project folder: the scope of its approvals (SECRETS-DESIGN §3 A1; never
+   * project.json's id, which the agent or a copied folder could set).
+   */
+  scope: string
+  /**
+   * The host's id for a scene (the approvals' scene part): stable for a scene, new for a new scene
+   * even when it reuses a deleted scene's id (A1; never the agent's string itself).
+   */
+  sceneKey: (sceneId: string) => string
   /** The project resolved for the runtime (org settings + project: `resolveProjectConfig`). */
   config: ProjectConfig
   takes: TakeStore
@@ -46,7 +58,12 @@ export interface StudioOptions {
   secrets?: () => { name: string; provided: boolean }[]
   /** Asks the user (a dialog in the app); rejects when `signal` aborts (the dialog closes). */
   requestUser: (request: UserRequest, signal: AbortSignal) => Promise<string | boolean>
-  /** Values the scrubber removes from everything the agent reads (the known secret values). */
+  /** Asks the user to approve a secret's use (the vault's approval: A3), in the app. */
+  requestApproval?: RunOptions["requestApproval"]
+  /**
+   * The known secret values (every value the project's scenes can use, R6): the scrubber removes
+   * them from everything the agent reads, and recordings blur them on screen.
+   */
   knownValues?: () => ReadonlySet<string>
 }
 
@@ -84,20 +101,35 @@ export class Studio {
     return { width, height }
   }
 
-  /** Text the agent reads: never a known secret value in it. */
+  /** Text the agent reads: never a known secret value in it (the host's, and the live page's). */
   scrub(text: string): string {
-    return scrubSecrets(text, this.options.knownValues?.() ?? new Set<string>())
+    const values = new Set(this.options.knownValues?.() ?? [])
+    if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
+    return scrubSecrets(text, values)
   }
 
   /** The page the agent explores and grounds on (opened at the app on first use). */
   async livePage(): Promise<Page> {
-    if (this.#live === undefined || this.#live.page.isClosed()) {
-      const context = await this.options.browser.newContext({ viewport: this.#viewport() })
-      const page = await context.newPage()
-      this.#live = { context, page }
-      await page.goto(this.options.config.target.url)
+    if (this.#live !== undefined && !this.#live.page.isClosed()) return this.#live.page
+    // The page the runner followed may have closed (a popup): its opener if it's still open.
+    const opener = this.#live?.context.pages().find((p) => !p.isClosed())
+    if (this.#live !== undefined && opener !== undefined) {
+      this.#live.page = opener
+      return opener
     }
-    return this.#live.page
+    await this.#live?.context.close().catch(() => undefined)
+    this.#live = undefined
+    const context = await this.options.browser.newContext({ viewport: this.#viewport() })
+    try {
+      const page = await context.newPage()
+      await page.goto(this.options.config.target.url)
+      // Kept only once it's at the app (a failed first visit is tried again next time).
+      this.#live = { context, page }
+      return page
+    } catch (error) {
+      await context.close().catch(() => undefined)
+      throw error
+    }
   }
 
   /** The live page's accessibility snapshot (or one region's), with its URL. */
@@ -156,10 +188,21 @@ export class Studio {
         : { version: 1, setup: [setupItem.data], steps: [] }
     const page = await this.livePage()
     try {
-      await runScenario(page, scenario, this.#quick, this.#run(scene, signal))
-      return `ok. url: ${new URL(page.url()).pathname}`
+      await runScenario(page, scenario, this.#quick, {
+        ...this.#run(scene, signal),
+        // The live page follows the tab or popup the runner switched to (the next step acts there).
+        onPageSwitch: (next) => {
+          if (this.#live !== undefined) this.#live.page = next
+        },
+      })
+      return `ok. url: ${new URL((await this.livePage()).url()).pathname}`
     } catch (error) {
-      return this.scrub(failure(error))
+      // An ensure checked alone doesn't know the scene's teardown or setup: said so.
+      const alone =
+        "ensure" in (raw as Record<string, unknown>)
+          ? " (ensure checked alone: your teardown and setup aren't known here; save_scene's replay runs them)"
+          : ""
+      return this.scrub(failure(error) + alone)
     }
   }
 
@@ -238,14 +281,21 @@ export class Studio {
   }
 
   #run(sceneId: string, signal: AbortSignal) {
-    const { resolveSecret, requestUser } = this.options
+    const { resolveSecret, requestUser, requestApproval, scope, sceneKey, knownValues } =
+      this.options
     return {
-      scope: this.project.project.id,
-      sceneId,
+      // The host's ids, never the agent's strings or project.json's (A1).
+      scope,
+      sceneId: sceneKey(sceneId),
       signal,
       timeoutMs: STEP_TIMEOUT_MS,
+      // Every value the scene can use: blurred on screen and scrubbed even when not typed (R6).
+      knownSecretValues: [...(knownValues?.() ?? [])],
       ...(resolveSecret !== undefined && { resolveSecret }),
+      ...(requestApproval !== undefined && { requestApproval }),
       // A risky step (a delete, a send) runs only if the user approves it, then and there.
+      // A cleanup after a stop is still asked (the stop doesn't close that dialog: the app is
+      // left clean only if the user approves it).
       approveRisky: async (step: StepRef) =>
         (await requestUser(
           {
@@ -254,7 +304,9 @@ export class Studio {
             step: step.stepId ?? `${step.phase}[${step.index}]`,
             action: step.action,
           },
-          signal,
+          step.cleanup === true || step.phase === "teardown"
+            ? new AbortController().signal
+            : signal,
         )) === true,
     }
   }

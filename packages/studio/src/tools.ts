@@ -46,7 +46,7 @@ const runStep = defineTool({
   description:
     "Run ONE step on the live page (a steps item, or a setup/teardown action). Returns ok or why it failed.",
   parameters: z.object({
-    scene: sceneId,
+    scene: SceneId.describe("the id you'll save this scene under (its approvals are that scene's)"),
     step: z.unknown().describe("The step, same fields as in the YAML"),
   }),
   run: ({ scene, step }, studio: Studio, signal) => studio.runStep(step, scene, signal),
@@ -93,17 +93,24 @@ const saveSceneTool = defineTool({
     yaml: z.string().min(1),
   }),
   run: async ({ id, title, notes, yaml }, studio: Studio, signal) => {
+    // An existing scene keeps what the agent doesn't set (its transition, its notes); a card is
+    // never turned into a recording.
+    const existing = studio.project.scenes.get(id)?.scene
+    if (existing !== undefined && existing.source.kind !== "recording") {
+      return { error: `scene "${id}" is a ${existing.source.kind} scene: pick another id` }
+    }
     const checked = studio.check(yaml)
     if ("error" in checked) return { error: checked.error }
     const result = await studio.replay(checked.scenario, id, signal)
     if (result !== "ok") return { error: result }
     const scene = {
       version: 1 as const,
+      source: { kind: "recording" as const },
+      duration: { mode: "auto" as const },
+      ...existing,
       id,
       title,
       ...(notes !== undefined && { notes }),
-      source: { kind: "recording" as const },
-      duration: { mode: "auto" as const },
     }
     // A new scenario: its old composition (of another take) goes; record the scene again.
     saveScene(studio.project, scene, { scenario: checked.scenario, composition: null })

@@ -11,8 +11,9 @@ import { settle } from "./settle.ts"
 
 /** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
 export async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
-  // Stopped: no later step, but the teardown (it leaves the app clean).
-  if (ctx.options.signal?.aborted === true && step.phase !== "teardown") {
+  // Stopped: no later step, but the cleanups (the teardown, the one an `ensure` runs: the app is
+  // left clean).
+  if (ctx.options.signal?.aborted === true && step.phase !== "teardown" && step.cleanup !== true) {
     throw new StepError(step, "stopped", "the run was stopped")
   }
   ctx.setCurrent(step)

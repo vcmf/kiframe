@@ -38,7 +38,10 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
   const asked: UserRequest[] = []
   const studio = new Studio({
     project,
+    scope: "folder-1",
+    sceneKey: (id) => `host-${id}`,
     config,
+    resolveSecret: () => "sk-live-4242424242",
     takes: new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-"))),
     browser,
     requestUser: (request, signal) => {
@@ -207,6 +210,59 @@ describe("studio tools", () => {
     expect(results[0]).toMatch(/^saved/)
     expect(results[1]).toMatch(/^recorded/)
     expect(events.at(-1)?.type).toBe("done")
+    await studio.close()
+  }, 60_000)
+
+  it("never shows the agent a secret it typed, in a snapshot or an error", async () => {
+    const { studio } = makeStudio()
+    const run = (step: object) => tool("run_step").run({ scene: "keys", step }, studio, never)
+    await run({ id: "go", action: "goto", url: "/projects" })
+    await run({
+      id: "new",
+      action: "click",
+      target: { by: "role", role: "button", name: "New project" },
+    })
+    expect(
+      await run({
+        id: "key",
+        action: "type",
+        target: { by: "label", name: "Project name" },
+        value: "{{secrets.acme.key}}",
+      }),
+    ).toMatch(/^ok/)
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    expect(snap).not.toContain("sk-live-4242424242")
+    await studio.close()
+  }, 60_000)
+
+  it("keeps an existing scene's other fields, and never turns a card into a recording", async () => {
+    const { studio } = makeStudio()
+    const { saveScene } = await import("@kiframe/project")
+    saveScene(studio.project, {
+      version: 1,
+      id: "tour",
+      title: "Old",
+      source: { kind: "recording" },
+      duration: { mode: "auto" },
+      transitionIn: { kind: "fade", ms: 300 },
+    })
+    expect(
+      await tool("save_scene").run({ id: "tour", title: "Tour", yaml: SCENE }, studio, never),
+    ).toMatch(/^saved/)
+    expect(studio.project.scenes.get("tour")?.scene).toMatchObject({
+      title: "Tour",
+      transitionIn: { kind: "fade", ms: 300 },
+    })
+    saveScene(studio.project, {
+      version: 1,
+      id: "intro",
+      title: "Intro",
+      source: { kind: "card", template: "title", content: { heading: "Hi" } },
+      duration: { mode: "auto" },
+    })
+    expect(
+      await tool("save_scene").run({ id: "intro", title: "Intro", yaml: SCENE }, studio, never),
+    ).toMatchObject({ error: expect.stringMatching(/card scene/) as unknown })
     await studio.close()
   }, 60_000)
 })
