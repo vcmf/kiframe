@@ -8,7 +8,6 @@ import {
   type SecretUse,
   type ApprovalRequest,
   knownValuesOf,
-  PAGE_CLOSED_NO_RETURN,
   StepError,
   type StepRef,
   visibleOnly,
@@ -109,22 +108,28 @@ export class Studio {
     return { width, height }
   }
 
-  /** Text the agent reads: never a known secret value in it (the host's, and the live page's). */
-  scrub(text: string): string {
+  /**
+   * A scrubber for text the agent reads: never a known secret value in it (the host's, and the live
+   * page's, as they are now). Built once for a whole result (the tools' boundary).
+   */
+  scrubber(): (text: string) => string {
     const values = new Set(this.options.knownValues?.() ?? [])
     if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
-    return scrubSecrets(text, values)
+    return (text) => scrubSecrets(text, values)
+  }
+
+  /** One text scrubbed (`scrubber`). */
+  scrub(text: string): string {
+    return this.scrubber()(text)
   }
 
   /** The page the agent explores and grounds on (opened at the app on first use). */
   async livePage(): Promise<Page> {
     if (this.#live !== undefined && !this.#live.page.isClosed()) return this.#live.page
-    // The page the runner followed may have closed (a popup): its opener if it's still open.
-    const opener = this.#live?.context.pages().find((p) => !p.isClosed())
-    if (this.#live !== undefined && opener !== undefined) {
-      this.#live.page = opener
-      return opener
-    }
+    // The page the runner followed may have closed (a popup): back on another page still open.
+    const back = this.#backPage()
+    if (back !== undefined) return back
+
     await this.#live?.context.close().catch(() => undefined)
     this.#live = undefined
     const context = await this.options.browser.newContext({ viewport: this.#viewport() })
@@ -140,6 +145,19 @@ export class Studio {
       await context.close().catch(() => undefined)
       throw error
     }
+  }
+
+  /**
+   * The live context's latest page still open (the one a closed popup's opener, or the tab before
+   * it, most likely is), made the live page; undefined when none is.
+   */
+  #backPage(): Page | undefined {
+    const back = this.#live?.context
+      .pages()
+      .filter((p) => !p.isClosed())
+      .at(-1)
+    if (this.#live !== undefined && back !== undefined) this.#live.page = back
+    return back
   }
 
   /** The live page's accessibility snapshot (or one region's), with its URL. */
@@ -160,11 +178,13 @@ export class Studio {
     const text = await root
       .ariaSnapshot({ timeout: 5000 })
       .catch((e: unknown) => `snapshot failed: ${String(e)}`)
+    // Scrubbed whole, then cut (a value the cut splits would pass the scrubber in part).
+    const scrubbed = this.scrub(text)
     const cut =
-      text.length > SNAPSHOT_MAX
-        ? `${text.slice(0, SNAPSHOT_MAX)}\n… (cut: ${text.length} chars; use \`within\` to look at a region)`
-        : text
-    return this.scrub(`url: ${new URL(page.url()).pathname}\n${cut}`)
+      scrubbed.length > SNAPSHOT_MAX
+        ? `${scrubbed.slice(0, SNAPSHOT_MAX)}\n… (cut: ${scrubbed.length} chars; use \`within\` to look at a region)`
+        : scrubbed
+    return `url: ${new URL(page.url()).pathname}\n${cut}`
   }
 
   /**
@@ -207,19 +227,22 @@ export class Studio {
       })
       return `ok. url: ${new URL((await this.livePage()).url()).pathname}`
     } catch (error) {
-      // The step closed the popup this run started on: its opener, still open, is live again.
-      const open = this.#live?.context.pages().filter((p) => !p.isClosed()) ?? []
-      if (error instanceof StepError && error.detail === PAGE_CLOSED_NO_RETURN && open.length > 0) {
-        const back = open.at(-1)
-        if (this.#live !== undefined && back !== undefined) this.#live.page = back
-        return `ok (the page closed itself: back on the page that opened it). url: ${new URL(back?.url() ?? "about:blank").pathname}`
+      // The item closed the popup this run started on: its opener, still open, is live again.
+      // Done if it was one step; an item of several (a preset) stopped there.
+      const back =
+        error instanceof StepError && error.reason === "page-closed" ? this.#backPage() : undefined
+      if (back !== undefined) {
+        const url = new URL(back.url()).pathname
+        return step.success || !("preset" in raw || "ensure" in raw)
+          ? `ok (the page closed itself: back on the page that opened it). url: ${url}`
+          : `failed (page-closed): ${(error as StepError).message}; the rest of it didn't run (back on the page that opened it, url: ${url}): run its remaining steps one by one`
       }
       // An ensure checked alone doesn't know the scene's teardown or setup: said so.
       const alone =
         "ensure" in (raw as Record<string, unknown>)
           ? " (ensure checked alone: your teardown and setup aren't known here; save_scene's replay runs them)"
           : ""
-      return this.scrub(failure(error) + alone)
+      return failure(error) + alone
     }
   }
 
@@ -246,7 +269,7 @@ export class Studio {
       await runScenario(await context.newPage(), scenario, this.#quick, this.#run(scene, signal))
       return "ok"
     } catch (error) {
-      return this.scrub(`replay failed: ${failure(error)}`)
+      return `replay failed: ${failure(error)}`
     } finally {
       await context.close().catch(() => undefined)
     }
@@ -280,14 +303,14 @@ export class Studio {
     }
     const take = takes.settle(dir)
     if (take === undefined || recorded === undefined) {
-      return this.scrub(`recording failed: ${failed ?? "no complete take"}`)
+      return `recording failed: ${failed ?? "no complete take"}`
     }
     const { composition, warnings } = generate(config, scenario, recorded)
     saveScene(this.project, stored.scene, { composition })
     const notes = [...recorded.warnings, ...warnings]
-    return this.scrub(
+    return (
       `recorded (${Math.round(take.meta.durationMs / 100) / 10} s)` +
-        (notes.length > 0 ? `; warnings: ${notes.join("; ")}` : ""),
+      (notes.length > 0 ? `; warnings: ${notes.join("; ")}` : "")
     )
   }
 
@@ -317,22 +340,35 @@ export class Studio {
       // Every value the scene can use: blurred on screen and scrubbed even when not typed (R6).
       knownSecretValues: [...(knownValues?.() ?? [])],
       ...(resolveSecret !== undefined && { resolveSecret }),
+      // A cleanup's dialogs close with the studio, the others at the stop; never opened after it.
       ...(requestApproval !== undefined && {
-        requestApproval: (request: ApprovalRequest) => requestApproval(request, signal),
+        requestApproval: (request: ApprovalRequest) => {
+          const until = request.cleanup === true ? cleanups : signal
+          return ask(until, () => requestApproval(request, until))
+        },
       }),
       // A risky step (a delete, a send) runs only if the user approves it, then and there.
-      approveRisky: async (step: StepRef) =>
-        (await requestUser(
-          {
-            kind: "approve-risky",
-            scene: sceneId,
-            step: step.stepId ?? `${step.phase}[${step.index}]`,
-            action: step.action,
-          },
-          step.cleanup === true ? cleanups : signal,
-        )) === true,
+      approveRisky: async (step: StepRef) => {
+        const until = step.cleanup === true ? cleanups : signal
+        const request: UserRequest = {
+          kind: "approve-risky",
+          scene: sceneId,
+          step: step.stepId ?? `${step.phase}[${step.index}]`,
+          action: step.action,
+        }
+        return (await ask(until, () => requestUser(request, until))) === true
+      },
     }
   }
+}
+
+/**
+ * A dialog to the host, never opened once `signal` has aborted (a host rejecting on the abort
+ * event would never hear it, and the run would wait on it).
+ */
+async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<T> {
+  signal.throwIfAborted()
+  return open()
 }
 
 /** A step failure as the agent reads it. */

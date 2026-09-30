@@ -7,7 +7,7 @@ import { parseProjectYaml } from "@kiframe/schema"
 import { type Browser, chromium } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../runtime/test/fixture-server.ts"
-import { Studio, studioTools, systemPrompt, type UserRequest } from "../src/index.ts"
+import { SNAPSHOT_MAX, Studio, studioTools, systemPrompt, type UserRequest } from "../src/index.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
 let browser: Browser
@@ -335,4 +335,59 @@ describe("studio tools", () => {
     ).toMatch(/kebab-case/)
     await studio.close()
   }, 30_000)
+
+  it("scrubs a snapshot before cutting it (a value the cut splits never shows in part)", async () => {
+    const value = "sk-live-4242424242"
+    const { studio } = makeStudio(undefined, { knownValues: () => new Set([value]) })
+    const page = await studio.livePage()
+    // The value placed across the cut: SNAPSHOT_MAX falls in its middle.
+    const fill = async (n: number) => {
+      await page.setContent(`<p>${"x".repeat(n)} ${value} ${"y".repeat(1000)}</p>`)
+      return (await page.locator("body").ariaSnapshot()).indexOf(value)
+    }
+    const at = await fill(SNAPSHOT_MAX)
+    expect(await fill(SNAPSHOT_MAX + (SNAPSHOT_MAX - 8 - at))).toBe(SNAPSHOT_MAX - 8)
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    expect(snap).toMatch(/cut: /)
+    expect(snap).not.toContain(value.slice(0, 8))
+    await studio.close()
+  }, 30_000)
+
+  it("keeps a tool's error as it was, scrubbed, even one that can't be written (a DOMException)", async () => {
+    const { studio } = makeStudio(
+      () => Promise.reject(new DOMException("timed out for sk-live-4242424242", "TimeoutError")),
+      { knownValues: () => new Set(["sk-live-4242424242"]) },
+    )
+    const error = await tool("ask_user")
+      .run({ question: "Which key?" }, studio, never)
+      .catch((e: unknown) => e as Error)
+    expect(error).toMatchObject({ name: "TimeoutError" })
+    expect((error as Error).message).toMatch(/^timed out for /)
+    expect((error as Error).message).not.toContain("sk-live-4242424242")
+    await studio.close()
+  }, 30_000)
+
+  it("says a preset stopped when a step closed the popup it started on", async () => {
+    const { studio } = makeStudio(undefined, {
+      config: parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+presets:
+  finish:
+    steps:
+      - { action: click, target: { by: role, role: button, name: Done } }
+      - { action: goto, url: /projects }
+`),
+    })
+    const run = (step: object) => tool("run_step").run({ scene: "pop", step }, studio, never)
+    await run({ id: "go", action: "goto", url: "/opener" })
+    await run({
+      id: "open",
+      action: "click",
+      target: { by: "role", role: "button", name: "Open popup" },
+    })
+    expect(await run({ preset: "finish" })).toMatch(/^failed \(page-closed\).*didn't run/)
+    expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/opener/)
+    await studio.close()
+  }, 60_000)
 })

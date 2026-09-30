@@ -207,15 +207,19 @@ export async function runScenario(
     }
     // Teardown is best effort: every step runs (cleanup must go as far as it can), each failure is
     // reported, and the first one is thrown if nothing failed before. Not after an `ensure`
-    // failure: no scene step ran, so what the teardown would delete wasn't created by this run.
-    const ensureFailed = failure instanceof StepError && failure.step.action === "ensure"
+    // failure, nor a stop during the setup: no scene step ran, so what the teardown would delete
+    // wasn't created by this run (the next run's `ensure` cleans what the setup left).
+    const noTeardown =
+      failure instanceof StepError &&
+      (failure.step.action === "ensure" ||
+        (failure.reason === "stopped" && failure.step.phase === "setup"))
     // The teardown cleans the app where the scene started, not a tab or popup it followed, and
     // never follows a page the scene opened late.
     ctx.opened.length = 0
     let returnFailure: StepError | undefined
     const root = ctx.openers[0]
     if (
-      !ensureFailed &&
+      !noTeardown &&
       root !== undefined &&
       !root.isClosed() &&
       (scenario.teardown ?? []).length > 0
@@ -245,7 +249,7 @@ export async function runScenario(
       }
     }
     let teardownFailure: StepError | undefined = returnFailure
-    for (const [index, action] of (ensureFailed ? [] : (scenario.teardown ?? [])).entries()) {
+    for (const [index, action] of (noTeardown ? [] : (scenario.teardown ?? [])).entries()) {
       const ref: StepRef = {
         phase: "teardown",
         index,

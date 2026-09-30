@@ -416,7 +416,11 @@ async function resolveSecret(
       const ask = ctx.options.requestApproval
       if (!isSecretRefusal(error) || error.reason !== "no-grant" || ask === undefined) throw error
       const box = (await input.boundingBox().catch(() => null)) ?? undefined
-      if (!(await guard(step, async () => ask({ secret: name, use, box })))) {
+      if (
+        !(await guard(step, async () =>
+          ask({ secret: name, use, box, ...(step.cleanup === true && { cleanup: true as const }) }),
+        ))
+      ) {
         throw new StepError(
           step,
           "secret-declined",

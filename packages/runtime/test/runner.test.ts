@@ -207,6 +207,24 @@ ${extra}`
       })
     })
 
+    it("marks a cleanup's approval (the host asks it even after a stop)", async () => {
+      const vault = await vaultWithPassword()
+      const asked: ApprovalRequest[] = []
+      await run(
+        `setup: [{ action: goto, url: /login-form }]
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { id: pw-again, action: type, target: ${password}, value: "{{secrets.acme.password}}" }
+`,
+        approving(vault, asked),
+      )
+      expect(asked).toHaveLength(1)
+      expect(asked[0]?.cleanup).toBe(true)
+      const inSteps: ApprovalRequest[] = []
+      await run(into(password), approving(await vaultWithPassword(), inSteps))
+      expect(inSteps[0]?.cleanup).toBeUndefined()
+    })
+
     it("refuses an ungranted use headless, and a declined one", async () => {
       const vault = await vaultWithPassword()
       const headless = await failure(into(password), { ...scope, resolveSecret: vault.resolver() })

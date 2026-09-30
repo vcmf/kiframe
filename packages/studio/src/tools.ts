@@ -138,25 +138,27 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
   return {
     ...tool,
     run: async (args, studio, signal) => {
+      let result: unknown
       try {
-        return scrubDeep(await tool.run(args, studio, signal), studio)
+        result = await tool.run(args, studio, signal)
       } catch (error) {
-        // Kept as it is (its kind), only its message scrubbed.
-        if (error instanceof Error) error.message = studio.scrub(error.message)
-        // No cause: it's the unscrubbed value.
-        // eslint-disable-next-line preserve-caught-error
-        else throw new Error(studio.scrub(String(error)))
-        throw error
+        // A new error of the same name (the caught one may not be writable: a DOMException), and
+        // no cause: that's the unscrubbed one.
+        const scrub = studio.scrubber()
+        const scrubbed = new Error(scrub(error instanceof Error ? error.message : String(error)))
+        if (error instanceof Error) scrubbed.name = error.name
+        throw scrubbed
       }
+      return scrubDeep(result, studio.scrubber())
     },
   }
 }
 
-function scrubDeep(value: unknown, studio: Studio): unknown {
-  if (typeof value === "string") return studio.scrub(value)
-  if (Array.isArray(value)) return value.map((v) => scrubDeep(v, studio))
+function scrubDeep(value: unknown, scrub: (text: string) => string): unknown {
+  if (typeof value === "string") return scrub(value)
+  if (Array.isArray(value)) return value.map((v) => scrubDeep(v, scrub))
   if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v, studio)]))
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v, scrub)]))
   }
   return value
 }

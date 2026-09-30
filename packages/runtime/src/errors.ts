@@ -32,6 +32,11 @@ export type StepErrorReason =
   | "ensure-failed"
   /** The run's signal was aborted (the user stopped it): no later step ran, but the teardown. */
   | "stopped"
+  /**
+   * A step closed the page it ran on and the run knows no page to return to (a popup a new run
+   * started on: the host's own opener may still be open).
+   */
+  | "page-closed"
 
 /**
  * A step failed. The message says which step and why, in words a user (or the agent) can act on:
@@ -89,10 +94,6 @@ export interface ApprovalRequest {
   use: SecretUse
   /** The element's box on the page (CSS pixels): what the prompt outlines. */
   box?: { x: number; y: number; width: number; height: number } | undefined
+  /** A cleanup's (`StepRef.cleanup`): asked even after a stop (the app is left clean). */
+  cleanup?: true | undefined
 }
-
-/**
- * A step closed the page it ran on and the run knows no page to return to (a popup a new run
- * started on: the host's own opener is then still open, and the step did what it should).
- */
-export const PAGE_CLOSED_NO_RETURN = "the page was closed and there's no page to return to"
