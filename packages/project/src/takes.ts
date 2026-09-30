@@ -1,6 +1,14 @@
 import { randomBytes } from "node:crypto"
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
-import { join, relative, sep } from "node:path"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs"
+import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
 
@@ -21,7 +29,12 @@ export interface StoredTake {
   meta: TakeMeta
 }
 
-const TAKE_DIR = /^take-\d{13}-[0-9a-f]{12}$/
+/** A take folder's name (and, unanchored, the take a leftover's name was made for). */
+const TAKE_NAME = "take-\\d{13}-[0-9a-f]{12}"
+const TAKE_DIR = new RegExp(`^${TAKE_NAME}$`)
+const LEFTOVER_OF = new RegExp(`^\\.?(${TAKE_NAME})`)
+/** The newest take format this Kiframe reads (a newer one is refused, never skipped as not a take). */
+const TAKE_VERSION = 1
 
 export class TakeStore {
   readonly root: string
@@ -53,47 +66,55 @@ export class TakeStore {
    * start's sweep catches a leftover); its meta.json stays, with the reason.
    */
   settle(dir: string): StoredTake | undefined {
-    const rel = relative(join(this.root, "takes"), dir).split(sep)
+    // Real paths on both sides (the recorder follows links: a store behind one, macOS's /var).
+    const real = (p: string) =>
+      existsSync(p) ? realpathSync(p) : join(realpathSync(dirname(p)), basename(p))
+    const rel = relative(real(join(this.root, "takes")), real(dir)).split(sep)
     const [, , name] = rel
     if (rel.length !== 3 || rel[0] === ".." || name === undefined || !TAKE_DIR.test(name)) {
       throw new Error("not a take folder of this store")
     }
     dropFrames(`${dir}.failed`)
-    return readTake(dir)
+    const take = readTake(dir)
+    if (take instanceof Error) throw take
+    return take
   }
 
-  /** The scene's complete takes, newest first (by when they were recorded). */
+  /** The scene's complete takes, newest first (by when they were recorded; unreadable ones skipped). */
   takes(projectId: string, sceneId: string): StoredTake[] {
-    return [...this.#complete(projectId, sceneId)].sort(
-      (a, b) => Date.parse(b.meta.recordedAt) - Date.parse(a.meta.recordedAt),
-    )
+    return this.#takes(projectId, sceneId, false)
   }
 
   /**
-   * The scene's newest complete take. Which take is a scene's current one is M1-8's staleness rule;
-   * a caller showing it checks `meta.scenarioHash` against the scenario it shows it for.
+   * The scene's newest complete take. A take folder that can't be read (a permission, an I/O
+   * error) is thrown: it may be the newest, never an older one shown instead. Which take is a
+   * scene's current one is M1-8's staleness rule; a caller showing it checks `meta.scenarioHash`
+   * against the scenario it shows it for.
    */
   latest(projectId: string, sceneId: string): StoredTake | undefined {
-    return this.takes(projectId, sceneId)[0]
+    return this.#takes(projectId, sceneId, true)[0]
   }
 
   /** The take a composition names (`composition.take.key`), if it's still there. */
   take(projectId: string, sceneId: string, takeKey: string): StoredTake | undefined {
-    for (const take of this.#complete(projectId, sceneId)) {
-      if (take.meta.takeKey === takeKey) return take
-    }
-    return undefined
+    return this.takes(projectId, sceneId).find((t) => t.meta.takeKey === takeKey)
   }
 
-  /** The scene's complete takes, in no order. */
-  *#complete(projectId: string, sceneId: string): Generator<StoredTake> {
+  /** The scene's complete takes, newest first; one that can't be read is skipped or thrown. */
+  #takes(projectId: string, sceneId: string, strict: boolean): StoredTake[] {
     const scene = this.#sceneDir(projectId, sceneId)
-    if (!existsSync(scene)) return
+    if (!existsSync(scene)) return []
+    const out: StoredTake[] = []
     for (const name of readdirSync(scene)) {
       if (!TAKE_DIR.test(name)) continue
-      const take = readTake(join(scene, name))
-      if (take !== undefined) yield take
+      const read = readTake(join(scene, name))
+      if (read instanceof Error) {
+        if (strict) throw read
+        continue
+      }
+      if (read !== undefined) out.push(read)
     }
+    return out.sort((a, b) => Date.parse(b.meta.recordedAt) - Date.parse(a.meta.recordedAt))
   }
 
   /**
@@ -107,9 +128,12 @@ export class TakeStore {
       for (const scene of list(join(takes, project))) {
         const at = join(takes, project, scene)
         // What the recorder left next to a take folder of ours (the name it was made for).
-        const leftovers = list(at).filter((n) => {
-          const take = /^\.?(take-\d{13}-[0-9a-f]{12})/.exec(n)?.[1]
-          return take !== undefined && isRecorderLeftover(n, take)
+        const names = list(at)
+        const leftovers = names.filter((n) => {
+          const take = LEFTOVER_OF.exec(n)?.[1]
+          if (take === undefined || !isRecorderLeftover(n, take)) return false
+          // A set-aside take is the only copy of the previous one until its replacement exists.
+          return !/\.old-/.test(n) || names.includes(take)
         })
         for (const name of leftovers) {
           if (name.endsWith(".failed")) dropFrames(join(at, name))
@@ -130,7 +154,8 @@ export class TakeStore {
 function dropFrames(failed: string): void {
   if (!existsSync(failed)) return
   for (const name of list(failed)) {
-    if (name === "meta.json" || name === "warnings.json") continue
+    // Its reason, and the recorder's marker (it's still a take to the recorder).
+    if (name === "meta.json" || name === "warnings.json" || name === ".kiframe-take") continue
     try {
       rmSync(join(failed, name), { recursive: true, force: true })
     } catch {
@@ -140,23 +165,29 @@ function dropFrames(failed: string): void {
 }
 
 /**
- * A complete take in `dir`, or undefined when it isn't one (no meta.json, a failed or older
- * Kiframe's take). Any other read error (permissions, I/O) is thrown: never an older take shown
- * instead of the newest by mistake.
+ * A complete take in `dir`; undefined when it isn't one (no meta.json, not JSON, a failed take, one
+ * an older Kiframe wrote); an Error when it can't be read (a permission, an I/O error) or a newer
+ * Kiframe wrote it (never skipped as not a take: an older take would be shown instead).
  */
-function readTake(dir: string): StoredTake | undefined {
+function readTake(dir: string): StoredTake | Error | undefined {
   let text: string
   try {
     text = readFileSync(join(dir, "meta.json"), "utf8")
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
-    throw error
+    return error instanceof Error ? error : new Error(String(error))
   }
   let raw: unknown
   try {
     raw = JSON.parse(text)
   } catch {
     return undefined
+  }
+  const version = (raw as { version?: unknown } | null)?.version
+  if (typeof version === "number" && version > TAKE_VERSION) {
+    return new Error(
+      `${dir}: recorded by a newer Kiframe (take version ${version}): update Kiframe`,
+    )
   }
   const meta = TakeMeta.safeParse(raw)
   return meta.success && meta.data.outcome.status === "complete"

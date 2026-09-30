@@ -10,11 +10,11 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@kiframe/runtime": "workspace:*",
     "@kiframe/schema": "workspace:*",
     "yaml": "^2.9.1"
   },
   "devDependencies": {
-    "@kiframe/runtime": "workspace:*",
     "playwright": "1.63.0"
   }
 }

@@ -220,13 +220,31 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     )
     expect(failed.error).toBeDefined()
     expect(failed.take).toBeUndefined()
-    // Only its meta.json (the reason) and warnings are left: no frames, no shots.
+    // Only its meta.json (the reason), warnings and the recorder's marker are left: no frames.
     const left = readdirSync(`${failed.dir}.failed`).sort()
-    expect(left.every((n) => n === "meta.json" || n === "warnings.json")).toBe(true)
+    const kept = ["meta.json", "warnings.json", ".kiframe-take"]
+    expect(left.every((n) => kept.includes(n))).toBe(true)
     expect(left).toContain("meta.json")
     expect(statSync(store.root).mode & 0o777).toBe(0o700)
     // Only a folder the store named is settled.
     expect(() => store.settle(join(store.root, "..", "elsewhere"))).toThrow(/not a take folder/)
+  })
+
+  it("keeps a set-aside take while it's the only copy, and refuses a newer Kiframe's take", async () => {
+    const store = newStore()
+    await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    const scene = join(store.root, "takes", "p1", "login")
+    // A crash mid-swap: the previous take set aside, its replacement never renamed in.
+    const lost = "take-1790000000000-0123456789ab"
+    mkdirSync(join(scene, `${lost}.old-1-2`))
+    store.sweep()
+    expect(existsSync(join(scene, `${lost}.old-1-2`))).toBe(true)
+    // A take a newer Kiframe wrote: an error, never skipped for an older take.
+    const newer = "take-9999999999999-0123456789ab"
+    mkdirSync(join(scene, newer))
+    writeFileSync(join(scene, newer, "meta.json"), JSON.stringify({ version: 99 }))
+    expect(() => store.latest("p1", "login")).toThrow(/newer Kiframe/)
+    expect(store.takes("p1", "login")).toHaveLength(1)
   })
 
   it("sweeps a crash's leftovers at start, and nothing else", async () => {
