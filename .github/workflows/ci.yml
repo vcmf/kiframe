@@ -23,5 +23,17 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Recording tests encode takes with ffmpeg; the browser tests drive Chromium.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: pnpm --filter @kiframe/runtime exec playwright install --with-deps chromium
-      - run: pnpm check
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test:coverage
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
