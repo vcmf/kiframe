@@ -21,7 +21,7 @@ const TMP = /^\.[0-9a-f]{12}\.tmp$/
  */
 export function writeAtomic(path: string, content: string): void {
   const folder = dirname(path)
-  mkdirSync(folder, { recursive: true })
+  const created = mkdirSync(folder, { recursive: true })
   const tmp = join(folder, `.${randomBytes(6).toString("hex")}.tmp`)
   try {
     const fd = openSync(tmp, "w")
@@ -38,6 +38,10 @@ export function writeAtomic(path: string, content: string): void {
     throw error
   }
   syncFolder(folder)
+  // A folder made for it: its entry in the parent is synced too (up to the first that existed).
+  if (created !== undefined) {
+    for (let at = folder; at.length >= created.length; at = dirname(at)) syncFolder(dirname(at))
+  }
 }
 
 function syncFolder(folder: string): void {

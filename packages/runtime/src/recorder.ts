@@ -449,7 +449,7 @@ export async function recordScenario(
       const scenarioHash = sha256(JSON.stringify(scenario))
       meta = TakeMeta.parse({
         version: 1,
-        takeKey: `${takeKeyPrefix(scenario, project, options.quality)}${recordedAt.getTime()}`,
+        takeKey: `${takeKeyPrefix(scenario, project)}${recordedAt.getTime()}`,
         scenarioHash,
         recordedAt: recordedAt.toISOString(),
         appUrl: project.target.url,
@@ -651,18 +651,15 @@ const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
 /**
- * What a take's key starts with (OBJECT-MODEL §0.7): the scenario, the app and the capture
- * settings, then the recording time. A take is a scene's current one when its key has the prefix
- * of the scene's scenario and project now (another prefix: the scene is stale).
+ * What a take's key starts with (OBJECT-MODEL §0.7): the scenario and everything of the project
+ * that shapes the footage (the app, its viewport, pacing, presets, interrupt and hide rules,
+ * redaction: the whole resolved config), then the recording time. A take is a scene's current one
+ * when its key has the prefix of the scene's scenario and project now; after any change the scene
+ * is stale (re-recorded, never shown with footage made under other rules: a new hide rule).
  */
-export function takeKeyPrefix(
-  scenario: Scenario,
-  project: Pick<ProjectConfig, "target">,
-  quality = 85,
-): string {
-  const scenarioHash = sha256(JSON.stringify(scenario))
-  const settings = `${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${quality}`
-  return `${sha256(settings).slice(0, 16)}-`
+export function takeKeyPrefix(scenario: Scenario, project: ProjectConfig): string {
+  const inputs = JSON.stringify({ scenario, project })
+  return `${sha256(inputs).slice(0, 16)}-`
 }
 
 /**

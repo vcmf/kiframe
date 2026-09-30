@@ -194,10 +194,11 @@ function readScene(
 
 /** Writes the project file: validated first, and only over the version this handle last saw. */
 export function saveProject(opened: OpenedProject, project: Project): void {
-  const text = jsonText(Project.parse(project))
+  // The handle keeps what's on disk (defaults filled in; never the caller's object).
+  const valid = Project.parse(project)
   assertUnchanged(opened, PROJECT_FILE)
-  write(opened, PROJECT_FILE, text)
-  opened.project = project
+  write(opened, PROJECT_FILE, jsonText(valid))
+  opened.project = valid
 }
 
 /**
@@ -230,9 +231,10 @@ export function saveScene(
   if (scenario !== undefined) touched.push("scenario")
   if (composition !== undefined) touched.push("composition")
   for (const which of touched) assertUnchanged(opened, scenePath(id, which))
-  const joins = !opened.project.sequence.includes(id)
-  if (joins) assertUnchanged(opened, PROJECT_FILE)
-  if (joins) saveProject(opened, { ...opened.project, sequence: [...opened.project.sequence, id] })
+  // (A new scene: saveProject checks project.json, still before any write.)
+  if (!opened.project.sequence.includes(id)) {
+    saveProject(opened, { ...opened.project, sequence: [...opened.project.sequence, id] })
+  }
   write(opened, scenePath(id, "scene"), jsonText(valid))
   if (scenario === null) remove(opened, scenePath(id, "scenario"))
   else if (scenario !== undefined) write(opened, scenePath(id, "scenario"), stringify(scenario))
@@ -255,7 +257,7 @@ export function saveScene(
 /**
  * Deletes a scene: its place in the sequence and outputs first (the project file), then its folder
  * (a crash in between leaves a folder outside the sequence, reported on open). Its takes are the
- * take store's (`TakeStore.removeScene`; `TakeStore.pruneScenes` on open catches a missed one).
+ * take store's (`TakeStore.removeScene`).
  */
 export function removeScene(opened: OpenedProject, id: string): void {
   const valid = SceneId.parse(id)

@@ -738,6 +738,7 @@ describe("takeKeyPrefix", () => {
     expect(takeKeyPrefix(other, p)).not.toBe(prefix)
     const moved = { ...p, target: { ...p.target, url: "https://elsewhere.test" } }
     expect(takeKeyPrefix(s, moved)).not.toBe(prefix)
-    expect(takeKeyPrefix(s, p, 70)).not.toBe(prefix)
+    // Any rule that shapes the footage (a hide rule for a field showing a key).
+    expect(takeKeyPrefix(s, { ...p, hide: [".api-key"] })).not.toBe(prefix)
   })
 })
