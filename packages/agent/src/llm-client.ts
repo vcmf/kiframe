@@ -10,6 +10,7 @@ import type {
   ChatCompletionTool,
 } from "openai/resources/chat/completions"
 import { assembleStreamedTurn } from "./stream-assemble.ts"
+import { CUT_SHORT } from "./tool-result.ts"
 import type {
   LlmClient,
   LlmMessage,
@@ -33,6 +34,11 @@ export type LlmConfig = {
   baseURL?: string
   /** Retries on 429 / 5xx / connection errors, with the SDK's backoff. Default 3. */
   maxRetries?: number
+  /**
+   * Send the provider's reasoning state back (OpenRouter's `reasoning_details`). Default: when the
+   * endpoint is OpenRouter's; set it for a gateway in front of OpenRouter.
+   */
+  sendReasoning?: boolean
 }
 
 /** The SDK calls the client makes: injectable, so tests never reach the network. */
@@ -153,7 +159,8 @@ export class OpenAiCompatibleClient implements LlmClient {
   }
 
   static fromConfig(config: LlmConfig): OpenAiCompatibleClient {
-    return new OpenAiCompatibleClient(makeCompleter(config), config.model, isOpenRouter(config))
+    const reasoning = config.sendReasoning ?? isOpenRouter(config)
+    return new OpenAiCompatibleClient(makeCompleter(config), config.model, reasoning)
   }
 
   #params(messages: LlmMessage[], tools: LlmToolDef[]) {
@@ -169,7 +176,11 @@ export class OpenAiCompatibleClient implements LlmClient {
       this.#params(messages, tools),
       signal ? { signal } : {},
     )
-    return fromOpenAiMessage(res.choices[0]?.message, res.choices[0]?.finish_reason)
+    const choice = res.choices[0]
+    // Same rule as a stream: no finish reason, or an error one, is a reply cut short.
+    const reason = choice?.finish_reason as string | null | undefined
+    if (reason === undefined || reason === null || reason === "error") throw new Error(CUT_SHORT)
+    return fromOpenAiMessage(choice?.message, reason)
   }
 
   /** Streams when the completer can, else one `final` event from `complete`. */

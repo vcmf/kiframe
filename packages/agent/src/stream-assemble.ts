@@ -5,6 +5,7 @@
  * Used by the OpenAI-compatible client (ported from cooldown).
  */
 import type { ChatCompletionChunk } from "openai/resources/chat/completions"
+import { CUT_SHORT } from "./tool-result.ts"
 import type { LlmStreamEvent, LlmToolCall, LlmTurn } from "./types.ts"
 
 export async function* assembleStreamedTurn(
@@ -15,10 +16,15 @@ export async function* assembleStreamedTurn(
   // received: every streamed fragment, in order, unmodified (OpenRouter's rule for sending it back).
   const reasoningDetails: unknown[] = []
   let finishReason: string | null | undefined
+  let streamError: string | undefined
   const calls = new Map<number, { id: string; name: string; arguments: string }>()
   const announced = new Set<number>()
 
   for await (const chunk of chunks) {
+    const failed = (chunk as { error?: { message?: unknown } }).error
+    if (failed !== undefined) {
+      streamError = typeof failed.message === "string" ? failed.message : "the provider failed"
+    }
     const choice = chunk.choices[0]
     if (choice?.finish_reason) finishReason = choice.finish_reason
     const delta = choice?.delta
@@ -60,11 +66,12 @@ export async function* assembleStreamedTurn(
     }
   }
 
-  // Text that came with tool calls is kept (the model's note to the user before it acts).
-  // No finish reason: the stream was cut short (a closed connection, a timeout), never a whole turn.
-  if (finishReason === undefined || finishReason === null) {
-    throw new Error("the model's reply ended before it was complete")
+  // No finish reason, or an error one (OpenRouter's upstream failure mid-stream, with its `error`):
+  // cut short, never a whole turn.
+  if (finishReason === undefined || finishReason === null || finishReason === "error") {
+    throw new Error(streamError === undefined ? CUT_SHORT : `${CUT_SHORT}: ${streamError}`)
   }
+  // Text that came with tool calls is kept (the model's note to the user before it acts).
   const extra = {
     ...(reasoningDetails.length > 0 && { reasoningDetails }),
     ...(finishReason === "length" && { truncated: true }),

@@ -1,7 +1,9 @@
 import { z } from "zod"
 import {
+  CUT_SHORT,
   isToolSoftError,
   toolAborted,
+  toolNotRun,
   toolRejected,
   toolThrew,
   unknownTool,
@@ -84,15 +86,26 @@ function plain(content: string): unknown {
   }
 }
 
-/** Resolves once the signal is aborted (never, if it isn't). */
-const aborted = (signal: AbortSignal): Promise<void> =>
-  new Promise((resolve) => {
+/** Resolves once the signal is aborted; `dispose` removes its listener (none left behind). */
+function abortedWith(signal: AbortSignal): { promise: Promise<void>; dispose: () => void } {
+  let listener: (() => void) | undefined
+  const promise = new Promise<void>((resolve) => {
     if (signal.aborted) resolve()
-    else signal.addEventListener("abort", () => resolve(), { once: true })
+    else {
+      listener = () => resolve()
+      signal.addEventListener("abort", listener, { once: true })
+    }
   })
+  return {
+    promise,
+    dispose: () => {
+      if (listener !== undefined) signal.removeEventListener("abort", listener)
+    },
+  }
+}
 
-/** Gives every call of the last assistant turn a result (an error cut the turn short). */
-function closeCalls(added: LlmMessage[], error: unknown): void {
+/** Gives every call of the last assistant turn a result (an error cut the turn short: not run). */
+function closeCalls(added: LlmMessage[], reason: string): void {
   const index = added.findLastIndex((m) => m.role === "assistant")
   const assistant = added[index]
   if (assistant?.role !== "assistant") return
@@ -101,7 +114,7 @@ function closeCalls(added: LlmMessage[], error: unknown): void {
   )
   for (const c of assistant.toolCalls ?? []) {
     if (answered.has(c.id)) continue
-    const content = JSON.stringify(toolThrew(c.name, new Error(errorMessage(error))))
+    const content = JSON.stringify(toolNotRun(c.name, reason))
     added.push({ role: "tool", toolCallId: c.id, toolName: c.name, content })
   }
 }
@@ -133,22 +146,46 @@ export type RunAgentOptions<C> = {
   maxTurns?: number
   /** Cancels the run: the model call and the running tool get it; the run ends `aborted`. */
   signal?: AbortSignal
+  /**
+   * Called when a stop left a tool running (one that doesn't heed its signal): `settled` resolves
+   * once it has finished. A host starts its next run after that (a recording still writing, an
+   * approval still open), with its own time limit.
+   */
+  onLeftBehind?: (settled: Promise<void>) => void
 }
 
 /** Runs the agent, yielding events as the answer streams and tools run. Ends with exactly one end. */
 export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<AgentEvent> {
   const added: LlmMessage[] = [{ role: "user", content: opts.userMessage }]
+  const left: Promise<unknown>[] = []
+  let ended = false
   try {
-    yield* run(opts, added)
+    for await (const event of run(opts, added, left)) {
+      if (END.has(event.type)) ended = true
+      yield event
+    }
   } catch (error) {
+    // After the end (the host threw into it): never a second end.
+    if (ended) throw error
     // Nothing escapes without an end (a tool's schema that can't become JSON Schema…), and every
     // call keeps a result (the stored history stays replayable).
-    closeCalls(added, error)
+    closeCalls(added, errorMessage(error))
     yield { type: "error", message: errorMessage(error), messages: added }
+  } finally {
+    // A tool the stop left behind: the host is told when it has settled (its next run waits for it).
+    if (left.length > 0) {
+      opts.onLeftBehind?.(Promise.allSettled(left).then(() => undefined))
+    }
   }
 }
 
-async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGenerator<AgentEvent> {
+const END = new Set<AgentEvent["type"]>(["done", "aborted", "turn_limit", "error"])
+
+async function* run<C>(
+  opts: RunAgentOptions<C>,
+  added: LlmMessage[],
+  left: Promise<unknown>[],
+): AsyncGenerator<AgentEvent> {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS
   const signal = opts.signal ?? new AbortController().signal
   const defs = toDefs(opts.tools)
@@ -235,11 +272,13 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
       } else if (signal.aborted) {
         output = toolAborted(call.name)
       } else {
-        // The stop ends the run at once, even if the tool doesn't heed it (an approval dialog).
-        output = await Promise.race([
-          executeToolCall(call.name, call.args, opts.tools, opts.context, signal),
-          aborted(signal).then(() => toolAborted(call.name)),
-        ])
+        // The stop ends the run at once, even if the tool doesn't heed it (an approval dialog):
+        // the tool is left to settle (the run's generator returns after it).
+        const running = executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
+        const stop = abortedWith(signal)
+        output = await Promise.race([running, stop.promise.then(() => toolAborted(call.name))])
+        stop.dispose()
+        if (signal.aborted) left.push(running)
       }
       const content = serializeToolResult(output, call.name)
       yield { type: "tool_result", callId: call.id, toolName: call.name, result: plain(content) }
@@ -289,7 +328,7 @@ async function* modelTurn(
     }
   }
   // A stream that ended without its turn is cut short: never taken as a complete answer.
-  if (final === undefined) throw new Error("the model's reply ended before it was complete")
+  if (final === undefined) throw new Error(CUT_SHORT)
   return final
 }
 

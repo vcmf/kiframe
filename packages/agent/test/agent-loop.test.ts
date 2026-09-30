@@ -446,6 +446,7 @@ describe("runAgent: round 3", () => {
       },
     })
     const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "wait", {})] }])
+    const left: Promise<void>[] = []
     const events = await collect(
       runAgent({
         userMessage: "go",
@@ -453,12 +454,15 @@ describe("runAgent: round 3", () => {
         llm,
         context: { log: [] },
         signal: controller.signal,
+        onLeftBehind: (settled) => left.push(settled),
       }),
     )
     expect(events.find((e) => e.type === "tool_result")).toMatchObject({
       result: { error: "aborted" },
     })
     expect(events.at(-1)?.type).toBe("aborted")
+    // The host is told a tool is still running (its next run waits for it).
+    expect(left).toHaveLength(1)
   })
 
   it("gives a call its result when the run ends in error mid-turn (the history stays replayable)", async () => {
@@ -479,6 +483,30 @@ describe("runAgent: round 3", () => {
     expect(
       messages.filter((m) => m.role === "tool").map((m) => m.role === "tool" && m.toolCallId),
     ).toEqual(["c1"])
+    // Not run: never "failed, retry" (it didn't start).
+    expect(JSON.stringify(messages.at(-1))).toMatch(/didn't run/)
+  })
+
+  it("never yields a second end when the host throws into the end event", async () => {
+    const { llm } = scripted([{ kind: "text", text: "ok" }])
+    const run = runAgent({ userMessage: "go", tools: [], llm, context: {} })
+    let next = await run.next()
+    while (!next.done && next.value.type !== "done") next = await run.next()
+    await expect(run.throw(new Error("store failed"))).rejects.toThrow(/store failed/)
+  })
+
+  it("treats an upstream failure mid-reply as an error, never a complete turn", async () => {
+    const { assembleStreamedTurn } = await import("../src/stream-assemble.ts")
+    async function* chunks() {
+      yield await Promise.resolve({ choices: [{ index: 0, delta: { content: "Half" } }] })
+      yield {
+        error: { message: "upstream 502" },
+        choices: [{ index: 0, delta: {}, finish_reason: "error" }],
+      }
+    }
+    await expect(async () => {
+      for await (const ev of assembleStreamedTurn(chunks() as never)) void ev
+    }).rejects.toThrow(/upstream 502/)
   })
 
   it("keeps the provider's call ids (a thought signature is bound to them), the pending one included", async () => {

@@ -99,3 +99,14 @@ export const toolAborted = (tool: string): ToolFailure => ({
     `The user stopped the run before "${tool}" finished: it may not have run, or only in part. ` +
     `Don't assume its effect; check the current state before relying on it.`,
 })
+
+/** The run ended (an error) before this call ran: it didn't run. */
+export const toolNotRun = (tool: string, reason: string): ToolFailure => ({
+  ok: false,
+  error: "aborted",
+  tool,
+  message: `"${tool}" didn't run: the run ended first (${reason}). Call it again if it's still needed.`,
+})
+
+/** What a reply the provider cut short (or failed mid-way) is: never a complete turn. */
+export const CUT_SHORT = "the model's reply ended before it was complete"

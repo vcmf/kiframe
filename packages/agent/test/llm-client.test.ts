@@ -12,7 +12,12 @@ describe("OpenAiCompatibleClient", () => {
           sent = params.messages
           options = opts
           return Promise.resolve({
-            choices: [{ message: { role: "assistant", content: "ok", refusal: null } }],
+            choices: [
+              {
+                message: { role: "assistant", content: "ok", refusal: null },
+                finish_reason: "stop",
+              },
+            ],
           } as unknown as ChatCompletion)
         },
       },
