@@ -1,5 +1,5 @@
 import type { Page } from "playwright"
-import { StepError, type StepRef } from "../errors.ts"
+import { PAGE_CLOSED_NO_RETURN, StepError, type StepRef } from "../errors.ts"
 import { type Ctx, firstLine, guard } from "./context.ts"
 import { applyHide } from "./interrupts.ts"
 import {
@@ -90,11 +90,7 @@ export async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
     back ??= ctx.opened.filter((p) => !p.isClosed()).at(-1)
     if (back !== undefined) ctx.opened.splice(0)
     if (back === undefined) {
-      throw new StepError(
-        step,
-        "action-failed",
-        "the page was closed and there's no page to return to",
-      )
+      throw new StepError(step, "action-failed", PAGE_CLOSED_NO_RETURN)
     }
     await switchPage(ctx, back, step)
     // The opener reacts (an OAuth callback loads the app): settled before going on.

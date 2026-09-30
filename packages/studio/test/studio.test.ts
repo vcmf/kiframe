@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
@@ -23,6 +23,7 @@ afterAll(async () => {
 function makeStudio(
   answer: (r: UserRequest, signal: AbortSignal) => Promise<string | boolean> = () =>
     Promise.resolve("ok"),
+  extra: Partial<ConstructorParameters<typeof Studio>[0]> = {},
 ) {
   const dir = join(mkdtempSync(join(tmpdir(), "kiframe-studio-")), "demo.kiframe")
   const project = createProject(dir, {
@@ -48,6 +49,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       asked.push(request)
       return answer(request, signal)
     },
+    ...extra,
   })
   return { studio, asked, dir }
 }
@@ -265,4 +267,72 @@ describe("studio tools", () => {
     ).toMatchObject({ error: expect.stringMatching(/card scene/) as unknown })
     await studio.close()
   }, 60_000)
+
+  it("goes back to the opener when a step closes the popup it started on", async () => {
+    const { studio } = makeStudio()
+    const run = (step: object) => tool("run_step").run({ scene: "pop", step }, studio, never)
+    await run({ id: "go", action: "goto", url: "/opener" })
+    expect(
+      await run({
+        id: "open",
+        action: "click",
+        target: { by: "role", role: "button", name: "Open popup" },
+      }),
+    ).toMatch(/url: \/popup-report/)
+    // This run starts on the popup: it has no page of its own to return to when it closes.
+    expect(
+      await run({
+        id: "done",
+        action: "click",
+        target: { by: "role", role: "button", name: "Done" },
+      }),
+    ).toMatch(/^ok .*url: \/opener/)
+    expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/opener/)
+    await studio.close()
+  }, 60_000)
+
+  it("scrubs every tool's result on its way to the model (a url, a user's answer)", async () => {
+    const { studio } = makeStudio(() => Promise.resolve("it's sk-live-4242424242"), {
+      knownValues: () => new Set(["sk-live-4242424242"]),
+    })
+    expect(
+      await tool("run_step").run(
+        { scene: "s", step: { id: "go", action: "goto", url: "/sk-live-4242424242" } },
+        studio,
+        never,
+      ),
+    ).not.toContain("sk-live-4242424242")
+    const answer = await tool("ask_user").run({ question: "Which key?" }, studio, never)
+    expect(JSON.stringify(answer)).not.toContain("sk-live-4242424242")
+    expect(JSON.stringify(answer)).toMatch(/it's/)
+    await studio.close()
+  }, 60_000)
+
+  it("never overwrites a scene whose scene.json didn't read", async () => {
+    const { dir } = makeStudio()
+    mkdirSync(join(dir, "scenes", "intro"), { recursive: true })
+    writeFileSync(
+      join(dir, "scenes", "intro", "scene.json"),
+      '{"version": 1, "id": "intro", "sourc',
+    )
+    const reopened = openProject(dir)
+    expect(reopened.problems.some((p) => p.sceneId === "intro" && p.part === "scene")).toBe(true)
+    const { studio } = makeStudio(undefined, { project: reopened })
+    expect(
+      await tool("save_scene").run({ id: "intro", title: "Intro", yaml: SCENE }, studio, never),
+    ).toMatchObject({ error: expect.stringMatching(/didn't read/) as unknown })
+    await studio.close()
+  }, 60_000)
+
+  it("refuses a host scene key that isn't kebab-case", async () => {
+    const { studio } = makeStudio(undefined, { sceneKey: (id) => `Host/${id}` })
+    expect(
+      await tool("run_step").run(
+        { scene: "s", step: { id: "a", action: "pause", ms: 1 } },
+        studio,
+        never,
+      ),
+    ).toMatch(/kebab-case/)
+    await studio.close()
+  }, 30_000)
 })

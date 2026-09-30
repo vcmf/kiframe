@@ -129,6 +129,9 @@ async function ensure(
   condition: Ensure["ensure"],
 ): Promise<void> {
   const ref: StepRef = { phase: "setup", index, action: "ensure" }
+  // Stopped before it: no check (it could run the whole teardown after the stop).
+  if (ctx.options.signal?.aborted === true)
+    throw new StepError(ref, "stopped", "the run was stopped")
   ctx.setCurrent(ref)
   // Its own ref: a page failing to load here is that setup's failure, not an `ensure` one (which
   // would skip the teardown).

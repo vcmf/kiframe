@@ -90,3 +90,9 @@ export interface ApprovalRequest {
   /** The element's box on the page (CSS pixels): what the prompt outlines. */
   box?: { x: number; y: number; width: number; height: number } | undefined
 }
+
+/**
+ * A step closed the page it ran on and the run knows no page to return to (a popup a new run
+ * started on: the host's own opener is then still open, and the step did what it should).
+ */
+export const PAGE_CLOSED_NO_RETURN = "the page was closed and there's no page to return to"

@@ -45,4 +45,36 @@ teardown: [{ action: pause, ms: 1 }]
     expect(started.some((s) => s.phase === "teardown")).toBe(true)
     await page.close()
   })
+
+  it("stops before an ensure: its check, and the teardown it would run, never start", async () => {
+    const page = await browser.newPage()
+    const project = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+    // The leftover is there: without the stop, the ensure would run the teardown to remove it.
+    const scenario = parseScenarioYaml(`version: 1
+setup:
+  - { action: goto, url: / }
+  - ensure: { absent: { by: text, text: Welcome } }
+steps: [{ id: a, action: pause, ms: 1 }]
+teardown: [{ action: pause, ms: 1 }]
+`)
+    const controller = new AbortController()
+    const events: RunnerEvent[] = []
+    const error = await runScenario(page, scenario, project, {
+      signal: controller.signal,
+      onEvent: (e) => {
+        events.push(e)
+        if (e.kind === "step_end" && e.step.phase === "setup" && e.step.index === 0) {
+          controller.abort()
+        }
+      },
+    }).catch((e: unknown) => e)
+    expect((error as StepError).reason).toBe("stopped")
+    expect((error as StepError).step.action).toBe("ensure")
+    const started = events.flatMap((e) => (e.kind === "step_start" ? [e.step] : []))
+    expect(started.some((s) => s.action.startsWith("ensure: "))).toBe(false)
+    await page.close()
+  })
 })

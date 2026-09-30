@@ -6,8 +6,9 @@ import {
   runScenario,
   scrubSecrets,
   type SecretUse,
+  type ApprovalRequest,
   knownValuesOf,
-  type RunOptions,
+  PAGE_CLOSED_NO_RETURN,
   StepError,
   type StepRef,
   visibleOnly,
@@ -21,6 +22,7 @@ import {
   PresetRef,
   type ProjectConfig,
   type Scenario,
+  SceneId,
   SetupItem,
   Step,
 } from "@kiframe/schema"
@@ -45,7 +47,8 @@ export interface StudioOptions {
   scope: string
   /**
    * The host's id for a scene (the approvals' scene part): stable for a scene, new for a new scene
-   * even when it reuses a deleted scene's id (A1; never the agent's string itself).
+   * even when it reuses a deleted scene's id (A1; never the agent's string itself). Kebab-case
+   * (a `SceneId`: the runtime refuses another).
    */
   sceneKey: (sceneId: string) => string
   /** The project resolved for the runtime (org settings + project: `resolveProjectConfig`). */
@@ -58,8 +61,11 @@ export interface StudioOptions {
   secrets?: () => { name: string; provided: boolean }[]
   /** Asks the user (a dialog in the app); rejects when `signal` aborts (the dialog closes). */
   requestUser: (request: UserRequest, signal: AbortSignal) => Promise<string | boolean>
-  /** Asks the user to approve a secret's use (the vault's approval: A3), in the app. */
-  requestApproval?: RunOptions["requestApproval"]
+  /**
+   * Asks the user to approve a secret's use (the vault's approval: A3), in the app; rejects when
+   * `signal` aborts (a stop closes the dialog: the secret is never typed after it).
+   */
+  requestApproval?: (request: ApprovalRequest, signal: AbortSignal) => boolean | Promise<boolean>
   /**
    * The known secret values (every value the project's scenes can use, R6): the scrubber removes
    * them from everything the agent reads, and recordings blur them on screen.
@@ -75,6 +81,8 @@ export const SNAPSHOT_MAX = 14_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
+  /** Aborted when the studio closes (a dialog a stop doesn't close, a cleanup's, closes then). */
+  readonly #lifetime = new AbortController()
 
   constructor(options: StudioOptions) {
     this.options = options
@@ -123,6 +131,8 @@ export class Studio {
     try {
       const page = await context.newPage()
       await page.goto(this.options.config.target.url)
+      // Closed meanwhile: never kept (nothing would close it).
+      if (this.#lifetime.signal.aborted) throw new Error("the studio was closed")
       // Kept only once it's at the app (a failed first visit is tried again next time).
       this.#live = { context, page }
       return page
@@ -197,6 +207,13 @@ export class Studio {
       })
       return `ok. url: ${new URL((await this.livePage()).url()).pathname}`
     } catch (error) {
+      // The step closed the popup this run started on: its opener, still open, is live again.
+      const open = this.#live?.context.pages().filter((p) => !p.isClosed()) ?? []
+      if (error instanceof StepError && error.detail === PAGE_CLOSED_NO_RETURN && open.length > 0) {
+        const back = open.at(-1)
+        if (this.#live !== undefined && back !== undefined) this.#live.page = back
+        return `ok (the page closed itself: back on the page that opened it). url: ${new URL(back?.url() ?? "about:blank").pathname}`
+      }
       // An ensure checked alone doesn't know the scene's teardown or setup: said so.
       const alone =
         "ensure" in (raw as Record<string, unknown>)
@@ -274,8 +291,9 @@ export class Studio {
     )
   }
 
-  /** Closes the live page (the browser is the host's). */
+  /** Closes the live page (the browser is the host's), and every dialog still open for it. */
   async close(): Promise<void> {
+    this.#lifetime.abort()
     await this.#live?.context.close().catch(() => undefined)
     this.#live = undefined
   }
@@ -283,19 +301,26 @@ export class Studio {
   #run(sceneId: string, signal: AbortSignal) {
     const { resolveSecret, requestUser, requestApproval, scope, sceneKey, knownValues } =
       this.options
+    const key = sceneKey(sceneId)
+    if (!SceneId.safeParse(key).success) {
+      throw new Error(`the host's scene key "${key}" isn't kebab-case (a SceneId)`)
+    }
+    // A cleanup's dialog isn't closed by the stop (the app is left clean only if the user
+    // approves it), only when the studio closes.
+    const cleanups = this.#lifetime.signal
     return {
       // The host's ids, never the agent's strings or project.json's (A1).
       scope,
-      sceneId: sceneKey(sceneId),
+      sceneId: key,
       signal,
       timeoutMs: STEP_TIMEOUT_MS,
       // Every value the scene can use: blurred on screen and scrubbed even when not typed (R6).
       knownSecretValues: [...(knownValues?.() ?? [])],
       ...(resolveSecret !== undefined && { resolveSecret }),
-      ...(requestApproval !== undefined && { requestApproval }),
+      ...(requestApproval !== undefined && {
+        requestApproval: (request: ApprovalRequest) => requestApproval(request, signal),
+      }),
       // A risky step (a delete, a send) runs only if the user approves it, then and there.
-      // A cleanup after a stop is still asked (the stop doesn't close that dialog: the app is
-      // left clean only if the user approves it).
       approveRisky: async (step: StepRef) =>
         (await requestUser(
           {
@@ -304,9 +329,7 @@ export class Studio {
             step: step.stepId ?? `${step.phase}[${step.index}]`,
             action: step.action,
           },
-          step.cleanup === true || step.phase === "teardown"
-            ? new AbortController().signal
-            : signal,
+          step.cleanup === true ? cleanups : signal,
         )) === true,
     }
   }

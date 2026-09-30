@@ -95,6 +95,10 @@ const saveSceneTool = defineTool({
   run: async ({ id, title, notes, yaml }, studio: Studio, signal) => {
     // An existing scene keeps what the agent doesn't set (its transition, its notes); a card is
     // never turned into a recording.
+    // One whose scene.json didn't read may be anything (a card with a typo): never overwritten.
+    if (studio.project.problems.some((p) => p.sceneId === id && p.part === "scene")) {
+      return { error: `scene "${id}" didn't read: pick another id, or fix its scene.json` }
+    }
     const existing = studio.project.scenes.get(id)?.scene
     if (existing !== undefined && existing.source.kind !== "recording") {
       return { error: `scene "${id}" is a ${existing.source.kind} scene: pick another id` }
@@ -126,6 +130,37 @@ const recordScene = defineTool({
   run: ({ id }, studio: Studio, signal) => studio.record(id, signal),
 })
 
+/**
+ * A tool whose result and error are scrubbed on their way to the model: once, here, for every path
+ * (this tool's and any added later; a user's answer quoting a value too).
+ */
+function scrubbed(tool: Tool<Studio>): Tool<Studio> {
+  return {
+    ...tool,
+    run: async (args, studio, signal) => {
+      try {
+        return scrubDeep(await tool.run(args, studio, signal), studio)
+      } catch (error) {
+        // Kept as it is (its kind), only its message scrubbed.
+        if (error instanceof Error) error.message = studio.scrub(error.message)
+        // No cause: it's the unscrubbed value.
+        // eslint-disable-next-line preserve-caught-error
+        else throw new Error(studio.scrub(String(error)))
+        throw error
+      }
+    },
+  }
+}
+
+function scrubDeep(value: unknown, studio: Studio): unknown {
+  if (typeof value === "string") return studio.scrub(value)
+  if (Array.isArray(value)) return value.map((v) => scrubDeep(v, studio))
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v, studio)]))
+  }
+  return value
+}
+
 /** Every tool of the studio. */
 export const studioTools: Tool<Studio>[] = [
   listScenes,
@@ -135,4 +170,4 @@ export const studioTools: Tool<Studio>[] = [
   askUser,
   saveSceneTool,
   recordScene,
-]
+].map(scrubbed)

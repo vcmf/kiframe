@@ -12,10 +12,6 @@ export interface ContextSecrets {
 const contextSecrets = new WeakMap<BrowserContext, ContextSecrets>()
 
 /**
- * The secret state of a browser context (SECRETS-DESIGN §3 A5: "while secrets are known in a
- * context"): shared by every run on it, gone with it (its handles die with the context).
- */
-/**
  * The secret values a browser context resolved or was given (read-only: for a host scrubbing what
  * it shows the agent, in the same process; never sent anywhere).
  */
@@ -23,6 +19,10 @@ export function knownValuesOf(context: BrowserContext): ReadonlySet<string> {
   return secretsOf(context).values
 }
 
+/**
+ * The secret state of a browser context (SECRETS-DESIGN §3 A5: "while secrets are known in a
+ * context"): shared by every run on it, gone with it (its handles die with the context).
+ */
 export function secretsOf(context: BrowserContext): ContextSecrets {
   let state = contextSecrets.get(context)
   if (state === undefined) contextSecrets.set(context, (state = { values: new Set(), written: [] }))
