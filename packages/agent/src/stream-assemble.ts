@@ -20,7 +20,8 @@ export async function* assembleStreamedTurn(
   const announced = new Set<number>()
 
   for await (const chunk of chunks) {
-    const choice = chunk.choices[0]
+    // (A chunk without choices: a usage-only one, a gateway's own.)
+    const choice = chunk.choices?.[0]
     if (choice?.finish_reason) finishReason = choice.finish_reason
     const delta = choice?.delta
     if (!delta) continue

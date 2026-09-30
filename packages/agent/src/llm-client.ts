@@ -34,6 +34,8 @@ export type LlmConfig = {
   baseURL?: string
   /** Retries on 429 / 5xx / connection errors, with the SDK's backoff. Default 3. */
   maxRetries?: number
+  /** The fetch the SDK uses (a proxy agent; tests). Default: the global fetch. */
+  fetch?: typeof fetch
   /**
    * Send the provider's reasoning state back (OpenRouter's `reasoning_details`). Default: when the
    * endpoint is OpenRouter's; set it for a gateway in front of OpenRouter.
@@ -139,6 +141,7 @@ export const makeCompleter = (config: LlmConfig): ChatCompleter => {
     apiKey: config.apiKey,
     baseURL: config.baseURL ?? BASE_URLS[config.provider ?? "openrouter"],
     maxRetries: config.maxRetries ?? 3,
+    ...(config.fetch !== undefined && { fetch: config.fetch }),
   })
   return {
     create: (params, options) => client.chat.completions.create(params, options),
@@ -181,7 +184,7 @@ export class OpenAiCompatibleClient implements LlmClient {
     const body = res as { choices?: ChatCompletion["choices"]; error?: { message?: unknown } }
     const choice = body.choices?.[0] as
       (ChatCompletion["choices"][number] & { error?: { message?: unknown } }) | undefined
-    const failure = choice?.error?.message ?? body.error?.message
+    const failure = [choice?.error?.message, body.error?.message].find((m) => typeof m === "string")
     if (typeof failure === "string") throw new Error(`${CUT_SHORT}: ${failure}`)
     const reason = choice?.finish_reason as string | null | undefined
     if (choice === undefined || reason === undefined || reason === null || reason === "error") {
