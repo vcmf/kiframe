@@ -13,7 +13,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test"
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -23,6 +24,7 @@
     "@kiframe/schema": "workspace:*",
     "@kiframe/vault": "workspace:*",
     "@types/node": "^22.20.4",
+    "@vitest/coverage-v8": "5.0.2",
     "esbuild": "0.28.2",
     "eslint": "^10.11.0",
     "openai": "7.23.0",
