@@ -416,11 +416,7 @@ async function resolveSecret(
       const ask = ctx.options.requestApproval
       if (!isSecretRefusal(error) || error.reason !== "no-grant" || ask === undefined) throw error
       const box = (await input.boundingBox().catch(() => null)) ?? undefined
-      if (
-        !(await guard(step, async () =>
-          ask({ secret: name, use, box, ...(step.cleanup === true && { cleanup: true as const }) }),
-        ))
-      ) {
+      if (!(await guard(step, async () => ask({ secret: name, use, box })))) {
         throw new StepError(
           step,
           "secret-declined",
@@ -457,6 +453,11 @@ function urlPath(value: string): string | undefined {
  * whitespace or line breaks (page text across DOM nodes, an accessibility snapshot) is matched too.
  */
 export function scrubSecrets(text: string, values: Iterable<string>): string {
+  return secretScrubber(values)(text)
+}
+
+/** `scrubSecrets` for many texts: the values' variants and their pattern built once. */
+export function secretScrubber(values: Iterable<string>): (text: string) => string {
   const list = [...values]
   const variants = new Set<string>()
   const encode = (f: (s: string) => string, s: string): string | undefined => {
@@ -496,7 +497,7 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       if (v !== undefined && v !== "") variants.add(v)
     }
   }
-  if (variants.size === 0) return text
+  if (variants.size === 0) return (text) => text
   // Patterns with the length of the text they can match (a split value: its characters, at least).
   const patterns: { source: string; length: number }[] = [...variants].map((v) => ({
     source: escapeRegExp(v),
@@ -517,7 +518,8 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
     .sort((a, b) => b.length - a.length)
     .map((p) => p.source)
     .join("|")
-  return text.replace(new RegExp(alternation, "giu"), "[secret]")
+  const pattern = new RegExp(alternation, "giu")
+  return (text) => text.replace(pattern, "[secret]")
 }
 
 function htmlEscape(value: string, apostrophe: string): string {

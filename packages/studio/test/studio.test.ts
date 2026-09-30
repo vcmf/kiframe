@@ -390,4 +390,44 @@ presets:
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/opener/)
     await studio.close()
   }, 60_000)
+
+  it("runs a teardown action as the teardown's (its approval is that part's)", async () => {
+    const { studio, asked } = makeStudio(() => Promise.resolve(true))
+    const risky = {
+      action: "click",
+      target: { by: "role", role: "link", name: "Projects" },
+      risky: true,
+    }
+    expect(
+      await tool("run_step").run({ scene: "s", step: risky, part: "teardown" }, studio, never),
+    ).toMatch(/^ok/)
+    expect(asked[0]).toMatchObject({ kind: "approve-risky", step: "teardown[0]" })
+    await studio.close()
+  }, 30_000)
+
+  it("records only a recording scene", async () => {
+    const { studio } = makeStudio()
+    const { saveScene } = await import("@kiframe/project")
+    const { parseScenarioYaml } = await import("@kiframe/schema")
+    saveScene(
+      studio.project,
+      {
+        version: 1,
+        id: "intro",
+        title: "Intro",
+        source: { kind: "card", template: "title", content: { heading: "Hi" } },
+        duration: { mode: "auto" },
+      },
+      { scenario: parseScenarioYaml(SCENE) },
+    )
+    expect(await tool("record_scene").run({ id: "intro" }, studio, never)).toMatch(
+      /card scene: only recordings/,
+    )
+    await studio.close()
+  }, 30_000)
+
+  it("never shows a known value in the system prompt's app url", () => {
+    const { studio } = makeStudio(undefined, { knownValues: () => new Set(["127.0.0.1"]) })
+    expect(systemPrompt(studio)).not.toContain("127.0.0.1")
+  })
 })

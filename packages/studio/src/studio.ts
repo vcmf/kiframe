@@ -4,7 +4,7 @@ import {
   locatorFor,
   recordScenario,
   runScenario,
-  scrubSecrets,
+  secretScrubber,
   type SecretUse,
   type ApprovalRequest,
   knownValuesOf,
@@ -80,7 +80,7 @@ export const SNAPSHOT_MAX = 14_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
-  /** Aborted when the studio closes (a dialog a stop doesn't close, a cleanup's, closes then). */
+  /** Aborted when the studio closes (a first navigation still running is then dropped). */
   readonly #lifetime = new AbortController()
 
   constructor(options: StudioOptions) {
@@ -115,7 +115,7 @@ export class Studio {
   scrubber(): (text: string) => string {
     const values = new Set(this.options.knownValues?.() ?? [])
     if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
-    return (text) => scrubSecrets(text, values)
+    return secretScrubber(values)
   }
 
   /** One text scrubbed (`scrubber`). */
@@ -191,14 +191,24 @@ export class Studio {
    * One item on the live page, through the real runner: an on-camera step (with its id), or a setup
    * or teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`).
    */
-  async runStep(input: unknown, scene: string, signal: AbortSignal): Promise<string> {
+  async runStep(
+    input: unknown,
+    scene: string,
+    signal: AbortSignal,
+    part: ScenarioPart = "steps",
+  ): Promise<string> {
     const raw = asObject(input)
     if (typeof raw !== "object" || raw === null) {
       return "invalid step: expected an object like {id: open-new, action: click, target: {...}}"
     }
-    const step = Step.safeParse(raw)
-    const setupItem = step.success ? undefined : SetupItem.safeParse(raw)
-    if (!step.success && setupItem?.success !== true) {
+    // Run in the part it's for: its approvals are keyed there, as the replay's will be (A1).
+    const step = part === "steps" ? Step.safeParse(raw) : { success: false as const }
+    const setupItem = step.success || part === "teardown" ? undefined : SetupItem.safeParse(raw)
+    const teardownItem = part === "teardown" ? Action.safeParse(raw) : undefined
+    if (teardownItem !== undefined && !teardownItem.success) {
+      return `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}`
+    }
+    if (teardownItem === undefined && !step.success && setupItem?.success !== true) {
       // Parsed against the shape the agent meant (a union's error only says "Invalid input").
       const r = raw as Record<string, unknown>
       const [what, schema] =
@@ -206,16 +216,18 @@ export class Studio {
           ? (["preset", PresetRef] as const)
           : "ensure" in r
             ? (["ensure", Ensure] as const)
-            : "id" in r
+            : "id" in r && part === "steps"
               ? (["step", Step] as const)
               : (["setup action", Action] as const)
       const result = schema.safeParse(raw)
       return `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}`
     }
     const scenario: Scenario =
-      step.success || setupItem?.data === undefined
-        ? { version: 1, steps: step.success ? [step.data] : [] }
-        : { version: 1, setup: [setupItem.data], steps: [] }
+      teardownItem?.success === true
+        ? { version: 1, steps: [], teardown: [teardownItem.data] }
+        : step.success || setupItem?.data === undefined
+          ? { version: 1, steps: step.success ? [step.data] : [] }
+          : { version: 1, setup: [setupItem.data], steps: [] }
     const page = await this.livePage()
     try {
       await runScenario(page, scenario, this.#quick, {
@@ -282,6 +294,9 @@ export class Studio {
   async record(sceneId: string, signal: AbortSignal): Promise<string> {
     const stored = this.project.scenes.get(sceneId)
     if (stored?.scenario === undefined) return `no scene "${sceneId}" with a scenario to record`
+    if (stored.scene.source.kind !== "recording") {
+      return `scene "${sceneId}" is a ${stored.scene.source.kind} scene: only recordings are filmed`
+    }
     const { scenario } = stored
     const { config, takes } = this.options
     const dir = takes.newTakeDir(this.project.project.id, sceneId)
@@ -301,9 +316,17 @@ export class Studio {
     } finally {
       await context.close().catch(() => undefined)
     }
-    const take = takes.settle(dir)
+    let take: ReturnType<TakeStore["settle"]>
+    try {
+      take = takes.settle(dir)
+    } catch (error) {
+      return `recording failed: ${failed ?? failure(error)}`
+    }
     if (take === undefined || recorded === undefined) {
-      return `recording failed: ${failed ?? "no complete take"}`
+      // A complete take the recorder failed after (a file error) is kept, but without its result
+      // no composition is made from it: filmed again.
+      const kept = take !== undefined ? " (its take was kept, but record again)" : ""
+      return `recording failed: ${failed ?? "no complete take"}${kept}`
     }
     const { composition, warnings } = generate(config, scenario, recorded)
     saveScene(this.project, stored.scene, { composition })
@@ -328,9 +351,6 @@ export class Studio {
     if (!SceneId.safeParse(key).success) {
       throw new Error(`the host's scene key "${key}" isn't kebab-case (a SceneId)`)
     }
-    // A cleanup's dialog isn't closed by the stop (the app is left clean only if the user
-    // approves it), only when the studio closes.
-    const cleanups = this.#lifetime.signal
     return {
       // The host's ids, never the agent's strings or project.json's (A1).
       scope,
@@ -340,23 +360,20 @@ export class Studio {
       // Every value the scene can use: blurred on screen and scrubbed even when not typed (R6).
       knownSecretValues: [...(knownValues?.() ?? [])],
       ...(resolveSecret !== undefined && { resolveSecret }),
-      // A cleanup's dialogs close with the studio, the others at the stop; never opened after it.
+      // Dialogs close at the stop, and never open after it.
       ...(requestApproval !== undefined && {
-        requestApproval: (request: ApprovalRequest) => {
-          const until = request.cleanup === true ? cleanups : signal
-          return ask(until, () => requestApproval(request, until))
-        },
+        requestApproval: (request: ApprovalRequest) =>
+          ask(signal, () => requestApproval(request, signal)),
       }),
       // A risky step (a delete, a send) runs only if the user approves it, then and there.
       approveRisky: async (step: StepRef) => {
-        const until = step.cleanup === true ? cleanups : signal
         const request: UserRequest = {
           kind: "approve-risky",
           scene: sceneId,
           step: step.stepId ?? `${step.phase}[${step.index}]`,
           action: step.action,
         }
-        return (await ask(until, () => requestUser(request, until))) === true
+        return (await ask(signal, () => requestUser(request, signal))) === true
       },
     }
   }
@@ -370,6 +387,9 @@ async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<
   signal.throwIfAborted()
   return open()
 }
+
+/** Where in a scenario an item runs. */
+export type ScenarioPart = "setup" | "steps" | "teardown"
 
 /** A step failure as the agent reads it. */
 function failure(error: unknown): string {

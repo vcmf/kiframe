@@ -48,8 +48,12 @@ const runStep = defineTool({
   parameters: z.object({
     scene: SceneId.describe("the id you'll save this scene under (its approvals are that scene's)"),
     step: z.unknown().describe("The step, same fields as in the YAML"),
+    part: z
+      .enum(["setup", "steps", "teardown"])
+      .default("steps")
+      .describe("the part of the scene it's for (its approvals are that part's)"),
   }),
-  run: ({ scene, step }, studio: Studio, signal) => studio.runStep(step, scene, signal),
+  run: ({ scene, step, part }, studio: Studio, signal) => studio.runStep(step, scene, signal, part),
 })
 
 const listSecrets = defineTool({

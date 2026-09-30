@@ -45,7 +45,8 @@ Rules:
 - Captions: short, marketing tone, on the steps that matter (not every step).
 - Ask the user (\`ask_user\`) only for real blockers (a missing secret, an ambiguous goal).
 - run_step runs steps on the live page in order: after the steps, clean up with the teardown actions too
-  (run them with run_step as well) so the app is back to its initial state before you save.
+  (run them with run_step as well) so the app is back to its initial state before you save. Give run_step
+  the part each item is for (\`part: setup\` / \`teardown\`; steps by default).
 - As soon as every step and the teardown ran ok once, call save_scene. Don't start over by hand to re-check:
   save_scene replays the whole scene from scratch in a fresh browser and tells you what fails.
 - A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.
@@ -53,5 +54,5 @@ Rules:
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.
 Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
-App: ${config.target.url}`
+App: ${studio.scrub(config.target.url)}`
 }

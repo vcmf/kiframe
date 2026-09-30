@@ -35,6 +35,7 @@
 | Order after M1's secrets work | **A vertical slice first** (`epic/app-slice`: minimal project store, agent loop, Electron shell + chat, preview player), then the visual rebuild V2–V4 (SECRETS-DESIGN §5). Until V2–V4 land, the app records only on throwaway accounts | 2026-09-30 |
 | App window (v0) | **Chat left, stage right:** the chat is a fixed side column; the main area has the preview player on top and the scene strip (the sequence) below | 2026-09-30 |
 | Branches | **Epics:** `epic/<name>` branches collect a milestone's PRs (CI and review on each), then merge into `main` | 2026-09-30 |
+| Stop | **A stop runs nothing more**, not even the teardown (nor the cleanup an `ensure` runs): what the run left is cleaned by the scene's `ensure` at its next run. Any failure once the run's signal aborted is a stop (a dialog it closed). A scene without an `ensure` keeps what a stopped run made | 2026-09-30 |
 
 ---
 

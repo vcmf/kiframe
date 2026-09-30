@@ -129,7 +129,7 @@ async function ensure(
   condition: Ensure["ensure"],
 ): Promise<void> {
   const ref: StepRef = { phase: "setup", index, action: "ensure" }
-  // Stopped before it: no check (it could run the whole teardown after the stop).
+  // Stopped before it: no check (its steps would stop anyway, but not the check itself).
   if (ctx.options.signal?.aborted === true)
     throw new StepError(ref, "stopped", "the run was stopped")
   ctx.setCurrent(ref)

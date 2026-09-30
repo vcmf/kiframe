@@ -30,7 +30,7 @@ export type StepErrorReason =
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"
-  /** The run's signal was aborted (the user stopped it): no later step ran, but the teardown. */
+  /** The run's signal was aborted (the user stopped it): nothing more ran, not even the teardown. */
   | "stopped"
   /**
    * A step closed the page it ran on and the run knows no page to return to (a popup a new run
@@ -94,6 +94,4 @@ export interface ApprovalRequest {
   use: SecretUse
   /** The element's box on the page (CSS pixels): what the prompt outlines. */
   box?: { x: number; y: number; width: number; height: number } | undefined
-  /** A cleanup's (`StepRef.cleanup`): asked even after a stop (the app is left clean). */
-  cleanup?: true | undefined
 }

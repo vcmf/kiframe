@@ -94,20 +94,19 @@ export async function recordBatch(
   let landings: Record<string, string> = {}
   const results: BatchResult[] = []
   const seenValues = new Set<string>()
+  const report = (index: number, result: BatchResult) => {
+    results.push(result)
+    try {
+      onScene?.(index, result)
+    } catch {
+      // a progress callback never stops the batch
+    }
+  }
   for (const [index, scene] of scenes.entries()) {
     // Stopped: the scenes left aren't recorded (each says so).
     if (options.signal?.aborted === true) {
       const step = { phase: "setup" as const, index: 0, action: "start the scene" }
-      const result: BatchResult = {
-        ok: false,
-        error: new StepError(step, "stopped", "the batch was stopped"),
-      }
-      results.push(result)
-      try {
-        onScene?.(index, result)
-      } catch {
-        // a progress callback never stops the batch
-      }
+      report(index, { ok: false, error: new StepError(step, "stopped", "the batch was stopped") })
       continue
     }
     const uses = sessionPresetsOf(scene.scenario, project)
@@ -183,12 +182,7 @@ export async function recordBatch(
       if (context !== undefined) for (const v of secretsOf(context).values) seenValues.add(v)
       await context?.close().catch(() => undefined)
     }
-    results.push(result)
-    try {
-      onScene?.(index, result)
-    } catch {
-      // a progress callback never stops the batch
-    }
+    report(index, result)
   }
   return results
 }

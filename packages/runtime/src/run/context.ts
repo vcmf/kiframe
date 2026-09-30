@@ -85,8 +85,9 @@ export type RunnerEvent =
 
 export interface RunOptions {
   /**
-   * Stops the run at its next step (the step running finishes; the teardown still runs: the app
-   * is left clean): a `StepError` with reason `stopped`.
+   * Stops the run at its next step (the step running finishes, or its dialog closes): nothing
+   * more runs, not even the teardown (the scene's next `ensure` cleans what it left). A
+   * `StepError` with reason `stopped`.
    */
   signal?: AbortSignal
   /**
