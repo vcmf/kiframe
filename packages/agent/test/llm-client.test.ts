@@ -81,3 +81,35 @@ describe("reasoning state on the wire", () => {
     ).toEqual({ kind: "text", text: "ok", reasoningDetails: details })
   })
 })
+
+describe("reasoning state: OpenRouter only, fragments joined", () => {
+  it("never sends reasoning_details to another API", () => {
+    const details = [{ type: "reasoning.encrypted", data: "sig" }]
+    const [m] = toOpenAiMessages(
+      [{ role: "assistant", content: "", reasoningDetails: details }],
+      false,
+    )
+    expect(m).not.toHaveProperty("reasoning_details")
+  })
+
+  it("joins streamed fragments of one entry (same index), keeps others apart", async () => {
+    const { assembleStreamedTurn } = await import("../src/stream-assemble.ts")
+    const chunk = (details: unknown[]) => ({
+      choices: [{ index: 0, delta: { reasoning_details: details } }],
+    })
+    async function* chunks() {
+      yield await Promise.resolve(chunk([{ type: "reasoning.text", index: 0, text: "Think" }]))
+      yield chunk([{ type: "reasoning.text", index: 0, text: "ing" }])
+      yield chunk([{ type: "reasoning.encrypted", index: 1, data: "sig" }])
+    }
+    let final: unknown
+    for await (const ev of assembleStreamedTurn(chunks() as never))
+      if (ev.kind === "final") final = ev.turn
+    expect(final).toMatchObject({
+      reasoningDetails: [
+        { type: "reasoning.text", index: 0, text: "Thinking" },
+        { type: "reasoning.encrypted", index: 1, data: "sig" },
+      ],
+    })
+  })
+})

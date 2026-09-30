@@ -1,5 +1,11 @@
 import { z } from "zod"
-import { isToolSoftError, toolRejected, toolThrew, unknownTool } from "./tool-result.ts"
+import {
+  isToolSoftError,
+  toolAborted,
+  toolRejected,
+  toolThrew,
+  unknownTool,
+} from "./tool-result.ts"
 import { buildModelMessages, emptyResultText, type ToolMsgMeta } from "./tool-result-view.ts"
 import type {
   AgentEvent,
@@ -35,19 +41,6 @@ const toDefs = <C>(tools: Tool<C>[]): LlmToolDef[] =>
     parameters: toJsonSchema(t.parameters),
   }))
 
-/** A call's JSON arguments, tolerating malformed or non-object input. */
-const parseArgs = (raw: string): Record<string, unknown> => {
-  try {
-    const v: unknown = JSON.parse(raw)
-    return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {}
-  } catch {
-    return {}
-  }
-}
-
-/** What a call that the stop prevented, or that stopped with it, answers. */
-const ABORTED = { ok: false, error: "aborted", message: "the run was stopped by the user" }
-
 /**
  * Runs one tool call and returns the model-facing result: the tool's own output, or a structured
  * failure (unknown tool, a thrown error, the tool's own `{ error }`; a tool that threw because the
@@ -66,39 +59,41 @@ export async function executeToolCall<C>(
     const result = await tool.run(args, ctx, signal)
     return isToolSoftError(result) ? toolRejected(tool.name, result.error) : result
   } catch (err) {
-    return signal.aborted ? ABORTED : toolThrew(tool.name, err)
+    return signal.aborted
+      ? toolAborted(tool.name)
+      : toolThrew(tool.name, new Error(errorMessage(err)))
   }
 }
 
 /** A tool result as the model reads it: never empty, and never an exception (a circular object). */
-function serializeToolResult(output: unknown, toolName: string): string {
+function serializeToolResult(
+  output: unknown,
+  toolName: string,
+): { content: string; shown: unknown } {
   try {
     const s = JSON.stringify(output)
-    return s === undefined ? emptyResultText(toolName) : s
+    return s === undefined
+      ? { content: emptyResultText(toolName), shown: output }
+      : { content: s, shown: output }
   } catch (error) {
-    return JSON.stringify(
-      toolThrew(toolName, new Error(`its result couldn't be read: ${errorMessage(error)}`)),
+    const failure = toolThrew(
+      toolName,
+      new Error(`its result couldn't be read: ${errorMessage(error)}`),
     )
+    return { content: JSON.stringify(failure), shown: failure }
   }
 }
 
-/** A tool result the UI can show (a plain value: what the model read, parsed back). */
-const shownResult = (content: string): unknown => {
+/** A call's arguments, parsed once: `whole` false when they aren't a JSON object. */
+const readArgs = (raw: string): { whole: boolean; args: Record<string, unknown> } => {
+  if (raw.trim() === "") return { whole: true, args: {} }
   try {
-    return JSON.parse(content) as unknown
+    const v: unknown = JSON.parse(raw)
+    return typeof v === "object" && v !== null && !Array.isArray(v)
+      ? { whole: true, args: v as Record<string, unknown> }
+      : { whole: false, args: {} }
   } catch {
-    return content
-  }
-}
-
-/** Whether a call's streamed arguments are whole JSON (a turn cut off by a length limit isn't). */
-const wholeJson = (raw: string): boolean => {
-  if (raw.trim() === "") return true
-  try {
-    JSON.parse(raw)
-    return true
-  } catch {
-    return false
+    return { whole: false, args: {} }
   }
 }
 
@@ -118,16 +113,24 @@ export type RunAgentOptions<C> = {
   signal?: AbortSignal
 }
 
-/** Runs the agent, yielding events as the answer streams and tools run. */
+/** Runs the agent, yielding events as the answer streams and tools run. Ends with exactly one end. */
 export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<AgentEvent> {
+  const added: LlmMessage[] = [{ role: "user", content: opts.userMessage }]
+  try {
+    yield* run(opts, added)
+  } catch (error) {
+    // Nothing escapes without an end (a tool's schema that can't become JSON Schema…).
+    yield { type: "error", message: errorMessage(error), messages: added }
+  }
+}
+
+async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGenerator<AgentEvent> {
   const maxTurns = opts.maxTurns ?? DEFAULT_MAX_TURNS
   const signal = opts.signal ?? new AbortController().signal
   const defs = toDefs(opts.tools)
   const prior: LlmMessage[] = []
   if (opts.system !== undefined) prior.push({ role: "system", content: opts.system })
   if (opts.history !== undefined) prior.push(...opts.history)
-  // What this run adds (returned at its end): the user message, then every turn.
-  const added: LlmMessage[] = [{ role: "user", content: opts.userMessage }]
   // Images are sent with this turn only (the stored message has none).
   const live: LlmMessage = {
     role: "user",
@@ -140,10 +143,17 @@ export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<Age
     keepFull: keepFullNames.has(m.toolName ?? ""),
   })
   // History's results were shown in their own runs: old bulky ones are elided by recency.
-  const shownBulky = new Set<string>(
-    prior.flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])),
-  )
-  let calls = 0
+  const usedIds = new Set<string>(prior.flatMap((m) => (m.role === "tool" ? [m.toolCallId] : [])))
+  const shownBulky = new Set<string>(usedIds)
+  // A call id nobody has used, in this chat (a provider may send none, or repeat one).
+  const runId = Math.random().toString(36).slice(2, 8)
+  let made = 0
+  const freshId = (id: string) => {
+    let out = id
+    while (out === "" || usedIds.has(out)) out = `call-${runId}-${(made += 1)}`
+    usedIds.add(out)
+    return out
+  }
 
   for (let turn = 0; turn < maxTurns; turn += 1) {
     if (signal.aborted) {
@@ -163,64 +173,49 @@ export async function* runAgent<C>(opts: RunAgentOptions<C>): AsyncGenerator<Age
       yield { type: "error", message: errorMessage(error), messages: added }
       return
     }
+    // Stopped as the reply came: never stored as a complete answer.
+    if (signal.aborted) {
+      yield { type: "aborted", messages: added }
+      return
+    }
     const details =
       result.reasoningDetails !== undefined ? { reasoningDetails: result.reasoningDetails } : {}
     if (result.kind === "text") {
       added.push({ role: "assistant", content: result.text, ...details })
       yield { type: "assistant_text", text: result.text }
-      yield { type: "done", messages: added }
+      yield { type: "done", messages: added, ...(result.truncated === true && { truncated: true }) }
       return
     }
-    // Every call has an id (a provider may send none: pairing and the wire need one), and whole
-    // JSON arguments (a cut-off call is stored as {} and never run: the model is told).
-    const turnCalls = result.calls.map((c) => ({
-      ...c,
-      id: c.id === "" ? `call-${(calls += 1)}` : c.id,
-      cut: !wholeJson(c.arguments),
-    }))
+    const turnCalls = result.calls.map((c) => {
+      const read = readArgs(c.arguments)
+      // Stored replayable: whole JSON, `{}` for none or broken ones.
+      const stored = read.whole && c.arguments.trim() !== "" ? c.arguments : "{}"
+      return { ...c, id: freshId(c.id), ...read, stored }
+    })
     added.push({
       role: "assistant",
       content: result.text ?? "",
-      toolCalls: turnCalls.map((c) => ({
-        id: c.id,
-        name: c.name,
-        arguments: c.cut ? "{}" : c.arguments,
-      })),
+      toolCalls: turnCalls.map((c) => ({ id: c.id, name: c.name, arguments: c.stored })),
       ...details,
     })
     for (const call of turnCalls) {
-      // Every call gets a result (the history stays well-formed); the UI sees the ones that
-      // started, with their results.
-      if (signal.aborted) {
-        added.push({
-          role: "tool",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: JSON.stringify(ABORTED),
-        })
-        continue
-      }
-      const args = call.cut ? {} : parseArgs(call.arguments)
-      yield { type: "tool_start", callId: call.id, toolName: call.name, args }
+      // Every call starts and ends, in the history and for the UI (a stopped one too).
+      yield { type: "tool_start", callId: call.id, toolName: call.name, args: call.args }
       let output: unknown
-      if (call.cut) {
+      if (!call.whole) {
         output = toolRejected(
           call.name,
-          "your arguments were cut off (not whole JSON: the reply hit its length limit): make the call again, shorter",
+          result.truncated === true
+            ? "your arguments were cut off (the reply hit its length limit): make the call again, shorter"
+            : "your arguments weren't a valid JSON object: make the call again with valid JSON",
         )
       } else if (signal.aborted) {
-        // Stopped while its start was being shown: not run.
-        output = ABORTED
+        output = toolAborted(call.name)
       } else {
-        output = await executeToolCall(call.name, args, opts.tools, opts.context, signal)
+        output = await executeToolCall(call.name, call.args, opts.tools, opts.context, signal)
       }
-      const content = serializeToolResult(output, call.name)
-      yield {
-        type: "tool_result",
-        callId: call.id,
-        toolName: call.name,
-        result: shownResult(content),
-      }
+      const { content, shown } = serializeToolResult(output, call.name)
+      yield { type: "tool_result", callId: call.id, toolName: call.name, result: shown }
       added.push({ role: "tool", toolCallId: call.id, toolName: call.name, content })
     }
   }
@@ -257,12 +252,25 @@ async function* modelTurn(
       reasoning += ev.text
       yield { type: "reasoning", text: reasoning }
     } else if (ev.kind === "tool_start") {
-      yield { type: "tool_pending", toolName: ev.name }
+      yield {
+        type: "tool_pending",
+        toolName: ev.name,
+        ...(ev.id !== undefined && { callId: ev.id }),
+      }
     } else {
       final = ev.turn
     }
   }
-  return final ?? { kind: "text", text }
+  // A stream that ended without its turn is cut short: never taken as a complete answer.
+  if (final === undefined) throw new Error("the model's reply ended before it was complete")
+  return final
 }
 
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+/** An error's text, whatever was thrown (never throws itself). */
+function errorMessage(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error)
+  } catch {
+    return "an error that can't be shown"
+  }
+}

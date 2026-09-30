@@ -52,8 +52,15 @@ const BASE_URLS: Record<Provider, string> = {
   openai: "https://api.openai.com/v1",
 }
 
-/** Our messages → OpenAI chat messages (structured tool calls and results, never flattened). */
-export const toOpenAiMessages = (messages: LlmMessage[]): ChatCompletionMessageParam[] =>
+/**
+ * Our messages → OpenAI chat messages (structured tool calls and results, never flattened).
+ * `reasoning`: send the provider's reasoning state back (OpenRouter only: another API may refuse
+ * the field).
+ */
+export const toOpenAiMessages = (
+  messages: LlmMessage[],
+  reasoning = true,
+): ChatCompletionMessageParam[] =>
   messages.map((m): ChatCompletionMessageParam => {
     if (m.role === "system") return { role: "system", content: m.content }
     if (m.role === "user") {
@@ -68,7 +75,8 @@ export const toOpenAiMessages = (messages: LlmMessage[]): ChatCompletionMessageP
       role: "assistant",
       content: m.content,
       // Sent back as the provider gave it (OpenRouter: Gemini's thought signatures, Claude's thinking).
-      ...(m.reasoningDetails !== undefined && { reasoning_details: m.reasoningDetails }),
+      ...(reasoning &&
+        m.reasoningDetails !== undefined && { reasoning_details: m.reasoningDetails }),
       ...(m.toolCalls !== undefined &&
         m.toolCalls.length > 0 && {
           tool_calls: m.toolCalls.map((tc) => ({
@@ -88,7 +96,10 @@ export const toOpenAiTools = (tools: LlmToolDef[]): ChatCompletionTool[] =>
   }))
 
 /** An OpenAI assistant message → our turn (tool calls, with the text that came with them). */
-export const fromOpenAiMessage = (message?: ChatCompletionMessage): LlmTurn => {
+export const fromOpenAiMessage = (
+  message?: ChatCompletionMessage,
+  finishReason?: string | null,
+): LlmTurn => {
   const calls: LlmToolCall[] = []
   for (const tc of message?.tool_calls ?? []) {
     if (tc.type === "function") {
@@ -97,10 +108,13 @@ export const fromOpenAiMessage = (message?: ChatCompletionMessage): LlmTurn => {
   }
   const text = message?.content ?? ""
   const raw = (message as { reasoning_details?: unknown } | undefined)?.reasoning_details
-  const details = Array.isArray(raw) ? { reasoningDetails: raw as unknown[] } : {}
+  const extra = {
+    ...(Array.isArray(raw) && { reasoningDetails: raw as unknown[] }),
+    ...(finishReason === "length" && { truncated: true }),
+  }
   return calls.length > 0
-    ? { kind: "tool_calls", calls, text, ...details }
-    : { kind: "text", text, ...details }
+    ? { kind: "tool_calls", calls, text, ...extra }
+    : { kind: "text", text, ...extra }
 }
 
 /** The SDK behind a completer, from the config. */
@@ -119,20 +133,24 @@ export const makeCompleter = (config: LlmConfig): ChatCompleter => {
 export class OpenAiCompatibleClient implements LlmClient {
   readonly #completer: ChatCompleter
   readonly #model: string
+  readonly #reasoning: boolean
 
-  constructor(completer: ChatCompleter, model: string) {
+  /** `sendReasoning`: send the reasoning state back (OpenRouter's field; off for other APIs). */
+  constructor(completer: ChatCompleter, model: string, sendReasoning = false) {
     this.#completer = completer
     this.#model = model
+    this.#reasoning = sendReasoning
   }
 
   static fromConfig(config: LlmConfig): OpenAiCompatibleClient {
-    return new OpenAiCompatibleClient(makeCompleter(config), config.model)
+    const openRouter = (config.provider ?? "openrouter") === "openrouter"
+    return new OpenAiCompatibleClient(makeCompleter(config), config.model, openRouter)
   }
 
   #params(messages: LlmMessage[], tools: LlmToolDef[]) {
     return {
       model: this.#model,
-      messages: toOpenAiMessages(messages),
+      messages: toOpenAiMessages(messages, this.#reasoning),
       ...(tools.length > 0 && { tools: toOpenAiTools(tools), tool_choice: "auto" as const }),
     }
   }
@@ -142,7 +160,7 @@ export class OpenAiCompatibleClient implements LlmClient {
       this.#params(messages, tools),
       signal ? { signal } : {},
     )
-    return fromOpenAiMessage(res.choices[0]?.message)
+    return fromOpenAiMessage(res.choices[0]?.message, res.choices[0]?.finish_reason)
   }
 
   /** Streams when the completer can, else one `final` event from `complete`. */

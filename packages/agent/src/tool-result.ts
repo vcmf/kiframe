@@ -13,7 +13,8 @@
  * `tool_rejected` (the tool RAN and returned `{error}` — a deliberate rejection
  * like bad args / not found).
  */
-export type ToolErrorCode = "user_declined" | "unknown_tool" | "tool_error" | "tool_rejected"
+export type ToolErrorCode =
+  "user_declined" | "unknown_tool" | "tool_error" | "tool_rejected" | "aborted"
 
 /** A structured tool-call failure fed back to the model as the tool result. */
 export type ToolFailure = {
@@ -87,4 +88,14 @@ export const toolThrew = (tool: string, err: unknown): ToolFailure => ({
     `The "${tool}" tool failed with an error: ${err instanceof Error ? err.message : String(err)}. ` +
     `You may retry once if this looks transient; otherwise continue without it and ` +
     `tell the user what could not be completed.`,
+})
+
+/** The user stopped the run before or while this call ran: not a failure of the tool. */
+export const toolAborted = (tool: string): ToolFailure => ({
+  ok: false,
+  error: "aborted",
+  tool,
+  message:
+    `The user stopped the run before "${tool}" finished: it may not have run, or only in part. ` +
+    `Don't assume its effect; check the current state before relying on it.`,
 })

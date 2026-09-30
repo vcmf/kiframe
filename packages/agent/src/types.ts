@@ -23,14 +23,23 @@ export type LlmMessage =
   // model-facing view; clients ignore it.
   | { role: "tool"; toolCallId: string; content: string; toolName?: string | undefined }
 
-/** One model turn: a final answer, or tool calls (with any text the model wrote before them). */
+/**
+ * One model turn: a final answer, or tool calls (with any text the model wrote before them).
+ * `truncated`: the provider stopped it at its length limit (`finish_reason: "length"`).
+ */
 export type LlmTurn =
-  | { kind: "text"; text: string; reasoningDetails?: unknown[] | undefined }
+  | {
+      kind: "text"
+      text: string
+      reasoningDetails?: unknown[] | undefined
+      truncated?: boolean | undefined
+    }
   | {
       kind: "tool_calls"
       calls: LlmToolCall[]
       text?: string | undefined
       reasoningDetails?: unknown[] | undefined
+      truncated?: boolean | undefined
     }
 
 export type LlmToolDef = {
@@ -107,11 +116,15 @@ export const defineTool = <C, S extends z.ZodType>(def: {
 export type AgentEvent =
   | { type: "assistant_text"; text: string }
   | { type: "reasoning"; text: string }
-  /** A call's name is known (its arguments still streaming): shown at once. */
-  | { type: "tool_pending"; toolName: string }
+  /**
+   * A call's name is known, its arguments still streaming: shown at once. Every pending call is
+   * followed by its `tool_start` (in order, per tool name) and `tool_result`, a stopped one too.
+   */
+  | { type: "tool_pending"; toolName: string; callId?: string | undefined }
   | { type: "tool_start"; callId: string; toolName: string; args: unknown }
   | { type: "tool_result"; callId: string; toolName: string; result: unknown }
-  | { type: "done"; messages: LlmMessage[] }
+  /** `truncated`: the last answer hit the provider's length limit (it's incomplete). */
+  | { type: "done"; messages: LlmMessage[]; truncated?: boolean | undefined }
   | { type: "aborted"; messages: LlmMessage[] }
   | { type: "turn_limit"; maxTurns: number; messages: LlmMessage[] }
   | { type: "error"; message: string; messages: LlmMessage[] }

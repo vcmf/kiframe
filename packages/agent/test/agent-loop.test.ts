@@ -270,6 +270,7 @@ describe("runAgent: review fixes", () => {
     const { llm } = scripted([
       {
         kind: "tool_calls",
+        truncated: true,
         calls: [
           { id: "", name: "echo", arguments: '{"text":"a"}' },
           { id: "", name: "echo", arguments: '{"text":"cut' },
@@ -289,6 +290,93 @@ describe("runAgent: review fixes", () => {
     const cut = events.filter((e) => e.type === "tool_result")[1]
     expect(cut).toMatchObject({ result: { ok: false, error: "tool_rejected" } })
     expect(JSON.stringify(cut)).toMatch(/cut off/)
+    // Broken JSON the provider didn't cut: said so, never "make it shorter".
+    const broken = scripted([
+      {
+        kind: "tool_calls",
+        calls: [call("c9", "echo", { text: "a" }), { id: "c10", name: "echo", arguments: "{oops" }],
+      },
+    ])
+    const again = await collect(
+      runAgent({ userMessage: "go", tools: [echo], llm: broken.llm, context: { log: [] } }),
+    )
+    expect(JSON.stringify(again.filter((e) => e.type === "tool_result")[1])).toMatch(/valid JSON/)
+  })
+
+  it("keeps call ids unique across runs, never repeating history's", async () => {
+    const first = scripted([
+      { kind: "tool_calls", calls: [{ id: "", name: "echo", arguments: '{"text":"a"}' }] },
+    ])
+    const one = await collect(
+      runAgent({ userMessage: "go", tools: [echo], llm: first.llm, context: { log: [] } }),
+    )
+    const history =
+      one.at(-1)?.type === "done" ? (one.at(-1) as { messages: LlmMessage[] }).messages : []
+    const second = scripted([
+      { kind: "tool_calls", calls: [{ id: "", name: "echo", arguments: '{"text":"b"}' }] },
+    ])
+    const two = await collect(
+      runAgent({
+        userMessage: "again",
+        tools: [echo],
+        llm: second.llm,
+        context: { log: [] },
+        history,
+      }),
+    )
+    const idsOf = (events: AgentEvent[]) =>
+      events.flatMap((e) => (e.type === "tool_start" ? [e.callId] : []))
+    expect(idsOf(two).some((id) => idsOf(one).includes(id))).toBe(false)
+  })
+
+  it("ends aborted, not done, when the stop comes as the reply arrives; a reply ended early is an error", async () => {
+    const controller = new AbortController()
+    const llm: LlmClient = {
+      complete: () => {
+        controller.abort()
+        return Promise.resolve({ kind: "text", text: "half an ans" })
+      },
+    }
+    const stopped = await collect(
+      runAgent({ userMessage: "go", tools: [], llm, context: {}, signal: controller.signal }),
+    )
+    expect(stopped.at(-1)?.type).toBe("aborted")
+    const early: LlmClient = {
+      complete: () => Promise.reject(new Error("unused")),
+      async *completeStream() {
+        yield await Promise.resolve({ kind: "delta" as const, text: "half" })
+      },
+    }
+    const cut = await collect(runAgent({ userMessage: "go", tools: [], llm: early, context: {} }))
+    expect(cut.at(-1)).toMatchObject({ type: "error" })
+  })
+
+  it("always ends with an event: a schema that can't become JSON Schema, an odd thrown value", async () => {
+    const odd = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "odd",
+      description: "Throws something that can't be printed",
+      parameters: z.object({}),
+      run: () => {
+        const thrown = Object.create(null) as object
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the point: a non-Error
+        return Promise.reject(thrown)
+      },
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "odd", {})] }])
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [odd], llm, context: { log: [] } }),
+    )
+    expect(events.at(-1)?.type).toBe("done")
+    const noSchema = {
+      name: "x",
+      description: "x",
+      parameters: z.date(),
+      run: () => Promise.resolve(1),
+    }
+    const bad = await collect(
+      runAgent({ userMessage: "go", tools: [noSchema], llm: scripted([]).llm, context: {} }),
+    )
+    expect(bad.at(-1)?.type).toBe("error")
   })
 
   it("shows the text sent with tool calls without streaming, and a pending call as it streams", async () => {
