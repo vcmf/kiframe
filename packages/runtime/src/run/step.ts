@@ -23,7 +23,15 @@ export async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promis
   if (action.action !== "goto") await handleInterrupts(ctx, step)
   if (action.risky === true) await requireApproval(ctx, step, "risky step needs approval")
   ctx.options.onEvent?.({ kind: "step_start", step })
-  await perform(ctx, action, step)
+  const on = ctx.page
+  try {
+    await perform(ctx, action, step)
+  } catch (error) {
+    // The action closed its own page (a "Done" button calling window.close()): Playwright can end
+    // the click with "Target page … has been closed" as the close lands. It did what it should:
+    // syncPage goes back to the opener (or says there's none).
+    if (!on.isClosed()) throw error
+  }
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
   if (!["pause", "expect", "waitFor"].includes(action.action)) {

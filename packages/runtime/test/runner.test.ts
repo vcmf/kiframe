@@ -1203,6 +1203,16 @@ steps:
 `)
   })
 
+  it("returns to the opener when the click closes its page before it ends", async () => {
+    // Closed as the pointer reaches it: the click finds its page closed ("Target page … closed").
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: done, action: click, target: { by: role, role: button, name: Close at once } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
   it("returns to the opener when a popup closes itself while the step settles", async () => {
     await run(`overrides: { pacing: { settleMs: 400 } }
 setup: [{ action: goto, url: /opener }]

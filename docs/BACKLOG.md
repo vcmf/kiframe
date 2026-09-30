@@ -31,6 +31,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 ## @kiframe/runtime recorder (P0-5)
 - **Sensitive rects follow the element within a step:** a vault-filled field is re-measured at each step end (a new `sensitive` rect when it moved, an empty rect when it's gone). During a step that moves it (smooth scroll, re-layout) the blur lags; sampling per frame would fix it. Also the DOM-text scan for secret text shown elsewhere (APPROACHES §7.4), before v0.
 - **Stale recording folders after a crash:** `.<name>.recording-*` and `<name>.old-*` are removed in-process only; after a kill they stay (unblurred frames). Sweep folders whose pid is dead at the next recording / app start.
+- **A first frame of another shape:** the take's frame size is the first frame's; on a slow machine (CI, 2026-09-30) that frame can have another aspect ratio than the viewport, and `TakeMeta.parse` throws a raw ZodError out of `recordScenario` (seen once in `recorder.test.ts` "keeps the good take…"). Take the size from frames matching the viewport's shape (or the most common one), and make a mismatch a failed take, not a thrown ZodError.
 - **Frame size change mid-take:** only warned; `meta.frameSize` is the first frame's, and ffmpeg gets mixed sizes. Split the take or scale frames when a real app resizes during a take.
 - **Frames through a pipe:** frames are written as JPEG files then encoded by ffmpeg after the run; piping them into ffmpeg (image2pipe) would avoid the temporary files. Needs ffmpeg on PATH (Phase 0).
 - **Secrets encoded inside larger values:** the scrubber catches each secret and its common encodings, but not a secret embedded in a larger encoded value (e.g. `base64("user:hunter2")` in a URL). The vault's grants (SECRETS-DESIGN §3) and keeping URLs out of takes where possible are the real defences.
@@ -213,3 +214,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A provider repeating call ids across turns:** the loop keeps the provider's ids (a thought signature in `reasoning_details` is bound to its call's id) and renames only a missing one or one repeated within a turn. A provider numbering calls per turn (`call_0` every turn) would repeat ids in the history: rename both the call and its reasoning entry's id then, once such a provider is used.
 - **History is the engine's own output:** a history from another client isn't normalized (duplicate ids, dangling calls). Validate it on import, once one exists.
 - **Reasoning history size:** streamed `reasoning_details` fragments are kept as received (OpenRouter's rule), which makes stored chats larger with thinking models. Compaction of old turns if it matters.
+
+## @kiframe/studio (S2b)
+
+- **A snapshot scrubbed twice:** it's scrubbed whole before its cut (a split value), then again at the tools' boundary: one scrubber passed in would do both.
+- **Two error scrubs:** the tools' boundary rebuilds a scrubbed error (name kept) beside the runtime's `scrubError`; a StepError through a tool loses its reason and step. One shared helper when a tool needs them.

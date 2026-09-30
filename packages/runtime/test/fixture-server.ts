@@ -223,6 +223,7 @@ const pages: Record<string, string> = {
   "/quick-close": `<!doctype html><title>Provider</title><script>window.close()</script>`,
   // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
   "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
+    <button onmouseover="window.close()">Close at once</button>
     <button onclick="fetch('/').then(() => setTimeout(() => window.close(), 200))">Authorize</button>
     <label>Code <input id="code" style="position:absolute; left:300px; top:285px; width:200px; height:30px; box-sizing:border-box"></label>
     <style>@keyframes spin { to { transform: rotate(360deg) } } #spin { width: 40px; height: 40px; background: #888; animation: spin 0.5s linear infinite }</style><div id="spin"></div>`,
