@@ -1,27 +1,26 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it } from "vitest"
+import type { ProjectView } from "../../shared/ipc.ts"
 import { App } from "../src/app.tsx"
 import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
 
-const project = {
+const project: ProjectView = {
   name: "Acme Billing demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.acme.example",
   scenes: [
-    { id: "intro", title: "Intro" as const, status: "card" as const },
+    { id: "intro", title: "Intro", status: "card" },
     {
       id: "invoice",
       title: "Create an invoice",
-      kind: "recording" as const,
-      status: "recorded" as const,
+      status: "recorded",
     },
     {
       id: "send",
       title: "Send to a client",
-      kind: "recording" as const,
-      status: "grounded" as const,
+      status: "grounded",
     },
   ],
   problems: [],

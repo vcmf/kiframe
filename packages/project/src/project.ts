@@ -131,7 +131,10 @@ export function createProject(dir: string, init: NewProject): OpenedProject {
 export function openProject(dir: string): OpenedProject {
   const disk = new Map<string, string>()
   // A project first: a folder that isn't one (picked by mistake) is never touched.
-  const project = parseProjectJson(readKnown(dir, disk, PROJECT_FILE) ?? "")
+  const text = readKnown(dir, disk, PROJECT_FILE)
+  if (text === undefined)
+    throw new Error(`${dir} isn't a Kiframe project (it has no ${PROJECT_FILE})`)
+  const project = parseProjectJson(text)
   removeStrayTemps(dir)
   const scenes = new Map<string, StoredScene>()
   const problems: SceneProblem[] = []

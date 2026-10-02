@@ -8,14 +8,20 @@ export class KeyStore {
   readonly #backend: SecretBackend
   /** Whether a key is set, once read (main is the only writer: kept in step by set and clear). */
   #has: boolean | undefined
+  /** Bumped by every write: a read that a write overlapped never caches its answer. */
+  #writes = 0
 
   constructor(backend: SecretBackend) {
     this.#backend = backend
   }
 
   async hasKey(): Promise<boolean> {
-    this.#has ??= ((await this.#backend.get(ACCOUNT)) ?? "") !== ""
-    return this.#has
+    if (this.#has !== undefined) return this.#has
+    const writes = this.#writes
+    const has = ((await this.#backend.get(ACCOUNT)) ?? "") !== ""
+    if (writes !== this.#writes) return this.#has ?? has
+    this.#has = has
+    return has
   }
 
   /** The key, for main's own use (the model client); undefined when none is set. */
@@ -25,11 +31,13 @@ export class KeyStore {
   }
 
   async set(key: string): Promise<void> {
+    this.#writes += 1
     await this.#backend.set(ACCOUNT, key.trim())
     this.#has = key.trim() !== ""
   }
 
   async clear(): Promise<void> {
+    this.#writes += 1
     await this.#backend.delete(ACCOUNT)
     this.#has = false
   }

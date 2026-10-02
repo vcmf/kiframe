@@ -169,9 +169,12 @@ button:disabled {
   padding-left: 88px;
 }
 
-/* Windows and Linux: the system's window controls are drawn over the right end. */
+/* Windows and Linux: the system's window controls are drawn over the right end; the space they
+   take comes from the platform (Window Controls Overlay; its height is main's TITLE_BAR_HEIGHT). */
 .titlebar.overlay {
-  padding-right: 150px;
+  padding-right: calc(
+    100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, calc(100vw - 150px)) + 16px
+  );
 }
 
 /* An open menu's backdrop: a click anywhere closes it (the title bar is a drag region, which

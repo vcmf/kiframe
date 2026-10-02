@@ -169,7 +169,7 @@ describe("project store: failures and conflicts", () => {
   it("never touches a folder that isn't a project (picked by mistake)", () => {
     const other = mkdtempSync(join(tmpdir(), "kiframe-not-a-project-"))
     writeFileSync(join(other, ".0123456789ab.tmp"), "someone's file")
-    expect(() => openProject(other)).toThrow()
+    expect(() => openProject(other)).toThrow(/isn't a Kiframe project \(it has no project.json\)/)
     expect(existsSync(join(other, ".0123456789ab.tmp"))).toBe(true)
   })
 

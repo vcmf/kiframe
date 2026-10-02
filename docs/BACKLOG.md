@@ -234,3 +234,4 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 - **Main bundles the whole runtime:** `@kiframe/project`'s take store imports `isRecorderLeftover` from the `@kiframe/runtime` barrel, so main's bundle (≈390 KB) carries the runner and pngjs it doesn't use in S3a (S3b loads the runtime anyway). A leaf module for the leftover check, or a subpath export, if cold start matters.
 - **The JS bundle is ≈700 KB** (React and the app; icons are tree-shaken): fine from disk, measure before splitting.
+- **The sweep is synchronous:** after a crash with many leftover frames, `TakeStore.sweep()` (sync `rmSync`) blocks main for a while just after the window shows. An async sweep (fs/promises) when takes get large.

@@ -111,6 +111,7 @@ describe("the open project", () => {
   it("puts a new project in a new or empty folder only", () => {
     const parent = mkdtempSync(join(tmpdir(), "kiframe-new-"))
     expect(newProjectDir(join(parent, "Demo"))).toBe(join(parent, "Demo.kiframe"))
+    expect(newProjectDir(join(parent, "Demo.KIFRAME"))).toBe(join(parent, "Demo.KIFRAME"))
     mkdirSync(join(parent, "empty.kiframe"))
     expect(newProjectDir(join(parent, "empty.kiframe"))).toBe(join(parent, "empty.kiframe"))
     mkdirSync(join(parent, "work.kiframe"))
@@ -130,6 +131,7 @@ describe("the open project", () => {
     expect(projectFileName("con.")).toBe("con project.kiframe")
     expect(projectFileName("COM¹")).toBe("COM¹ project.kiframe")
     expect(projectFileName("console")).toBe("console.kiframe")
+    expect(Buffer.byteLength(projectFileName(`nul.${"演".repeat(110)}`))).toBeLessThanOrEqual(255)
     const long = projectFileName("演".repeat(120))
     expect(Buffer.byteLength(long)).toBeLessThanOrEqual(255)
     expect(long.endsWith(".kiframe")).toBe(true)

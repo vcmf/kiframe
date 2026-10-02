@@ -5,7 +5,7 @@ import { TakeStore } from "@kiframe/project"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import type { AppStatus } from "../shared/ipc.ts"
-import { registerHandlers } from "./ipc.ts"
+import { emit, registerHandlers } from "./ipc.ts"
 import { newProjectDir, ProjectSession, projectFileName, targetUrl } from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
@@ -141,7 +141,9 @@ function start(): void {
         try {
           new TakeStore(join(app.getPath("userData"), "data")).sweep()
         } catch (e) {
+          // After the window's first read: pushed to it (not an action's result).
           error = `couldn't clean up old recordings: ${message(e)}`
+          void status().then((now) => emit(window, "status", now))
         }
       })
     })

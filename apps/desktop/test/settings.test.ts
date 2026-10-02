@@ -39,4 +39,21 @@ describe("the OpenRouter key", () => {
     expect(await keys.hasKey()).toBe(false)
     expect(reads).toBe(1)
   })
+
+  it("never caches a read that a write overlapped", async () => {
+    const backend = memoryBackend()
+    let release: () => void = () => undefined
+    const get = backend.get.bind(backend)
+    backend.get = async (name) => {
+      const value = await get(name)
+      await new Promise<void>((r) => (release = r))
+      return value
+    }
+    const keys = new KeyStore(backend)
+    const reading = keys.hasKey()
+    await keys.set("sk-or-1")
+    release()
+    await reading
+    expect(await keys.hasKey()).toBe(true)
+  })
 })

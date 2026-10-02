@@ -36,8 +36,8 @@ export function projectFileName(name: string): string {
     .replace(/^[.\s]+/, "")
     // A trailing dot or space: Windows drops it (`con.` is `con`).
     .replace(/[.\s]+$/, "")
-  while (Buffer.byteLength(safe) > MAX_NAME_BYTES) safe = [...safe].slice(0, -1).join("").trimEnd()
   if (RESERVED.test(safe)) safe = `${safe.replace(/^([^.]*)/, "$1 project")}`
+  while (Buffer.byteLength(safe) > MAX_NAME_BYTES) safe = [...safe].slice(0, -1).join("").trimEnd()
   return `${safe === "" ? "Untitled" : safe}${PROJECT_EXTENSION}`
 }
 
@@ -46,7 +46,9 @@ export function projectFileName(name: string): string {
  * wasn't): refused unless it's new or empty (never mixed into a folder holding other files).
  */
 export function newProjectDir(picked: string): string {
-  const dir = picked.endsWith(PROJECT_EXTENSION) ? picked : `${picked}${PROJECT_EXTENSION}`
+  const dir = picked.toLowerCase().endsWith(PROJECT_EXTENSION)
+    ? picked
+    : `${picked}${PROJECT_EXTENSION}`
   if (existsSync(dir) && (!statSync(dir).isDirectory() || readdirSync(dir).length > 0)) {
     throw new Error(`${dir} already exists and isn't an empty folder: pick another name`)
   }

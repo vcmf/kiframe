@@ -27,15 +27,21 @@ export const useApp = create<AppState>((set, get) => ({
     api()
       .invoke("app:status")
       .then(
-        (status) => set({ status }),
-        (error: unknown) =>
-          set({
-            status: {
-              hasKey: false,
-              project: null,
-              error: `Kiframe didn’t start: ${String(error)}`,
-            },
-          }),
+        // Only if nothing newer came first (a push, an action's result).
+        (status) => {
+          if (get().status === null) set({ status })
+        },
+        (error: unknown) => {
+          if (get().status === null) {
+            set({
+              status: {
+                hasKey: false,
+                project: null,
+                error: `Kiframe didn’t start: ${String(error)}`,
+              },
+            })
+          }
+        },
       )
     return off
   },
@@ -50,9 +56,8 @@ export const useApp = create<AppState>((set, get) => ({
       const status = await api().invoke(channel, ...args)
       set({ status })
     } catch (error) {
-      const now = get().status
-      if (now !== null)
-        set({ status: { ...now, error: error instanceof Error ? error.message : String(error) } })
+      const now = get().status ?? { hasKey: false, project: null, error: null }
+      set({ status: { ...now, error: error instanceof Error ? error.message : String(error) } })
     } finally {
       set({ busy: null })
     }
