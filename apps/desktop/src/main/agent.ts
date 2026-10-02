@@ -47,8 +47,11 @@ export class AgentHost {
   #live: LiveView | undefined
   #run: { controller: AbortController; done: Promise<void> } | undefined
   readonly #pending = new Map<string, Pending>()
-  #text: { item: ChatItem; timer: ReturnType<typeof setTimeout> } | undefined
+  /** The streaming text item: sent, and its newer version (if any) waiting for the timer. */
+  #text: { item: ChatItem; newer: boolean; timer: ReturnType<typeof setTimeout> } | undefined
   #closed = false
+  /** The last run's live view stopping (its last frame): a next run starts it after. */
+  #liveStopped: Promise<void> = Promise.resolve()
 
   constructor(options: AgentHostOptions) {
     this.#options = options
@@ -102,6 +105,7 @@ export class AgentHost {
       const studio = await this.#ensureStudio()
       const llm = await this.#options.llm()
       this.#live ??= new LiveView(() => studio.currentPage, this.#options.frame)
+      await this.#liveStopped
       this.#live.start()
       for await (const event of runAgent({
         userMessage: text,
@@ -130,9 +134,12 @@ export class AgentHost {
       }
     } finally {
       this.#flushText()
-      await this.#live?.stop()
+      // The run is over for the user at once (Stop works, a message can go); the live view's last
+      // frame comes after, and a next run's live view waits for it.
       this.#run = undefined
       this.#options.running(false)
+      this.#liveStopped = this.#live?.stop() ?? Promise.resolve()
+      await this.#liveStopped
     }
   }
 
@@ -191,18 +198,19 @@ export class AgentHost {
     }
     if (this.#text !== undefined && this.#text.item.id === item.id) {
       this.#text.item = item
+      this.#text.newer = true
       return
     }
     this.#flushText()
     this.#options.item(item)
-    this.#text = { item, timer: setTimeout(() => this.#flushText(), TEXT_MS) }
+    this.#text = { item, newer: false, timer: setTimeout(() => this.#flushText(), TEXT_MS) }
   }
 
   #flushText(): void {
     if (this.#text === undefined) return
     clearTimeout(this.#text.timer)
-    const { item } = this.#text
+    const { item, newer } = this.#text
     this.#text = undefined
-    this.#options.item(item)
+    if (newer) this.#options.item(item)
   }
 }

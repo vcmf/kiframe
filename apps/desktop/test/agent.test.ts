@@ -47,6 +47,7 @@ function host(model: LlmClient | (() => Promise<LlmClient>)) {
     viewport: { width: 800, height: 600 },
   })
   const items = new Map<string, ChatItem>()
+  const sends: ChatItem[] = []
   const order: string[] = []
   const running: boolean[] = []
   const frames: LiveFrame[] = []
@@ -60,6 +61,7 @@ function host(model: LlmClient | (() => Promise<LlmClient>)) {
     llm,
     model: "test/model",
     item: (item) => {
+      sends.push(item)
       if (!items.has(item.id)) order.push(item.id)
       items.set(item.id, item)
     },
@@ -77,7 +79,7 @@ function host(model: LlmClient | (() => Promise<LlmClient>)) {
       await new Promise((r) => setTimeout(r, 25))
     }
   }
-  return { agent, shown, running, frames, until, changed: () => changed }
+  return { agent, shown, running, frames, until, sends, changed: () => changed }
 }
 
 describe("the agent in the app", () => {
@@ -86,7 +88,7 @@ describe("the agent in the app", () => {
       call("list_scenes", {}),
       { kind: "text", text: "The project has no scenes yet." },
     ])
-    const { agent, shown, running, until } = host(llm)
+    const { agent, shown, running, until, sends } = host(llm)
     expect(agent.send("what's in the project?")).toBeNull()
     await until(() => running.at(-1) === false)
     expect(shown()).toMatchObject([
@@ -96,6 +98,9 @@ describe("the agent in the app", () => {
       { kind: "end", outcome: "done" },
     ])
     expect(running).toEqual([true, false])
+    // A one-chunk answer is sent once (no repeat from the text timer).
+    await new Promise((r) => setTimeout(r, 150))
+    expect(sends.filter((i) => i.kind === "assistant")).toHaveLength(1)
     // The next run's model sees this one's turns.
     expect(agent.send("thanks")).toBeNull()
     await until(() => running.length === 4)

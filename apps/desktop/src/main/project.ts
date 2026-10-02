@@ -1,8 +1,7 @@
 // The open project: one at a time, opened or created from a folder main chose (never a path the
 // window sent), and shown to the window as a `ProjectView`.
-import { randomBytes } from "node:crypto"
 import { existsSync, readdirSync, statSync } from "node:fs"
-import { createProject, openProject, type OpenedProject } from "@kiframe/project"
+import type { OpenedProject } from "@kiframe/project"
 import { TargetApp } from "@kiframe/schema"
 import type { ProjectView, SceneView } from "../shared/ipc.ts"
 
@@ -53,49 +52,6 @@ export function newProjectDir(picked: string): string {
     throw new Error(`${dir} already exists and isn't an empty folder: pick another name`)
   }
   return dir
-}
-
-export class ProjectSession {
-  #opened: OpenedProject | null = null
-
-  get opened(): OpenedProject | null {
-    return this.#opened
-  }
-
-  /** Creates a project in `dir` and makes it the open one. */
-  create(dir: string, init: { name: string; url: string }): OpenedProject {
-    const opened = createProject(dir, {
-      id: `p-${randomBytes(8).toString("hex")}`,
-      name: init.name,
-      url: init.url,
-    })
-    this.#opened = opened
-    return opened
-  }
-
-  /** Opens the project in `dir` (its errors say why it doesn't read) and makes it the open one. */
-  open(dir: string): OpenedProject {
-    return this.use(this.peek(dir))
-  }
-
-  /** Opens the project in `dir` without making it the open one yet. */
-  peek(dir: string): OpenedProject {
-    return openProject(dir)
-  }
-
-  /** Makes an opened project the open one. */
-  use(opened: OpenedProject): OpenedProject {
-    this.#opened = opened
-    return opened
-  }
-
-  close(): void {
-    this.#opened = null
-  }
-
-  view(): ProjectView | null {
-    return this.#opened === null ? null : projectView(this.#opened)
-  }
 }
 
 /**

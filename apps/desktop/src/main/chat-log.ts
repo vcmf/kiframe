@@ -1,5 +1,6 @@
 // The chat as the window shows it, folded from the agent's events (pure: tested without the app).
 // Each change gives back the items that changed; the window replaces them by id.
+import { randomBytes } from "node:crypto"
 import { type AgentEvent, isToolFailure, isToolSoftError } from "@kiframe/agent"
 import type { ChatItem, ChatRequest } from "../shared/ipc.ts"
 
@@ -57,13 +58,20 @@ export function toolOutcome(result: unknown): {
 
 export class ChatLog {
   readonly items: ChatItem[] = []
+  /** This log's own prefix: its ids never meet another project's (the window keys items by id). */
+  readonly #prefix = randomBytes(4).toString("hex")
   #next = 0
+  /**
+   * The item of each call still going, by its provider id (a provider may reuse an id in a later
+   * turn: that call gets its own row, never the earlier one's).
+   */
+  readonly #calls = new Map<string, string>()
   /** The assistant item text goes into, until a tool or the run's end starts a new one. */
   #assistant: string | undefined
 
   #id(prefix: string): string {
     this.#next += 1
-    return `${prefix}-${this.#next}`
+    return `${prefix}-${this.#prefix}-${this.#next}`
   }
 
   #put(item: ChatItem): ChatItem {
@@ -109,10 +117,12 @@ export class ChatLog {
         return []
       case "tool_start": {
         this.#assistant = undefined
+        const id = this.#id("tool")
+        this.#calls.set(event.callId, id)
         return [
           this.#put({
             kind: "tool",
-            id: `tool-${event.callId}`,
+            id,
             name: event.toolName,
             detail: toolDetail(event.args),
             status: "running",
@@ -120,20 +130,18 @@ export class ChatLog {
         ]
       }
       case "tool_result": {
-        const item = this.items.find((i) => i.id === `tool-${event.callId}`)
+        const id = this.#calls.get(event.callId) ?? this.#id("tool")
+        this.#calls.delete(event.callId)
+        const item = this.items.find((i) => i.id === id)
         const base =
           item?.kind === "tool"
             ? item
-            : {
-                kind: "tool" as const,
-                id: `tool-${event.callId}`,
-                name: event.toolName,
-                detail: "",
-              }
+            : { kind: "tool" as const, id, name: event.toolName, detail: "" }
         return [this.#put({ ...base, ...toolOutcome(event.result) })]
       }
       default: {
         this.#assistant = undefined
+        this.#calls.clear()
         // The run's end: a call still shown running didn't finish (the run stopped or failed).
         const changed: ChatItem[] = []
         for (const item of this.items) {

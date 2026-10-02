@@ -13,6 +13,8 @@ export class LiveView {
   #followed: Page | undefined
   #timer: ReturnType<typeof setInterval> | undefined
   #lastSent = 0
+  #latest: { page: Page; data: Buffer } | undefined
+  #pending: ReturnType<typeof setTimeout> | undefined
   #switching: Promise<void> = Promise.resolve()
 
   constructor(page: () => Page | undefined, send: (frame: LiveFrame) => void) {
@@ -37,11 +39,23 @@ export class LiveView {
     await this.#switching
     const page = this.#page() ?? this.#followed
     await this.#switch(undefined)
+    clearTimeout(this.#pending)
+    this.#pending = undefined
+    this.#latest = undefined
     if (page === undefined || page.isClosed()) return
     const last = await page
       .screenshot({ type: "jpeg", quality: 70, timeout: 2000 })
       .catch(() => undefined)
     if (last !== undefined) this.#send({ jpeg: last.toString("base64"), path: pathOf(page) })
+  }
+
+  #flush(): void {
+    this.#pending = undefined
+    const latest = this.#latest
+    this.#latest = undefined
+    if (latest === undefined || latest.page !== this.#followed) return
+    this.#lastSent = Date.now()
+    this.#send({ jpeg: latest.data.toString("base64"), path: pathOf(latest.page) })
   }
 
   #follow(): void {
@@ -61,10 +75,13 @@ export class LiveView {
       .start({
         quality: 70,
         onFrame: ({ data }) => {
-          const now = Date.now()
-          if (now - this.#lastSent < FRAME_MS || page !== this.#followed) return
-          this.#lastSent = now
-          this.#send({ jpeg: data.toString("base64"), path: pathOf(page) })
+          if (page !== this.#followed) return
+          // At most every FRAME_MS, and never the last of a burst dropped: the latest one waits
+          // for its turn (the page may then stay still, the screencast sends nothing more).
+          this.#latest = { page, data }
+          if (this.#pending !== undefined) return
+          const wait = Math.max(0, this.#lastSent + FRAME_MS - Date.now())
+          this.#pending = setTimeout(() => this.#flush(), wait)
         },
       })
       .catch(() => {

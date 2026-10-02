@@ -9,13 +9,14 @@ import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
 import { AgentHost } from "./agent.ts"
 import { emit, registerHandlers } from "./ipc.ts"
-import { newProjectDir, ProjectSession, projectFileName, targetUrl } from "./project.ts"
+import { newProjectDir, projectFileName, targetUrl } from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
+import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
 const here = fileURLToPath(new URL(".", import.meta.url))
@@ -40,6 +41,8 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 /** The agent's model by default (OpenRouter ids; a picker comes later). */
 export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
+/** How long quitting waits for the run and the browser to close. */
+const QUIT_WAIT_MS = 5000
 
 function start(): void {
   let window: BrowserWindow | null = null
@@ -48,13 +51,24 @@ function start(): void {
   const keys = new KeyStore(
     memory ? memoryBackend() : keychainBackend(`${app.getName()} app${dev ? " (dev)" : ""}`),
   )
-  const project = new ProjectSession()
   let error: string | null = null
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
   let registry: Registry | undefined
-  /** The open project's agent (one per project, closed before another opens). */
-  let agent: AgentHost | undefined
+  /** The host's ids: read when first needed, and again after a failure (never replaced). */
+  const ids = (): Registry => {
+    if (registry !== undefined) return registry
+    const data = app.getPath("userData")
+    try {
+      registry = new Registry(data)
+      return registry
+    } catch (e) {
+      throw new Error(
+        `couldn't read the project registry (${join(data, "registry.json")}): ${message(e)}`,
+        { cause: e },
+      )
+    }
+  }
   /** The browser the agent works in: launched on first use, shared by every project. */
   let browser: Promise<Browser> | undefined
   const launch = (): Promise<Browser> => {
@@ -75,29 +89,33 @@ function start(): void {
     return OpenAiCompatibleClient.fromConfig({ apiKey, model: DEFAULT_MODEL })
   }
 
-  /** Makes `opened` the open project (null: none): the old one's agent stops and closes first. */
-  const switchTo = async (opened: OpenedProject | null): Promise<void> => {
-    const old = agent
-    agent = undefined
-    await old?.close()
-    if (opened === null || takes === undefined || registry === undefined) return
-    const ids = registry
-    agent = new AgentHost({
+  /**
+   * The open project and its agent, switched as one. An agent's events reach the window only while
+   * it's the open project's (the one closing never writes into the next one's chat).
+   */
+  const workspace: Workspace<AgentHost> = new Workspace((opened: OpenedProject) => {
+    const registry = ids()
+    if (takes === undefined) throw new Error("the app isn't ready yet")
+    const current = () => workspace.agent === host
+    const host: AgentHost = new AgentHost({
       project: opened,
-      scope: ids.scope(opened.dir),
-      sceneKey: (sceneId) => ids.sceneKey(opened.dir, sceneId),
+      scope: registry.scope(opened.dir),
+      sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
       takes,
       browser: launch,
       llm: model,
       model: DEFAULT_MODEL,
-      item: (item) => emit(window, "chat:item", item),
-      running: (running) => emit(window, "chat:running", running),
-      frame: (frame) => emit(window, "live:frame", frame),
-      projectChanged: () => void status().then((now) => emit(window, "status", now)),
+      item: (item) => current() && emit(window, "chat:item", item),
+      running: (running) => current() && emit(window, "chat:running", running),
+      frame: (frame) => current() && emit(window, "live:frame", frame),
+      projectChanged: () => {
+        if (current()) void status().then((now) => emit(window, "status", now))
+      },
     })
-  }
+    return host
+  })
 
-  const status = () => readStatus(() => keys.hasKey(), project.view(), error)
+  const status = () => readStatus(() => keys.hasKey(), workspace.view(), error)
   /** Runs one action: its failure becomes the status's error (cleared by the next action). */
   const act = async (work: () => Promise<void> | void): Promise<AppStatus> => {
     error = null
@@ -135,28 +153,27 @@ function start(): void {
     if (process.platform !== "darwin") app.quit()
   })
 
-  // Quitting: the run stops, the browser closes (no Chromium left behind), then the app quits.
-  let quitting = false
+  // Quitting: the run stops, the browser closes (no Chromium left behind), then the app quits. A
+  // second quit while that runs waits for it; a cleanup that hangs is cut after QUIT_WAIT_MS.
+  let cleanup: "idle" | "running" | "done" = "idle"
   app.on("before-quit", (event) => {
-    if (quitting) return
-    quitting = true
+    if (cleanup === "done") return
     event.preventDefault()
-    void (async () => {
-      await switchTo(null).catch(() => undefined)
+    if (cleanup === "running") return
+    cleanup = "running"
+    const work = (async () => {
+      await workspace.close().catch(() => undefined)
       await (await browser?.catch(() => undefined))?.close().catch(() => undefined)
-      app.quit()
     })()
+    void Promise.race([work, new Promise((r) => setTimeout(r, QUIT_WAIT_MS))]).then(() => {
+      cleanup = "done"
+      app.quit()
+    })
   })
 
   void app.whenReady().then(() => {
     const data = app.getPath("userData")
     takes = new TakeStore(join(data, "data"))
-    try {
-      registry = new Registry(data)
-    } catch (e) {
-      // Never replaced (approvals hang on it): the agent waits until it reads again.
-      error = `couldn't read the project registry (${join(data, "registry.json")}): ${message(e)}`
-    }
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -187,7 +204,7 @@ function start(): void {
               properties: ["createDirectory", "showOverwriteConfirmation"],
             })
             if (picked.canceled || picked.filePath === undefined) return
-            await switchTo(project.create(newProjectDir(picked.filePath), { name: init.name, url }))
+            await workspace.create(newProjectDir(picked.filePath), { name: init.name, url })
           }),
         "project:open": () =>
           act(async () => {
@@ -198,24 +215,22 @@ function start(): void {
             })
             const dir = picked.filePaths[0]
             if (picked.canceled || dir === undefined) return
-            // Opened first: a folder that doesn't open keeps the current project (and its agent).
-            const opened = project.peek(dir)
-            await switchTo(opened)
-            project.use(opened)
+            // A folder that doesn't open keeps the current project (and its agent).
+            await workspace.open(dir)
           }),
-        "project:close": () =>
-          act(async () => {
-            await switchTo(null)
-            project.close()
-          }),
+        "project:close": () => act(() => workspace.close()),
         "external:open": async (url) => {
           if (isSafeExternal(url)) await shell.openExternal(url)
         },
-        "chat:state": () => agent?.state() ?? { items: [], running: false, model: DEFAULT_MODEL },
+        "chat:state": () =>
+          workspace.agent?.state() ?? { items: [], running: false, model: DEFAULT_MODEL },
         // `send` answers null when the run started: never read as "no agent".
-        "chat:send": (text) => (agent === undefined ? "open a project first" : agent.send(text)),
-        "chat:stop": () => agent?.stop(),
-        "chat:answer": (id, answer) => agent?.answer(id, answer),
+        "chat:send": (text) => {
+          const agent = workspace.agent
+          return agent === undefined ? "open a project first" : agent.send(text)
+        },
+        "chat:stop": () => workspace.agent?.stop(),
+        "chat:answer": (id, answer) => workspace.agent?.answer(id, answer),
       },
       devServer,
     )

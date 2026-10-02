@@ -73,6 +73,25 @@ describe("the chat, folded from the agent's events", () => {
     })
   })
 
+  it("gives a call its own row even when the provider reuses its id, and never meets another log's ids", () => {
+    const log = new ChatLog()
+    log.event({ type: "tool_start", callId: "call_0", toolName: "snapshot", args: {} })
+    log.event({ type: "tool_result", callId: "call_0", toolName: "snapshot", result: "url: /" })
+    log.event({ type: "tool_start", callId: "call_0", toolName: "run_step", args: {} })
+    log.event({
+      type: "tool_result",
+      callId: "call_0",
+      toolName: "run_step",
+      result: "ok. url: /x",
+    })
+    expect(log.items).toMatchObject([
+      { name: "snapshot", status: "ok" },
+      { name: "run_step", status: "ok" },
+    ])
+    const other = new ChatLog()
+    expect(other.user("hi").id).not.toBe(new ChatLog().user("hi").id)
+  })
+
   it("keeps a request open until answered or closed, once", () => {
     const log = new ChatLog()
     const item = log.request({

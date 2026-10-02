@@ -165,4 +165,20 @@ describe("the chat", () => {
     expect(await screen.findByText("earlier message")).toBeTruthy()
     expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy()
   })
+
+  it("starts another project's chat empty (nothing of the last one's left)", async () => {
+    const { push } = open()
+    await screen.findByLabelText("Message the agent")
+    act(() => {
+      push("chat:item", { kind: "user", id: "user-a-1", text: "project A's message" })
+      push("live:frame", { jpeg: "AAAA", path: "/a" })
+    })
+    expect(screen.getByText("project A's message")).toBeTruthy()
+    act(() =>
+      push("status", status({ hasKey: true, project: { ...project, dir: "/tmp/b.kiframe" } })),
+    )
+    await screen.findByLabelText("Message the agent")
+    expect(screen.queryByText("project A's message")).toBeNull()
+    expect(useChat.getState().frame).toBeNull()
+  })
 })
