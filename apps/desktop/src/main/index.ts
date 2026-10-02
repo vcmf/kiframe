@@ -14,6 +14,7 @@ import { newProjectDir, projectFileName, targetUrl } from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
+import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
@@ -56,6 +57,8 @@ function start(): void {
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
   let registry: Registry | undefined
+  /** The app's secrets (the vault in app data, values in the keychain), once ready. */
+  let secrets: Secrets | undefined
   /** The host's ids: read when first needed, and again after a failure (never replaced). */
   const ids = (): Registry => {
     if (registry !== undefined) return registry
@@ -99,11 +102,39 @@ function start(): void {
     return OpenAiCompatibleClient.fromConfig({ apiKey, model: DEFAULT_MODEL })
   }
 
-  /** What an agent needs (the host's ids, the take store): throws when it can't be had now. */
+  /** The app's secrets: the vault read when first needed, and again after a failure (said). */
+  const vault = (): Secrets => {
+    if (secrets !== undefined) return secrets
+    const path = join(app.getPath("userData"), "vault.json")
+    try {
+      secrets = new Secrets(
+        path,
+        memory ? memoryBackend() : keychainBackend(`${app.getName()}${dev ? " (dev)" : ""}`),
+      )
+      return secrets
+    } catch (e) {
+      // Never replaced (the user would lose track of their secrets).
+      throw new Error(`couldn't read the secrets (${path}): ${message(e)}`, { cause: e })
+    }
+  }
+  const vaultOrNull = (): Secrets | undefined => {
+    try {
+      return vault()
+    } catch {
+      return undefined
+    }
+  }
+
+  /** What an agent needs (the host's ids, the take store, the secrets): throws when it can't. */
   const ready = (): { registry: Registry; takes: TakeStore } => {
     const registry = ids()
     if (takes === undefined) throw new Error("the app isn't ready yet")
     return { registry, takes }
+  }
+  /** The open project's app origin (its secrets are those usable there). */
+  const origin = (): string | null => {
+    const url = workspace.view()?.url
+    return url === null || url === undefined ? null : new URL(url).origin
   }
 
   /**
@@ -122,6 +153,7 @@ function start(): void {
         browser: launch,
         llm: model,
         model: DEFAULT_MODEL,
+        secrets: vaultOrNull,
         item: (item) => current() && emit(window, "chat:item", item),
         running: (running) => current() && emit(window, "chat:running", running),
         frame: (frame) => current() && emit(window, "live:frame", frame),
@@ -253,6 +285,33 @@ function start(): void {
         "chat:send": (text) => {
           const agent = workspace.agent
           return agent === undefined ? "open a project first" : agent.send(text)
+        },
+        // An unreadable vault says why here (projects still open: a secret step can't run).
+        "secrets:list": async () => {
+          const secrets = vault()
+          await secrets.ready()
+          return secrets.list(origin())
+        },
+        "secrets:add": async (form) => {
+          const at = origin()
+          if (at === null) return "open a project with an app address first"
+          try {
+            await vault().add(form, at)
+            return null
+          } catch (e) {
+            // A refusal names the secret and why, never the value.
+            return message(e)
+          }
+        },
+        "secrets:remove": async (name) => {
+          const at = origin()
+          if (at === null) return "open a project with an app address first"
+          try {
+            await vault().remove(name, at)
+            return null
+          } catch (e) {
+            return message(e)
+          }
         },
         "chat:stop": () => workspace.agent?.stop(),
         "chat:answer": (id, answer) => workspace.agent?.answer(id, answer),

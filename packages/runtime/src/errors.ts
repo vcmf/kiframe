@@ -94,4 +94,11 @@ export interface ApprovalRequest {
   use: SecretUse
   /** The element's box on the page (CSS pixels): what the prompt outlines. */
   box?: { x: number; y: number; width: number; height: number } | undefined
+  /**
+   * The page as it is (a JPEG, base64, of the viewport, `width`×`height` CSS pixels), the element in
+   * view (the step brought it there): the prompt shows it outlined (§3 A3: built from the live page).
+   * Taken before the value is typed; the user's own screen, for their prompt only (never the
+   * agent, a take or a file).
+   */
+  shot?: { jpeg: string; width: number; height: number } | undefined
 }

@@ -316,6 +316,10 @@ const pages: Record<string, string> = {
         }
       })
     </script>`,
+  // A login whose password field is below the fold.
+  "/login-below": `<!doctype html><title>Login (below)</title>
+    <div style="height:2400px">A long page</div>
+    <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>`,
   "/login-form": `<!doctype html><title>Login form</title>
     <label>Email <input type="email"></label>
     <label>Age <input type="number"></label>

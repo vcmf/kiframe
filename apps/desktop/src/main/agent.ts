@@ -5,12 +5,33 @@ import type { LlmClient, LlmMessage } from "@kiframe/agent"
 import { runAgent } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
 import { resolveProjectConfig } from "@kiframe/schema"
-import { Studio, studioTools, systemPrompt, type UserRequest } from "@kiframe/studio"
+import { Studio, studioTools, systemPrompt } from "@kiframe/studio"
 import type { Browser } from "playwright"
-import type { ChatItem, ChatState, LiveFrame } from "../shared/ipc.ts"
+import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
+import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
+import type { Secrets } from "./secrets.ts"
+
+/** `work`, or the stop: a keychain prompt waiting for the user never holds Stop. */
+function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("stopped"))
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(new Error("stopped"))
+    signal.addEventListener("abort", stop, { once: true })
+    work.then(
+      (v) => {
+        signal.removeEventListener("abort", stop)
+        resolve(v)
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", stop)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      },
+    )
+  })
+}
 
 /** Assistant text repainted at most this often (tool steps and requests at once). */
 const TEXT_MS = 100
@@ -28,6 +49,11 @@ export interface AgentHostOptions {
   /** The model for a run (built from the key in the keychain then). */
   llm: () => Promise<LlmClient>
   model: string
+  /**
+   * The app's secrets, when the vault reads (asked again each time a studio is made: a vault read
+   * later is picked up; none: a scene typing one fails, "no secret resolver given").
+   */
+  secrets?: () => Secrets | undefined
   item: (item: ChatItem) => void
   running: (running: boolean) => void
   frame: (frame: LiveFrame) => void
@@ -36,8 +62,46 @@ export interface AgentHostOptions {
 }
 
 interface Pending {
-  request: UserRequest
+  request: ChatRequest
   resolve: (answer: string | boolean) => void
+}
+
+/**
+ * A step key as the user reads it ("pw, in the setup of scene login"; "pw, in the login preset").
+ * `scenes`: the scene of each host key.
+ */
+export function stepLabel(
+  stepKey: string,
+  scenes: ReadonlyMap<string, string> = new Map(),
+): string {
+  const scene = /^scene:([^/]+)\/(setup|steps|teardown)\/(.+)$/.exec(stepKey)
+  if (scene !== null) {
+    const part = scene[2] === "steps" ? "the steps" : `the ${scene[2]}`
+    const name = scenes.get(scene[1] ?? "")
+    return `${scene[3]}, in ${part} of ${name === undefined ? "a scene" : `scene ${name}`}`
+  }
+  const preset = /^preset:([^/]+)\/(.+)$/.exec(stepKey)
+  if (preset !== null) return `${preset[2]}, in the ${preset[1]} preset`
+  const interrupt = /interrupt:(.+)$/.exec(stepKey)
+  return interrupt !== null ? `the ${interrupt[1]} interrupt rule` : stepKey
+}
+
+/** The approval prompt, from the live page only (§3 A3: never the agent's words). */
+export function secretRequest(
+  request: ApprovalRequest,
+  scenes: ReadonlyMap<string, string> = new Map(),
+): ChatRequest {
+  const { use } = request
+  return {
+    kind: "approve-secret",
+    secret: request.secret,
+    element: use.element,
+    origin: use.origin,
+    path: use.path,
+    step: stepLabel(use.stepKey, scenes),
+    ...(request.shot !== undefined && { shot: request.shot }),
+    ...(request.box !== undefined && { box: request.box }),
+  }
 }
 
 export class AgentHost {
@@ -45,6 +109,10 @@ export class AgentHost {
   readonly #log = new ChatLog()
   #history: LlmMessage[] = []
   #studio: Studio | undefined
+  /** The studio was made with the app's secrets. */
+  #withSecrets = false
+  /** The scene of each key the studio was given (a prompt names the scene). */
+  readonly #scenes = new Map<string, string>()
   /** The browser the studio was made in. */
   #browser: Browser | undefined
   /** The live app's last frame (a reloaded window shows where the run ended). */
@@ -90,9 +158,7 @@ export class AgentHost {
     const pending = this.#pending.get(id)
     if (pending === undefined) return
     const fits =
-      pending.request.kind === "approve-risky"
-        ? typeof answer === "boolean"
-        : typeof answer === "string"
+      pending.request.kind === "question" ? typeof answer === "string" : typeof answer === "boolean"
     if (fits) pending.resolve(answer)
   }
 
@@ -110,7 +176,9 @@ export class AgentHost {
     this.#notify("running", true)
     this.#emit(this.#log.user(text))
     try {
-      const studio = await this.#ensureStudio()
+      const studio = await untilStopped(this.#ensureStudio(), signal)
+      // Every run: a value the keychain didn't give before (a dismissed prompt) is read again.
+      await untilStopped(this.#options.secrets?.()?.ready() ?? Promise.resolve(), signal)
       const llm = await this.#options.llm()
       this.#live ??= new LiveView(
         () => studio.currentPage,
@@ -162,13 +230,28 @@ export class AgentHost {
 
   async #ensureStudio(): Promise<Studio> {
     // A studio whose browser died (crashed, killed) is made again in a new one.
-    if (this.#studio !== undefined && this.#browser?.isConnected() !== false) return this.#studio
+    // ... and one made without secrets is made again once the vault reads.
+    const fresh =
+      this.#studio !== undefined &&
+      this.#browser?.isConnected() !== false &&
+      (this.#withSecrets || this.#options.secrets?.() === undefined)
+    if (fresh && this.#studio !== undefined) return this.#studio
     await this.#studio?.close().catch(() => undefined)
     this.#studio = undefined
     this.#live = undefined
-    const { project, scope, sceneKey, takes } = this.#options
+    const { project, scope, takes } = this.#options
+    // Every key handed out, to name its scene in a prompt (the approval's step key holds the key).
+    const sceneKey = (sceneId: string) => {
+      const key = this.#options.sceneKey(sceneId)
+      this.#scenes.set(key, sceneId)
+      return key
+    }
     const { config } = resolveProjectConfig(project.project, undefined)
-    const browser = await this.#options.browser()
+    const secrets = this.#options.secrets?.()
+    this.#withSecrets = secrets !== undefined
+    // Every value known before anything runs (R6); the browser launches meanwhile.
+    const [browser] = await Promise.all([this.#options.browser(), secrets?.ready()])
+    const origin = new URL(config.target.url).origin
     this.#browser = browser
     this.#studio = new Studio({
       project,
@@ -178,14 +261,44 @@ export class AgentHost {
       takes,
       browser,
       requestUser: (request, signal) => this.#ask(request, signal),
+      // Secrets (when the app has its vault): names for the agent, values for granted uses only,
+      // every value known to the scrubber and the blur; an ungranted use asks the user.
+      ...(secrets !== undefined && {
+        secrets: () => secrets.names(origin),
+        resolveSecret: (name: string, use: SecretUse) => secrets.resolve(name, use),
+        knownValues: () => secrets.knownValues(),
+        requestApproval: async (request: ApprovalRequest, signal: AbortSignal) => {
+          let item = ""
+          const approved =
+            (await this.#ask(secretRequest(request, this.#scenes), signal, (id) => {
+              item = id
+            })) === true
+          if (!approved) return false
+          // Granted only by the user's answer, in main (never by the agent). Not stored (the secret
+          // removed meanwhile): the chat says it wasn't, and the step fails.
+          try {
+            await secrets.approve(request.secret, request.use)
+          } catch (error) {
+            const revised = this.#log.revise(item, false)
+            if (revised !== undefined) this.#emit(revised)
+            throw error
+          }
+          return true
+        },
+      }),
     })
     return this.#studio
   }
 
   /** A request shown in the chat until answered, or closed by the stop (it then rejects). */
-  #ask(request: UserRequest, signal: AbortSignal): Promise<string | boolean> {
+  #ask(
+    request: ChatRequest,
+    signal: AbortSignal,
+    onItem?: (id: string) => void,
+  ): Promise<string | boolean> {
     signal.throwIfAborted()
     const item = this.#log.request(request)
+    onItem?.(item.id)
     this.#emit(item)
     return new Promise((resolve, reject) => {
       const done = () => {

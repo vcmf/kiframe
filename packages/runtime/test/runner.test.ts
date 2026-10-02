@@ -184,6 +184,22 @@ ${extra}`
       },
     })
 
+    it("scrolls the field into view for the approval's screenshot (its outline is in it)", async () => {
+      const vault = await vaultWithPassword()
+      const asked: ApprovalRequest[] = []
+      await run(
+        `setup: [{ action: goto, url: /login-below }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`,
+        approving(vault, asked),
+      )
+      const { box, shot } = asked[0]!
+      expect(box).toBeDefined()
+      expect(box!.y).toBeGreaterThanOrEqual(0)
+      expect(box!.y + box!.height).toBeLessThanOrEqual(shot!.height)
+    })
+
     it("asks once in an interactive run, then types without asking", async () => {
       const vault = await vaultWithPassword()
       const asked: ApprovalRequest[] = []
@@ -197,6 +213,18 @@ ${extra}`
         element: { tag: "input", type: "password", label: "Password input" },
       })
       expect(asked[0]?.box).toBeDefined()
+      // The page as it is, to outline the field on: before the value is typed.
+      const shot = asked[0]?.shot
+      expect(shot).toMatchObject({
+        width: expect.any(Number) as unknown,
+        height: expect.any(Number) as unknown,
+      })
+      // A JPEG of the page as it is (the user's own screen).
+      expect(
+        Buffer.from(shot?.jpeg ?? "", "base64")
+          .subarray(0, 2)
+          .toString("hex"),
+      ).toBe("ffd8")
       // Headless now: granted, no hook needed.
       await run(into(password), { ...scope, resolveSecret: vault.resolver() })
       expect(asked).toHaveLength(1)

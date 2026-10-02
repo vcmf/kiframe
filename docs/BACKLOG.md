@@ -246,3 +246,16 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A tool's failure read from its words:** the chat tells a failed step by the studio's wording ("failed (…)", "replay failed: …"). The studio returning failures as soft errors (`{ error }`) would make it structural.
 - **The project refreshed after a list of tools:** the host refreshes the scene strip after `save_scene` / `record_scene` by name. A project-changed callback from the studio (or `saveScene`) would cover any tool that writes the project.
 
+## @kiframe/desktop (S3c)
+
+- **Approve for a wider path** (§3 A3's third choice): the dialog has Allow and Decline; a grant covers the page's path pattern (ids as `*`). Add the wider choice when a real app needs it.
+- **The approvals, listed:** the panel lists secrets, not their grants; removing a secret (or taking it off an app) drops its approvals. A per-step list with revoke (the vault has `grants` / `revoke`) when users ask what they approved.
+- **The approval's screenshot is the page as it is** (APPROACHES §0, 2026-10-02): the user's own values typed earlier show in it (their own screen, to them only, never the agent or a take). Masking them proved fragile; revisit if screen sharing during approvals becomes a real case.
+- **One secret for several apps:** the panel refuses a name another app already uses (its value there would be replaced unseen). Sharing one secret across apps (staging and prod logins alike) needs its own choice in the panel.
+- **A secret on the app's other origins:** a secret is added for the project URL's origin only; a login that redirects to `www.` or an SSO host is refused there ("isn't allowed on …", not an approval). The panel adding origins to a secret (the vault keeps several) when a real app does this.
+- **The approval's step from its key:** the dialog's "Step" line is parsed from the runtime's step key; an `ApprovalRequest` carrying the step's parts (phase, id, preset, rule, scene key) would make it structural.
+- **A grant stored before the chat says "Allowed":** the request is settled when the user answers, then the grant is stored; if storing fails (the secret removed meanwhile) the chat is revised to declined and the step fails as "unavailable". Storing first, then settling, would say it right the first time.
+- **A studio made again once the vault reads:** it closes the live page (the agent's next step starts on a fresh one though its history says where it was). Rare (the vault unreadable at a project's first run); keep the live context when only the secrets change.
+- **Why a secret step has no resolver:** with the vault unreadable, a secret step fails "no secret resolver given"; the Secrets panel says why, the run doesn't.
+- **Stop during the approval's screenshot:** the screenshot (up to 3 s) isn't stopped by the run's signal.
+

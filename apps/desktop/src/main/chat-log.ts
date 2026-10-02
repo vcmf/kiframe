@@ -92,14 +92,26 @@ export class ChatLog {
     return this.#put({ kind: "request", id: this.#id("request"), request, state: "open" })
   }
 
+  /** An answered request's answer changed after the fact (a grant that couldn't be stored). */
+  revise(id: string, answer: string | boolean): ChatItem | undefined {
+    const item = this.items.find((i) => i.id === id)
+    if (item?.kind !== "request" || item.state !== "answered") return undefined
+    return this.#put({ ...item, answer })
+  }
+
   /** The request's end: answered (with the answer) or closed by the stop. */
   settle(id: string, end: { answer: string | boolean } | "closed"): ChatItem | undefined {
     const item = this.items.find((i) => i.id === id)
     if (item?.kind !== "request" || item.state !== "open") return undefined
+    // A secret's screenshot goes with the question (kept, it would sit in the chat for good).
+    const request =
+      item.request.kind === "approve-secret"
+        ? (({ shot: _shot, ...rest }) => rest)(item.request)
+        : item.request
     return this.#put(
       end === "closed"
-        ? { ...item, state: "closed" }
-        : { ...item, state: "answered", answer: end.answer },
+        ? { ...item, request, state: "closed" }
+        : { ...item, request, state: "answered", answer: end.answer },
     )
   }
 

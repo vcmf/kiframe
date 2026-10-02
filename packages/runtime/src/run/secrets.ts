@@ -6,7 +6,13 @@ import {
   type Target,
 } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
-import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
+import {
+  type ApprovalRequest,
+  isSecretRefusal,
+  type SecretUse,
+  StepError,
+  type StepRef,
+} from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { isNavigationError, viewportOf } from "../targets.ts"
@@ -416,7 +422,8 @@ async function resolveSecret(
       const ask = ctx.options.requestApproval
       if (!isSecretRefusal(error) || error.reason !== "no-grant" || ask === undefined) throw error
       const box = (await input.boundingBox().catch(() => null)) ?? undefined
-      if (!(await guard(step, async () => ask({ secret: name, use, box })))) {
+      const shot = await pageShot(ctx.page)
+      if (!(await guard(step, async () => ask({ secret: name, use, box, shot })))) {
         throw new StepError(
           step,
           "secret-declined",
@@ -434,6 +441,20 @@ async function resolveSecret(
     }
     throw new StepError(step, "secret-unavailable", `secret "${name}" is unavailable`)
   }
+}
+
+/**
+ * The viewport as it is, for an approval prompt (undefined if it can't be taken): the user's own
+ * screen, shown to them only (APPROACHES §0: never masked; it never reaches the agent or a take).
+ */
+async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
+  const size = page.viewportSize()
+  if (size === null) return undefined
+  const jpeg = await page
+    .screenshot({ type: "jpeg", quality: 75, timeout: 3000, caret: "initial", animations: "allow" })
+    .catch(() => undefined)
+  if (jpeg === undefined) return undefined
+  return { jpeg: jpeg.toString("base64"), width: size.width, height: size.height }
 }
 
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */

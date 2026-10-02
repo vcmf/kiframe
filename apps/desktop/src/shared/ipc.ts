@@ -36,6 +36,33 @@ export interface ProjectView {
 export type ChatRequest =
   | { kind: "question"; question: string }
   | { kind: "approve-risky"; scene: string; step: string; action: string }
+  /**
+   * A secret typed where no approval covers it yet (§3 A3), built from the live page only (never
+   * the agent's words): the element, the page, the step, and the page as it is with the element
+   * outlined. The shot goes once the request is answered or closed.
+   */
+  | {
+      kind: "approve-secret"
+      secret: string
+      element: { tag: string; type: string; label: string | null }
+      origin: string
+      path: string
+      /** The step that types it ("pw, in the setup"). */
+      step: string
+      /** The page as it is (a JPEG, base64); `width`×`height` CSS pixels. */
+      shot?: { jpeg: string; width: number; height: number }
+      box?: { x: number; y: number; width: number; height: number }
+    }
+
+/** A secret as the window shows it: never its value. */
+export interface SecretView {
+  name: string
+  kind: "password" | "username" | "api_key" | "text"
+  /** Where it may be typed. */
+  origins: string[]
+  /** Its value is in the keychain on this machine. */
+  provided: boolean
+}
 
 /**
  * One item of the chat, as main folds the agent's events (the window only shows them): a new
@@ -125,6 +152,24 @@ export const invokeArgs = {
   "chat:stop": z.tuple([]),
   /** The user's answer to an open request (by its item id). */
   "chat:answer": z.tuple([z.string().max(64), z.union([z.string().max(5000), z.boolean()])]),
+  /** The open project's secrets (usable on its app). */
+  "secrets:list": z.tuple([]),
+  /**
+   * A secret for the open project's app: its value goes to the keychain (never back to the
+   * window). Its name is checked in main (a secret name, never a value).
+   */
+  "secrets:add": z.tuple([
+    z.strictObject({
+      name: z.string().trim().min(1).max(120),
+      kind: z.enum(["password", "username", "api_key", "text"]),
+      value: z.string().min(1).max(4096),
+    }),
+  ]),
+  /**
+   * Takes a secret off the open project's app (its approvals there); the secret itself goes when
+   * no other app uses it. Its name is checked in main.
+   */
+  "secrets:remove": z.tuple([z.string().max(120)]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
 
 export type InvokeChannel = keyof typeof invokeArgs
@@ -144,6 +189,10 @@ export interface InvokeResults {
   "chat:send": string | null
   "chat:stop": void
   "chat:answer": void
+  "secrets:list": SecretView[]
+  /** null when done; else why not, in words. */
+  "secrets:add": string | null
+  "secrets:remove": string | null
 }
 
 /** What main pushes to the window. */
