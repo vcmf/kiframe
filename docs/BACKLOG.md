@@ -229,3 +229,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 - **A snapshot scrubbed twice:** it's scrubbed whole before its cut (a split value), then again at the tools' boundary: one scrubber passed in would do both.
 - **Two error scrubs:** the tools' boundary rebuilds a scrubbed error (name kept) beside the runtime's `scrubError`; a StepError through a tool loses its reason and step. One shared helper when a tool needs them.
+
+## @kiframe/desktop (S3a)
+
+- **Main bundles the whole runtime:** `@kiframe/project`'s take store imports `isRecorderLeftover` from the `@kiframe/runtime` barrel, so main's bundle (≈390 KB) carries the runner and pngjs it doesn't use in S3a (S3b loads the runtime anyway). A leaf module for the leftover check, or a subpath export, if cold start matters.
+- **The JS bundle is ≈700 KB** (React and the app; icons are tree-shaken): fine from disk, measure before splitting.

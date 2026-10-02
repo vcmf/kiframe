@@ -18,15 +18,25 @@ export function targetUrl(url: string): string {
   return parsed.data
 }
 
-/** A project name as a folder name: no separators or characters a file system refuses. */
+/** Names Windows refuses as a file name, with any extension. */
+const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
+/** Bytes a folder name may hold: 255 on most file systems, the extension included. */
+const MAX_NAME_BYTES = 255 - Buffer.byteLength(PROJECT_EXTENSION)
+
+/**
+ * A project name as a folder name: no separators, characters or names a file system refuses, no
+ * leading dots or spaces, and short enough in bytes.
+ */
 export function projectFileName(name: string): string {
-  const safe = name
+  let safe = name
     // Separators, characters Windows refuses, and control characters.
     // eslint-disable-next-line no-control-regex
     .replace(/[/\\:*?"<>|\u0000-\u001f]/g, " ")
     .replace(/\s+/g, " ")
+    .replace(/^[.\s]+/, "")
     .trim()
-    .replace(/^\.+/, "")
+  while (Buffer.byteLength(safe) > MAX_NAME_BYTES) safe = [...safe].slice(0, -1).join("").trimEnd()
+  if (RESERVED.test(safe)) safe = `${safe} project`
   return `${safe === "" ? "Untitled" : safe}${PROJECT_EXTENSION}`
 }
 
@@ -97,7 +107,6 @@ export function projectView(opened: OpenedProject): ProjectView {
       views.push({
         id,
         title: id,
-        kind: missing ? "missing" : "unreadable",
         status: missing ? "missing" : "unreadable",
         ...(problem !== "" && { problem }),
       })
@@ -105,11 +114,11 @@ export function projectView(opened: OpenedProject): ProjectView {
     }
     const { scene } = stored
     if (broken.length > 0) {
-      views.push({ id, title: scene.title, kind: "unreadable", status: "unreadable", problem })
+      views.push({ id, title: scene.title, status: "unreadable", problem })
       continue
     }
     if (scene.source.kind === "card") {
-      views.push({ id, title: scene.title, kind: "card", status: "card" })
+      views.push({ id, title: scene.title, status: "card" })
       continue
     }
     const status =
@@ -118,7 +127,7 @@ export function projectView(opened: OpenedProject): ProjectView {
         : stored.scenario !== undefined
           ? "grounded"
           : "empty"
-    views.push({ id, title: scene.title, kind: "recording", status })
+    views.push({ id, title: scene.title, status })
   }
   return {
     name: project.name,

@@ -26,8 +26,8 @@ export function SceneStrip(props: {
       </div>
       {problems.length > 0 && (
         <ul className="strip-problems" aria-label="Problems">
-          {problems.map((p) => (
-            <li key={p}>
+          {problems.map((p, i) => (
+            <li key={i}>
               <WarningCircle size={13} weight="fill" />
               {p}
             </li>
@@ -52,8 +52,8 @@ export function SceneStrip(props: {
                   title={scene.problem}
                   onClick={() => props.onSelect(scene.id)}
                 >
-                  <div className={`scene-thumb${scene.kind === "card" ? " card" : ""}`}>
-                    {scene.kind === "card" ? scene.title : <FilmSlate size={22} />}
+                  <div className={`scene-thumb${scene.status === "card" ? " card" : ""}`}>
+                    {scene.status === "card" ? scene.title : <FilmSlate size={22} />}
                   </div>
                   <div className="scene-meta">
                     <span className="scene-title">{scene.title}</span>

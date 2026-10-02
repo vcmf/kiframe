@@ -8,7 +8,6 @@ import { INVOKE_CHANNELS, EVENT_CHANNELS } from "./channels.ts"
 export interface SceneView {
   id: string
   title: string
-  kind: "recording" | "card" | "unreadable" | "missing"
   /**
    * `recorded`: a composition from a take; `grounded`: a scenario, not filmed yet; `empty`: a
    * recording with no scenario yet; `card`: a title card; `unreadable`: a part of it didn't read

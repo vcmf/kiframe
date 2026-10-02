@@ -1,6 +1,7 @@
 // The window's hardening, as plain functions (tested without Electron): the CSP, which links may
 // open in the user's browser, and which app files the app's protocol may serve.
 import { relative, resolve, sep } from "node:path"
+import { hasUrlCredentials } from "@kiframe/schema"
 
 /** The app's own origin: the window's pages are served from it (never `file://`). */
 export const APP_SCHEME = "kiframe-app"
@@ -36,7 +37,7 @@ export function isSafeExternal(url: string): boolean {
   } catch {
     return false
   }
-  return parsed.protocol === "https:" && parsed.username === "" && parsed.password === ""
+  return parsed.protocol === "https:" && !hasUrlCredentials(url)
 }
 
 /**

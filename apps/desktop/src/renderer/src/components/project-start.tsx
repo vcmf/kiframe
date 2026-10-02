@@ -37,7 +37,8 @@ export function ProjectStart() {
           <label htmlFor="url">App address</label>
           <input
             id="url"
-            type="url"
+            type="text"
+            inputMode="url"
             spellCheck={false}
             placeholder="https://app.example.com"
             value={url}

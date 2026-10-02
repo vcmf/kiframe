@@ -24,7 +24,7 @@ export function App() {
           <ErrorBar error={status.error} />
           <div className="workspace">
             <ChatColumn />
-            <Stage project={status.project} />
+            <Stage key={status.project.dir} project={status.project} />
           </div>
         </>
       )}

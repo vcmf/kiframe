@@ -29,6 +29,7 @@ describe("the window's hardening", () => {
       "file:///etc/passwd",
       "javascript:alert(1)",
       "https://u:p@x.com",
+      "https://u@x.com",
       "x",
     ]) {
       expect(isSafeExternal(url), url).toBe(false)

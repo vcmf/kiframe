@@ -5,9 +5,10 @@ import { TakeStore } from "@kiframe/project"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import type { AppStatus } from "../shared/ipc.ts"
-import { emit, registerHandlers } from "./ipc.ts"
+import { registerHandlers } from "./ipc.ts"
 import { newProjectDir, ProjectSession, projectFileName, targetUrl } from "./project.ts"
 import { isSafeExternal } from "./security.ts"
+import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
@@ -41,16 +42,7 @@ function start(): void {
   const project = new ProjectSession()
   let error: string | null = null
 
-  /** Never throws: a keychain that can't be read is said, as the status's error. */
-  const status = async (): Promise<AppStatus> => {
-    let hasKey = false
-    try {
-      hasKey = await keys.hasKey()
-    } catch (e) {
-      error ??= `couldn't read the system keychain: ${message(e)}`
-    }
-    return { hasKey, project: project.view(), error }
-  }
+  const status = () => readStatus(() => keys.hasKey(), project.view(), error)
   /** Runs one action: its failure becomes the status's error (cleared by the next action). */
   const act = async (work: () => Promise<void> | void): Promise<AppStatus> => {
     error = null
@@ -59,9 +51,13 @@ function start(): void {
     } catch (e) {
       error = message(e)
     }
-    const now = await status()
-    emit(window, "status", now)
-    return now
+    return status()
+  }
+
+  /** The window a dialog belongs to (modal to it: never opened behind it). */
+  const parent = (): BrowserWindow => {
+    if (window === null) throw new Error("no window to show the dialog in")
+    return window
   }
 
   const showWindow = () => {
@@ -85,13 +81,6 @@ function start(): void {
   })
 
   void app.whenReady().then(() => {
-    // Leftovers of a crash (a recording's temporary folders) go before anything records. A sweep
-    // that fails is said, never a reason not to open.
-    try {
-      new TakeStore(join(app.getPath("userData"), "data")).sweep()
-    } catch (e) {
-      error = `couldn't clean up old recordings: ${message(e)}`
-    }
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
     registerHandlers(
@@ -101,7 +90,7 @@ function start(): void {
         "key:clear": () =>
           act(async () => {
             // Asked in main: the key is gone for good (it's never shown again).
-            const { response } = await dialog.showMessageBox({
+            const { response } = await dialog.showMessageBox(parent(), {
               type: "warning",
               message: "Remove the OpenRouter key?",
               detail: "Kiframe forgets it; you paste a key again to keep working.",
@@ -114,7 +103,7 @@ function start(): void {
         "project:create": (init) =>
           act(async () => {
             const url = targetUrl(init.url)
-            const picked = await dialog.showSaveDialog({
+            const picked = await dialog.showSaveDialog(parent(), {
               title: "Create a project",
               buttonLabel: "Create",
               defaultPath: join(app.getPath("documents"), projectFileName(init.name)),
@@ -125,7 +114,7 @@ function start(): void {
           }),
         "project:open": () =>
           act(async () => {
-            const picked = await dialog.showOpenDialog({
+            const picked = await dialog.showOpenDialog(parent(), {
               title: "Open a project",
               buttonLabel: "Open",
               properties: ["openDirectory"],
@@ -143,5 +132,12 @@ function start(): void {
     )
     showWindow()
     app.on("activate", showWindow)
+    // Leftovers of a crash (a recording's temporary folders), once the window is up: before
+    // anything records (nothing does until the user acts). A sweep that fails is said.
+    try {
+      new TakeStore(join(app.getPath("userData"), "data")).sweep()
+    } catch (e) {
+      error = `couldn't clean up old recordings: ${message(e)}`
+    }
   })
 }

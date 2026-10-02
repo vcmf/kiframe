@@ -39,9 +39,9 @@ describe("the open project", () => {
       name: "Demo",
       url: "https://app.test",
       scenes: [
-        { id: "empty", status: "empty", kind: "recording" },
-        { id: "grounded", status: "grounded", kind: "recording" },
-        { id: "intro", status: "card", kind: "card" },
+        { id: "empty", status: "empty" },
+        { id: "grounded", status: "grounded" },
+        { id: "intro", status: "card" },
       ],
       problems: [],
     })
@@ -59,7 +59,6 @@ describe("the open project", () => {
       {
         id: "broken",
         title: "broken",
-        kind: "unreadable",
         status: "unreadable",
         problem: expect.any(String) as unknown,
       },
@@ -124,6 +123,12 @@ describe("the open project", () => {
   it("names a project's folder safely, and checks its address by the project's rule", () => {
     expect(projectFileName("Q3/Q4 demo")).toBe("Q3 Q4 demo.kiframe")
     expect(projectFileName("..")).toBe("Untitled.kiframe")
+    expect(projectFileName(". Demo")).toBe("Demo.kiframe")
+    expect(projectFileName("CON")).toBe("CON project.kiframe")
+    expect(projectFileName("nul")).toBe("nul project.kiframe")
+    const long = projectFileName("演".repeat(120))
+    expect(Buffer.byteLength(long)).toBeLessThanOrEqual(255)
+    expect(long.endsWith(".kiframe")).toBe(true)
     expect(projectFileName('a:b*c?"d<e>f|g\\h')).toBe("a b c d e f g h.kiframe")
     expect(targetUrl(" https://app.test/x ")).toBe("https://app.test/x")
     expect(() => targetUrl("https://u:p@app.test")).toThrow(/credentials/)

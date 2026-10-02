@@ -10,7 +10,7 @@ const project = {
   dir: "/tmp/demo.kiframe",
   url: "https://app.acme.example",
   scenes: [
-    { id: "intro", title: "Intro", kind: "card" as const, status: "card" as const },
+    { id: "intro", title: "Intro" as const, status: "card" as const },
     {
       id: "invoice",
       title: "Create an invoice",
@@ -140,7 +140,7 @@ describe("the window", () => {
           hasKey: true,
           project: {
             ...project,
-            scenes: [{ id: "gone", title: "gone", kind: "missing", status: "missing" }],
+            scenes: [{ id: "gone", title: "gone", status: "missing" }],
             problems: ["gone: in the sequence, but its folder is missing"],
           },
         }),
@@ -149,5 +149,32 @@ describe("the window", () => {
     const list = await screen.findByRole("list", { name: "Problems" })
     expect(list.textContent).toMatch(/folder is missing/)
     expect(screen.getByRole("button", { name: /gone/ }).textContent).toMatch(/Folder missing/)
+  })
+
+  it("sends an address without a scheme to main (no browser check of its own)", async () => {
+    const { invoke } = stubApi({
+      "app:status": () => status({ hasKey: true }),
+      "project:create": () => status({ hasKey: true, error: "App address: Invalid URL" }),
+    })
+    render(<App />)
+    const create = await screen.findByRole("button", { name: "Create project…" })
+    fireEvent.change(screen.getByLabelText("Project name"), { target: { value: "Acme" } })
+    fireEvent.change(screen.getByLabelText("App address"), { target: { value: "app.acme.com" } })
+    fireEvent.click(create)
+    expect((await screen.findByRole("alert")).textContent).toMatch(/App address/)
+    expect(invoke).toHaveBeenCalledWith("project:create", { name: "Acme", url: "app.acme.com" })
+  })
+
+  it("starts another project's stage fresh (no selection carried over)", async () => {
+    const { push } = stubApi({ "app:status": () => status({ hasKey: true, project }) })
+    render(<App />)
+    const strip = await screen.findByRole("region", { name: "Scenes" })
+    fireEvent.click(within(strip).getAllByRole("button")[0]!)
+    expect(within(strip).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("true")
+    act(() =>
+      push("status", status({ hasKey: true, project: { ...project, dir: "/tmp/other.kiframe" } })),
+    )
+    const again = await screen.findByRole("region", { name: "Scenes" })
+    expect(within(again).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("false")
   })
 })
