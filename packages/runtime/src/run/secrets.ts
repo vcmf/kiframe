@@ -446,8 +446,10 @@ async function resolveSecret(
 /** The viewport as it is, for an approval prompt (undefined if it can't be taken). */
 async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
   const size = page.viewportSize()
+  // Every field masked: a value typed earlier (a username) never shows in the prompt.
+  const fields = page.locator("input:not([type=hidden]), textarea, [contenteditable=true]")
   const jpeg = await page
-    .screenshot({ type: "jpeg", quality: 70, timeout: 3000 })
+    .screenshot({ type: "jpeg", quality: 70, timeout: 3000, mask: [fields], maskColor: "#E3E4E7" })
     .catch(() => undefined)
   if (jpeg === undefined || size === null) return undefined
   return { jpeg: jpeg.toString("base64"), width: size.width, height: size.height }

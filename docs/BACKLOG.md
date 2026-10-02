@@ -246,3 +246,10 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A tool's failure read from its words:** the chat tells a failed step by the studio's wording ("failed (…)", "replay failed: …"). The studio returning failures as soft errors (`{ error }`) would make it structural.
 - **The project refreshed after a list of tools:** the host refreshes the scene strip after `save_scene` / `record_scene` by name. A project-changed callback from the studio (or `saveScene`) would cover any tool that writes the project.
 
+## @kiframe/desktop (S3c)
+
+- **Approve for a wider path** (§3 A3's third choice): the dialog has Allow and Decline; a grant covers the page's path pattern (ids as `*`). Add the wider choice when a real app needs it.
+- **The approvals, listed:** the panel lists secrets, not their grants; removing a secret (or taking it off an app) drops its approvals. A per-step list with revoke (the vault has `grants` / `revoke`) when users ask what they approved.
+- **Text in the approval's screenshot:** every field is masked (a value typed earlier never shows); a known value shown as page text ("Signed in as bob@acme.com") isn't. The shot goes to the user's own window only, in memory, dropped once answered: mask text too with the scanner's regions when V2 lands.
+- **One secret for several apps:** the panel refuses a name another app already uses (its value there would be replaced unseen). Sharing one secret across apps (staging and prod logins alike) needs its own choice in the panel.
+

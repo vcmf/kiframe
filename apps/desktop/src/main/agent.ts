@@ -219,10 +219,19 @@ export class AgentHost {
         resolveSecret: (name: string, use: SecretUse) => secrets.resolve(name, use),
         knownValues: () => secrets.knownValues(),
         requestApproval: async (request: ApprovalRequest, signal: AbortSignal) => {
+          const item = this.#log.peekNextId("request")
           const approved = (await this.#ask(secretRequest(request), signal)) === true
-          // Granted only by the user's answer, in main (never by the agent).
-          if (approved) await secrets.approve(request.secret, request.use)
-          return approved
+          if (!approved) return false
+          // Granted only by the user's answer, in main (never by the agent). Not stored (the secret
+          // removed meanwhile): the chat says it wasn't, and the step fails.
+          try {
+            await secrets.approve(request.secret, request.use)
+          } catch (error) {
+            const revised = this.#log.revise(item, false)
+            if (revised !== undefined) this.#emit(revised)
+            throw error
+          }
+          return true
         },
       }),
     })

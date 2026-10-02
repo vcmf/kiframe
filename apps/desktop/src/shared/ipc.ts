@@ -164,7 +164,10 @@ export const invokeArgs = {
       value: z.string().min(1).max(4096),
     }),
   ]),
-  /** Removes a secret: its value, and every approval of it. */
+  /**
+   * Takes a secret off the open project's app (its approvals there); the secret itself goes when
+   * no other app uses it. Its name is checked in main.
+   */
   "secrets:remove": z.tuple([z.string().max(120)]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
 

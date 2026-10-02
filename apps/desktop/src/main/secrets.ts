@@ -5,6 +5,14 @@ import { type SecretBackend, type SecretUse, Vault } from "@kiframe/vault"
 import { SecretName } from "@kiframe/schema"
 import type { SecretView } from "../shared/ipc.ts"
 
+/** A secret name, or why not in words (a schema error's message is its issues' JSON). */
+function secretName(name: string): string {
+  const parsed = SecretName.safeParse(name.trim())
+  if (!parsed.success)
+    throw new Error(`"${name}": ${parsed.error.issues[0]?.message ?? "not a secret name"}`)
+  return parsed.data
+}
+
 export class Secrets {
   readonly #vault: Vault
   readonly #backend: SecretBackend
@@ -27,11 +35,13 @@ export class Secrets {
   }
 
   async #load(): Promise<void> {
+    const names = this.#vault.list().map((s) => s.name)
+    const read = await Promise.all(names.map((name) => this.#backend.get(name)))
     const values = new Map<string, string>()
-    for (const { name } of this.#vault.list()) {
-      const value = await this.#backend.get(name)
+    names.forEach((name, i) => {
+      const value = read[i]
       if (value !== undefined && value !== "") values.set(name, value)
-    }
+    })
     this.#values = values
   }
 
@@ -49,10 +59,19 @@ export class Secrets {
       .sort((a, b) => a.name.localeCompare(b.name))
   }
 
-  /** Adds a secret (or a new value, or a new origin for it): the value to the keychain only. */
+  /**
+   * Adds a secret for `origin`, or a new value for one it has: the value to the keychain only. A
+   * name another app already uses is refused (its value there would be replaced unseen).
+   */
   async add(form: { name: string; kind: string; value: string }, origin: string): Promise<void> {
     await this.ready()
-    const name = SecretName.parse(form.name)
+    const name = secretName(form.name)
+    const existing = this.#vault.list().find((s) => s.name === name)
+    if (existing !== undefined && !existing.origins.includes(origin)) {
+      throw new Error(
+        `"${name}" is already a secret of ${existing.origins.join(", ")}: pick another name for this app`,
+      )
+    }
     const result = await this.#vault.request(
       { name, kind: form.kind, origin, reason: "added by the user" },
       () => Promise.resolve(form.value),
@@ -61,10 +80,14 @@ export class Secrets {
     this.#values.set(name, form.value)
   }
 
-  /** Removes a secret: its value, its metadata and every approval of it. */
-  async remove(name: string): Promise<void> {
-    await this.#vault.remove(name)
-    this.#values.delete(name)
+  /**
+   * Takes a secret off `origin` (its approvals there): the secret itself, its value, only when no
+   * other app uses it.
+   */
+  async remove(name: string, origin: string): Promise<void> {
+    const checked = secretName(name)
+    await this.#vault.removeOrigin(checked, origin)
+    if (!this.#vault.list().some((s) => s.name === checked)) this.#values.delete(checked)
   }
 
   /** The studio's: the secrets usable on the project's app, and whether each has a value. */

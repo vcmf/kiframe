@@ -31,7 +31,10 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
     load()
     first.current?.focus()
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose()
+      // A secret's approval over the panel takes Escape (it's on top): the panel stays.
+      if (event.key === "Escape" && !document.querySelector('[aria-labelledby="secret-title"]')) {
+        onClose()
+      }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)

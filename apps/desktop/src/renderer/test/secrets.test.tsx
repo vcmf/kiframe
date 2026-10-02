@@ -137,4 +137,18 @@ describe("the secrets panel", () => {
     expect((await within(panel).findByRole("alert")).textContent).toMatch(/never a secret value/)
     expect(within(panel).getByLabelText("Name")).toHaveProperty("value", "hunter2 pw")
   })
+
+  it("leaves the panel open when Escape declines an approval over it", async () => {
+    const { push, invoke } = stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "secrets:list": () => [],
+      "chat:answer": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
+    act(() => push("chat:item", approval()))
+    fireEvent.keyDown(document, { key: "Escape" })
+    expect(invoke).toHaveBeenCalledWith("chat:answer", "r1", false)
+    expect(screen.getByRole("dialog", { name: "Secrets" })).toBeTruthy()
+  })
 })

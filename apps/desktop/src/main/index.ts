@@ -102,11 +102,34 @@ function start(): void {
     return OpenAiCompatibleClient.fromConfig({ apiKey, model: DEFAULT_MODEL })
   }
 
-  /** What an agent needs (the host's ids, the take store): throws when it can't be had now. */
+  /** The app's secrets: the vault read when first needed, and again after a failure (said). */
+  const vault = (): Secrets => {
+    if (secrets !== undefined) return secrets
+    const path = join(app.getPath("userData"), "vault.json")
+    try {
+      secrets = new Secrets(
+        path,
+        memory ? memoryBackend() : keychainBackend(`${app.getName()}${dev ? " (dev)" : ""}`),
+      )
+      return secrets
+    } catch (e) {
+      // Never replaced (the user would lose track of their secrets).
+      throw new Error(`couldn't read the secrets (${path}): ${message(e)}`, { cause: e })
+    }
+  }
+  const vaultOrNull = (): Secrets | undefined => {
+    try {
+      return vault()
+    } catch {
+      return undefined
+    }
+  }
+
+  /** What an agent needs (the host's ids, the take store, the secrets): throws when it can't. */
   const ready = (): { registry: Registry; takes: TakeStore; secrets: Secrets } => {
     const registry = ids()
-    if (takes === undefined || secrets === undefined) throw new Error("the app isn't ready yet")
-    return { registry, takes, secrets }
+    if (takes === undefined) throw new Error("the app isn't ready yet")
+    return { registry, takes, secrets: vault() }
   }
   /** The open project's app origin (its secrets are those usable there). */
   const origin = (): string | null => {
@@ -203,15 +226,6 @@ function start(): void {
   void app.whenReady().then(() => {
     const data = app.getPath("userData")
     takes = new TakeStore(join(data, "data"))
-    try {
-      secrets = new Secrets(
-        join(data, "vault.json"),
-        memory ? memoryBackend() : keychainBackend(`${app.getName()}${dev ? " (dev)" : ""}`),
-      )
-    } catch (e) {
-      // Never replaced (the user would lose track of their secrets): said, projects wait for it.
-      error = `couldn't read the secrets (${join(data, "vault.json")}): ${message(e)}`
-    }
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -272,23 +286,28 @@ function start(): void {
           const agent = workspace.agent
           return agent === undefined ? "open a project first" : agent.send(text)
         },
-        "secrets:list": () => secrets?.list(origin()) ?? [],
+        "secrets:list": async () => {
+          const vault = vaultOrNull()
+          if (vault === undefined) return []
+          await vault.ready()
+          return vault.list(origin())
+        },
         "secrets:add": async (form) => {
           const at = origin()
-          if (secrets === undefined || at === null)
-            return "open a project with an app address first"
+          if (at === null) return "open a project with an app address first"
           try {
-            await secrets.add(form, at)
+            await vault().add(form, at)
             return null
           } catch (e) {
-            // A refusal names the secret and why (a schema error), never the value.
-            return message(e).split("\n")[0] ?? "the secret wasn't added"
+            // A refusal names the secret and why, never the value.
+            return message(e)
           }
         },
         "secrets:remove": async (name) => {
-          if (secrets === undefined) return "the app isn't ready yet"
+          const at = origin()
+          if (at === null) return "open a project with an app address first"
           try {
-            await secrets.remove(name)
+            await vault().remove(name, at)
             return null
           } catch (e) {
             return message(e)

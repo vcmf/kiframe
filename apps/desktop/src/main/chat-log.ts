@@ -92,6 +92,18 @@ export class ChatLog {
     return this.#put({ kind: "request", id: this.#id("request"), request, state: "open" })
   }
 
+  /** The id the next item of `prefix` gets (a caller that must find it again later). */
+  peekNextId(prefix: string): string {
+    return `${prefix}-${this.#prefix}-${this.#next + 1}`
+  }
+
+  /** An answered request's answer changed after the fact (a grant that couldn't be stored). */
+  revise(id: string, answer: string | boolean): ChatItem | undefined {
+    const item = this.items.find((i) => i.id === id)
+    if (item?.kind !== "request" || item.state !== "answered") return undefined
+    return this.#put({ ...item, answer })
+  }
+
   /** The request's end: answered (with the answer) or closed by the stop. */
   settle(id: string, end: { answer: string | boolean } | "closed"): ChatItem | undefined {
     const item = this.items.find((i) => i.id === id)
