@@ -96,10 +96,15 @@ export class ChatLog {
   settle(id: string, end: { answer: string | boolean } | "closed"): ChatItem | undefined {
     const item = this.items.find((i) => i.id === id)
     if (item?.kind !== "request" || item.state !== "open") return undefined
+    // A secret's screenshot goes with the question (kept, it would sit in the chat for good).
+    const request =
+      item.request.kind === "approve-secret"
+        ? (({ shot: _shot, ...rest }) => rest)(item.request)
+        : item.request
     return this.#put(
       end === "closed"
-        ? { ...item, state: "closed" }
-        : { ...item, state: "answered", answer: end.answer },
+        ? { ...item, request, state: "closed" }
+        : { ...item, request, state: "answered", answer: end.answer },
     )
   }
 

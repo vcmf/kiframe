@@ -12,6 +12,11 @@ import { startFixtureServer } from "../../../packages/runtime/test/fixture-serve
 const appDir = join(import.meta.dirname, "..")
 const shots = process.env.KIFRAME_E2E_SHOTS
 let server: Awaited<ReturnType<typeof startFixtureServer>>
+/** A step the scripted model runs. */
+const step = (id: string, s: object) => ({
+  kind: "tool_calls",
+  calls: [{ id, name: "run_step", arguments: JSON.stringify({ scene: "login", step: s }) }],
+})
 /** A risky click the scripted model asks for: once stopped, once approved. */
 const riskyCall = (id: string) => ({
   kind: "tool_calls",
@@ -55,6 +60,14 @@ beforeAll(async () => {
       riskyCall("c1"),
       riskyCall("c2"),
       { kind: "text", text: "Opened your projects." },
+      step("c3", { id: "go", action: "goto", url: "/login-form" }),
+      step("c4", {
+        id: "pw",
+        action: "type",
+        target: { by: "label", name: "Password input" },
+        value: "{{secrets.acme.password}}",
+      }),
+      { kind: "text", text: "Signed in." },
     ]),
   )
   env.KIFRAME_TEST_MODEL = model
@@ -176,6 +189,32 @@ describe("the desktop app", () => {
     await expect.poll(() => frame.isVisible()).toBe(true)
     expect(await frame.getAttribute("alt")).toMatch(/\/projects/)
     if (shots !== undefined) await page.screenshot({ path: join(shots, "agent-live.png") })
+  })
+
+  it("keeps a secret the user adds, and asks before a step types it, the field outlined", async () => {
+    await page.getByRole("button", { name: "Secrets" }).click()
+    const panel = page.getByRole("dialog", { name: "Secrets" })
+    await panel.getByLabel("Name").fill("acme.password")
+    await panel.getByLabel("Value").fill("hunter2-e2e-secret")
+    await panel.getByRole("button", { name: "Add secret" }).click()
+    await expect
+      .poll(() => panel.getByText("acme.password", { exact: true }).isVisible())
+      .toBe(true)
+    expect(await page.content()).not.toContain("hunter2-e2e-secret")
+    await panel.getByRole("button", { name: "Close" }).click()
+    const box = page.getByLabel("Message the agent")
+    await box.fill("Sign in")
+    await box.press("Enter")
+    const dialog = page.getByRole("dialog", { name: "Type a secret here?" })
+    await expect.poll(() => dialog.isVisible(), { timeout: 30_000 }).toBe(true)
+    expect(await dialog.textContent()).toMatch(/Password input · an input of type password/)
+    expect(await dialog.getByTestId("secret-outline").isVisible()).toBe(true)
+    if (shots !== undefined) await page.screenshot({ path: join(shots, "secret-approval.png") })
+    await dialog.getByRole("button", { name: "Allow here" }).click()
+    await expect
+      .poll(() => page.getByText("Signed in.").isVisible(), { timeout: 30_000 })
+      .toBe(true)
+    expect(await page.content()).not.toContain("hunter2-e2e-secret")
   })
 
   it("is served from the app's own origin, sandboxed, with a strict CSP", async () => {

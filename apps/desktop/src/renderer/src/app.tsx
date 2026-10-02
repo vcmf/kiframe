@@ -4,6 +4,7 @@ import { ChatColumn } from "./components/chat-column.tsx"
 import { ErrorBar } from "./components/error-note.tsx"
 import { KeySetup } from "./components/key-setup.tsx"
 import { ProjectStart } from "./components/project-start.tsx"
+import { SecretDialog } from "./components/secret-dialog.tsx"
 import { Stage } from "./components/stage.tsx"
 import { TitleBar } from "./components/title-bar.tsx"
 import { useApp } from "./store.ts"
@@ -26,6 +27,7 @@ export function App() {
           <div className="workspace" key={status.project.session}>
             <ChatColumn />
             <Stage project={status.project} />
+            <SecretDialog />
           </div>
         </>
       )}

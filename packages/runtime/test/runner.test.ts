@@ -197,6 +197,17 @@ ${extra}`
         element: { tag: "input", type: "password", label: "Password input" },
       })
       expect(asked[0]?.box).toBeDefined()
+      // The page as it is, to outline the field on: before the value is typed.
+      const shot = asked[0]?.shot
+      expect(shot).toMatchObject({
+        width: expect.any(Number) as unknown,
+        height: expect.any(Number) as unknown,
+      })
+      expect(
+        Buffer.from(shot?.jpeg ?? "", "base64")
+          .subarray(0, 2)
+          .toString("hex"),
+      ).toBe("ffd8")
       // Headless now: granted, no hook needed.
       await run(into(password), { ...scope, resolveSecret: vault.resolver() })
       expect(asked).toHaveLength(1)

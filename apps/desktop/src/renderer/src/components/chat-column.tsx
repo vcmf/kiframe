@@ -11,6 +11,7 @@ import {
   Key,
   ListBullets,
   ListChecks,
+  LockKey,
   MagnifyingGlass,
   PaperPlaneRight,
   Question,
@@ -222,6 +223,30 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
                 : "Declined."}
           </div>
         )}
+      </div>
+    )
+  }
+  if (request.kind === "approve-secret") {
+    // The question itself is the dialog over the window (the field outlined): here, its trace.
+    return (
+      <div className="request-card" aria-label="A secret to approve">
+        <div className="request-title">
+          <LockKey size={17} />
+          Type <span className="mono">{request.secret}</span> here?
+        </div>
+        <p>
+          {request.step}, on {request.origin}
+          {request.path}
+        </p>
+        <div className="request-state">
+          {open
+            ? "Waiting for your answer in the dialog."
+            : item.state === "closed"
+              ? "Closed: the run stopped."
+              : item.answer === true
+                ? "Allowed: later takes type it without asking."
+                : "Declined: the scene can't type it."}
+        </div>
       </div>
     )
   }

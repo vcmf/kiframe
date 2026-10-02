@@ -5,12 +5,14 @@ import type { LlmClient, LlmMessage } from "@kiframe/agent"
 import { runAgent } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
 import { resolveProjectConfig } from "@kiframe/schema"
-import { Studio, studioTools, systemPrompt, type UserRequest } from "@kiframe/studio"
+import { Studio, studioTools, systemPrompt } from "@kiframe/studio"
 import type { Browser } from "playwright"
-import type { ChatItem, ChatState, LiveFrame } from "../shared/ipc.ts"
+import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
+import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
+import type { Secrets } from "./secrets.ts"
 
 /** Assistant text repainted at most this often (tool steps and requests at once). */
 const TEXT_MS = 100
@@ -28,6 +30,8 @@ export interface AgentHostOptions {
   /** The model for a run (built from the key in the keychain then). */
   llm: () => Promise<LlmClient>
   model: string
+  /** The app's secrets (none: a scene typing one fails, "no secret resolver given"). */
+  secrets?: Secrets
   item: (item: ChatItem) => void
   running: (running: boolean) => void
   frame: (frame: LiveFrame) => void
@@ -36,8 +40,36 @@ export interface AgentHostOptions {
 }
 
 interface Pending {
-  request: UserRequest
+  request: ChatRequest
   resolve: (answer: string | boolean) => void
+}
+
+/** A step key as the user reads it ("pw, in the setup"; "pw, in the login preset"). */
+export function stepLabel(stepKey: string): string {
+  const scene = /^scene:[^/]+\/(setup|steps|teardown)\/(.+)$/.exec(stepKey)
+  if (scene !== null) {
+    const part = scene[1] === "steps" ? "the scene's steps" : `the ${scene[1]}`
+    return `${scene[2]}, in ${part}`
+  }
+  const preset = /^preset:([^/]+)\/(.+)$/.exec(stepKey)
+  if (preset !== null) return `${preset[2]}, in the ${preset[1]} preset`
+  const interrupt = /interrupt:(.+)$/.exec(stepKey)
+  return interrupt !== null ? `the ${interrupt[1]} interrupt rule` : stepKey
+}
+
+/** The approval prompt, from the live page only (§3 A3: never the agent's words). */
+export function secretRequest(request: ApprovalRequest): ChatRequest {
+  const { use } = request
+  return {
+    kind: "approve-secret",
+    secret: request.secret,
+    element: use.element,
+    origin: use.origin,
+    path: use.path,
+    step: stepLabel(use.stepKey),
+    ...(request.shot !== undefined && { shot: request.shot }),
+    ...(request.box !== undefined && { box: request.box }),
+  }
 }
 
 export class AgentHost {
@@ -90,9 +122,7 @@ export class AgentHost {
     const pending = this.#pending.get(id)
     if (pending === undefined) return
     const fits =
-      pending.request.kind === "approve-risky"
-        ? typeof answer === "boolean"
-        : typeof answer === "string"
+      pending.request.kind === "question" ? typeof answer === "string" : typeof answer === "boolean"
     if (fits) pending.resolve(answer)
   }
 
@@ -168,6 +198,10 @@ export class AgentHost {
     this.#live = undefined
     const { project, scope, sceneKey, takes } = this.#options
     const { config } = resolveProjectConfig(project.project, undefined)
+    const { secrets } = this.#options
+    // Every value known before anything runs (R6).
+    await secrets?.ready()
+    const origin = new URL(config.target.url).origin
     const browser = await this.#options.browser()
     this.#browser = browser
     this.#studio = new Studio({
@@ -178,12 +212,25 @@ export class AgentHost {
       takes,
       browser,
       requestUser: (request, signal) => this.#ask(request, signal),
+      // Secrets (when the app has its vault): names for the agent, values for granted uses only,
+      // every value known to the scrubber and the blur; an ungranted use asks the user.
+      ...(secrets !== undefined && {
+        secrets: () => secrets.names(origin),
+        resolveSecret: (name: string, use: SecretUse) => secrets.resolve(name, use),
+        knownValues: () => secrets.knownValues(),
+        requestApproval: async (request: ApprovalRequest, signal: AbortSignal) => {
+          const approved = (await this.#ask(secretRequest(request), signal)) === true
+          // Granted only by the user's answer, in main (never by the agent).
+          if (approved) await secrets.approve(request.secret, request.use)
+          return approved
+        },
+      }),
     })
     return this.#studio
   }
 
   /** A request shown in the chat until answered, or closed by the stop (it then rejects). */
-  #ask(request: UserRequest, signal: AbortSignal): Promise<string | boolean> {
+  #ask(request: ChatRequest, signal: AbortSignal): Promise<string | boolean> {
     signal.throwIfAborted()
     const item = this.#log.request(request)
     this.#emit(item)

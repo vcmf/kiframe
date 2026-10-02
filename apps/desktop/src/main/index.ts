@@ -14,6 +14,7 @@ import { newProjectDir, projectFileName, targetUrl } from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
+import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
@@ -56,6 +57,8 @@ function start(): void {
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
   let registry: Registry | undefined
+  /** The app's secrets (the vault in app data, values in the keychain), once ready. */
+  let secrets: Secrets | undefined
   /** The host's ids: read when first needed, and again after a failure (never replaced). */
   const ids = (): Registry => {
     if (registry !== undefined) return registry
@@ -100,10 +103,15 @@ function start(): void {
   }
 
   /** What an agent needs (the host's ids, the take store): throws when it can't be had now. */
-  const ready = (): { registry: Registry; takes: TakeStore } => {
+  const ready = (): { registry: Registry; takes: TakeStore; secrets: Secrets } => {
     const registry = ids()
-    if (takes === undefined) throw new Error("the app isn't ready yet")
-    return { registry, takes }
+    if (takes === undefined || secrets === undefined) throw new Error("the app isn't ready yet")
+    return { registry, takes, secrets }
+  }
+  /** The open project's app origin (its secrets are those usable there). */
+  const origin = (): string | null => {
+    const url = workspace.view()?.url
+    return url === null || url === undefined ? null : new URL(url).origin
   }
 
   /**
@@ -112,7 +120,7 @@ function start(): void {
    */
   const workspace: Workspace<AgentHost> = new Workspace(
     (opened: OpenedProject) => {
-      const { registry, takes } = ready()
+      const { registry, takes, secrets } = ready()
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
@@ -122,6 +130,7 @@ function start(): void {
         browser: launch,
         llm: model,
         model: DEFAULT_MODEL,
+        secrets,
         item: (item) => current() && emit(window, "chat:item", item),
         running: (running) => current() && emit(window, "chat:running", running),
         frame: (frame) => current() && emit(window, "live:frame", frame),
@@ -194,6 +203,15 @@ function start(): void {
   void app.whenReady().then(() => {
     const data = app.getPath("userData")
     takes = new TakeStore(join(data, "data"))
+    try {
+      secrets = new Secrets(
+        join(data, "vault.json"),
+        memory ? memoryBackend() : keychainBackend(`${app.getName()}${dev ? " (dev)" : ""}`),
+      )
+    } catch (e) {
+      // Never replaced (the user would lose track of their secrets): said, projects wait for it.
+      error = `couldn't read the secrets (${join(data, "vault.json")}): ${message(e)}`
+    }
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -253,6 +271,28 @@ function start(): void {
         "chat:send": (text) => {
           const agent = workspace.agent
           return agent === undefined ? "open a project first" : agent.send(text)
+        },
+        "secrets:list": () => secrets?.list(origin()) ?? [],
+        "secrets:add": async (form) => {
+          const at = origin()
+          if (secrets === undefined || at === null)
+            return "open a project with an app address first"
+          try {
+            await secrets.add(form, at)
+            return null
+          } catch (e) {
+            // A refusal names the secret and why (a schema error), never the value.
+            return message(e).split("\n")[0] ?? "the secret wasn't added"
+          }
+        },
+        "secrets:remove": async (name) => {
+          if (secrets === undefined) return "the app isn't ready yet"
+          try {
+            await secrets.remove(name)
+            return null
+          } catch (e) {
+            return message(e)
+          }
         },
         "chat:stop": () => workspace.agent?.stop(),
         "chat:answer": (id, answer) => workspace.agent?.answer(id, answer),

@@ -1,8 +1,9 @@
 // The window's top: the wordmark, the project menu, the app it films.
-import { CaretDown, Export, FolderSimple, Globe } from "@phosphor-icons/react"
+import { CaretDown, Export, FolderSimple, Globe, Key } from "@phosphor-icons/react"
 import { useEffect, useState } from "react"
 import { api } from "../api.ts"
 import { useApp } from "../store.ts"
+import { SecretsPanel } from "./secrets-panel.tsx"
 
 export function TitleBar() {
   const status = useApp((s) => s.status)
@@ -24,6 +25,7 @@ export function TitleBar() {
               {hostOf(project.url)}
             </span>
           )}
+          {project.url !== null && <SecretsButton origin={new URL(project.url).origin} />}
           <button
             type="button"
             className="btn btn-ghost"
@@ -36,6 +38,19 @@ export function TitleBar() {
         </>
       )}
     </header>
+  )
+}
+
+function SecretsButton({ origin }: { origin: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <button type="button" className="btn btn-ghost" onClick={() => setOpen(true)}>
+        <Key size={16} />
+        Secrets
+      </button>
+      {open && <SecretsPanel origin={origin} onClose={() => setOpen(false)} />}
+    </>
   )
 }
 
