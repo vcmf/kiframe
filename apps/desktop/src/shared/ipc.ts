@@ -49,7 +49,8 @@ export type ChatRequest =
       path: string
       /** The step that types it ("pw, in the setup"). */
       step: string
-      shot?: { jpeg: string; width: number; height: number }
+      /** A PNG, base64, every field painted over; `width`×`height` CSS pixels. */
+      shot?: { png: string; width: number; height: number }
       box?: { x: number; y: number; width: number; height: number }
     }
 

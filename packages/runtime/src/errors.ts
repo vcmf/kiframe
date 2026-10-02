@@ -95,9 +95,9 @@ export interface ApprovalRequest {
   /** The element's box on the page (CSS pixels): what the prompt outlines. */
   box?: { x: number; y: number; width: number; height: number } | undefined
   /**
-   * The page as it is (a JPEG, base64, of the viewport, `width`×`height` CSS pixels): the prompt
-   * shows the element outlined on it (§3 A3: built from the live page). Taken before the value is
-   * typed; it goes to the user's prompt only, never to the agent.
+   * The page as it is (a PNG, base64, of the viewport, `width`×`height` CSS pixels), every field
+   * painted over: the prompt shows the element outlined on it (§3 A3: built from the live page).
+   * Taken before the value is typed; it goes to the user's prompt only, never to the agent.
    */
-  shot?: { jpeg: string; width: number; height: number } | undefined
+  shot?: { png: string; width: number; height: number } | undefined
 }

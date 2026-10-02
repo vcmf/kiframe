@@ -8,8 +8,12 @@ import type { SecretView } from "../shared/ipc.ts"
 /** A secret name, or why not in words (a schema error's message is its issues' JSON). */
 function secretName(name: string): string {
   const parsed = SecretName.safeParse(name.trim())
-  if (!parsed.success)
-    throw new Error(`"${name}": ${parsed.error.issues[0]?.message ?? "not a secret name"}`)
+  // The name is never repeated: one refused may be a value pasted in by mistake.
+  if (!parsed.success) {
+    throw new Error(
+      `that isn't a secret name (${parsed.error.issues[0]?.message ?? "letters, digits, dots"})`,
+    )
+  }
   return parsed.data
 }
 
@@ -42,6 +46,8 @@ export class Secrets {
       const value = read[i]
       if (value !== undefined && value !== "") values.set(name, value)
     })
+    // Values set or kept meanwhile (an add during the load) win: a load never undoes a change.
+    for (const [name, value] of this.#values) values.set(name, value)
     this.#values = values
   }
 
@@ -67,9 +73,11 @@ export class Secrets {
     await this.ready()
     const name = secretName(form.name)
     const existing = this.#vault.list().find((s) => s.name === name)
-    if (existing !== undefined && !existing.origins.includes(origin)) {
+    // Another app has it (alone, or with this one): its value there would be replaced unseen.
+    const others = existing?.origins.filter((o) => o !== origin) ?? []
+    if (others.length > 0) {
       throw new Error(
-        `"${name}" is already a secret of ${existing.origins.join(", ")}: pick another name for this app`,
+        `"${name}" is already a secret of ${others.join(", ")}: pick another name for this app`,
       )
     }
     const result = await this.#vault.request(
@@ -87,10 +95,14 @@ export class Secrets {
   async remove(name: string, origin: string): Promise<void> {
     const checked = secretName(name)
     await this.#vault.removeOrigin(checked, origin)
-    if (!this.#vault.list().some((s) => s.name === checked)) this.#values.delete(checked)
+    // Its value stays known until the app quits: a page still showing it is still scrubbed and
+    // blurred (R6).
   }
 
-  /** The studio's: the secrets usable on the project's app, and whether each has a value. */
+  /**
+   * The studio's: the secrets usable on the project's app, and whether each has a value (a
+   * removed one's value is still known, never usable).
+   */
   names(origin: string | null): { name: string; provided: boolean }[] {
     return this.list(origin).map(({ name, provided }) => ({ name, provided }))
   }

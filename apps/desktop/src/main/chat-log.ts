@@ -92,11 +92,6 @@ export class ChatLog {
     return this.#put({ kind: "request", id: this.#id("request"), request, state: "open" })
   }
 
-  /** The id the next item of `prefix` gets (a caller that must find it again later). */
-  peekNextId(prefix: string): string {
-    return `${prefix}-${this.#prefix}-${this.#next + 1}`
-  }
-
   /** An answered request's answer changed after the fact (a grant that couldn't be stored). */
   revise(id: string, answer: string | boolean): ChatItem | undefined {
     const item = this.items.find((i) => i.id === id)

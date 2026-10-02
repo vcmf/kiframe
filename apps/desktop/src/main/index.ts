@@ -126,10 +126,10 @@ function start(): void {
   }
 
   /** What an agent needs (the host's ids, the take store, the secrets): throws when it can't. */
-  const ready = (): { registry: Registry; takes: TakeStore; secrets: Secrets } => {
+  const ready = (): { registry: Registry; takes: TakeStore; secrets: Secrets | undefined } => {
     const registry = ids()
     if (takes === undefined) throw new Error("the app isn't ready yet")
-    return { registry, takes, secrets: vault() }
+    return { registry, takes, secrets: vaultOrNull() }
   }
   /** The open project's app origin (its secrets are those usable there). */
   const origin = (): string | null => {
@@ -153,7 +153,7 @@ function start(): void {
         browser: launch,
         llm: model,
         model: DEFAULT_MODEL,
-        secrets,
+        ...(secrets !== undefined && { secrets }),
         item: (item) => current() && emit(window, "chat:item", item),
         running: (running) => current() && emit(window, "chat:running", running),
         frame: (frame) => current() && emit(window, "live:frame", frame),
@@ -286,11 +286,11 @@ function start(): void {
           const agent = workspace.agent
           return agent === undefined ? "open a project first" : agent.send(text)
         },
+        // An unreadable vault says why here (projects still open: a secret step can't run).
         "secrets:list": async () => {
-          const vault = vaultOrNull()
-          if (vault === undefined) return []
-          await vault.ready()
-          return vault.list(origin())
+          const secrets = vault()
+          await secrets.ready()
+          return secrets.list(origin())
         },
         "secrets:add": async (form) => {
           const at = origin()

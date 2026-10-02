@@ -6,6 +6,7 @@ import {
   type Target,
 } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
+import { PNG } from "pngjs"
 import {
   type ApprovalRequest,
   isSecretRefusal,
@@ -443,16 +444,56 @@ async function resolveSecret(
   }
 }
 
-/** The viewport as it is, for an approval prompt (undefined if it can't be taken). */
+/** The fields an approval's screenshot masks (iframes and open shadow roots too). */
+const FIELDS =
+  'input:not([type=hidden]), textarea, [contenteditable]:not([contenteditable="false"])'
+/** At most this many fields masked per frame (a page with thousands is masked in part). */
+const MASK_MAX = 300
+
+/**
+ * The viewport as it is, for an approval prompt (undefined if it can't be taken): a PNG with every
+ * field painted over in Node (a value typed earlier, a username, never shows). Nothing is added to
+ * the page (a take or the live view filming it never sees a mask, nor a hidden caret).
+ */
 async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
   const size = page.viewportSize()
-  // Every field masked: a value typed earlier (a username) never shows in the prompt.
-  const fields = page.locator("input:not([type=hidden]), textarea, [contenteditable=true]")
-  const jpeg = await page
-    .screenshot({ type: "jpeg", quality: 70, timeout: 3000, mask: [fields], maskColor: "#E3E4E7" })
+  if (size === null) return undefined
+  const shot = await page
+    .screenshot({ type: "png", timeout: 3000, caret: "initial", animations: "allow" })
     .catch(() => undefined)
-  if (jpeg === undefined || size === null) return undefined
-  return { jpeg: jpeg.toString("base64"), width: size.width, height: size.height }
+  if (shot === undefined) return undefined
+  // Boxes in CSS pixels of the viewport (an iframe's fields too: Playwright places them there).
+  const boxes: { x: number; y: number; width: number; height: number }[] = []
+  for (const frame of page.frames()) {
+    const handles = await frame
+      .locator(FIELDS)
+      .elementHandles()
+      .catch(() => [])
+    for (const handle of handles.slice(0, MASK_MAX)) {
+      const box = await handle.boundingBox().catch(() => null)
+      if (box !== null) boxes.push(box)
+    }
+    for (const handle of handles) void handle.dispose().catch(() => undefined)
+  }
+  const png = PNG.sync.read(shot)
+  const scale = png.width / size.width
+  for (const box of boxes) {
+    // A little wider than the field (its border, a value's descenders).
+    const x0 = Math.max(0, Math.floor((box.x - 2) * scale))
+    const y0 = Math.max(0, Math.floor((box.y - 2) * scale))
+    const x1 = Math.min(png.width, Math.ceil((box.x + box.width + 2) * scale))
+    const y1 = Math.min(png.height, Math.ceil((box.y + box.height + 2) * scale))
+    for (let y = y0; y < y1; y += 1) {
+      for (let x = x0; x < x1; x += 1) {
+        const at = (y * png.width + x) * 4
+        png.data[at] = 0xe3
+        png.data[at + 1] = 0xe4
+        png.data[at + 2] = 0xe7
+        png.data[at + 3] = 0xff
+      }
+    }
+  }
+  return { png: PNG.sync.write(png).toString("base64"), width: size.width, height: size.height }
 }
 
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */

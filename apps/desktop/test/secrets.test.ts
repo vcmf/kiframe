@@ -56,7 +56,7 @@ describe("the app's secrets", () => {
     expect(await secrets.resolve("acme.password", use)).toBe("hunter2-secret")
   })
 
-  it("loads every value at start (a reopened app knows them), and forgets a removed one", async () => {
+  it("loads every value at start (a reopened app knows them); a removed one is no longer listed", async () => {
     const { secrets, backend, path } = make()
     await secrets.add({ name: "acme.password", kind: "password", value: "hunter2-secret" }, APP)
     const again = new Secrets(path, backend)
@@ -65,15 +65,17 @@ describe("the app's secrets", () => {
     expect([...again.knownValues()]).toEqual(["hunter2-secret"])
     await again.remove("acme.password", APP)
     expect(again.list(APP)).toEqual([])
-    expect(again.knownValues().size).toBe(0)
+    // Still known until the app quits: a page still showing it is still scrubbed (R6).
+    expect([...again.knownValues()]).toEqual(["hunter2-secret"])
     expect(backend.values.has("acme.password")).toBe(false)
   })
 
-  it("says why a name isn't one, in words", async () => {
+  it("says why a name isn't one, in words, without repeating it (it may be a value)", async () => {
     const { secrets } = make()
-    await expect(
-      secrets.add({ name: "hunter2 pw", kind: "password", value: "x" }, APP),
-    ).rejects.toThrow(/^"hunter2 pw": must be a secret name, never a secret value$/)
+    const refused = await secrets
+      .add({ name: "hunter2 pw", kind: "password", value: "x" }, APP)
+      .catch((e: unknown) => (e as Error).message)
+    expect(refused).toBe("that isn't a secret name (must be a secret name, never a secret value)")
   })
 
   it("never lets one app replace another's secret, nor remove it", async () => {
@@ -100,6 +102,10 @@ describe("the app's secrets", () => {
     const reopened = new Secrets(path, backend)
     await reopened.ready()
     await reopened.approve("acme.password", use)
+    // Shared with another app: a new value from this one is refused (the other's would change).
+    await expect(
+      reopened.add({ name: "acme.password", kind: "password", value: "new" }, APP),
+    ).rejects.toThrow(/already a secret of https:\/\/other\.test/)
     await reopened.remove("acme.password", APP)
     expect(reopened.list(APP)).toEqual([])
     expect(reopened.list("https://other.test")).toHaveLength(1)

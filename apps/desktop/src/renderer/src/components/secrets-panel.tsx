@@ -27,18 +27,24 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
       .invoke("secrets:list")
       .then(setSecrets, (e: unknown) => setError(String(e)))
   }, [])
+  // Loaded and focused once, when it opens: a re-render (a status update while a value is being
+  // typed) never moves focus, so a value never lands in the plain-text Name field.
   useEffect(() => {
     load()
     first.current?.focus()
+  }, [load])
+  const close = useRef(onClose)
+  close.current = onClose
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       // A secret's approval over the panel takes Escape (it's on top): the panel stays.
       if (event.key === "Escape" && !document.querySelector('[aria-labelledby="secret-title"]')) {
-        onClose()
+        close.current()
       }
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)
-  }, [load, onClose])
+  }, [])
 
   const add = async (event: FormEvent) => {
     event.preventDefault()
@@ -60,9 +66,12 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
   }
 
   const remove = async (secret: string) => {
+    if (busy) return
+    setBusy(true)
     const refused = await api()
       .invoke("secrets:remove", secret)
       .catch((e: unknown) => String(e))
+    setBusy(false)
     setRemoving(null)
     setError(refused)
     load()
