@@ -74,18 +74,42 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@kiframe/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@kiframe/generators':
+        specifier: workspace:*
+        version: link:../../packages/generators
       '@kiframe/project':
         specifier: workspace:*
         version: link:../../packages/project
+      '@kiframe/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@kiframe/schema':
         specifier: workspace:*
         version: link:../../packages/schema
+      '@kiframe/studio':
+        specifier: workspace:*
+        version: link:../../packages/studio
       '@kiframe/vault':
         specifier: workspace:*
         version: link:../../packages/vault
       '@napi-rs/keyring':
         specifier: 2.1.0
         version: 2.1.0
+      openai:
+        specifier: 7.23.0
+        version: 7.23.0(undici@8.11.2)(zod@4.6.5)
+      playwright:
+        specifier: 1.63.0
+        version: 1.63.0
+      pngjs:
+        specifier: 7.0.0
+        version: 7.0.0
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
       zod:
         specifier: ^4.6.5
         version: 4.6.5
@@ -123,9 +147,6 @@ importers:
       jsdom:
         specifier: 29.1.1
         version: 29.1.1
-      playwright:
-        specifier: 1.63.0
-        version: 1.63.0
       react:
         specifier: 19.3.0
         version: 19.3.0
@@ -3131,7 +3152,7 @@ snapshots:
       obug: 2.2.1
       std-env: 4.2.0
       tinyrainbow: 3.1.1
-      vitest: 5.0.2(@types/node@22.20.4)(@vitest/coverage-v8@5.0.2)(jsdom@29.1.1)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(yaml@2.9.1))
+      vitest: 5.0.2(@types/node@24.19.0)(@vitest/coverage-v8@5.0.2)(jsdom@29.1.1)(vite@7.3.6(@types/node@24.19.0)(lightningcss@1.33.0)(yaml@2.9.1))
 
   '@vitest/istanbul-lib-coverage@1.0.2': {}
 
@@ -3147,7 +3168,6 @@ snapshots:
       magic-string: 1.4.2
     optionalDependencies:
       vite: 7.3.6(@types/node@24.19.0)(lightningcss@1.33.0)(yaml@2.9.1)
-    optional: true
 
   '@vitest/mocker@5.0.2(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(yaml@2.9.1))':
     dependencies:
@@ -3946,7 +3966,6 @@ snapshots:
       jsdom: 29.1.1
     transitivePeerDependencies:
       - msw
-    optional: true
 
   w3c-xmlserializer@5.0.0:
     dependencies:

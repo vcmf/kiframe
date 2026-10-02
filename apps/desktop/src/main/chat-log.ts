@@ -1,0 +1,170 @@
+// The chat as the window shows it, folded from the agent's events (pure: tested without the app).
+// Each change gives back the items that changed; the window replaces them by id.
+import { type AgentEvent, isToolFailure, isToolSoftError } from "@kiframe/agent"
+import type { ChatItem, ChatRequest } from "../shared/ipc.ts"
+
+const LINE_MAX = 160
+
+/** One line, at most `LINE_MAX` characters. */
+export function oneLine(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim()
+  return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}…` : line
+}
+
+/** What a call acts on, in a line: the arguments that say it, in the order the tools take them. */
+export function toolDetail(args: unknown): string {
+  if (typeof args !== "object" || args === null) return ""
+  const a = args as Record<string, unknown>
+  const step = a.step
+  // The model's arguments: only strings are shown (anything else isn't what it acts on).
+  const str = (v: unknown) => (typeof v === "string" ? v : "")
+  if (typeof step === "object" && step !== null) {
+    const s = step as Record<string, unknown>
+    const target = (typeof s.target === "object" && s.target !== null ? s.target : {}) as Record<
+      string,
+      unknown
+    >
+    const what = [
+      str(s.action) || (s.preset !== undefined ? "preset" : s.ensure !== undefined ? "ensure" : ""),
+      str(target.name) || str(target.text) || str(target.selector),
+      str(s.url),
+      str(s.preset),
+    ]
+    return oneLine(what.filter((w) => w !== "").join(" "))
+  }
+  for (const key of ["id", "question", "scene"]) {
+    if (typeof a[key] === "string") return oneLine(a[key])
+  }
+  return ""
+}
+
+/** A result's outcome and first line (the studio says failures in words: "failed (…)"). */
+export function toolOutcome(result: unknown): {
+  status: "ok" | "failed" | "stopped"
+  result: string
+} {
+  if (isToolFailure(result)) {
+    return {
+      status: result.error === "aborted" ? "stopped" : "failed",
+      result: oneLine(result.message),
+    }
+  }
+  if (isToolSoftError(result)) return { status: "failed", result: oneLine(result.error) }
+  const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "")
+  const failed = /^(failed|invalid|refused|replay failed|recording failed|no scene)\b/.test(text)
+  return { status: failed ? "failed" : "ok", result: oneLine(text.split("\n")[0] ?? "") }
+}
+
+export class ChatLog {
+  readonly items: ChatItem[] = []
+  #next = 0
+  /** The assistant item text goes into, until a tool or the run's end starts a new one. */
+  #assistant: string | undefined
+
+  #id(prefix: string): string {
+    this.#next += 1
+    return `${prefix}-${this.#next}`
+  }
+
+  #put(item: ChatItem): ChatItem {
+    const at = this.items.findIndex((i) => i.id === item.id)
+    if (at === -1) this.items.push(item)
+    else this.items[at] = item
+    return item
+  }
+
+  user(text: string): ChatItem {
+    this.#assistant = undefined
+    return this.#put({ kind: "user", id: this.#id("user"), text })
+  }
+
+  /** A request the agent made: open until answered or closed. */
+  request(request: ChatRequest): ChatItem {
+    this.#assistant = undefined
+    return this.#put({ kind: "request", id: this.#id("request"), request, state: "open" })
+  }
+
+  /** The request's end: answered (with the answer) or closed by the stop. */
+  settle(id: string, end: { answer: string | boolean } | "closed"): ChatItem | undefined {
+    const item = this.items.find((i) => i.id === id)
+    if (item?.kind !== "request" || item.state !== "open") return undefined
+    return this.#put(
+      end === "closed"
+        ? { ...item, state: "closed" }
+        : { ...item, state: "answered", answer: end.answer },
+    )
+  }
+
+  /** Folds one agent event: the items it changed. */
+  event(event: AgentEvent): ChatItem[] {
+    switch (event.type) {
+      case "assistant_text": {
+        // The turn's whole text so far (it replaces what was shown).
+        if (event.text === "") return []
+        this.#assistant ??= this.#id("assistant")
+        return [this.#put({ kind: "assistant", id: this.#assistant, text: event.text })]
+      }
+      case "reasoning":
+      case "tool_pending":
+        return []
+      case "tool_start": {
+        this.#assistant = undefined
+        return [
+          this.#put({
+            kind: "tool",
+            id: `tool-${event.callId}`,
+            name: event.toolName,
+            detail: toolDetail(event.args),
+            status: "running",
+          }),
+        ]
+      }
+      case "tool_result": {
+        const item = this.items.find((i) => i.id === `tool-${event.callId}`)
+        const base =
+          item?.kind === "tool"
+            ? item
+            : {
+                kind: "tool" as const,
+                id: `tool-${event.callId}`,
+                name: event.toolName,
+                detail: "",
+              }
+        return [this.#put({ ...base, ...toolOutcome(event.result) })]
+      }
+      default: {
+        this.#assistant = undefined
+        // The run's end: a call still shown running didn't finish (the run stopped or failed).
+        const changed: ChatItem[] = []
+        for (const item of this.items) {
+          if (item.kind === "tool" && item.status === "running") {
+            changed.push(this.#put({ ...item, status: "stopped" }))
+          }
+        }
+        const outcome =
+          event.type === "aborted"
+            ? "stopped"
+            : event.type === "turn_limit"
+              ? "turn_limit"
+              : event.type
+        const message =
+          event.type === "error"
+            ? oneLine(event.message)
+            : event.type === "turn_limit"
+              ? `stopped after ${event.maxTurns} turns`
+              : event.type === "done" && event.truncated === true
+                ? "the answer was cut short (the model's length limit)"
+                : undefined
+        changed.push(
+          this.#put({
+            kind: "end",
+            id: this.#id("end"),
+            outcome,
+            ...(message !== undefined && { message }),
+          }),
+        )
+        return changed
+      }
+    }
+  }
+}

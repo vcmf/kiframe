@@ -1,16 +1,21 @@
 // Kiframe's main process: one instance, the hardened window, and the handlers of the contract.
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { TakeStore } from "@kiframe/project"
+import { type LlmClient, OpenAiCompatibleClient } from "@kiframe/agent"
+import { type OpenedProject, TakeStore } from "@kiframe/project"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
+import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
+import { AgentHost } from "./agent.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { newProjectDir, ProjectSession, projectFileName, targetUrl } from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
+import { Registry } from "./registry.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
+import { scriptedModel } from "./test-model.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
 const here = fileURLToPath(new URL(".", import.meta.url))
@@ -33,6 +38,9 @@ if (!app.requestSingleInstanceLock()) {
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
+/** The agent's model by default (OpenRouter ids; a picker comes later). */
+export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
+
 function start(): void {
   let window: BrowserWindow | null = null
   // Tests (unpackaged builds only) keep the key in memory: CI has no keychain.
@@ -42,6 +50,52 @@ function start(): void {
   )
   const project = new ProjectSession()
   let error: string | null = null
+  // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
+  let takes: TakeStore | undefined
+  let registry: Registry | undefined
+  /** The open project's agent (one per project, closed before another opens). */
+  let agent: AgentHost | undefined
+  /** The browser the agent works in: launched on first use, shared by every project. */
+  let browser: Promise<Browser> | undefined
+  const launch = (): Promise<Browser> => {
+    browser ??= chromium.launch({ headless: true }).catch((e: unknown) => {
+      browser = undefined
+      throw new Error(`the agent's browser didn't start: ${message(e)}`)
+    })
+    return browser
+  }
+  // Tests (unpackaged builds only) script the model: no network, no key spent.
+  const testModel = dev ? process.env.KIFRAME_TEST_MODEL : undefined
+  // One script for the app's whole run: its turns go on from one message to the next.
+  const scripted = testModel !== undefined ? scriptedModel(testModel) : undefined
+  const model = async (): Promise<LlmClient> => {
+    if (scripted !== undefined) return scripted
+    const apiKey = await keys.key()
+    if (apiKey === undefined) throw new Error("no OpenRouter key: add one first")
+    return OpenAiCompatibleClient.fromConfig({ apiKey, model: DEFAULT_MODEL })
+  }
+
+  /** Makes `opened` the open project (null: none): the old one's agent stops and closes first. */
+  const switchTo = async (opened: OpenedProject | null): Promise<void> => {
+    const old = agent
+    agent = undefined
+    await old?.close()
+    if (opened === null || takes === undefined || registry === undefined) return
+    const ids = registry
+    agent = new AgentHost({
+      project: opened,
+      scope: ids.scope(opened.dir),
+      sceneKey: (sceneId) => ids.sceneKey(opened.dir, sceneId),
+      takes,
+      browser: launch,
+      llm: model,
+      model: DEFAULT_MODEL,
+      item: (item) => emit(window, "chat:item", item),
+      running: (running) => emit(window, "chat:running", running),
+      frame: (frame) => emit(window, "live:frame", frame),
+      projectChanged: () => void status().then((now) => emit(window, "status", now)),
+    })
+  }
 
   const status = () => readStatus(() => keys.hasKey(), project.view(), error)
   /** Runs one action: its failure becomes the status's error (cleared by the next action). */
@@ -81,7 +135,28 @@ function start(): void {
     if (process.platform !== "darwin") app.quit()
   })
 
+  // Quitting: the run stops, the browser closes (no Chromium left behind), then the app quits.
+  let quitting = false
+  app.on("before-quit", (event) => {
+    if (quitting) return
+    quitting = true
+    event.preventDefault()
+    void (async () => {
+      await switchTo(null).catch(() => undefined)
+      await (await browser?.catch(() => undefined))?.close().catch(() => undefined)
+      app.quit()
+    })()
+  })
+
   void app.whenReady().then(() => {
+    const data = app.getPath("userData")
+    takes = new TakeStore(join(data, "data"))
+    try {
+      registry = new Registry(data)
+    } catch (e) {
+      // Never replaced (approvals hang on it): the agent waits until it reads again.
+      error = `couldn't read the project registry (${join(data, "registry.json")}): ${message(e)}`
+    }
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -112,7 +187,7 @@ function start(): void {
               properties: ["createDirectory", "showOverwriteConfirmation"],
             })
             if (picked.canceled || picked.filePath === undefined) return
-            project.create(newProjectDir(picked.filePath), { name: init.name, url })
+            await switchTo(project.create(newProjectDir(picked.filePath), { name: init.name, url }))
           }),
         "project:open": () =>
           act(async () => {
@@ -123,12 +198,24 @@ function start(): void {
             })
             const dir = picked.filePaths[0]
             if (picked.canceled || dir === undefined) return
-            project.open(dir)
+            // Opened first: a folder that doesn't open keeps the current project (and its agent).
+            const opened = project.peek(dir)
+            await switchTo(opened)
+            project.use(opened)
           }),
-        "project:close": () => act(() => project.close()),
+        "project:close": () =>
+          act(async () => {
+            await switchTo(null)
+            project.close()
+          }),
         "external:open": async (url) => {
           if (isSafeExternal(url)) await shell.openExternal(url)
         },
+        "chat:state": () => agent?.state() ?? { items: [], running: false, model: DEFAULT_MODEL },
+        // `send` answers null when the run started: never read as "no agent".
+        "chat:send": (text) => (agent === undefined ? "open a project first" : agent.send(text)),
+        "chat:stop": () => agent?.stop(),
+        "chat:answer": (id, answer) => agent?.answer(id, answer),
       },
       devServer,
     )
@@ -139,7 +226,7 @@ function start(): void {
     window?.once("ready-to-show", () => {
       setImmediate(() => {
         try {
-          new TakeStore(join(app.getPath("userData"), "data")).sweep()
+          takes?.sweep()
         } catch (e) {
           // After the window's first read: pushed to it (not an action's result).
           error = `couldn't clean up old recordings: ${message(e)}`

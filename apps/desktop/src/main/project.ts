@@ -75,7 +75,16 @@ export class ProjectSession {
 
   /** Opens the project in `dir` (its errors say why it doesn't read) and makes it the open one. */
   open(dir: string): OpenedProject {
-    const opened = openProject(dir)
+    return this.use(this.peek(dir))
+  }
+
+  /** Opens the project in `dir` without making it the open one yet. */
+  peek(dir: string): OpenedProject {
+    return openProject(dir)
+  }
+
+  /** Makes an opened project the open one. */
+  use(opened: OpenedProject): OpenedProject {
     this.#opened = opened
     return opened
   }

@@ -70,10 +70,12 @@ describe("the window", () => {
     })
     fireEvent.click(create)
     await screen.findByRole("region", { name: "Scenes" })
-    expect(invoke).toHaveBeenLastCalledWith("project:create", {
-      name: "Acme",
-      url: "https://app.acme.example",
-    })
+    // The last create sent the good address (the workspace then loads its chat).
+    const creates = invoke.mock.calls.filter(([channel]) => channel === "project:create")
+    expect(creates.at(-1)).toEqual([
+      "project:create",
+      { name: "Acme", url: "https://app.acme.example" },
+    ])
   })
 
   it("shows the scenes in story order with their status", async () => {

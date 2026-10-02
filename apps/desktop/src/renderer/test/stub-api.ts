@@ -20,8 +20,13 @@ export function stubApi(
   answers: Partial<{ [C in InvokeChannel]: (...args: unknown[]) => InvokeResults[C] }>,
 ) {
   const listeners = new Map<string, Set<(payload: never) => void>>()
+  // The chat's state by default: empty, idle (a test answers it to show more).
+  const defaults: Partial<Record<InvokeChannel, (...args: unknown[]) => unknown>> = {
+    "chat:state": () => ({ items: [], running: false, model: "test/model" }),
+  }
   const invoke = vi.fn((channel: InvokeChannel, ...args: unknown[]) => {
-    const answer = answers[channel] as ((...a: unknown[]) => unknown) | undefined
+    const answer = (answers[channel] ?? defaults[channel]) as
+      ((...a: unknown[]) => unknown) | undefined
     if (answer === undefined) return Promise.reject(new Error(`no answer for ${channel}`))
     return Promise.resolve(answer(...args))
   })

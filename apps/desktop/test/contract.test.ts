@@ -5,7 +5,12 @@ import { invokeArgs } from "../src/shared/ipc.ts"
 describe("the IPC contract", () => {
   it("validates every channel's arguments (the preload allows exactly these)", () => {
     expect(Object.keys(invokeArgs).sort()).toEqual([...INVOKE_CHANNELS].sort())
-    expect(EVENT_CHANNELS).toEqual(["status"])
+    expect([...EVENT_CHANNELS].sort()).toEqual([
+      "chat:item",
+      "chat:running",
+      "live:frame",
+      "status",
+    ])
   })
 
   // The address itself is checked in main by the project's rule (test/project.test.ts, targetUrl).
@@ -24,5 +29,13 @@ describe("the IPC contract", () => {
     expect(invokeArgs["key:set"].safeParse([""]).success).toBe(false)
     expect(invokeArgs["key:set"].safeParse(["x".repeat(513)]).success).toBe(false)
     expect(invokeArgs["project:open"].safeParse(["/etc"]).success).toBe(false)
+    expect(invokeArgs["chat:send"].safeParse(["  "]).success).toBe(false)
+    expect(invokeArgs["chat:send"].safeParse(["x".repeat(20_001)]).success).toBe(false)
+    expect(invokeArgs["chat:answer"].safeParse(["request-1", true]).success).toBe(true)
+    expect(invokeArgs["chat:answer"].safeParse(["request-1", "the demo one"]).success).toBe(true)
+    expect(invokeArgs["chat:answer"].safeParse(["request-1", { approve: true }]).success).toBe(
+      false,
+    )
+    expect(invokeArgs["chat:answer"].safeParse(["x".repeat(65), true]).success).toBe(false)
   })
 })

@@ -130,6 +130,14 @@ export class Studio {
     return this.#lifetime.signal
   }
 
+  /**
+   * The live page, when one is open: never opens one (the host's live view follows it, and the
+   * page the runner switched to, a popup, when it does).
+   */
+  get currentPage(): Page | undefined {
+    return this.#live !== undefined && !this.#live.page.isClosed() ? this.#live.page : undefined
+  }
+
   /** The page the agent explores and grounds on (opened at the app on first use). */
   async livePage(): Promise<Page> {
     if (this.#live !== undefined && !this.#live.page.isClosed()) return this.#live.page
