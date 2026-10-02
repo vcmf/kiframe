@@ -22,10 +22,20 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
   const [removing, setRemoving] = useState<string | null>(null)
   const first = useRef<HTMLInputElement>(null)
 
+  // Answers in order: a late answer to an older request never overwrites a newer one.
+  const asked = useRef(0)
   const load = useCallback(() => {
+    const at = (asked.current += 1)
     api()
       .invoke("secrets:list")
-      .then(setSecrets, (e: unknown) => setError(String(e)))
+      .then(
+        (list) => {
+          if (at === asked.current) setSecrets(list)
+        },
+        (e: unknown) => {
+          if (at === asked.current) setError(String(e))
+        },
+      )
   }, [])
   // Loaded and focused once, when it opens: a re-render (a status update while a value is being
   // typed) never moves focus, so a value never lands in the plain-text Name field.

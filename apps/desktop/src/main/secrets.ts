@@ -1,7 +1,7 @@
 // The app's secrets (the vault: names and grants in app data, values in the keychain). The window
 // lists and adds them (a value goes window → main → keychain, never back); the studio resolves
 // them for granted uses, and every value is known to it for blurring and scrubbing (R6).
-import { type SecretBackend, type SecretUse, Vault } from "@kiframe/vault"
+import { type SecretBackend, type SecretKind, type SecretUse, Vault } from "@kiframe/vault"
 import { SecretName } from "@kiframe/schema"
 import type { SecretView } from "../shared/ipc.ts"
 
@@ -17,6 +17,11 @@ function secretName(name: string): string {
   return parsed.data
 }
 
+// The window's kinds are the vault's (a kind added there must be added to the contract too).
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
+const _kinds: Same<SecretView["kind"], SecretKind> = true
+void _kinds
+
 export class Secrets {
   readonly #vault: Vault
   readonly #backend: SecretBackend
@@ -31,12 +36,17 @@ export class Secrets {
     this.#backend = backend
   }
 
-  /** The values loaded from the keychain (before a run: the studio must know them all). */
+  /**
+   * The values loaded from the keychain (before a run: the studio must know them all). One that
+   * couldn't be read (a dismissed prompt, a locked keychain) is read again by the next call.
+   */
   ready(): Promise<void> {
-    this.#loaded ??= this.#load().catch((e: unknown) => {
-      this.#loaded = undefined
-      throw e
-    })
+    const missing = this.#vault.list().some((s) => !this.#values.has(s.name))
+    if (missing && this.#loaded !== undefined) {
+      const last = this.#loaded
+      this.#loaded = last.then(() => this.#load())
+    }
+    this.#loaded ??= this.#load()
     return this.#loaded
   }
 

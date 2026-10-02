@@ -87,6 +87,11 @@ describe("the app's secrets", () => {
       ["acme.password", true],
       ["acme.token", false],
     ])
+    // The keychain answers again (the prompt allowed this time): the next run's load reads it.
+    backend.get = get
+    await again.ready()
+    expect(again.list(APP).map((s) => s.provided)).toEqual([true, true])
+    expect(again.knownValues().has("tok")).toBe(true)
   })
 
   it("says why a name isn't one, in words, without repeating it (it may be a value)", async () => {

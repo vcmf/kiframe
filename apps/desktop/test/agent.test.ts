@@ -336,7 +336,7 @@ steps:
     })
     if (asked.kind !== "request" || asked.request.kind !== "approve-secret")
       throw new Error("no approval")
-    expect(asked.request.shot?.png.length).toBeGreaterThan(100)
+    expect(asked.request.shot?.jpeg.length).toBeGreaterThan(100)
     expect(asked.request.box?.width).toBeGreaterThan(0)
     made.agent.answer(asked.id, true)
     await made.until(() => made.running.at(-1) === false)

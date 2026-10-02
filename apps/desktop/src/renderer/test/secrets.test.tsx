@@ -33,7 +33,7 @@ const approval = (state: "open" | "answered" = "open"): ChatItem => ({
     origin: "https://app.test",
     path: "/login",
     step: "pw, in the setup",
-    shot: { png: "AAAA", width: 800, height: 600 },
+    shot: { jpeg: "AAAA", width: 800, height: 600 },
     box: { x: 200, y: 150, width: 400, height: 30 },
   },
 })
@@ -48,7 +48,7 @@ describe("a secret's approval", () => {
     await screen.findByLabelText("Message the agent")
     act(() => push("chat:item", approval()))
     const dialog = screen.getByRole("dialog", { name: "Type a secret here?" })
-    expect(within(dialog).getByRole("img").getAttribute("src")).toBe("data:image/png;base64,AAAA")
+    expect(within(dialog).getByRole("img").getAttribute("src")).toBe("data:image/jpeg;base64,AAAA")
     const outline = within(dialog).getByTestId("secret-outline")
     expect(outline.style.left).toBe("25%")
     expect(outline.style.top).toBe("25%")

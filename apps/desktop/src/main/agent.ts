@@ -228,10 +228,9 @@ export class AgentHost {
     const { config } = resolveProjectConfig(project.project, undefined)
     const secrets = this.#options.secrets?.()
     this.#withSecrets = secrets !== undefined
-    // Every value known before anything runs (R6).
-    await secrets?.ready()
+    // Every value known before anything runs (R6); the browser launches meanwhile.
+    const [browser] = await Promise.all([this.#options.browser(), secrets?.ready()])
     const origin = new URL(config.target.url).origin
-    const browser = await this.#options.browser()
     this.#browser = browser
     this.#studio = new Studio({
       project,

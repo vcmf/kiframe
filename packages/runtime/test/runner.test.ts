@@ -3,7 +3,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml, type ProjectConfig } from "@kiframe/schema"
 import { chromium, type Browser, type Page } from "playwright"
-import { PNG } from "pngjs"
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import { runScenario, StepError, type ApprovalRequest, type RunnerEvent } from "../src/index.ts"
 import { memoryBackend, Vault } from "@kiframe/vault"
@@ -185,60 +184,20 @@ ${extra}`
       },
     })
 
-    it("paints over a value typed earlier in the approval's screenshot, without touching the page", async () => {
-      const vault = await vaultWithPassword()
-      const asked: ApprovalRequest[] = []
-      let nodes = -1
-      await run(
-        `setup: [{ action: goto, url: /login-form }]
-steps:
-  - { id: mail, action: type, target: { by: label, name: Email }, value: "bob@visible.example" }
-  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
-`,
-        {
-          ...approving(vault, asked),
-          requestApproval: async (request: ApprovalRequest) => {
-            asked.push(request)
-            // The page as the user's app has it: nothing added for the screenshot.
-            nodes = await page.evaluate(() => document.querySelectorAll("*").length)
-            await vault.approve(request.secret, request.use)
-            return true
-          },
-        },
-      )
-      expect(nodes).toBe(await page.evaluate(() => document.querySelectorAll("*").length))
-      const shot = asked[0]!.shot!
-      const png = PNG.sync.read(Buffer.from(shot.png, "base64"))
-      const mail = (await page.getByLabel("Email").boundingBox())!
-      const scale = png.width / shot.width
-      // Across the typed email's text: all the mask's grey.
-      for (const fx of [0.1, 0.3, 0.5]) {
-        const x = Math.round((mail.x + mail.width * fx) * scale)
-        const y = Math.round((mail.y + mail.height / 2) * scale)
-        const at = (y * png.width + x) * 4
-        expect([...png.data.subarray(at, at + 3)], `at ${fx}`).toEqual([0xe3, 0xe4, 0xe7])
-      }
-    })
-
-    it("paints over a value typed into a web component's field (an open shadow root)", async () => {
+    it("scrolls the field into view for the approval's screenshot (its outline is in it)", async () => {
       const vault = await vaultWithPassword()
       const asked: ApprovalRequest[] = []
       await run(
-        `setup: [{ action: goto, url: /login-shadow }]
+        `setup: [{ action: goto, url: /login-below }]
 steps:
-  - { id: nick, action: type, target: { by: label, name: Nickname }, value: "bob-visible" }
   - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
 `,
         approving(vault, asked),
       )
-      const shot = asked[0]!.shot!
-      const png = PNG.sync.read(Buffer.from(shot.png, "base64"))
-      const nick = (await page.getByLabel("Nickname").boundingBox())!
-      const scale = png.width / shot.width
-      const x = Math.round((nick.x + nick.width * 0.2) * scale)
-      const y = Math.round((nick.y + nick.height / 2) * scale)
-      const at = (y * png.width + x) * 4
-      expect([...png.data.subarray(at, at + 3)]).toEqual([0xe3, 0xe4, 0xe7])
+      const { box, shot } = asked[0]!
+      expect(box).toBeDefined()
+      expect(box!.y).toBeGreaterThanOrEqual(0)
+      expect(box!.y + box!.height).toBeLessThanOrEqual(shot!.height)
     })
 
     it("asks once in an interactive run, then types without asking", async () => {
@@ -260,14 +219,12 @@ steps:
         width: expect.any(Number) as unknown,
         height: expect.any(Number) as unknown,
       })
-      const png = PNG.sync.read(Buffer.from(shot?.png ?? "", "base64"))
-      // The fields are painted over (nothing in them shows), and nothing was added to the page.
-      const box = asked[0]!.box!
-      const scale = png.width / shot!.width
-      const cx = Math.round((box.x + box.width / 2) * scale)
-      const cy = Math.round((box.y + box.height / 2) * scale)
-      const at = (cy * png.width + cx) * 4
-      expect([...png.data.subarray(at, at + 3)]).toEqual([0xe3, 0xe4, 0xe7])
+      // A JPEG of the page as it is (the user's own screen).
+      expect(
+        Buffer.from(shot?.jpeg ?? "", "base64")
+          .subarray(0, 2)
+          .toString("hex"),
+      ).toBe("ffd8")
       // Headless now: granted, no hook needed.
       await run(into(password), { ...scope, resolveSecret: vault.resolver() })
       expect(asked).toHaveLength(1)

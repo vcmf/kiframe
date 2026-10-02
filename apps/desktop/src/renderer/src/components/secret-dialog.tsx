@@ -66,7 +66,7 @@ export function SecretDialog() {
         {shot !== undefined && (
           <div className="shot">
             <img
-              src={`data:image/png;base64,${shot.png}`}
+              src={`data:image/jpeg;base64,${shot.jpeg}`}
               alt={`The page at ${request.path}, with the field outlined`}
             />
             {box !== undefined && (

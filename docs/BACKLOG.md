@@ -250,6 +250,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 - **Approve for a wider path** (§3 A3's third choice): the dialog has Allow and Decline; a grant covers the page's path pattern (ids as `*`). Add the wider choice when a real app needs it.
 - **The approvals, listed:** the panel lists secrets, not their grants; removing a secret (or taking it off an app) drops its approvals. A per-step list with revoke (the vault has `grants` / `revoke`) when users ask what they approved.
-- **Text in the approval's screenshot:** every field is masked (a value typed earlier never shows); a known value shown as page text ("Signed in as bob@acme.com") isn't. The shot goes to the user's own window only, in memory, dropped once answered: mask text too with the scanner's regions when V2 lands.
+- **The approval's screenshot is the page as it is** (APPROACHES §0, 2026-10-02): the user's own values typed earlier show in it (their own screen, to them only, never the agent or a take). Masking them proved fragile; revisit if screen sharing during approvals becomes a real case.
 - **One secret for several apps:** the panel refuses a name another app already uses (its value there would be replaced unseen). Sharing one secret across apps (staging and prod logins alike) needs its own choice in the panel.
+- **A secret on the app's other origins:** a secret is added for the project URL's origin only; a login that redirects to `www.` or an SSO host is refused there ("isn't allowed on …", not an approval). The panel adding origins to a secret (the vault keeps several) when a real app does this.
+- **The approval's step from its key:** the dialog's "Step" line is parsed from the runtime's step key; an `ApprovalRequest` carrying the step's parts (phase, id, preset, rule, scene key) would make it structural.
 

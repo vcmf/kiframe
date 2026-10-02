@@ -6,7 +6,6 @@ import {
   type Target,
 } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
-import { PNG } from "pngjs"
 import {
   type ApprovalRequest,
   isSecretRefusal,
@@ -444,105 +443,18 @@ async function resolveSecret(
   }
 }
 
-/** The fields an approval's screenshot masks (iframes and open shadow roots too). */
-const FIELDS =
-  'input:not([type=hidden]), textarea, [contenteditable]:not([contenteditable="false"])'
-/** At most this many fields masked per frame (a page with thousands is masked in part). */
-const MASK_MAX = 300
-
 /**
- * The viewport as it is, for an approval prompt (undefined if it can't be taken): a PNG with every
- * field painted over in Node (a value typed earlier, a username, never shows). Nothing is added to
- * the page (a take or the live view filming it never sees a mask, nor a hidden caret).
+ * The viewport as it is, for an approval prompt (undefined if it can't be taken): the user's own
+ * screen, shown to them only (APPROACHES §0: never masked; it never reaches the agent or a take).
  */
 async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
   const size = page.viewportSize()
   if (size === null) return undefined
-  const shot = await page
-    .screenshot({ type: "png", timeout: 3000, caret: "initial", animations: "allow" })
+  const jpeg = await page
+    .screenshot({ type: "jpeg", quality: 75, timeout: 3000, caret: "initial", animations: "allow" })
     .catch(() => undefined)
-  if (shot === undefined) return undefined
-  // Boxes in CSS pixels of the viewport: one read per frame, shifted by the frame's own place (an
-  // iframe's fields too). A frame that can't be read is masked whole.
-  const read = await Promise.all(
-    page.frames().map(async (frame) => {
-      const at =
-        frame.parentFrame() === null
-          ? { x: 0, y: 0 }
-          : await frame
-              .frameElement()
-              .then((el) => el.boundingBox())
-              .catch(() => null)
-      if (at === null) return []
-      const rects = await frame
-        .evaluate(
-          ([selector, max]) => {
-            // The document and every open shadow root in it (a web component's own fields).
-            const found: Element[] = []
-            const roots: (Document | ShadowRoot)[] = [document]
-            while (roots.length > 0 && found.length < max) {
-              const root = roots.pop()!
-              found.push(...root.querySelectorAll(selector))
-              for (const el of root.querySelectorAll("*")) {
-                if (el.shadowRoot !== null) roots.push(el.shadowRoot)
-              }
-            }
-            return found.slice(0, max).map((el) => {
-              const r = el.getBoundingClientRect()
-              return { x: r.x, y: r.y, width: r.width, height: r.height }
-            })
-          },
-          [FIELDS, MASK_MAX] as const,
-        )
-        .catch(() => null)
-      if (rects === null) {
-        // An iframe masked whole; the page itself unread: no screenshot at all (never one
-        // with its fields showing).
-        if (!("width" in at)) throw new Error("the page's fields couldn't be read")
-        return [at]
-      }
-      return rects.map((r) => ({ ...r, x: r.x + at.x, y: r.y + at.y }))
-    }),
-  ).catch(() => undefined)
-  if (read === undefined) return undefined
-  const boxes = read.flat()
-  const png = await readPng(shot)
-  const scale = png.width / size.width
-  for (const box of boxes) {
-    // A little wider than the field (its border, a value's descenders).
-    const x0 = Math.max(0, Math.floor((box.x - 2) * scale))
-    const y0 = Math.max(0, Math.floor((box.y - 2) * scale))
-    const x1 = Math.min(png.width, Math.ceil((box.x + box.width + 2) * scale))
-    const y1 = Math.min(png.height, Math.ceil((box.y + box.height + 2) * scale))
-    for (let y = y0; y < y1; y += 1) {
-      for (let x = x0; x < x1; x += 1) {
-        const at = (y * png.width + x) * 4
-        png.data[at] = 0xe3
-        png.data[at + 1] = 0xe4
-        png.data[at + 2] = 0xe7
-        png.data[at + 3] = 0xff
-      }
-    }
-  }
-  return { png: (await writePng(png)).toString("base64"), width: size.width, height: size.height }
-}
-
-/** A PNG decoded with zlib's async inflate (off the main thread: the app's window keeps up). */
-function readPng(data: Buffer): Promise<PNG> {
-  return new Promise((resolve, reject) => {
-    new PNG().parse(data, (error, png) => (error === null ? resolve(png) : reject(error)))
-  })
-}
-
-function writePng(png: PNG): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = []
-    png
-      .pack()
-      .on("data", (chunk: Buffer) => chunks.push(chunk))
-      .on("end", () => resolve(Buffer.concat(chunks)))
-      .on("error", reject)
-  })
+  if (jpeg === undefined) return undefined
+  return { jpeg: jpeg.toString("base64"), width: size.width, height: size.height }
 }
 
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */
