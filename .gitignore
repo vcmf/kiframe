@@ -9,3 +9,5 @@ coverage/
 # Phase 0 local outputs (takes, renders, experiment logs)
 .kiframe-local/
 *.tsbuildinfo
+# The desktop app's build (electron-vite)
+apps/desktop/out/

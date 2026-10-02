@@ -1,5 +1,15 @@
 # Kiframe backlog
 
+## Must do: data persistence (rework, not a patch)
+
+**Decided 2026-10-02, S3:** the app keeps a project's chat **in memory only**: it's gone when the app quits (the scenes, scenarios, compositions and takes it made are saved as before). This is a deliberate slice shortcut, and closing it is **a rework of the agent runtime and of storage**, not a file dump of the message list:
+
+- **A proper store** (a database in app data, e.g. SQLite; not JSON files next to the project): chats and their messages, several chats per project, written as a turn goes (a crash keeps what was said), with versioning and migrations once it ships.
+- **The agent runtime resumable from it:** a run's history (`AgentEvent.messages`, reasoning details, tool results and their elision state) stored as the loop produces it, and reloaded into `runAgent` exactly; an interrupted turn (a stop, a crash mid-tool) restored in a state the model can continue from.
+- **Never a secret value in it:** tool results are scrubbed at the boundary today (S2b); the store must keep that guarantee (and its retention and encryption follow M1-8's take rules).
+- **What links to what:** a chat's turns to the scenes and takes they made, so history survives a scene's rename or delete.
+
+
 Non-severe review findings deferred on purpose (see the review-round rule: only severe findings trigger a new round).
 
 ## @kiframe/schema (P0-2)
@@ -219,3 +229,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 - **A snapshot scrubbed twice:** it's scrubbed whole before its cut (a split value), then again at the tools' boundary: one scrubber passed in would do both.
 - **Two error scrubs:** the tools' boundary rebuilds a scrubbed error (name kept) beside the runtime's `scrubError`; a StepError through a tool loses its reason and step. One shared helper when a tool needs them.
+
+## @kiframe/desktop (S3a)
+
+- **Main bundles the whole runtime:** `@kiframe/project`'s take store imports `isRecorderLeftover` from the `@kiframe/runtime` barrel, so main's bundle (≈390 KB) carries the runner and pngjs it doesn't use in S3a (S3b loads the runtime anyway). A leaf module for the leftover check, or a subpath export, if cold start matters.
+- **The JS bundle is ≈700 KB** (React and the app; icons are tree-shaken): fine from disk, measure before splitting.
+- **The sweep is synchronous:** after a crash with many leftover frames, `TakeStore.sweep()` (sync `rmSync`) blocks main for a while just after the window shows. An async sweep (fs/promises) when takes get large.

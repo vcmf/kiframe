@@ -129,9 +129,13 @@ export function createProject(dir: string, init: NewProject): OpenedProject {
  * is reported in `problems`; the rest still opens (a scene's other parts included).
  */
 export function openProject(dir: string): OpenedProject {
-  removeStrayTemps(dir)
   const disk = new Map<string, string>()
-  const project = parseProjectJson(readKnown(dir, disk, PROJECT_FILE) ?? "")
+  // A project first: a folder that isn't one (picked by mistake) is never touched.
+  const text = readKnown(dir, disk, PROJECT_FILE)
+  if (text === undefined)
+    throw new Error(`${dir} isn't a Kiframe project (it has no ${PROJECT_FILE})`)
+  const project = parseProjectJson(text)
+  removeStrayTemps(dir)
   const scenes = new Map<string, StoredScene>()
   const problems: SceneProblem[] = []
   const root = join(dir, "scenes")

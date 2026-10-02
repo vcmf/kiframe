@@ -165,6 +165,20 @@ describe("project store: failures and conflicts", () => {
     openProject(made.dir)
     expect(existsSync(join(made.dir, ".0123456789ab.tmp"))).toBe(false)
   })
+
+  it("never touches a folder that isn't a project (picked by mistake)", () => {
+    const other = mkdtempSync(join(tmpdir(), "kiframe-not-a-project-"))
+    writeFileSync(join(other, ".0123456789ab.tmp"), "someone's file")
+    expect(() => openProject(other)).toThrow(/isn't a Kiframe project \(it has no project.json\)/)
+    expect(existsSync(join(other, ".0123456789ab.tmp"))).toBe(true)
+  })
+
+  it("removes only files that look like its own leftovers, never a folder", () => {
+    const made = createProject(folder(), { id: "p1", name: "Q4", url: "https://app.test" })
+    mkdirSync(join(made.dir, ".0123456789ab.tmp"))
+    expect(() => openProject(made.dir)).not.toThrow()
+    expect(existsSync(join(made.dir, ".0123456789ab.tmp"))).toBe(true)
+  })
 })
 
 describe("take store (with the real recorder)", () => {

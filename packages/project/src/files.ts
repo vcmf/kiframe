@@ -60,8 +60,9 @@ function syncFolder(folder: string): void {
 /** Removes the temporary files an interrupted write left in a folder. */
 export function removeStrayTemps(folder: string): void {
   if (!existsSync(folder)) return
-  for (const name of readdirSync(folder)) {
-    if (TMP.test(name)) rmSync(join(folder, name), { force: true })
+  for (const entry of readdirSync(folder, { withFileTypes: true })) {
+    // Only the files our own writes leave (never a folder that happens to match).
+    if (entry.isFile() && TMP.test(entry.name)) rmSync(join(folder, entry.name), { force: true })
   }
 }
 

@@ -3,7 +3,7 @@ import { defineConfig } from "eslint/config"
 import tseslint from "typescript-eslint"
 
 export default defineConfig(
-  { ignores: ["**/dist/**", "**/coverage/**", ".kiframe-local/**"] },
+  { ignores: ["**/dist/**", "**/coverage/**", ".kiframe-local/**", "apps/desktop/out/**"] },
   js.configs.recommended,
   tseslint.configs.recommendedTypeChecked,
   {
