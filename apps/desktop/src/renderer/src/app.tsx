@@ -1,6 +1,7 @@
 // The screens: first run (the key, then a project), then the workspace.
 import { useEffect } from "react"
 import { ChatColumn } from "./components/chat-column.tsx"
+import { ErrorBar } from "./components/error-note.tsx"
 import { KeySetup } from "./components/key-setup.tsx"
 import { ProjectStart } from "./components/project-start.tsx"
 import { Stage } from "./components/stage.tsx"
@@ -19,10 +20,13 @@ export function App() {
       ) : status.project === null ? (
         <ProjectStart />
       ) : (
-        <div className="workspace">
-          <ChatColumn />
-          <Stage project={status.project} />
-        </div>
+        <>
+          <ErrorBar error={status.error} />
+          <div className="workspace">
+            <ChatColumn />
+            <Stage project={status.project} />
+          </div>
+        </>
       )}
     </div>
   )

@@ -47,7 +47,12 @@ export function Stage({ project }: { project: ProjectView }) {
           </>
         )}
       </section>
-      <SceneStrip scenes={project.scenes} selected={selected} onSelect={setSelected} />
+      <SceneStrip
+        scenes={project.scenes}
+        problems={project.problems}
+        selected={selected}
+        onSelect={setSelected}
+      />
     </main>
   )
 }

@@ -29,6 +29,8 @@ export default defineConfig({
     root: resolve(import.meta.dirname, "src/renderer"),
     build: {
       outDir: resolve(import.meta.dirname, "out/renderer"),
+      // Every asset a file (small fonts too): the CSP allows the app's own files, no data: URIs.
+      assetsInlineLimit: 0,
       rollupOptions: { input: resolve(import.meta.dirname, "src/renderer/index.html") },
     },
     plugins: [react()],

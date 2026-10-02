@@ -10,7 +10,8 @@ export function ProjectStart() {
   const error = useApp((s) => s.status?.error)
   const [name, setName] = useState("")
   const [url, setUrl] = useState("")
-  const ready = name.trim() !== "" && /^https?:\/\/\S+$/.test(url.trim())
+  // The address is checked in main (the project's own rule): its error comes back as the status's.
+  const ready = name.trim() !== "" && url.trim() !== ""
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (ready) void run("project:create", { name: name.trim(), url: url.trim() })

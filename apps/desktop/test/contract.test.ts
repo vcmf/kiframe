@@ -8,12 +8,12 @@ describe("the IPC contract", () => {
     expect(EVENT_CHANNELS).toEqual(["status"])
   })
 
+  // The address itself is checked in main by the project's rule (test/project.test.ts, targetUrl).
   it("refuses what the window shouldn't send", () => {
     const create = invokeArgs["project:create"]
     expect(create.safeParse([{ name: "Demo", url: "https://app.test" }]).success).toBe(true)
     for (const bad of [
-      [{ name: "Demo", url: "file:///etc/passwd" }],
-      [{ name: "Demo", url: "javascript:alert(1)" }],
+      [{ name: "Demo", url: "" }],
       [{ name: "", url: "https://app.test" }],
       [{ name: "Demo", url: "https://app.test", dir: "/etc" }],
       [],

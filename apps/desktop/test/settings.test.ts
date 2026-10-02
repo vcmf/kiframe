@@ -21,4 +21,22 @@ describe("the OpenRouter key", () => {
     backend.values.set("openrouter-api-key", "")
     expect(await new KeyStore(backend).hasKey()).toBe(false)
   })
+
+  it("reads the keychain once (main is its only writer)", async () => {
+    const backend = memoryBackend()
+    let reads = 0
+    const get = backend.get.bind(backend)
+    backend.get = (name) => {
+      reads += 1
+      return get(name)
+    }
+    const keys = new KeyStore(backend)
+    await keys.hasKey()
+    await keys.hasKey()
+    await keys.set("sk-or-1")
+    expect(await keys.hasKey()).toBe(true)
+    await keys.clear()
+    expect(await keys.hasKey()).toBe(false)
+    expect(reads).toBe(1)
+  })
 })

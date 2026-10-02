@@ -1,10 +1,16 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createProject, saveScene } from "@kiframe/project"
+import { createProject, openProject, saveScene } from "@kiframe/project"
 import { parseScenarioYaml } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
-import { ProjectSession, projectView } from "../src/main/project.ts"
+import {
+  newProjectDir,
+  ProjectSession,
+  projectFileName,
+  projectView,
+  targetUrl,
+} from "../src/main/project.ts"
 
 const folder = () => join(mkdtempSync(join(tmpdir(), "kiframe-desktop-")), "demo.kiframe")
 const recording = (id: string, title: string) => ({
@@ -50,7 +56,13 @@ describe("the open project", () => {
     session.open(dir)
     const view = session.view()
     expect(view?.scenes).toEqual([
-      { id: "broken", title: "broken", kind: "unreadable", status: "unreadable" },
+      {
+        id: "broken",
+        title: "broken",
+        kind: "unreadable",
+        status: "unreadable",
+        problem: expect.any(String) as unknown,
+      },
     ])
     expect(view?.problems.some((p) => p.startsWith("broken:"))).toBe(true)
   })
@@ -73,5 +85,49 @@ describe("the open project", () => {
       /already holds a project/,
     )
     expect(() => session.open(mkdtempSync(join(tmpdir(), "kiframe-not-")))).toThrow()
+  })
+
+  it("never hides a scene whose scenario didn't read, nor one whose folder is gone", () => {
+    const dir = folder()
+    const project = createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
+    saveScene(project, recording("broken", "Broken"), {
+      scenario: parseScenarioYaml("version: 1\nsteps: [{ id: a, action: pause, ms: 1 }]\n"),
+    })
+    saveScene(project, recording("gone", "Gone"))
+    writeFileSync(join(dir, "scenes", "broken", "scenario.yaml"), "steps: [")
+    rmSync(join(dir, "scenes", "gone"), { recursive: true })
+    const view = new ProjectSession().open(dir) && projectView(openProject(dir))
+    expect(view.scenes).toMatchObject([
+      {
+        id: "broken",
+        title: "Broken",
+        status: "unreadable",
+        problem: expect.any(String) as unknown,
+      },
+      { id: "gone", status: "missing" },
+    ])
+    expect(view.problems).toHaveLength(2)
+  })
+
+  it("puts a new project in a new or empty folder only", () => {
+    const parent = mkdtempSync(join(tmpdir(), "kiframe-new-"))
+    expect(newProjectDir(join(parent, "Demo"))).toBe(join(parent, "Demo.kiframe"))
+    mkdirSync(join(parent, "empty.kiframe"))
+    expect(newProjectDir(join(parent, "empty.kiframe"))).toBe(join(parent, "empty.kiframe"))
+    mkdirSync(join(parent, "work.kiframe"))
+    writeFileSync(join(parent, "work.kiframe", "notes.txt"), "mine")
+    expect(() => newProjectDir(join(parent, "work"))).toThrow(/isn't an empty folder/)
+    writeFileSync(join(parent, "file.kiframe"), "x")
+    expect(() => newProjectDir(join(parent, "file.kiframe"))).toThrow(/isn't an empty folder/)
+  })
+
+  it("names a project's folder safely, and checks its address by the project's rule", () => {
+    expect(projectFileName("Q3/Q4 demo")).toBe("Q3 Q4 demo.kiframe")
+    expect(projectFileName("..")).toBe("Untitled.kiframe")
+    expect(projectFileName('a:b*c?"d<e>f|g\\h')).toBe("a b c d e f g h.kiframe")
+    expect(targetUrl(" https://app.test/x ")).toBe("https://app.test/x")
+    expect(() => targetUrl("https://u:p@app.test")).toThrow(/credentials/)
+    expect(() => targetUrl("file:///etc/passwd")).toThrow(/App address/)
+    expect(() => targetUrl("not a url")).toThrow(/App address/)
   })
 })

@@ -8,20 +8,32 @@ const STATUS: Record<SceneView["status"], { label: string; icon: React.ReactNode
   empty: { label: "No steps yet", icon: <FilmSlate size={13} /> },
   card: { label: "Title card", icon: <TextT size={13} /> },
   unreadable: { label: "Didn’t read", icon: <WarningCircle size={13} /> },
+  missing: { label: "Folder missing", icon: <WarningCircle size={13} /> },
 }
 
 export function SceneStrip(props: {
   scenes: SceneView[]
+  problems: string[]
   selected: string | null
   onSelect: (id: string) => void
 }) {
-  const { scenes } = props
+  const { scenes, problems } = props
   return (
     <section className="strip" aria-label="Scenes">
       <div className="strip-head">
         <span className="pane-title">Scenes</span>
         <span className="strip-count">{scenes.length}</span>
       </div>
+      {problems.length > 0 && (
+        <ul className="strip-problems" aria-label="Problems">
+          {problems.map((p) => (
+            <li key={p}>
+              <WarningCircle size={13} weight="fill" />
+              {p}
+            </li>
+          ))}
+        </ul>
+      )}
       {scenes.length === 0 ? (
         <div className="strip-empty">
           <Plus size={16} />
@@ -37,6 +49,7 @@ export function SceneStrip(props: {
                   type="button"
                   className="scene-card"
                   aria-pressed={props.selected === scene.id}
+                  title={scene.problem}
                   onClick={() => props.onSelect(scene.id)}
                 >
                   <div className={`scene-thumb${scene.kind === "card" ? " card" : ""}`}>

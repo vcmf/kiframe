@@ -693,3 +693,37 @@ ul.strip-cards {
   margin: 4px 2px;
   background: var(--line);
 }
+
+.error-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 8px 0 16px;
+  border-bottom: 1px solid #f5c2bc;
+  background: #fdecea;
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.strip-problems {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.strip-problems li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-missing {
+  color: var(--danger);
+}

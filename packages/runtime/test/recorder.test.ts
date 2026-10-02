@@ -572,13 +572,15 @@ steps:
     const take = await recordScenario(page, scene, withRules, { outDir })
     await context.close()
     const interrupt = take.events.find((e) => e.kind === "interrupt")
-    expect(interrupt).toMatchObject({
-      kind: "interrupt",
-      rule: "cookies",
-      phase: "steps",
-      stepId: "go",
-    })
+    // The dialog shows 300 ms after the page loads: before `wait` on a slow machine, before `go`
+    // otherwise. Either way it's handled off camera before the step it's attributed to starts.
+    expect(interrupt).toMatchObject({ kind: "interrupt", rule: "cookies", phase: "steps" })
+    expect(["wait", "go"]).toContain(interrupt?.stepId)
+    const start = take.events.find((e) => e.kind === "step_start" && e.stepId === interrupt?.stepId)
     expect(interrupt?.kind === "interrupt" && interrupt.until > interrupt.t).toBe(true)
+    expect(
+      interrupt?.kind === "interrupt" && start !== undefined && start.t >= interrupt.until,
+    ).toBe(true)
     const { composition } = generate(withRules, scene, take)
     expect(composition.tracks.clips.some((c) => c.mode === "cut" && c.reason === "interrupt")).toBe(
       true,

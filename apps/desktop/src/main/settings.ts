@@ -6,13 +6,16 @@ const ACCOUNT = "openrouter-api-key"
 
 export class KeyStore {
   readonly #backend: SecretBackend
+  /** Whether a key is set, once read (main is the only writer: kept in step by set and clear). */
+  #has: boolean | undefined
 
   constructor(backend: SecretBackend) {
     this.#backend = backend
   }
 
   async hasKey(): Promise<boolean> {
-    return ((await this.#backend.get(ACCOUNT)) ?? "") !== ""
+    this.#has ??= ((await this.#backend.get(ACCOUNT)) ?? "") !== ""
+    return this.#has
   }
 
   /** The key, for main's own use (the model client); undefined when none is set. */
@@ -23,9 +26,11 @@ export class KeyStore {
 
   async set(key: string): Promise<void> {
     await this.#backend.set(ACCOUNT, key.trim())
+    this.#has = key.trim() !== ""
   }
 
   async clear(): Promise<void> {
     await this.#backend.delete(ACCOUNT)
+    this.#has = false
   }
 }

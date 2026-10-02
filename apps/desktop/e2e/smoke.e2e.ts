@@ -12,6 +12,8 @@ const appDir = join(import.meta.dirname, "..")
 const shots = process.env.KIFRAME_E2E_SHOTS
 let app: ElectronApplication
 let page: Page
+/** What the window's console reported (a CSP refusal shows there). */
+const consoleErrors: string[] = []
 
 beforeAll(async () => {
   const profile = mkdtempSync(join(tmpdir(), "kiframe-e2e-"))
@@ -29,6 +31,10 @@ beforeAll(async () => {
     env,
   })
   page = await app.firstWindow()
+  page.on("console", (m) => {
+    if (m.type() === "error" || /Content Security Policy/.test(m.text()))
+      consoleErrors.push(m.text())
+  })
 })
 
 afterAll(async () => {
@@ -114,6 +120,46 @@ describe("the desktop app", () => {
     expect(inline).toBeNull()
   })
 
+  it("asks before removing the key, and keeps it when the user cancels", async () => {
+    await app.evaluate(({ dialog }) => {
+      dialog.showMessageBox = () => Promise.resolve({ response: 1, checkboxChecked: false })
+    })
+    await page.getByRole("button", { name: /Acme Billing demo/ }).click()
+    await page.getByRole("menuitem", { name: "Change OpenRouter key…" }).click()
+    await expect.poll(() => page.getByRole("region", { name: "Scenes" }).isVisible()).toBe(true)
+    await app.evaluate(({ dialog }) => {
+      dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false })
+    })
+    await page.getByRole("button", { name: /Acme Billing demo/ }).click()
+    await page.getByRole("menuitem", { name: "Change OpenRouter key…" }).click()
+    await expect
+      .poll(() => page.getByRole("heading", { name: "Connect a model" }).isVisible())
+      .toBe(true)
+  })
+
+  it("loads every font and asset under its CSP (nothing refused)", async () => {
+    // From here: the CSP test above injected a refused inline script on purpose.
+    consoleErrors.length = 0
+    // Glyphs from the smaller subsets too (Vietnamese, Cyrillic): every face is loaded for them,
+    // and none fails (a face the CSP refuses ends in "error").
+    const faces = await page.evaluate(async () => {
+      const text = "Tiếng Việt Ѐѐ abc"
+      for (const family of ["JetBrains Mono", "Instrument Sans"]) {
+        for (const weight of [400, 500, 600]) {
+          await document.fonts.load(`${weight} 16px "${family}"`, text).catch(() => [])
+        }
+      }
+      const all = [...document.fonts]
+      return {
+        loaded: all.filter((f) => f.status === "loaded").length,
+        failed: all.filter((f) => f.status === "error").map((f) => `${f.family} ${f.weight}`),
+      }
+    })
+    expect(faces.failed).toEqual([])
+    expect(faces.loaded).toBeGreaterThan(6)
+    expect(consoleErrors).toEqual([])
+  })
+  // Last: the blocked navigation leaves Playwright waiting for it (later clicks would wait too).
   it("never opens a window, navigates away or answers an unknown channel", async () => {
     await page.evaluate(() => window.open("https://example.com"))
     expect(app.windows()).toHaveLength(1)
@@ -135,12 +181,23 @@ describe("the desktop app", () => {
       (
         window as unknown as { kiframe: { invoke: (c: string, a: unknown) => Promise<unknown> } }
       ).kiframe
-        .invoke("project:create", { name: "x", url: "file:///etc/passwd" })
+        .invoke("project:create", { name: "x", url: "https://app.test", dir: "/etc" })
         .then(
           () => "answered",
           (e: Error) => e.message,
         ),
     )
     expect(invalid).toMatch(/invalid project:create/)
+    // A bad address is the project's rule, said as the status's error (no dialog opened).
+    const refused = await page.evaluate(() =>
+      (
+        window as unknown as {
+          kiframe: { invoke: (c: string, a: unknown) => Promise<{ error: string | null }> }
+        }
+      ).kiframe
+        .invoke("project:create", { name: "x", url: "file:///etc/passwd" })
+        .then((s) => s.error),
+    )
+    expect(refused).toMatch(/App address/)
   })
 })

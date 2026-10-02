@@ -13,6 +13,8 @@ interface AppState {
   busy: StatusChannel | null
   /** Reads the status and follows main's updates; returns the unsubscribe. */
   connect: () => () => void
+  /** Hides the shown error (the next action clears it in main too). */
+  dismissError: () => void
   /** Runs an action that answers with the status. */
   run: <C extends StatusChannel>(channel: C, ...args: InvokeArgs<C>) => Promise<void>
 }
@@ -22,10 +24,24 @@ export const useApp = create<AppState>((set, get) => ({
   busy: null,
   connect: () => {
     const off = api().on("status", (status) => set({ status }))
-    void api()
+    api()
       .invoke("app:status")
-      .then((status) => set({ status }))
+      .then(
+        (status) => set({ status }),
+        (error: unknown) =>
+          set({
+            status: {
+              hasKey: false,
+              project: null,
+              error: `Kiframe didn’t start: ${String(error)}`,
+            },
+          }),
+      )
     return off
+  },
+  dismissError: () => {
+    const now = get().status
+    if (now !== null) set({ status: { ...now, error: null } })
   },
   run: async (channel, ...args) => {
     if (get().busy !== null) return

@@ -8,12 +8,15 @@ import { INVOKE_CHANNELS, EVENT_CHANNELS } from "./channels.ts"
 export interface SceneView {
   id: string
   title: string
-  kind: "recording" | "card" | "unreadable"
+  kind: "recording" | "card" | "unreadable" | "missing"
   /**
    * `recorded`: a composition from a take; `grounded`: a scenario, not filmed yet; `empty`: a
-   * recording with no scenario yet; `card`: a title card; `unreadable`: its scene.json didn't read.
+   * recording with no scenario yet; `card`: a title card; `unreadable`: a part of it didn't read
+   * (`problem` says which); `missing`: the sequence names it, its folder is gone.
    */
-  status: "recorded" | "grounded" | "empty" | "card" | "unreadable"
+  status: "recorded" | "grounded" | "empty" | "card" | "unreadable" | "missing"
+  /** What didn't read, when something didn't. */
+  problem?: string
 }
 
 /** The open project as the window shows it. */
@@ -37,27 +40,21 @@ export interface AppStatus {
   error: string | null
 }
 
-const httpUrl = z
-  .string()
-  .trim()
-  .max(2048)
-  .refine((v) => {
-    try {
-      return ["http:", "https:"].includes(new URL(v).protocol)
-    } catch {
-      return false
-    }
-  }, "an http(s) URL")
-
 /** Each request channel's arguments, validated in main. */
 export const invokeArgs = {
   "app:status": z.tuple([]),
   /** The OpenRouter key: stored in the keychain, never echoed back. */
   "key:set": z.tuple([z.string().trim().min(1).max(512)]),
   "key:clear": z.tuple([]),
-  /** A new project: main asks where to put it (the window never names a path). */
+  /**
+   * A new project: main checks the address (the project schema's rule, said as the status's
+   * error) and asks where to put it (the window never names a path).
+   */
   "project:create": z.tuple([
-    z.strictObject({ name: z.string().trim().min(1).max(120), url: httpUrl }),
+    z.strictObject({
+      name: z.string().trim().min(1).max(120),
+      url: z.string().trim().min(1).max(2048),
+    }),
   ]),
   /** Main shows the folder picker. */
   "project:open": z.tuple([]),

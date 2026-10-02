@@ -6,7 +6,7 @@ import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import type { AppStatus } from "../shared/ipc.ts"
 import { emit, registerHandlers } from "./ipc.ts"
-import { PROJECT_EXTENSION, ProjectSession } from "./project.ts"
+import { newProjectDir, ProjectSession, projectFileName, targetUrl } from "./project.ts"
 import { isSafeExternal } from "./security.ts"
 import { KeyStore } from "./settings.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
@@ -29,6 +29,8 @@ if (!app.requestSingleInstanceLock()) {
   start()
 }
 
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
 function start(): void {
   let window: BrowserWindow | null = null
   // Tests (unpackaged builds only) keep the key in memory: CI has no keychain.
@@ -39,56 +41,87 @@ function start(): void {
   const project = new ProjectSession()
   let error: string | null = null
 
-  const status = async (): Promise<AppStatus> => ({
-    hasKey: await keys.hasKey(),
-    project: project.view(),
-    error,
-  })
+  /** Never throws: a keychain that can't be read is said, as the status's error. */
+  const status = async (): Promise<AppStatus> => {
+    let hasKey = false
+    try {
+      hasKey = await keys.hasKey()
+    } catch (e) {
+      error ??= `couldn't read the system keychain: ${message(e)}`
+    }
+    return { hasKey, project: project.view(), error }
+  }
   /** Runs one action: its failure becomes the status's error (cleared by the next action). */
   const act = async (work: () => Promise<void> | void): Promise<AppStatus> => {
     error = null
     try {
       await work()
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      error = message(e)
     }
     const now = await status()
     emit(window, "status", now)
     return now
   }
 
-  app.on("second-instance", () => {
-    if (window === null) return
+  const showWindow = () => {
+    if (window === null) {
+      window = createWindow(join(here, "../preload"), devServer)
+      window.on("closed", () => {
+        window = null
+      })
+      return
+    }
     if (window.isMinimized()) window.restore()
     window.focus()
+  }
+
+  // Launched again: this instance's window (made again if every window was closed, on macOS).
+  app.on("second-instance", () => {
+    if (app.isReady()) showWindow()
   })
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit()
   })
 
   void app.whenReady().then(() => {
-    // Leftovers of a crash (a recording's temporary folders) go before anything records.
-    new TakeStore(join(app.getPath("userData"), "data")).sweep()
+    // Leftovers of a crash (a recording's temporary folders) go before anything records. A sweep
+    // that fails is said, never a reason not to open.
+    try {
+      new TakeStore(join(app.getPath("userData"), "data")).sweep()
+    } catch (e) {
+      error = `couldn't clean up old recordings: ${message(e)}`
+    }
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
     registerHandlers(
       {
         "app:status": status,
         "key:set": (key) => act(() => keys.set(key)),
-        "key:clear": () => act(() => keys.clear()),
+        "key:clear": () =>
+          act(async () => {
+            // Asked in main: the key is gone for good (it's never shown again).
+            const { response } = await dialog.showMessageBox({
+              type: "warning",
+              message: "Remove the OpenRouter key?",
+              detail: "Kiframe forgets it; you paste a key again to keep working.",
+              buttons: ["Remove key", "Cancel"],
+              defaultId: 1,
+              cancelId: 1,
+            })
+            if (response === 0) await keys.clear()
+          }),
         "project:create": (init) =>
           act(async () => {
+            const url = targetUrl(init.url)
             const picked = await dialog.showSaveDialog({
               title: "Create a project",
               buttonLabel: "Create",
-              defaultPath: join(app.getPath("documents"), `${init.name}${PROJECT_EXTENSION}`),
+              defaultPath: join(app.getPath("documents"), projectFileName(init.name)),
               properties: ["createDirectory", "showOverwriteConfirmation"],
             })
             if (picked.canceled || picked.filePath === undefined) return
-            const dir = picked.filePath.endsWith(PROJECT_EXTENSION)
-              ? picked.filePath
-              : `${picked.filePath}${PROJECT_EXTENSION}`
-            project.create(dir, init)
+            project.create(newProjectDir(picked.filePath), { name: init.name, url })
           }),
         "project:open": () =>
           act(async () => {
@@ -108,17 +141,7 @@ function start(): void {
       },
       devServer,
     )
-    window = createWindow(join(here, "../preload"), devServer)
-    window.on("closed", () => {
-      window = null
-    })
-    app.on("activate", () => {
-      if (window === null) {
-        window = createWindow(join(here, "../preload"), devServer)
-        window.on("closed", () => {
-          window = null
-        })
-      }
-    })
+    showWindow()
+    app.on("activate", showWindow)
   })
 }
