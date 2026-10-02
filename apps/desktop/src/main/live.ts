@@ -13,6 +13,7 @@ export class LiveView {
   #followed: Page | undefined
   #timer: ReturnType<typeof setInterval> | undefined
   #lastSent = 0
+  readonly #refused = new WeakSet<Page>()
   #latest: { page: Page; data: Buffer } | undefined
   #pending: ReturnType<typeof setTimeout> | undefined
   #switching: Promise<void> = Promise.resolve()
@@ -59,7 +60,8 @@ export class LiveView {
   }
 
   #follow(): void {
-    const page = this.#page()
+    const found = this.#page()
+    const page = found !== undefined && this.#refused.has(found) ? undefined : found
     if (page === this.#followed) return
     // One switch at a time: a slow start never runs over the next one.
     this.#switching = this.#switching.then(() => this.#switch(page))
@@ -85,7 +87,9 @@ export class LiveView {
         },
       })
       .catch(() => {
-        // A page closing as it's followed: the next check follows the next one.
+        // A page closing as it's followed, or one the screencast refuses: never tried again (the
+        // next check follows the next page).
+        this.#refused.add(page)
         if (this.#followed === page) this.#followed = undefined
       })
   }

@@ -2,6 +2,7 @@
 // (a failure leaves the current one as it was), then the old agent closed. One switch at a time
 // (two quick ones never leak an agent). Electron-free: main gives it how to make an agent.
 import { randomBytes } from "node:crypto"
+import { realpathSync } from "node:fs"
 import { createProject, openProject, type OpenedProject } from "@kiframe/project"
 import type { ProjectView } from "../shared/ipc.ts"
 import { projectView } from "./project.ts"
@@ -37,9 +38,13 @@ export class Workspace<A extends Agent> {
     return this.#opened === null ? null : projectView(this.#opened, this.#session)
   }
 
-  /** Opens the project in `dir` (its error says why it doesn't, and nothing changes then). */
+  /**
+   * Opens the project in `dir` (its error says why it doesn't, and nothing changes then). The
+   * folder already open stays as it is (read again while its agent may be writing to it, the new
+   * copy could be older than the one in use).
+   */
   open(dir: string): Promise<void> {
-    return this.#switch(() => openProject(dir))
+    return this.#switch(() => openProject(dir), dir)
   }
 
   /** Creates a project in `dir` (a fresh id) and opens it. */
@@ -52,10 +57,11 @@ export class Workspace<A extends Agent> {
     return this.#switch(() => null)
   }
 
-  #switch(next: () => OpenedProject | null): Promise<void> {
+  #switch(next: () => OpenedProject | null, dir?: string): Promise<void> {
     const run = this.#switching.then(async () => {
       // Both made before anything changes: a project or agent that can't be made keeps the old.
       this.#ready()
+      if (dir !== undefined && this.#opened !== null && sameFolder(dir, this.#opened.dir)) return
       const opened = next()
       const agent = opened === null ? undefined : this.#makeAgent(opened)
       const old = this.#agent
@@ -68,4 +74,16 @@ export class Workspace<A extends Agent> {
     this.#switching = run.catch(() => undefined)
     return run
   }
+}
+
+/** Whether two paths are the same folder (through symlinks; a path that's gone is just itself). */
+function sameFolder(a: string, b: string): boolean {
+  const real = (p: string) => {
+    try {
+      return realpathSync(p)
+    } catch {
+      return p
+    }
+  }
+  return real(a) === real(b)
 }

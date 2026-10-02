@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { OpenedProject } from "@kiframe/project"
+import { createProject, type OpenedProject } from "@kiframe/project"
 import { describe, expect, it } from "vitest"
 import { Workspace } from "../src/main/workspace.ts"
 
@@ -62,8 +62,11 @@ describe("the open project and its agent", () => {
     await expect(ws.create(dir, { name: "A", url: "https://a.test" })).rejects.toThrow(
       /already holds a project/,
     )
+    // Another project, whose agent can't be made now.
+    const other = folder()
+    createProject(other, { id: "p-other", name: "B", url: "https://b.test" })
     fail = true
-    await expect(ws.open(dir)).rejects.toThrow(/registry/)
+    await expect(ws.open(other)).rejects.toThrow(/registry/)
     expect(ws.view()?.name).toBe("A")
     expect(ws.agent).toBe(made[0])
     expect(made[0]?.closed).toBe(false)
@@ -83,13 +86,17 @@ describe("the open project and its agent", () => {
     expect(ws.view()?.name).toBe("A")
   })
 
-  it("gives each opening its own session, the same folder reopened too", async () => {
-    const { make } = agents()
+  it("gives each opening its own session; the folder already open stays as it is", async () => {
+    const { made, make } = agents()
     const ws = new Workspace(make)
-    const dir = folder()
-    await ws.create(dir, { name: "A", url: "https://a.test" })
+    const a = folder()
+    await ws.create(a, { name: "A", url: "https://a.test" })
     const first = ws.view()?.session
-    await ws.open(dir)
+    await ws.open(a)
+    expect(ws.view()?.session).toBe(first)
+    expect(made).toHaveLength(1)
+    expect(made[0]?.closed).toBe(false)
+    await ws.create(folder(), { name: "B", url: "https://b.test" })
     expect(ws.view()?.session).not.toBe(first)
   })
 

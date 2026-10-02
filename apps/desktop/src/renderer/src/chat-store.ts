@@ -3,6 +3,7 @@
 import { create } from "zustand"
 import type { ChatItem, LiveFrame } from "../../shared/ipc.ts"
 import { errorMessage, upsert } from "../../shared/util.ts"
+
 import { api } from "./api.ts"
 
 interface ChatStore {
@@ -19,6 +20,9 @@ interface ChatStore {
   answer: (id: string, answer: string | boolean) => void
 }
 
+/** The connect current (a late answer to an earlier one is dropped). */
+let generation = 0
+
 export const useChat = create<ChatStore>((set) => ({
   items: [],
   running: false,
@@ -32,17 +36,15 @@ export const useChat = create<ChatStore>((set) => ({
       api().on("chat:running", (running) => set({ running })),
       api().on("live:frame", (frame) => set({ frame })),
     ]
+    // Main answers after every event it sent before: its state is the whole truth then (later
+    // events come after it). Only for the connect still current.
+    const at = (generation += 1)
     void api()
       .invoke("chat:state")
-      .then((state) =>
-        // Items that arrived meanwhile are newer: kept over the loaded ones.
-        set((s) => ({
-          items: s.items.reduce(upsert, state.items),
-          running: state.running,
-          model: state.model,
-          frame: s.frame ?? state.frame,
-        })),
-      )
+      .then((state) => {
+        if (at !== generation) return
+        set({ items: state.items, running: state.running, model: state.model, frame: state.frame })
+      })
       .catch(() => undefined)
     return () => {
       for (const off of offs) off()

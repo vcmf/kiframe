@@ -243,4 +243,6 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A model picker:** the model is `deepseek/deepseek-v4.1-flash` for now (the composer shows it).
 - **The live view polls for a page switch** (every 400 ms): a popup's first frames can be missed. A page-changed callback from the studio (where it follows the runner's switch) would replace the poll.
 - **Long chats repaint whole:** each streamed update re-renders the column and scans the item list (main and window). Derived selectors and an id index when chats get long.
+- **A tool's failure read from its words:** the chat tells a failed step by the studio's wording ("failed (…)", "replay failed: …"). The studio returning failures as soft errors (`{ error }`) would make it structural.
+- **The project refreshed after a list of tools:** the host refreshes the scene strip after `save_scene` / `record_scene` by name. A project-changed callback from the studio (or `saveScene`) would cover any tool that writes the project.
 

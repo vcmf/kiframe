@@ -128,5 +128,8 @@ describe("a tool's line", () => {
     expect(toolOutcome("saved: tour (replayed)").status).toBe("ok")
     expect(toolOutcome({ answer: "the demo account" }).status).toBe("ok")
     expect(oneLine("x".repeat(400)).length).toBe(160)
+    // Never half an emoji at the cut.
+    const cut = oneLine(`${"x".repeat(158)}😀${"y".repeat(10)}`)
+    expect(cut).toBe(`${"x".repeat(158)}😀…`)
   })
 })

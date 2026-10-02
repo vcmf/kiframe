@@ -260,4 +260,21 @@ steps:
     })
     await failing.agent.close()
   }, 60_000)
+
+  it("keeps a message whose run couldn't start, for the next run's model", async () => {
+    let fail = true
+    const { llm, seen } = script([{ kind: "text", text: "On it." }])
+    const made = host(() =>
+      fail ? Promise.reject(new Error("no OpenRouter key")) : Promise.resolve(llm),
+    )
+    made.agent.send("film the signup flow")
+    await made.until(() => made.running.at(-1) === false)
+    fail = false
+    made.agent.send("go ahead")
+    await made.until(() => made.running.length === 4)
+    expect(seen[0]?.some((m) => m.role === "user" && m.content === "film the signup flow")).toBe(
+      true,
+    )
+    await made.agent.close()
+  }, 60_000)
 })

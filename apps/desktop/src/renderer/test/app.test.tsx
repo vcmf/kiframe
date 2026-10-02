@@ -29,7 +29,7 @@ const project: ProjectView = {
 
 afterEach(() => {
   cleanup()
-  useApp.setState({ status: null, busy: null })
+  useApp.setState({ status: null, busy: null, dismissed: null })
 })
 
 describe("the window", () => {
@@ -116,7 +116,7 @@ describe("the window", () => {
   })
 
   it("shows an action's failure in the workspace, until dismissed", async () => {
-    stubApi({
+    const { push } = stubApi({
       "app:status": () => status({ hasKey: true, project }),
       "project:open": () =>
         status({ hasKey: true, project, error: "not a project: project.json is missing" }),
@@ -127,6 +127,18 @@ describe("the window", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/project.json is missing/)
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }))
     expect(screen.queryByRole("alert")).toBeNull()
+    // Main says it again (a push after the agent saved a scene): it stays dismissed.
+    act(() =>
+      push(
+        "status",
+        status({ hasKey: true, project, error: "not a project: project.json is missing" }),
+      ),
+    )
+    expect(screen.queryByRole("alert")).toBeNull()
+    // The same failure from a new action shows.
+    fireEvent.click(screen.getByRole("button", { name: /Acme Billing demo/ }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open another project…" }))
+    expect((await screen.findByRole("alert")).textContent).toMatch(/project.json is missing/)
   })
 
   it("says so when main can't answer at start, instead of a blank window", async () => {

@@ -138,7 +138,9 @@ export class AgentHost {
         }
       }
     } catch (error) {
-      // Before the run could start (the browser, the project's config, the key): said as its end.
+      // Before the run could start (the browser, the project's config, the key): said as its end,
+      // and the message kept for the model (the chat shows it: the next run knows it was said).
+      this.#history = [...this.#history, { role: "user", content: text }]
       const message = errorMessage(error)
       for (const item of this.#log.event({
         type: "error",

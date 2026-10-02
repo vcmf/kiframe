@@ -8,8 +8,8 @@ const LINE_MAX = 160
 
 /** One line, at most `LINE_MAX` characters. */
 export function oneLine(text: string): string {
-  const line = text.replace(/\s+/g, " ").trim()
-  return line.length > LINE_MAX ? `${line.slice(0, LINE_MAX - 1)}…` : line
+  const chars = [...text.replace(/\s+/g, " ").trim()]
+  return chars.length > LINE_MAX ? `${chars.slice(0, LINE_MAX - 1).join("")}…` : chars.join("")
 }
 
 /** What a call acts on, in a line: the arguments that say it, in the order the tools take them. */

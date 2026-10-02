@@ -18,7 +18,7 @@ const project: ProjectView = {
 
 afterEach(() => {
   cleanup()
-  useApp.setState({ status: null, busy: null })
+  useApp.setState({ status: null, busy: null, dismissed: null })
   useChat.setState({ items: [], running: false, model: "", frame: null, refused: null })
 })
 

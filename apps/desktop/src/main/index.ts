@@ -99,14 +99,20 @@ function start(): void {
     return OpenAiCompatibleClient.fromConfig({ apiKey, model: DEFAULT_MODEL })
   }
 
+  /** What an agent needs (the host's ids, the take store): throws when it can't be had now. */
+  const ready = (): { registry: Registry; takes: TakeStore } => {
+    const registry = ids()
+    if (takes === undefined) throw new Error("the app isn't ready yet")
+    return { registry, takes }
+  }
+
   /**
    * The open project and its agent, switched as one. An agent's events reach the window only while
    * it's the open project's (the one closing never writes into the next one's chat).
    */
   const workspace: Workspace<AgentHost> = new Workspace(
     (opened: OpenedProject) => {
-      const registry = ids()
-      if (takes === undefined) throw new Error("the app isn't ready yet")
+      const { registry, takes } = ready()
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
@@ -120,15 +126,13 @@ function start(): void {
         running: (running) => current() && emit(window, "chat:running", running),
         frame: (frame) => current() && emit(window, "live:frame", frame),
         projectChanged: () => {
-          if (current()) void status().then((now) => emit(window, "status", now))
+          // Checked again once read: a switch meanwhile makes this one stale.
+          if (current()) void status().then((now) => current() && emit(window, "status", now))
         },
       })
       return host
     },
-    () => {
-      ids()
-      if (takes === undefined) throw new Error("the app isn't ready yet")
-    },
+    () => void ready(),
   )
 
   const status = () => readStatus(() => keys.hasKey(), workspace.view(), error)
