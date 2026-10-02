@@ -38,6 +38,22 @@ describe("the host's ids", () => {
     expect(new Registry(data).sceneKey(a, "tour")).not.toBe(key)
   })
 
+  it("keys a scene named like an object's own property as any other", () => {
+    const { data, a } = dirs()
+    const registry = new Registry(data)
+    // `__proto__` can't be one: a scene id is kebab-case (the agent's ids are checked as SceneIds).
+    expect(SceneId.safeParse("__proto__").success).toBe(false)
+    for (const id of ["constructor", "to-string", "value-of"]) {
+      const key = registry.sceneKey(a, id)
+      expect(key, id).toMatch(/^scene-[0-9a-f]{12}$/)
+      expect(new Registry(data).sceneKey(a, id)).toBe(key)
+    }
+    registry.forgetScene(a, "constructor")
+    expect(new Registry(data).sceneKey(a, "constructor")).not.toBe(
+      registry.sceneKey(a, "to-string"),
+    )
+  })
+
   it("never replaces a registry that doesn't read (approvals hang on it)", () => {
     const { data } = dirs()
     writeFileSync(join(data, "registry.json"), "{ not json")

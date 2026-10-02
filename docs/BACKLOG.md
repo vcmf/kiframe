@@ -241,4 +241,6 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A removed scene's key:** `Registry.forgetScene` gives a reused scene id a new key (no inherited approvals), but nothing removes scenes in the app yet: wire it to the remove path when one exists (and to a scene folder deleted outside the app, noticed at open).
 - **Markdown in the agent's answers:** shown as plain text (`pre-wrap`); cooldown's Streamdown renderer when answers carry lists and code.
 - **A model picker:** the model is `deepseek/deepseek-v4.1-flash` for now (the composer shows it).
+- **The live view polls for a page switch** (every 400 ms): a popup's first frames can be missed. A page-changed callback from the studio (where it follows the runner's switch) would replace the poll.
+- **Long chats repaint whole:** each streamed update re-renders the column and scans the item list (main and window). Derived selectors and an id index when chats get long.
 

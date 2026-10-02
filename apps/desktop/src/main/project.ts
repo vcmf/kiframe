@@ -59,7 +59,7 @@ export function newProjectDir(picked: string): string {
  * Nothing wrong is hidden: a scene with a part that didn't read, or whose folder is missing, says
  * so, and every problem is listed.
  */
-export function projectView(opened: OpenedProject): ProjectView {
+export function projectView(opened: OpenedProject, session: string): ProjectView {
   const { project, scenes, problems } = opened
   const problemsOf = (id: string) => problems.filter((p) => p.sceneId === id)
   const ids = [
@@ -98,6 +98,7 @@ export function projectView(opened: OpenedProject): ProjectView {
     views.push({ id, title: scene.title, status })
   }
   return {
+    session,
     name: project.name,
     dir: opened.dir,
     url: project.target.url ?? null,

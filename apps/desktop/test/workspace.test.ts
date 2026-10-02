@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { OpenedProject } from "@kiframe/project"
@@ -67,6 +67,30 @@ describe("the open project and its agent", () => {
     expect(ws.view()?.name).toBe("A")
     expect(ws.agent).toBe(made[0])
     expect(made[0]?.closed).toBe(false)
+  })
+
+  it("writes no project when an agent can't be made now (the registry doesn't read)", async () => {
+    const { make } = agents()
+    let ready = false
+    const ws = new Workspace(make, () => {
+      if (!ready) throw new Error("couldn't read the project registry")
+    })
+    const dir = folder()
+    await expect(ws.create(dir, { name: "A", url: "https://a.test" })).rejects.toThrow(/registry/)
+    expect(existsSync(dir)).toBe(false)
+    ready = true
+    await ws.create(dir, { name: "A", url: "https://a.test" })
+    expect(ws.view()?.name).toBe("A")
+  })
+
+  it("gives each opening its own session, the same folder reopened too", async () => {
+    const { make } = agents()
+    const ws = new Workspace(make)
+    const dir = folder()
+    await ws.create(dir, { name: "A", url: "https://a.test" })
+    const first = ws.view()?.session
+    await ws.open(dir)
+    expect(ws.view()?.session).not.toBe(first)
   })
 
   it("switches one at a time: two quick switches never leave an agent open", async () => {

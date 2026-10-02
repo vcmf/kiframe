@@ -20,6 +20,8 @@ export interface SceneView {
 
 /** The open project as the window shows it. */
 export interface ProjectView {
+  /** This opening of the project (a reopen is a new one: the window starts its chat afresh). */
+  session: string
   name: string
   /** The folder (shown in the title bar's menu; never sent back by the window to open it). */
   dir: string
@@ -73,6 +75,8 @@ export interface ChatState {
   running: boolean
   /** The model the agent runs on (an OpenRouter id). */
   model: string
+  /** The live app's last frame (null before the first run). */
+  frame: LiveFrame | null
 }
 
 /** A frame of the live app (the agent's browser), view only. */

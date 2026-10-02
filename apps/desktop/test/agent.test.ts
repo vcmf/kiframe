@@ -37,7 +37,11 @@ function script(turns: LlmTurn[]) {
   return { llm, seen }
 }
 
-function host(model: LlmClient | (() => Promise<LlmClient>)) {
+function host(
+  model: LlmClient | (() => Promise<LlmClient>),
+  launch: () => Promise<Browser> = () => Promise.resolve(browser),
+  failShowing?: () => void,
+) {
   const llm = typeof model === "function" ? model : () => Promise.resolve(model)
   const dir = join(mkdtempSync(join(tmpdir(), "kiframe-agent-")), "demo.kiframe")
   const project = createProject(dir, {
@@ -57,10 +61,11 @@ function host(model: LlmClient | (() => Promise<LlmClient>)) {
     scope: "folder-0123456789abcdef",
     sceneKey: (id) => `scene-${id}`,
     takes: new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-"))),
-    browser: () => Promise.resolve(browser),
+    browser: launch,
     llm,
     model: "test/model",
     item: (item) => {
+      failShowing?.()
       sends.push(item)
       if (!items.has(item.id)) order.push(item.id)
       items.set(item.id, item)
@@ -178,6 +183,39 @@ describe("the agent in the app", () => {
     await until(() => running.length === 4)
     await agent.close()
     expect(agent.send("after close")).toMatch(/closed/)
+  }, 60_000)
+
+  it("works on in a new browser when the last one died (crashed, killed)", async () => {
+    let current = await chromium.launch()
+    const { llm } = script([
+      call("snapshot", {}),
+      { kind: "text", text: "one" },
+      call("snapshot", {}),
+    ])
+    const made = host(llm, () => Promise.resolve(current))
+    made.agent.send("look")
+    await made.until(() => made.running.at(-1) === false)
+    await current.close()
+    current = await chromium.launch()
+    made.agent.send("look again")
+    await made.until(() => made.running.length === 4)
+    const snapshots = made.shown().filter((i) => i.kind === "tool")
+    expect(snapshots.map((s) => s.kind === "tool" && s.status)).toEqual(["ok", "ok"])
+    await made.agent.close()
+    await current.close()
+  }, 60_000)
+
+  it("keeps a run's turns in the history even when showing an event fails", async () => {
+    const { llm, seen } = script([call("list_scenes", {}), { kind: "text", text: "None." }])
+    const made = host(llm, undefined, () => {
+      throw new Error("the window is gone")
+    })
+    made.agent.send("what's there?")
+    await made.until(() => made.running.at(-1) === false)
+    made.agent.send("and now?")
+    await made.until(() => made.running.length === 4)
+    expect(seen.at(-1)?.some((m) => m.role === "assistant" && m.content === "None.")).toBe(true)
+    await made.agent.close()
   }, 60_000)
 
   it("refreshes the project after a tool saves a scene", async () => {

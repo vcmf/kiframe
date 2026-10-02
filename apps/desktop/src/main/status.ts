@@ -1,8 +1,7 @@
 // The window's status, read fresh each time: it never throws, and never changes the last
 // action's error (a keychain that can't be read is said for as long as it can't).
 import type { AppStatus, ProjectView } from "../shared/ipc.ts"
-
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+import { errorMessage as message } from "../shared/util.ts"
 
 export async function readStatus(
   hasKey: () => Promise<boolean>,

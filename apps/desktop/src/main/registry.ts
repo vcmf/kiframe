@@ -39,7 +39,8 @@ export class Registry {
   /** The scene's key in the project folder: stable for it (kebab-case, a SceneId). */
   sceneKey(dir: string, sceneId: string): string {
     const entry = this.#entry(dir)
-    const known = entry.scenes[sceneId]
+    // Own keys only (a scene named "constructor" is a scene, not Object's).
+    const known = Object.hasOwn(entry.scenes, sceneId) ? entry.scenes[sceneId] : undefined
     if (known !== undefined) return known
     const key = `scene-${randomBytes(6).toString("hex")}`
     entry.scenes[sceneId] = key
@@ -53,14 +54,14 @@ export class Registry {
    */
   forgetScene(dir: string, sceneId: string): void {
     const entry = this.#entry(dir)
-    if (!(sceneId in entry.scenes)) return
+    if (!Object.hasOwn(entry.scenes, sceneId)) return
     delete entry.scenes[sceneId]
     this.#save()
   }
 
   #entry(dir: string): z.infer<typeof Entry> {
     const at = realpathSync(dir)
-    let entry = this.#file.projects[at]
+    let entry = Object.hasOwn(this.#file.projects, at) ? this.#file.projects[at] : undefined
     if (entry === undefined) {
       entry = { scope: `folder-${randomBytes(8).toString("hex")}`, scenes: {} }
       this.#file.projects[at] = entry

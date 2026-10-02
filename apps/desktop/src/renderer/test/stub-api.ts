@@ -22,7 +22,7 @@ export function stubApi(
   const listeners = new Map<string, Set<(payload: never) => void>>()
   // The chat's state by default: empty, idle (a test answers it to show more).
   const defaults: Partial<Record<InvokeChannel, (...args: unknown[]) => unknown>> = {
-    "chat:state": () => ({ items: [], running: false, model: "test/model" }),
+    "chat:state": () => ({ items: [], running: false, model: "test/model", frame: null }),
   }
   const invoke = vi.fn((channel: InvokeChannel, ...args: unknown[]) => {
     const answer = (answers[channel] ?? defaults[channel]) as

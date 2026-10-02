@@ -8,6 +8,7 @@ import { resolveProjectConfig } from "@kiframe/schema"
 import { Studio, studioTools, systemPrompt, type UserRequest } from "@kiframe/studio"
 import type { Browser } from "playwright"
 import type { ChatItem, ChatState, LiveFrame } from "../shared/ipc.ts"
+import { errorMessage } from "../shared/util.ts"
 import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
 
@@ -44,6 +45,10 @@ export class AgentHost {
   readonly #log = new ChatLog()
   #history: LlmMessage[] = []
   #studio: Studio | undefined
+  /** The browser the studio was made in. */
+  #browser: Browser | undefined
+  /** The live app's last frame (a reloaded window shows where the run ended). */
+  #frame: LiveFrame | null = null
   #live: LiveView | undefined
   #run: { controller: AbortController; done: Promise<void> } | undefined
   readonly #pending = new Map<string, Pending>()
@@ -62,6 +67,7 @@ export class AgentHost {
       items: [...this.#log.items],
       running: this.#run !== undefined,
       model: this.#options.model,
+      frame: this.#frame,
     }
   }
 
@@ -95,16 +101,24 @@ export class AgentHost {
     this.#closed = true
     this.stop()
     await this.#run?.done
+    // The live view's last frame too (never racing the context closing).
+    await this.#liveStopped
     await this.#studio?.close()
   }
 
   async #go(text: string, signal: AbortSignal): Promise<void> {
-    this.#options.running(true)
+    this.#notify("running", true)
     this.#emit(this.#log.user(text))
     try {
       const studio = await this.#ensureStudio()
       const llm = await this.#options.llm()
-      this.#live ??= new LiveView(() => studio.currentPage, this.#options.frame)
+      this.#live ??= new LiveView(
+        () => studio.currentPage,
+        (frame) => {
+          this.#frame = frame
+          this.#notify("frame", frame)
+        },
+      )
       await this.#liveStopped
       this.#live.start()
       for await (const event of runAgent({
@@ -116,15 +130,16 @@ export class AgentHost {
         history: this.#history,
         signal,
       })) {
+        // The run's turns, kept as they come.
+        if ("messages" in event) this.#history = [...this.#history, ...event.messages]
         for (const item of this.#log.event(event)) this.#emit(item, event.type === "assistant_text")
         if (event.type === "tool_result" && PROJECT_TOOLS.has(event.toolName)) {
-          this.#options.projectChanged()
+          this.#notify("projectChanged")
         }
-        if ("messages" in event) this.#history = [...this.#history, ...event.messages]
       }
     } catch (error) {
       // Before the run could start (the browser, the project's config, the key): said as its end.
-      const message = error instanceof Error ? error.message : String(error)
+      const message = errorMessage(error)
       for (const item of this.#log.event({
         type: "error",
         message: oneLine(message),
@@ -137,17 +152,22 @@ export class AgentHost {
       // The run is over for the user at once (Stop works, a message can go); the live view's last
       // frame comes after, and a next run's live view waits for it.
       this.#run = undefined
-      this.#options.running(false)
+      this.#notify("running", false)
       this.#liveStopped = this.#live?.stop() ?? Promise.resolve()
       await this.#liveStopped
     }
   }
 
   async #ensureStudio(): Promise<Studio> {
-    if (this.#studio !== undefined) return this.#studio
+    // A studio whose browser died (crashed, killed) is made again in a new one.
+    if (this.#studio !== undefined && this.#browser?.isConnected() !== false) return this.#studio
+    await this.#studio?.close().catch(() => undefined)
+    this.#studio = undefined
+    this.#live = undefined
     const { project, scope, sceneKey, takes } = this.#options
     const { config } = resolveProjectConfig(project.project, undefined)
     const browser = await this.#options.browser()
+    this.#browser = browser
     this.#studio = new Studio({
       project,
       scope,
@@ -189,11 +209,23 @@ export class AgentHost {
     })
   }
 
+  /** Tells main something (the window): a failure there never breaks the run. */
+  #notify<K extends "item" | "running" | "frame" | "projectChanged">(
+    what: K,
+    ...args: Parameters<AgentHostOptions[K]>
+  ): void {
+    try {
+      ;(this.#options[what] as (...a: Parameters<AgentHostOptions[K]>) => void)(...args)
+    } catch {
+      // the window gone or failing: the run, and its history, go on
+    }
+  }
+
   /** Sends an item; streaming text at most every `TEXT_MS` (the last one always goes). */
   #emit(item: ChatItem, text = false): void {
     if (!text) {
       this.#flushText()
-      this.#options.item(item)
+      this.#notify("item", item)
       return
     }
     if (this.#text !== undefined && this.#text.item.id === item.id) {
@@ -202,7 +234,7 @@ export class AgentHost {
       return
     }
     this.#flushText()
-    this.#options.item(item)
+    this.#notify("item", item)
     this.#text = { item, newer: false, timer: setTimeout(() => this.#flushText(), TEXT_MS) }
   }
 
@@ -211,6 +243,6 @@ export class AgentHost {
     clearTimeout(this.#text.timer)
     const { item, newer } = this.#text
     this.#text = undefined
-    if (newer) this.#options.item(item)
+    if (newer) this.#notify("item", item)
   }
 }

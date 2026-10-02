@@ -7,6 +7,7 @@ import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
 
 const project: ProjectView = {
+  session: "s1",
   name: "Acme Billing demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.acme.example",
@@ -172,9 +173,7 @@ describe("the window", () => {
     const strip = await screen.findByRole("region", { name: "Scenes" })
     fireEvent.click(within(strip).getAllByRole("button")[0]!)
     expect(within(strip).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("true")
-    act(() =>
-      push("status", status({ hasKey: true, project: { ...project, dir: "/tmp/other.kiframe" } })),
-    )
+    act(() => push("status", status({ hasKey: true, project: { ...project, session: "s2" } })))
     const again = await screen.findByRole("region", { name: "Scenes" })
     expect(within(again).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("false")
   })

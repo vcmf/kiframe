@@ -2,6 +2,7 @@
 // user's messages, stops and answers), and the live app's latest frame.
 import { create } from "zustand"
 import type { ChatItem, LiveFrame } from "../../shared/ipc.ts"
+import { errorMessage, upsert } from "../../shared/util.ts"
 import { api } from "./api.ts"
 
 interface ChatStore {
@@ -16,15 +17,6 @@ interface ChatStore {
   send: (text: string) => Promise<boolean>
   stop: () => void
   answer: (id: string, answer: string | boolean) => void
-}
-
-/** The items with `item` in (a newer version replaces the one with its id). */
-export function upsert(items: ChatItem[], item: ChatItem): ChatItem[] {
-  const at = items.findIndex((i) => i.id === item.id)
-  if (at === -1) return [...items, item]
-  const next = [...items]
-  next[at] = item
-  return next
 }
 
 export const useChat = create<ChatStore>((set) => ({
@@ -48,6 +40,7 @@ export const useChat = create<ChatStore>((set) => ({
           items: s.items.reduce(upsert, state.items),
           running: state.running,
           model: state.model,
+          frame: s.frame ?? state.frame,
         })),
       )
       .catch(() => undefined)
@@ -61,7 +54,7 @@ export const useChat = create<ChatStore>((set) => ({
       set({ refused })
       return refused === null
     } catch (error) {
-      set({ refused: error instanceof Error ? error.message : String(error) })
+      set({ refused: errorMessage(error) })
       return false
     }
   },

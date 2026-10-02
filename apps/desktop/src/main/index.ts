@@ -7,6 +7,7 @@ import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
+import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { newProjectDir, projectFileName, targetUrl } from "./project.ts"
@@ -37,7 +38,7 @@ if (!app.requestSingleInstanceLock()) {
   start()
 }
 
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
+const message = errorMessage
 
 /** The agent's model by default (OpenRouter ids; a picker comes later). */
 export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
@@ -71,11 +72,20 @@ function start(): void {
   }
   /** The browser the agent works in: launched on first use, shared by every project. */
   let browser: Promise<Browser> | undefined
-  const launch = (): Promise<Browser> => {
-    browser ??= chromium.launch({ headless: true }).catch((e: unknown) => {
-      browser = undefined
-      throw new Error(`the agent's browser didn't start: ${message(e)}`)
-    })
+  const launch = async (): Promise<Browser> => {
+    browser ??= chromium.launch({ headless: true }).then(
+      (b) => {
+        // Crashed or killed: the next run launches another.
+        b.on("disconnected", () => {
+          browser = undefined
+        })
+        return b
+      },
+      (e: unknown) => {
+        browser = undefined
+        throw new Error(`the agent's browser didn't start: ${message(e)}`)
+      },
+    )
     return browser
   }
   // Tests (unpackaged builds only) script the model: no network, no key spent.
@@ -93,27 +103,33 @@ function start(): void {
    * The open project and its agent, switched as one. An agent's events reach the window only while
    * it's the open project's (the one closing never writes into the next one's chat).
    */
-  const workspace: Workspace<AgentHost> = new Workspace((opened: OpenedProject) => {
-    const registry = ids()
-    if (takes === undefined) throw new Error("the app isn't ready yet")
-    const current = () => workspace.agent === host
-    const host: AgentHost = new AgentHost({
-      project: opened,
-      scope: registry.scope(opened.dir),
-      sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
-      takes,
-      browser: launch,
-      llm: model,
-      model: DEFAULT_MODEL,
-      item: (item) => current() && emit(window, "chat:item", item),
-      running: (running) => current() && emit(window, "chat:running", running),
-      frame: (frame) => current() && emit(window, "live:frame", frame),
-      projectChanged: () => {
-        if (current()) void status().then((now) => emit(window, "status", now))
-      },
-    })
-    return host
-  })
+  const workspace: Workspace<AgentHost> = new Workspace(
+    (opened: OpenedProject) => {
+      const registry = ids()
+      if (takes === undefined) throw new Error("the app isn't ready yet")
+      const current = () => workspace.agent === host
+      const host: AgentHost = new AgentHost({
+        project: opened,
+        scope: registry.scope(opened.dir),
+        sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
+        takes,
+        browser: launch,
+        llm: model,
+        model: DEFAULT_MODEL,
+        item: (item) => current() && emit(window, "chat:item", item),
+        running: (running) => current() && emit(window, "chat:running", running),
+        frame: (frame) => current() && emit(window, "live:frame", frame),
+        projectChanged: () => {
+          if (current()) void status().then((now) => emit(window, "status", now))
+        },
+      })
+      return host
+    },
+    () => {
+      ids()
+      if (takes === undefined) throw new Error("the app isn't ready yet")
+    },
+  )
 
   const status = () => readStatus(() => keys.hasKey(), workspace.view(), error)
   /** Runs one action: its failure becomes the status's error (cleared by the next action). */
@@ -223,7 +239,12 @@ function start(): void {
           if (isSafeExternal(url)) await shell.openExternal(url)
         },
         "chat:state": () =>
-          workspace.agent?.state() ?? { items: [], running: false, model: DEFAULT_MODEL },
+          workspace.agent?.state() ?? {
+            items: [],
+            running: false,
+            model: DEFAULT_MODEL,
+            frame: null,
+          },
         // `send` answers null when the run started: never read as "no agent".
         "chat:send": (text) => {
           const agent = workspace.agent

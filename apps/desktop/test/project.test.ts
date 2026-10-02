@@ -29,7 +29,7 @@ describe("the open project", () => {
       source: { kind: "card", template: "title", content: { heading: "Hi" } },
       duration: { mode: "auto" },
     })
-    expect(projectView(project)).toMatchObject({
+    expect(projectView(project, "s1")).toMatchObject({
       name: "Demo",
       url: "https://app.test",
       scenes: [
@@ -46,7 +46,7 @@ describe("the open project", () => {
     createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
     mkdirSync(join(dir, "scenes", "broken"), { recursive: true })
     writeFileSync(join(dir, "scenes", "broken", "scene.json"), "{ not json")
-    const view = projectView(openProject(dir))
+    const view = projectView(openProject(dir), "s1")
     expect(view?.scenes).toEqual([
       {
         id: "broken",
@@ -67,7 +67,7 @@ describe("the open project", () => {
     saveScene(project, recording("gone", "Gone"))
     writeFileSync(join(dir, "scenes", "broken", "scenario.yaml"), "steps: [")
     rmSync(join(dir, "scenes", "gone"), { recursive: true })
-    const view = projectView(openProject(dir))
+    const view = projectView(openProject(dir), "s1")
     expect(view.scenes).toMatchObject([
       {
         id: "broken",

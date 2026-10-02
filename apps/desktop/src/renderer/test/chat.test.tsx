@@ -8,6 +8,7 @@ import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
 
 const project: ProjectView = {
+  session: "s1",
   name: "Demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.test",
@@ -159,14 +160,17 @@ describe("the chat", () => {
         items: [{ kind: "user", id: "u1", text: "earlier message" }],
         running: true,
         model: "test/model",
+        frame: { jpeg: "BBBB", path: "/projects" },
       }),
     })
     render(<App />)
     expect(await screen.findByText("earlier message")).toBeTruthy()
     expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy()
+    // Where the run is: the last frame comes back too.
+    expect(screen.getByRole("img", { name: "The live app at /projects" })).toBeTruthy()
   })
 
-  it("starts another project's chat empty (nothing of the last one's left)", async () => {
+  it("starts the chat afresh when a project opens again (another one, or the same folder reopened)", async () => {
     const { push } = open()
     await screen.findByLabelText("Message the agent")
     act(() => {
@@ -174,9 +178,7 @@ describe("the chat", () => {
       push("live:frame", { jpeg: "AAAA", path: "/a" })
     })
     expect(screen.getByText("project A's message")).toBeTruthy()
-    act(() =>
-      push("status", status({ hasKey: true, project: { ...project, dir: "/tmp/b.kiframe" } })),
-    )
+    act(() => push("status", status({ hasKey: true, project: { ...project, session: "s2" } })))
     await screen.findByLabelText("Message the agent")
     expect(screen.queryByText("project A's message")).toBeNull()
     expect(useChat.getState().frame).toBeNull()
