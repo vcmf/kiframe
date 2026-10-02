@@ -177,4 +177,25 @@ describe("the window", () => {
     const again = await screen.findByRole("region", { name: "Scenes" })
     expect(within(again).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("false")
   })
+
+  it("closes the project menu on a click anywhere (the title bar too)", async () => {
+    stubApi({ "app:status": () => status({ hasKey: true, project }) })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /Acme Billing demo/ }))
+    expect(screen.getByRole("menu")).toBeTruthy()
+    // The backdrop covers the title bar's drag region, which never gives the page mouse events.
+    fireEvent.mouseDown(screen.getByTestId("menu-backdrop"))
+    expect(screen.queryByRole("menu")).toBeNull()
+  })
+
+  it("says so when the browser can't be opened, and limits what can't be sent", async () => {
+    stubApi({ "app:status": () => status() })
+    render(<App />)
+    const link = await screen.findByRole("button", { name: "Create one on OpenRouter" })
+    // Main can't open the browser (no default one).
+    window.kiframe.invoke = () => Promise.reject(new Error("no browser"))
+    fireEvent.click(link)
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Couldn’t open your browser/)
+    expect(screen.getByLabelText("OpenRouter API key").getAttribute("maxlength")).toBe("512")
+  })
 })

@@ -78,7 +78,10 @@ export interface InvokeResults {
 
 /** What main pushes to the window. */
 export interface Events {
-  /** The status changed (a project opened, the key set): the whole status, not a diff. */
+  /**
+   * The status changed on main's own (not as an action's result, which comes back from the
+   * action): the whole status, not a diff. Sent from S3b (the agent changing the project).
+   */
   status: AppStatus
 }
 export type EventChannel = keyof Events

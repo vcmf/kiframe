@@ -129,9 +129,10 @@ export function createProject(dir: string, init: NewProject): OpenedProject {
  * is reported in `problems`; the rest still opens (a scene's other parts included).
  */
 export function openProject(dir: string): OpenedProject {
-  removeStrayTemps(dir)
   const disk = new Map<string, string>()
+  // A project first: a folder that isn't one (picked by mistake) is never touched.
   const project = parseProjectJson(readKnown(dir, disk, PROJECT_FILE) ?? "")
+  removeStrayTemps(dir)
   const scenes = new Map<string, StoredScene>()
   const problems: SceneProblem[] = []
   const root = join(dir, "scenes")

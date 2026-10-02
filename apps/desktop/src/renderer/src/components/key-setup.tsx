@@ -10,6 +10,7 @@ export function KeySetup() {
   const busy = useApp((s) => s.busy)
   const error = useApp((s) => s.status?.error)
   const [key, setKey] = useState("")
+  const [linkError, setLinkError] = useState<string | null>(null)
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (key.trim() === "") return
@@ -30,6 +31,7 @@ export function KeySetup() {
           <label htmlFor="key">OpenRouter API key</label>
           <input
             id="key"
+            maxLength={512}
             type="password"
             autoComplete="off"
             spellCheck={false}
@@ -42,13 +44,17 @@ export function KeySetup() {
             <button
               type="button"
               className="link-btn"
-              onClick={() => void api().invoke("external:open", "https://openrouter.ai/keys")}
+              onClick={() => {
+                api()
+                  .invoke("external:open", "https://openrouter.ai/keys")
+                  .catch((e: unknown) => setLinkError(`Couldn’t open your browser: ${String(e)}`))
+              }}
             >
               Create one on OpenRouter
             </button>
           </span>
         </div>
-        <ErrorNote error={error} />
+        <ErrorNote error={error ?? linkError} />
         <div className="setup-actions">
           <button
             type="submit"

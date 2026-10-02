@@ -28,6 +28,7 @@ export function ProjectStart() {
           <label htmlFor="name">Project name</label>
           <input
             id="name"
+            maxLength={120}
             placeholder="Acme Billing demo"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -37,6 +38,7 @@ export function ProjectStart() {
           <label htmlFor="url">App address</label>
           <input
             id="url"
+            maxLength={2048}
             type="text"
             inputMode="url"
             spellCheck={false}

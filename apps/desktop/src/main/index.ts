@@ -7,6 +7,7 @@ import { app, type BrowserWindow, dialog, shell } from "electron"
 import type { AppStatus } from "../shared/ipc.ts"
 import { registerHandlers } from "./ipc.ts"
 import { newProjectDir, ProjectSession, projectFileName, targetUrl } from "./project.ts"
+import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
@@ -81,6 +82,7 @@ function start(): void {
   })
 
   void app.whenReady().then(() => {
+    setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
     registerHandlers(
@@ -132,12 +134,16 @@ function start(): void {
     )
     showWindow()
     app.on("activate", showWindow)
-    // Leftovers of a crash (a recording's temporary folders), once the window is up: before
-    // anything records (nothing does until the user acts). A sweep that fails is said.
-    try {
-      new TakeStore(join(app.getPath("userData"), "data")).sweep()
-    } catch (e) {
-      error = `couldn't clean up old recordings: ${message(e)}`
-    }
+    // Leftovers of a crash (a recording's temporary folders), once the window has shown (never
+    // delaying it), before anything records (nothing does until the user acts). Said if it fails.
+    window?.once("ready-to-show", () => {
+      setImmediate(() => {
+        try {
+          new TakeStore(join(app.getPath("userData"), "data")).sweep()
+        } catch (e) {
+          error = `couldn't clean up old recordings: ${message(e)}`
+        }
+      })
+    })
   })
 }

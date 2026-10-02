@@ -70,7 +70,13 @@ export function hardenSessions(devServer?: string): void {
   })
 }
 
-/** The main window, as in the mockup: the app draws its own title bar. */
+/** The window controls' height on Windows and Linux (drawn over the app's title bar). */
+export const TITLE_BAR_HEIGHT = 48
+
+/**
+ * The main window, as in the mockup: the app draws its own title bar on every platform (macOS's
+ * buttons inset in it; Windows' and Linux's controls drawn over its right end).
+ */
 export function createWindow(preloadDir: string, devServer?: string): BrowserWindow {
   const mac = process.platform === "darwin"
   const window = new BrowserWindow({
@@ -83,7 +89,10 @@ export function createWindow(preloadDir: string, devServer?: string): BrowserWin
     show: false,
     ...(mac
       ? { titleBarStyle: "hiddenInset" as const, trafficLightPosition: { x: 18, y: 16 } }
-      : {}),
+      : {
+          titleBarStyle: "hidden" as const,
+          titleBarOverlay: { color: "#FFFFFF", symbolColor: "#111214", height: TITLE_BAR_HEIGHT },
+        }),
     webPreferences: {
       preload: join(preloadDir, "index.cjs"),
       sandbox: true,
@@ -91,6 +100,8 @@ export function createWindow(preloadDir: string, devServer?: string): BrowserWin
       nodeIntegration: false,
       webSecurity: true,
       spellcheck: false,
+      // Never in a packaged app (the hardening would mean little with them a shortcut away).
+      devTools: !app.isPackaged,
     },
   })
   window.on("page-title-updated", (event) => event.preventDefault())

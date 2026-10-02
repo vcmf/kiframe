@@ -169,6 +169,20 @@ button:disabled {
   padding-left: 88px;
 }
 
+/* Windows and Linux: the system's window controls are drawn over the right end. */
+.titlebar.overlay {
+  padding-right: 150px;
+}
+
+/* An open menu's backdrop: a click anywhere closes it (the title bar is a drag region, which
+   never delivers mouse events to the page). */
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  -webkit-app-region: no-drag;
+}
+
 .titlebar button,
 .titlebar .chip {
   -webkit-app-region: no-drag;

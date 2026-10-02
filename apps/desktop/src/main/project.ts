@@ -18,8 +18,8 @@ export function targetUrl(url: string): string {
   return parsed.data
 }
 
-/** Names Windows refuses as a file name, with any extension. */
-const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
+/** Names Windows refuses as a file name: a device name before the first dot (`nul.tar` too). */
+const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(\.|$)/i
 /** Bytes a folder name may hold: 255 on most file systems, the extension included. */
 const MAX_NAME_BYTES = 255 - Buffer.byteLength(PROJECT_EXTENSION)
 
@@ -34,9 +34,10 @@ export function projectFileName(name: string): string {
     .replace(/[/\\:*?"<>|\u0000-\u001f]/g, " ")
     .replace(/\s+/g, " ")
     .replace(/^[.\s]+/, "")
-    .trim()
+    // A trailing dot or space: Windows drops it (`con.` is `con`).
+    .replace(/[.\s]+$/, "")
   while (Buffer.byteLength(safe) > MAX_NAME_BYTES) safe = [...safe].slice(0, -1).join("").trimEnd()
-  if (RESERVED.test(safe)) safe = `${safe} project`
+  if (RESERVED.test(safe)) safe = `${safe.replace(/^([^.]*)/, "$1 project")}`
   return `${safe === "" ? "Untitled" : safe}${PROJECT_EXTENSION}`
 }
 

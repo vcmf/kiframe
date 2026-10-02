@@ -1,6 +1,6 @@
 // The window's top: the wordmark, the project menu, the app it films.
 import { CaretDown, Export, FolderSimple, Globe } from "@phosphor-icons/react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { api } from "../api.ts"
 import { useApp } from "../store.ts"
 
@@ -8,7 +8,7 @@ export function TitleBar() {
   const status = useApp((s) => s.status)
   const project = status?.project ?? null
   return (
-    <header className={`titlebar${api().platform === "darwin" ? " mac" : ""}`}>
+    <header className={`titlebar ${api().platform === "darwin" ? "mac" : "overlay"}`}>
       <div className="wordmark" aria-label="Kiframe">
         kiframe
         <span className="wordmark-dot" />
@@ -42,23 +42,18 @@ export function TitleBar() {
 function ProjectMenu({ name }: { name: string }) {
   const run = useApp((s) => s.run)
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
-    const close = (event: MouseEvent | KeyboardEvent) => {
-      if (
-        event instanceof KeyboardEvent
-          ? event.key === "Escape"
-          : !ref.current?.contains(event.target as Node)
-      ) {
-        setOpen(false)
-      }
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false)
     }
-    document.addEventListener("mousedown", close)
+    // The window losing focus closes it too.
+    const blur = () => setOpen(false)
     document.addEventListener("keydown", close)
+    window.addEventListener("blur", blur)
     return () => {
-      document.removeEventListener("mousedown", close)
       document.removeEventListener("keydown", close)
+      window.removeEventListener("blur", blur)
     }
   }, [open])
   const pick = (action: () => Promise<void>) => () => {
@@ -66,7 +61,7 @@ function ProjectMenu({ name }: { name: string }) {
     void action()
   }
   return (
-    <div className="menu-anchor" ref={ref}>
+    <div className="menu-anchor">
       <button
         type="button"
         className="project-menu"
@@ -78,6 +73,13 @@ function ProjectMenu({ name }: { name: string }) {
         {name}
         <CaretDown size={13} />
       </button>
+      {open && (
+        <div
+          className="menu-backdrop"
+          data-testid="menu-backdrop"
+          onMouseDown={() => setOpen(false)}
+        />
+      )}
       {open && (
         <div className="menu" role="menu">
           <button type="button" role="menuitem" onClick={pick(() => run("project:open"))}>
