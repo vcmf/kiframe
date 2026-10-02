@@ -28,6 +28,7 @@ export class Secrets {
   /** Every secret's value (main only: the studio's scrubber and the recorder's blur). */
   #values = new Map<string, string>()
   #loaded: Promise<void> | undefined
+  #reloading = false
   /** Values replaced since the app started (still scrubbed and blurred until it quits). */
   readonly #retired = new Set<string>()
 
@@ -41,17 +42,26 @@ export class Secrets {
    * couldn't be read (a dismissed prompt, a locked keychain) is read again by the next call.
    */
   ready(): Promise<void> {
-    const missing = this.#vault.list().some((s) => !this.#values.has(s.name))
-    if (missing && this.#loaded !== undefined) {
-      const last = this.#loaded
-      this.#loaded = last.then(() => this.#load())
+    const missing = () => this.#vault.list().some((s) => !this.#values.has(s.name))
+    if (this.#loaded === undefined) this.#loaded = this.#load()
+    else if (!this.#reloading && missing()) {
+      // One reload at a time (the calls meanwhile wait for it).
+      this.#reloading = true
+      this.#loaded = this.#loaded
+        .then(() => this.#load())
+        .finally(() => {
+          this.#reloading = false
+        })
     }
-    this.#loaded ??= this.#load()
     return this.#loaded
   }
 
   async #load(): Promise<void> {
-    const names = this.#vault.list().map((s) => s.name)
+    // Only what isn't known yet (a reload reads the ones the keychain didn't give).
+    const names = this.#vault
+      .list()
+      .map((s) => s.name)
+      .filter((name) => !this.#values.has(name))
     // One that can't be read (a refused keychain prompt, a corrupt item) is skipped: listed as
     // having no value here, never failing every run.
     const read = await Promise.all(
@@ -71,7 +81,7 @@ export class Secrets {
   list(origin: string | null): SecretView[] {
     return this.#vault
       .list()
-      .filter((s) => origin === null || s.origins.includes(origin))
+      .filter((s) => origin !== null && s.origins.includes(origin))
       .map((s) => ({
         name: s.name,
         kind: s.kind,

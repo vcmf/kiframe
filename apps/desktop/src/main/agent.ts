@@ -14,6 +14,25 @@ import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
 import type { Secrets } from "./secrets.ts"
 
+/** `work`, or the stop: a keychain prompt waiting for the user never holds Stop. */
+function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("stopped"))
+  return new Promise((resolve, reject) => {
+    const stop = () => reject(new Error("stopped"))
+    signal.addEventListener("abort", stop, { once: true })
+    work.then(
+      (v) => {
+        signal.removeEventListener("abort", stop)
+        resolve(v)
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", stop)
+        reject(e instanceof Error ? e : new Error(String(e)))
+      },
+    )
+  })
+}
+
 /** Assistant text repainted at most this often (tool steps and requests at once). */
 const TEXT_MS = 100
 /** Tools whose result changes the project (the scene strip is refreshed after them). */
@@ -157,7 +176,9 @@ export class AgentHost {
     this.#notify("running", true)
     this.#emit(this.#log.user(text))
     try {
-      const studio = await this.#ensureStudio()
+      const studio = await untilStopped(this.#ensureStudio(), signal)
+      // Every run: a value the keychain didn't give before (a dismissed prompt) is read again.
+      await untilStopped(this.#options.secrets?.()?.ready() ?? Promise.resolve(), signal)
       const llm = await this.#options.llm()
       this.#live ??= new LiveView(
         () => studio.currentPage,

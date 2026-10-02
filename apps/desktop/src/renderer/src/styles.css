@@ -1200,3 +1200,8 @@ ul.strip-cards {
   border: 1px solid var(--line-strong);
   background: var(--bg);
 }
+
+.facts-note {
+  color: var(--dim);
+  font-size: 12px;
+}

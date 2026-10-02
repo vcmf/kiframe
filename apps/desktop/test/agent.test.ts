@@ -392,6 +392,19 @@ steps:
     expect(JSON.stringify(seen)).not.toContain("pw-x")
     await made.agent.close()
   }, 60_000)
+
+  it("stops a run still waiting on the keychain (a prompt the user hasn't answered)", async () => {
+    const waiting = { ready: () => new Promise<void>(() => undefined) } as unknown as Secrets
+    const { llm } = script([{ kind: "text", text: "never" }])
+    const made = host(llm, undefined, undefined, () => waiting)
+    made.agent.send("go")
+    await new Promise((r) => setTimeout(r, 200))
+    expect(made.running).toEqual([true])
+    made.agent.stop()
+    await made.until(() => made.running.at(-1) === false, 5000)
+    expect(made.shown().at(-1)).toMatchObject({ kind: "end" })
+    await made.agent.close()
+  }, 30_000)
 })
 
 describe("a step as the user reads it", () => {

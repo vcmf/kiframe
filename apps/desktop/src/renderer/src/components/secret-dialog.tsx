@@ -94,7 +94,9 @@ export function SecretDialog() {
             {request.path}
           </dd>
           <dt>Step</dt>
-          <dd>{request.step}</dd>
+          <dd>
+            {request.step} <span className="facts-note">(as the scene names it)</span>
+          </dd>
         </dl>
         <div className="dialog-foot">
           <span className="dialog-note">
