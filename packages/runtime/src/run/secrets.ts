@@ -462,20 +462,51 @@ async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
     .screenshot({ type: "png", timeout: 3000, caret: "initial", animations: "allow" })
     .catch(() => undefined)
   if (shot === undefined) return undefined
-  // Boxes in CSS pixels of the viewport (an iframe's fields too: Playwright places them there).
-  const boxes: { x: number; y: number; width: number; height: number }[] = []
-  for (const frame of page.frames()) {
-    const handles = await frame
-      .locator(FIELDS)
-      .elementHandles()
-      .catch(() => [])
-    for (const handle of handles.slice(0, MASK_MAX)) {
-      const box = await handle.boundingBox().catch(() => null)
-      if (box !== null) boxes.push(box)
-    }
-    for (const handle of handles) void handle.dispose().catch(() => undefined)
-  }
-  const png = PNG.sync.read(shot)
+  // Boxes in CSS pixels of the viewport: one read per frame, shifted by the frame's own place (an
+  // iframe's fields too). A frame that can't be read is masked whole.
+  const read = await Promise.all(
+    page.frames().map(async (frame) => {
+      const at =
+        frame.parentFrame() === null
+          ? { x: 0, y: 0 }
+          : await frame
+              .frameElement()
+              .then((el) => el.boundingBox())
+              .catch(() => null)
+      if (at === null) return []
+      const rects = await frame
+        .evaluate(
+          ([selector, max]) => {
+            // The document and every open shadow root in it (a web component's own fields).
+            const found: Element[] = []
+            const roots: (Document | ShadowRoot)[] = [document]
+            while (roots.length > 0 && found.length < max) {
+              const root = roots.pop()!
+              found.push(...root.querySelectorAll(selector))
+              for (const el of root.querySelectorAll("*")) {
+                if (el.shadowRoot !== null) roots.push(el.shadowRoot)
+              }
+            }
+            return found.slice(0, max).map((el) => {
+              const r = el.getBoundingClientRect()
+              return { x: r.x, y: r.y, width: r.width, height: r.height }
+            })
+          },
+          [FIELDS, MASK_MAX] as const,
+        )
+        .catch(() => null)
+      if (rects === null) {
+        // An iframe masked whole; the page itself unread: no screenshot at all (never one
+        // with its fields showing).
+        if (!("width" in at)) throw new Error("the page's fields couldn't be read")
+        return [at]
+      }
+      return rects.map((r) => ({ ...r, x: r.x + at.x, y: r.y + at.y }))
+    }),
+  ).catch(() => undefined)
+  if (read === undefined) return undefined
+  const boxes = read.flat()
+  const png = await readPng(shot)
   const scale = png.width / size.width
   for (const box of boxes) {
     // A little wider than the field (its border, a value's descenders).
@@ -493,7 +524,25 @@ async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
       }
     }
   }
-  return { png: PNG.sync.write(png).toString("base64"), width: size.width, height: size.height }
+  return { png: (await writePng(png)).toString("base64"), width: size.width, height: size.height }
+}
+
+/** A PNG decoded with zlib's async inflate (off the main thread: the app's window keeps up). */
+function readPng(data: Buffer): Promise<PNG> {
+  return new Promise((resolve, reject) => {
+    new PNG().parse(data, (error, png) => (error === null ? resolve(png) : reject(error)))
+  })
+}
+
+function writePng(png: PNG): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    png
+      .pack()
+      .on("data", (chunk: Buffer) => chunks.push(chunk))
+      .on("end", () => resolve(Buffer.concat(chunks)))
+      .on("error", reject)
+  })
 }
 
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */

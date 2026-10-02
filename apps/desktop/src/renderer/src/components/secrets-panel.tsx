@@ -37,10 +37,8 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
   close.current = onClose
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      // A secret's approval over the panel takes Escape (it's on top): the panel stays.
-      if (event.key === "Escape" && !document.querySelector('[aria-labelledby="secret-title"]')) {
-        close.current()
-      }
+      // A dialog over the panel (a secret's approval) took Escape first: the panel stays.
+      if (event.key === "Escape" && !event.defaultPrevented) close.current()
     }
     document.addEventListener("keydown", onKey)
     return () => document.removeEventListener("keydown", onKey)

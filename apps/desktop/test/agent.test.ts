@@ -43,7 +43,7 @@ function host(
   model: LlmClient | (() => Promise<LlmClient>),
   launch: () => Promise<Browser> = () => Promise.resolve(browser),
   failShowing?: () => void,
-  secrets?: Secrets,
+  secrets?: Secrets | (() => Secrets | undefined),
 ) {
   const llm = typeof model === "function" ? model : () => Promise.resolve(model)
   const dir = join(mkdtempSync(join(tmpdir(), "kiframe-agent-")), "demo.kiframe")
@@ -67,7 +67,9 @@ function host(
     browser: launch,
     llm,
     model: "test/model",
-    ...(secrets !== undefined && { secrets }),
+    ...(secrets !== undefined && {
+      secrets: typeof secrets === "function" ? secrets : () => secrets,
+    }),
     item: (item) => {
       failShowing?.()
       sends.push(item)
@@ -154,7 +156,8 @@ describe("the agent in the app", () => {
       status: "ok",
       result: expect.stringMatching(/^ok\. url: \/projects/) as unknown,
     })
-    expect(frames.length).toBeGreaterThan(0)
+    // The run is over for the user first; the live view's last frame comes right after.
+    await until(() => frames.length > 0)
     expect(frames.at(-1)?.jpeg.length).toBeGreaterThan(100)
     await agent.close()
   }, 60_000)
@@ -328,7 +331,7 @@ steps:
         element: { tag: "input", type: "password", label: "Password input" },
         origin: new URL(server.url).origin,
         path: "/login-form",
-        step: "pw, in the scene's steps",
+        step: "pw, in the steps of scene login",
       },
     })
     if (asked.kind !== "request" || asked.request.kind !== "approve-secret")
@@ -358,12 +361,51 @@ steps:
     expect(JSON.stringify(seen)).not.toContain("hunter2-secret")
     await made.agent.close()
   }, 60_000)
+
+  it("picks up the vault once it reads (an agent made while it couldn't)", async () => {
+    const later: { vault?: Secrets } = {}
+    const { llm, seen } = script([
+      call("list_secrets", {}),
+      { kind: "text", text: "a" },
+      call("list_secrets", {}, "c2"),
+      { kind: "text", text: "b" },
+    ])
+    const made = host(llm, undefined, undefined, () => later.vault)
+    made.agent.send("which secrets?")
+    await made.until(() => made.running.at(-1) === false)
+    const vault = new Secrets(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    later.vault = vault
+    await vault.add(
+      { name: "acme.password", kind: "password", value: "pw-x" },
+      new URL(server.url).origin,
+    )
+    made.agent.send("and now?")
+    await made.until(() => made.running.length === 4)
+    const results = made
+      .shown()
+      .filter((i) => i.kind === "tool")
+      .map((t) => (t.kind === "tool" ? t.result : ""))
+    expect(results).toEqual(["none", "acme.password"])
+    expect(JSON.stringify(seen)).not.toContain("pw-x")
+    await made.agent.close()
+  }, 60_000)
 })
 
 describe("a step as the user reads it", () => {
-  it("names the step and its part", () => {
-    expect(stepLabel("scene:scene-0123456789ab/setup/pw")).toBe("pw, in the setup")
-    expect(stepLabel("scene:scene-0123456789ab/steps/pw")).toBe("pw, in the scene's steps")
+  it("names the step, its part and its scene", () => {
+    const scenes = new Map([["scene-0123456789ab", "login"]])
+    expect(stepLabel("scene:scene-0123456789ab/setup/pw", scenes)).toBe(
+      "pw, in the setup of scene login",
+    )
+    expect(stepLabel("scene:scene-0123456789ab/steps/pw", scenes)).toBe(
+      "pw, in the steps of scene login",
+    )
+    expect(stepLabel("scene:scene-ffffffffffff/steps/pw", scenes)).toBe(
+      "pw, in the steps of a scene",
+    )
     expect(stepLabel("preset:login/pw")).toBe("pw, in the login preset")
     expect(stepLabel("interrupt:session-expired")).toBe("the session-expired interrupt rule")
   })

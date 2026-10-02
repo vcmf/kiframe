@@ -126,10 +126,10 @@ function start(): void {
   }
 
   /** What an agent needs (the host's ids, the take store, the secrets): throws when it can't. */
-  const ready = (): { registry: Registry; takes: TakeStore; secrets: Secrets | undefined } => {
+  const ready = (): { registry: Registry; takes: TakeStore } => {
     const registry = ids()
     if (takes === undefined) throw new Error("the app isn't ready yet")
-    return { registry, takes, secrets: vaultOrNull() }
+    return { registry, takes }
   }
   /** The open project's app origin (its secrets are those usable there). */
   const origin = (): string | null => {
@@ -143,7 +143,7 @@ function start(): void {
    */
   const workspace: Workspace<AgentHost> = new Workspace(
     (opened: OpenedProject) => {
-      const { registry, takes, secrets } = ready()
+      const { registry, takes } = ready()
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
@@ -153,7 +153,7 @@ function start(): void {
         browser: launch,
         llm: model,
         model: DEFAULT_MODEL,
-        ...(secrets !== undefined && { secrets }),
+        secrets: vaultOrNull,
         item: (item) => current() && emit(window, "chat:item", item),
         running: (running) => current() && emit(window, "chat:running", running),
         frame: (frame) => current() && emit(window, "live:frame", frame),

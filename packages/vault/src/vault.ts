@@ -341,11 +341,9 @@ export class Vault {
 
   /** Removes a secret: its value from the keychain, its metadata and grants from the vault. */
   async remove(name: string): Promise<void> {
-    // Only a secret of the vault (never another keychain entry of its service: the grants' key).
-    if (this.#find(SecretName.parse(name)) === undefined) {
-      throw new Error(`secret "${name}" isn't in the vault`)
-    }
-    await this.#backend.delete(name)
+    // A secret name only (never another keychain entry of its service: the grants' key), with or
+    // without its metadata (a value whose metadata write failed can still be removed).
+    await this.#backend.delete(SecretName.parse(name))
     this.#update((file) => ({
       ...file,
       secrets: file.secrets.filter((s) => s.name !== name),

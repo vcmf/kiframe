@@ -25,7 +25,9 @@ export function TitleBar() {
               {hostOf(project.url)}
             </span>
           )}
-          {project.url !== null && <SecretsButton origin={new URL(project.url).origin} />}
+          {project.url !== null && (
+            <SecretsButton key={project.session} origin={new URL(project.url).origin} />
+          )}
           <button
             type="button"
             className="btn btn-ghost"

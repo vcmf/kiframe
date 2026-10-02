@@ -70,6 +70,25 @@ describe("the app's secrets", () => {
     expect(backend.values.has("acme.password")).toBe(false)
   })
 
+  it("keeps a replaced value known (a page may still show it), and skips one it can't read", async () => {
+    const { secrets, backend, path } = make()
+    await secrets.add({ name: "acme.password", kind: "password", value: "old-pw" }, APP)
+    await secrets.add({ name: "acme.password", kind: "password", value: "new-pw" }, APP)
+    expect([...secrets.knownValues()].sort()).toEqual(["new-pw", "old-pw"])
+    await secrets.add({ name: "acme.token", kind: "api_key", value: "tok" }, APP)
+    // The keychain refuses one entry (a denied prompt): the others still load, and runs still go.
+    const get = backend.get.bind(backend)
+    backend.get = (name) =>
+      name === "acme.token" ? Promise.reject(new Error("denied")) : get(name)
+    const again = new Secrets(path, backend)
+    await again.ready()
+    expect([...again.knownValues()]).toEqual(["new-pw"])
+    expect(again.list(APP).map((s) => [s.name, s.provided])).toEqual([
+      ["acme.password", true],
+      ["acme.token", false],
+    ])
+  })
+
   it("says why a name isn't one, in words, without repeating it (it may be a value)", async () => {
     const { secrets } = make()
     const refused = await secrets

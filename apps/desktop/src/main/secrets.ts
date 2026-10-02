@@ -23,6 +23,8 @@ export class Secrets {
   /** Every secret's value (main only: the studio's scrubber and the recorder's blur). */
   #values = new Map<string, string>()
   #loaded: Promise<void> | undefined
+  /** Values replaced since the app started (still scrubbed and blurred until it quits). */
+  readonly #retired = new Set<string>()
 
   constructor(path: string, backend: SecretBackend) {
     this.#vault = Vault.open(path, backend)
@@ -40,7 +42,11 @@ export class Secrets {
 
   async #load(): Promise<void> {
     const names = this.#vault.list().map((s) => s.name)
-    const read = await Promise.all(names.map((name) => this.#backend.get(name)))
+    // One that can't be read (a refused keychain prompt, a corrupt item) is skipped: listed as
+    // having no value here, never failing every run.
+    const read = await Promise.all(
+      names.map((name) => this.#backend.get(name).catch(() => undefined)),
+    )
     const values = new Map<string, string>()
     names.forEach((name, i) => {
       const value = read[i]
@@ -85,6 +91,9 @@ export class Secrets {
       () => Promise.resolve(form.value),
     )
     if (result !== "provided") throw new Error("a secret needs a value")
+    // The old value stays known until the app quits (a page may still show it: R6).
+    const old = this.#values.get(name)
+    if (old !== undefined && old !== form.value) this.#retired.add(old)
     this.#values.set(name, form.value)
   }
 
@@ -109,7 +118,7 @@ export class Secrets {
 
   /** Every value (R6: blurred on screen and scrubbed even when not typed). */
   knownValues(): ReadonlySet<string> {
-    return new Set(this.#values.values())
+    return new Set([...this.#values.values(), ...this.#retired])
   }
 
   /** The runtime's resolver: a value only for a use a grant covers. */

@@ -30,8 +30,11 @@ export interface AgentHostOptions {
   /** The model for a run (built from the key in the keychain then). */
   llm: () => Promise<LlmClient>
   model: string
-  /** The app's secrets (none: a scene typing one fails, "no secret resolver given"). */
-  secrets?: Secrets
+  /**
+   * The app's secrets, when the vault reads (asked again each time a studio is made: a vault read
+   * later is picked up; none: a scene typing one fails, "no secret resolver given").
+   */
+  secrets?: () => Secrets | undefined
   item: (item: ChatItem) => void
   running: (running: boolean) => void
   frame: (frame: LiveFrame) => void
@@ -44,12 +47,19 @@ interface Pending {
   resolve: (answer: string | boolean) => void
 }
 
-/** A step key as the user reads it ("pw, in the setup"; "pw, in the login preset"). */
-export function stepLabel(stepKey: string): string {
-  const scene = /^scene:[^/]+\/(setup|steps|teardown)\/(.+)$/.exec(stepKey)
+/**
+ * A step key as the user reads it ("pw, in the setup of scene login"; "pw, in the login preset").
+ * `scenes`: the scene of each host key.
+ */
+export function stepLabel(
+  stepKey: string,
+  scenes: ReadonlyMap<string, string> = new Map(),
+): string {
+  const scene = /^scene:([^/]+)\/(setup|steps|teardown)\/(.+)$/.exec(stepKey)
   if (scene !== null) {
-    const part = scene[1] === "steps" ? "the scene's steps" : `the ${scene[1]}`
-    return `${scene[2]}, in ${part}`
+    const part = scene[2] === "steps" ? "the steps" : `the ${scene[2]}`
+    const name = scenes.get(scene[1] ?? "")
+    return `${scene[3]}, in ${part} of ${name === undefined ? "a scene" : `scene ${name}`}`
   }
   const preset = /^preset:([^/]+)\/(.+)$/.exec(stepKey)
   if (preset !== null) return `${preset[2]}, in the ${preset[1]} preset`
@@ -58,7 +68,10 @@ export function stepLabel(stepKey: string): string {
 }
 
 /** The approval prompt, from the live page only (§3 A3: never the agent's words). */
-export function secretRequest(request: ApprovalRequest): ChatRequest {
+export function secretRequest(
+  request: ApprovalRequest,
+  scenes: ReadonlyMap<string, string> = new Map(),
+): ChatRequest {
   const { use } = request
   return {
     kind: "approve-secret",
@@ -66,7 +79,7 @@ export function secretRequest(request: ApprovalRequest): ChatRequest {
     element: use.element,
     origin: use.origin,
     path: use.path,
-    step: stepLabel(use.stepKey),
+    step: stepLabel(use.stepKey, scenes),
     ...(request.shot !== undefined && { shot: request.shot }),
     ...(request.box !== undefined && { box: request.box }),
   }
@@ -77,6 +90,10 @@ export class AgentHost {
   readonly #log = new ChatLog()
   #history: LlmMessage[] = []
   #studio: Studio | undefined
+  /** The studio was made with the app's secrets. */
+  #withSecrets = false
+  /** The scene of each key the studio was given (a prompt names the scene). */
+  readonly #scenes = new Map<string, string>()
   /** The browser the studio was made in. */
   #browser: Browser | undefined
   /** The live app's last frame (a reloaded window shows where the run ended). */
@@ -192,13 +209,25 @@ export class AgentHost {
 
   async #ensureStudio(): Promise<Studio> {
     // A studio whose browser died (crashed, killed) is made again in a new one.
-    if (this.#studio !== undefined && this.#browser?.isConnected() !== false) return this.#studio
+    // ... and one made without secrets is made again once the vault reads.
+    const fresh =
+      this.#studio !== undefined &&
+      this.#browser?.isConnected() !== false &&
+      (this.#withSecrets || this.#options.secrets?.() === undefined)
+    if (fresh && this.#studio !== undefined) return this.#studio
     await this.#studio?.close().catch(() => undefined)
     this.#studio = undefined
     this.#live = undefined
-    const { project, scope, sceneKey, takes } = this.#options
+    const { project, scope, takes } = this.#options
+    // Every key handed out, to name its scene in a prompt (the approval's step key holds the key).
+    const sceneKey = (sceneId: string) => {
+      const key = this.#options.sceneKey(sceneId)
+      this.#scenes.set(key, sceneId)
+      return key
+    }
     const { config } = resolveProjectConfig(project.project, undefined)
-    const { secrets } = this.#options
+    const secrets = this.#options.secrets?.()
+    this.#withSecrets = secrets !== undefined
     // Every value known before anything runs (R6).
     await secrets?.ready()
     const origin = new URL(config.target.url).origin
@@ -221,7 +250,7 @@ export class AgentHost {
         requestApproval: async (request: ApprovalRequest, signal: AbortSignal) => {
           let item = ""
           const approved =
-            (await this.#ask(secretRequest(request), signal, (id) => {
+            (await this.#ask(secretRequest(request, this.#scenes), signal, (id) => {
               item = id
             })) === true
           if (!approved) return false

@@ -56,8 +56,11 @@ describe("a secret's approval", () => {
     expect(dialog.textContent).toMatch(/Password · an input of type password/)
     expect(dialog.textContent).toMatch(/https:\/\/app\.test\/login/)
     expect(dialog.textContent).toMatch(/pw, in the setup/)
-    // Declining is the default: focused first.
-    expect(document.activeElement?.textContent).toBe("Decline")
+    // The dialog itself takes focus (no button: a stray key never answers it).
+    expect(document.activeElement).toBe(dialog)
+    fireEvent.keyDown(dialog, { key: " " })
+    fireEvent.keyDown(dialog, { key: "Enter" })
+    expect(invoke).not.toHaveBeenCalledWith("chat:answer", expect.anything(), expect.anything())
     fireEvent.click(within(dialog).getByRole("button", { name: "Allow here" }))
     expect(invoke).toHaveBeenCalledWith("chat:answer", "r1", true)
     act(() => push("chat:item", { ...approval("answered"), answer: true } as ChatItem))

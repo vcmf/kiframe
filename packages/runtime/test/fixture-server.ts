@@ -316,6 +316,17 @@ const pages: Record<string, string> = {
         }
       })
     </script>`,
+  // A login whose first field is a web component's (inside an open shadow root).
+  "/login-shadow": `<!doctype html><title>Login (shadow)</title>
+    <nick-field></nick-field>
+    <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>
+    <script>
+      customElements.define("nick-field", class extends HTMLElement {
+        connectedCallback() {
+          this.attachShadow({ mode: "open" }).innerHTML = '<label>Nickname <input style="width:240px"></label>'
+        }
+      })
+    </script>`,
   "/login-form": `<!doctype html><title>Login form</title>
     <label>Email <input type="email"></label>
     <label>Age <input type="number"></label>

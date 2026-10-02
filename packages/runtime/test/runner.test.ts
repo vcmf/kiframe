@@ -220,6 +220,27 @@ steps:
       }
     })
 
+    it("paints over a value typed into a web component's field (an open shadow root)", async () => {
+      const vault = await vaultWithPassword()
+      const asked: ApprovalRequest[] = []
+      await run(
+        `setup: [{ action: goto, url: /login-shadow }]
+steps:
+  - { id: nick, action: type, target: { by: label, name: Nickname }, value: "bob-visible" }
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`,
+        approving(vault, asked),
+      )
+      const shot = asked[0]!.shot!
+      const png = PNG.sync.read(Buffer.from(shot.png, "base64"))
+      const nick = (await page.getByLabel("Nickname").boundingBox())!
+      const scale = png.width / shot.width
+      const x = Math.round((nick.x + nick.width * 0.2) * scale)
+      const y = Math.round((nick.y + nick.height / 2) * scale)
+      const at = (y * png.width + x) * 4
+      expect([...png.data.subarray(at, at + 3)]).toEqual([0xe3, 0xe4, 0xe7])
+    })
+
     it("asks once in an interactive run, then types without asking", async () => {
       const vault = await vaultWithPassword()
       const asked: ApprovalRequest[] = []
