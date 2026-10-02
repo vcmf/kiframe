@@ -20,6 +20,8 @@ export interface SceneView {
 
 /** The open project as the window shows it. */
 export interface ProjectView {
+  /** This opening of the project (a reopen is a new one: the window starts its chat afresh). */
+  session: string
   name: string
   /** The folder (shown in the title bar's menu; never sent back by the window to open it). */
   dir: string
@@ -28,6 +30,61 @@ export interface ProjectView {
   scenes: SceneView[]
   /** Parts that didn't read (shown, never hidden). */
   problems: string[]
+}
+
+/** What the agent asks the user (the studio's `UserRequest`), as the chat shows it. */
+export type ChatRequest =
+  | { kind: "question"; question: string }
+  | { kind: "approve-risky"; scene: string; step: string; action: string }
+
+/**
+ * One item of the chat, as main folds the agent's events (the window only shows them): a new
+ * item, or a newer version of one (same id), replaces what the window had.
+ */
+export type ChatItem =
+  | { kind: "user"; id: string; text: string }
+  | { kind: "assistant"; id: string; text: string }
+  | {
+      kind: "tool"
+      id: string
+      name: string
+      /** What it acts on, in a line (never a secret: the studio scrubs what it returns). */
+      detail: string
+      status: "running" | "ok" | "failed" | "stopped"
+      /** Its result's first line, once it has one. */
+      result?: string
+    }
+  | {
+      kind: "request"
+      id: string
+      request: ChatRequest
+      /** `closed`: the run stopped before the user answered. */
+      state: "open" | "answered" | "closed"
+      answer?: string | boolean
+    }
+  | {
+      kind: "end"
+      id: string
+      outcome: "done" | "stopped" | "turn_limit" | "error"
+      message?: string
+    }
+
+export interface ChatState {
+  items: ChatItem[]
+  /** A run is going (the composer is the status bar with Stop). */
+  running: boolean
+  /** The model the agent runs on (an OpenRouter id). */
+  model: string
+  /** The live app's last frame (null before the first run). */
+  frame: LiveFrame | null
+}
+
+/** A frame of the live app (the agent's browser), view only. */
+export interface LiveFrame {
+  /** A JPEG, base64. */
+  jpeg: string
+  /** The page's path (never its query: it may hold a value). */
+  path: string
 }
 
 /** What the window needs to know to show the right screen. */
@@ -60,6 +117,14 @@ export const invokeArgs = {
   "project:close": z.tuple([]),
   /** An https link opened in the user's browser. */
   "external:open": z.tuple([z.string().max(2048)]),
+  /** The open project's chat (after a reload). */
+  "chat:state": z.tuple([]),
+  /** A message to the agent: starts a run (refused while one is going). */
+  "chat:send": z.tuple([z.string().trim().min(1).max(20_000)]),
+  /** Stops the run (its tools and open requests with it). */
+  "chat:stop": z.tuple([]),
+  /** The user's answer to an open request (by its item id). */
+  "chat:answer": z.tuple([z.string().max(64), z.union([z.string().max(5000), z.boolean()])]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
 
 export type InvokeChannel = keyof typeof invokeArgs
@@ -74,6 +139,11 @@ export interface InvokeResults {
   "project:open": AppStatus
   "project:close": AppStatus
   "external:open": void
+  "chat:state": ChatState
+  /** null when the run started; else why not (said in words). */
+  "chat:send": string | null
+  "chat:stop": void
+  "chat:answer": void
 }
 
 /** What main pushes to the window. */
@@ -83,6 +153,12 @@ export interface Events {
    * action): the whole status, not a diff. Sent from S3b (the agent changing the project).
    */
   status: AppStatus
+  /** A chat item, new or newer (same id: replaces it). */
+  "chat:item": ChatItem
+  /** A run started or ended. */
+  "chat:running": boolean
+  /** The live app, while the agent works on it. */
+  "live:frame": LiveFrame
 }
 export type EventChannel = keyof Events
 

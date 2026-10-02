@@ -1,7 +1,9 @@
-// The stage: Preview / Live app tabs over the well, the scene strip below.
-import { Browser, FilmStrip, Monitor } from "@phosphor-icons/react"
-import { useState } from "react"
+// The stage: Preview / Live app tabs over the well, the scene strip below. A run shows the live
+// app (view only: the agent's browser) until the user picks a tab.
+import { Browser, FilmStrip, HandPointing, Monitor } from "@phosphor-icons/react"
+import { useEffect, useState } from "react"
 import type { ProjectView } from "../../../shared/ipc.ts"
+import { useChat } from "../chat-store.ts"
 import { SceneStrip } from "./scene-strip.tsx"
 
 type Tab = "preview" | "live"
@@ -9,6 +11,12 @@ type Tab = "preview" | "live"
 export function Stage({ project }: { project: ProjectView }) {
   const [tab, setTab] = useState<Tab>("preview")
   const [selected, setSelected] = useState<string | null>(null)
+  const running = useChat((s) => s.running)
+  const frame = useChat((s) => s.frame)
+  // A run starting shows the agent at work.
+  useEffect(() => {
+    if (running) setTab("live")
+  }, [running])
   return (
     <main className="stage">
       <div className="stage-head" role="tablist" aria-label="Stage">
@@ -25,25 +33,44 @@ export function Stage({ project }: { project: ProjectView }) {
           onPick={setTab}
           icon={<Browser size={15} />}
           label="Live app"
+          live={running}
         />
+        <div className="spacer" />
+        {tab === "live" && running && (
+          <span className="chip">
+            <HandPointing size={13} />
+            Agent driving
+          </span>
+        )}
+        {tab === "live" && frame !== null && <span className="stage-path mono">{frame.path}</span>}
       </div>
       <section
         className="stage-well"
         role="tabpanel"
         aria-label={tab === "preview" ? "Preview" : "Live app"}
       >
-        <div className="empty-icon">
-          {tab === "preview" ? <FilmStrip size={24} /> : <Monitor size={24} />}
-        </div>
-        {tab === "preview" ? (
-          <>
-            <h2>Nothing filmed yet</h2>
-            <p>Filmed scenes play here, with their captions, cursor and blurred secrets.</p>
-          </>
+        {tab === "live" && frame !== null ? (
+          <img
+            className="live-frame"
+            alt={`The live app at ${frame.path}`}
+            src={`data:image/jpeg;base64,${frame.jpeg}`}
+          />
         ) : (
           <>
-            <h2>The agent’s browser</h2>
-            <p>While the agent works on {project.url ?? "your app"}, you watch it here.</p>
+            <div className="empty-icon">
+              {tab === "preview" ? <FilmStrip size={24} /> : <Monitor size={24} />}
+            </div>
+            {tab === "preview" ? (
+              <>
+                <h2>Nothing filmed yet</h2>
+                <p>Filmed scenes play here, with their captions, cursor and blurred secrets.</p>
+              </>
+            ) : (
+              <>
+                <h2>The agent’s browser</h2>
+                <p>While the agent works on {project.url ?? "your app"}, you watch it here.</p>
+              </>
+            )}
           </>
         )}
       </section>
@@ -63,6 +90,7 @@ function TabButton(props: {
   onPick: (tab: Tab) => void
   icon: React.ReactNode
   label: string
+  live?: boolean
 }) {
   return (
     <button
@@ -74,6 +102,7 @@ function TabButton(props: {
     >
       {props.icon}
       {props.label}
+      {props.live === true && <span className="live-dot" aria-label="live" />}
     </button>
   )
 }

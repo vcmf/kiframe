@@ -7,6 +7,7 @@ import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
 
 const project: ProjectView = {
+  session: "s1",
   name: "Acme Billing demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.acme.example",
@@ -28,7 +29,7 @@ const project: ProjectView = {
 
 afterEach(() => {
   cleanup()
-  useApp.setState({ status: null, busy: null })
+  useApp.setState({ status: null, busy: null, dismissed: null })
 })
 
 describe("the window", () => {
@@ -70,10 +71,12 @@ describe("the window", () => {
     })
     fireEvent.click(create)
     await screen.findByRole("region", { name: "Scenes" })
-    expect(invoke).toHaveBeenLastCalledWith("project:create", {
-      name: "Acme",
-      url: "https://app.acme.example",
-    })
+    // The last create sent the good address (the workspace then loads its chat).
+    const creates = invoke.mock.calls.filter(([channel]) => channel === "project:create")
+    expect(creates.at(-1)).toEqual([
+      "project:create",
+      { name: "Acme", url: "https://app.acme.example" },
+    ])
   })
 
   it("shows the scenes in story order with their status", async () => {
@@ -113,7 +116,7 @@ describe("the window", () => {
   })
 
   it("shows an action's failure in the workspace, until dismissed", async () => {
-    stubApi({
+    const { push } = stubApi({
       "app:status": () => status({ hasKey: true, project }),
       "project:open": () =>
         status({ hasKey: true, project, error: "not a project: project.json is missing" }),
@@ -124,6 +127,18 @@ describe("the window", () => {
     expect((await screen.findByRole("alert")).textContent).toMatch(/project.json is missing/)
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }))
     expect(screen.queryByRole("alert")).toBeNull()
+    // Main says it again (a push after the agent saved a scene): it stays dismissed.
+    act(() =>
+      push(
+        "status",
+        status({ hasKey: true, project, error: "not a project: project.json is missing" }),
+      ),
+    )
+    expect(screen.queryByRole("alert")).toBeNull()
+    // The same failure from a new action shows.
+    fireEvent.click(screen.getByRole("button", { name: /Acme Billing demo/ }))
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open another project…" }))
+    expect((await screen.findByRole("alert")).textContent).toMatch(/project.json is missing/)
   })
 
   it("says so when main can't answer at start, instead of a blank window", async () => {
@@ -170,9 +185,7 @@ describe("the window", () => {
     const strip = await screen.findByRole("region", { name: "Scenes" })
     fireEvent.click(within(strip).getAllByRole("button")[0]!)
     expect(within(strip).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("true")
-    act(() =>
-      push("status", status({ hasKey: true, project: { ...project, dir: "/tmp/other.kiframe" } })),
-    )
+    act(() => push("status", status({ hasKey: true, project: { ...project, session: "s2" } })))
     const again = await screen.findByRole("region", { name: "Scenes" })
     expect(within(again).getAllByRole("button")[0]?.getAttribute("aria-pressed")).toBe("false")
   })

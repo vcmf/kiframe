@@ -4,7 +4,15 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite"
 
 // The workspace packages are TypeScript sources: bundled into main (never loaded as is at
 // runtime). Their own dependencies (zod, playwright, the keyring's native module) stay external.
-const bundled = ["@kiframe/project", "@kiframe/schema", "@kiframe/vault"]
+const bundled = [
+  "@kiframe/agent",
+  "@kiframe/generators",
+  "@kiframe/project",
+  "@kiframe/runtime",
+  "@kiframe/schema",
+  "@kiframe/studio",
+  "@kiframe/vault",
+]
 
 export default defineConfig({
   main: {

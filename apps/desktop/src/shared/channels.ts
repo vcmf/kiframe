@@ -9,6 +9,10 @@ export const INVOKE_CHANNELS = [
   "project:open",
   "project:close",
   "external:open",
+  "chat:state",
+  "chat:send",
+  "chat:stop",
+  "chat:answer",
 ] as const
 
-export const EVENT_CHANNELS = ["status"] as const
+export const EVENT_CHANNELS = ["status", "chat:item", "chat:running", "live:frame"] as const

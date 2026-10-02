@@ -13,6 +13,8 @@ interface AppState {
   busy: StatusChannel | null
   /** Reads the status and follows main's updates; returns the unsubscribe. */
   connect: () => () => void
+  /** The error the user dismissed (it stays hidden if main says it again; another one shows). */
+  dismissed: string | null
   /** Hides the shown error (the next action clears it in main too). */
   dismissError: () => void
   /** Runs an action that answers with the status. */
@@ -22,6 +24,7 @@ interface AppState {
 export const useApp = create<AppState>((set, get) => ({
   status: null,
   busy: null,
+  dismissed: null,
   connect: () => {
     const off = api().on("status", (status) => set({ status }))
     api()
@@ -46,12 +49,12 @@ export const useApp = create<AppState>((set, get) => ({
     return off
   },
   dismissError: () => {
-    const now = get().status
-    if (now !== null) set({ status: { ...now, error: null } })
+    set({ dismissed: get().status?.error ?? null })
   },
   run: async (channel, ...args) => {
     if (get().busy !== null) return
-    set({ busy: channel })
+    // A new action: its failure shows, even worded like the one dismissed.
+    set({ busy: channel, dismissed: null })
     try {
       const status = await api().invoke(channel, ...args)
       set({ status })

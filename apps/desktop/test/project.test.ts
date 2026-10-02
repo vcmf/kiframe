@@ -4,13 +4,7 @@ import { join } from "node:path"
 import { createProject, openProject, saveScene } from "@kiframe/project"
 import { parseScenarioYaml } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
-import {
-  newProjectDir,
-  ProjectSession,
-  projectFileName,
-  projectView,
-  targetUrl,
-} from "../src/main/project.ts"
+import { newProjectDir, projectFileName, projectView, targetUrl } from "../src/main/project.ts"
 
 const folder = () => join(mkdtempSync(join(tmpdir(), "kiframe-desktop-")), "demo.kiframe")
 const recording = (id: string, title: string) => ({
@@ -35,7 +29,7 @@ describe("the open project", () => {
       source: { kind: "card", template: "title", content: { heading: "Hi" } },
       duration: { mode: "auto" },
     })
-    expect(projectView(project)).toMatchObject({
+    expect(projectView(project, "s1")).toMatchObject({
       name: "Demo",
       url: "https://app.test",
       scenes: [
@@ -52,9 +46,7 @@ describe("the open project", () => {
     createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
     mkdirSync(join(dir, "scenes", "broken"), { recursive: true })
     writeFileSync(join(dir, "scenes", "broken", "scene.json"), "{ not json")
-    const session = new ProjectSession()
-    session.open(dir)
-    const view = session.view()
+    const view = projectView(openProject(dir), "s1")
     expect(view?.scenes).toEqual([
       {
         id: "broken",
@@ -66,26 +58,6 @@ describe("the open project", () => {
     expect(view?.problems.some((p) => p.startsWith("broken:"))).toBe(true)
   })
 
-  it("creates one project at a time, with a fresh id, and closes it", () => {
-    const session = new ProjectSession()
-    const a = session.create(folder(), { name: "A", url: "https://a.test" })
-    const b = session.create(folder(), { name: "B", url: "https://b.test" })
-    expect(a.project.id).not.toBe(b.project.id)
-    expect(session.view()?.name).toBe("B")
-    session.close()
-    expect(session.view()).toBeNull()
-  })
-
-  it("refuses a folder that already holds a project, and one that isn't one", () => {
-    const dir = folder()
-    const session = new ProjectSession()
-    session.create(dir, { name: "A", url: "https://a.test" })
-    expect(() => session.create(dir, { name: "A", url: "https://a.test" })).toThrow(
-      /already holds a project/,
-    )
-    expect(() => session.open(mkdtempSync(join(tmpdir(), "kiframe-not-")))).toThrow()
-  })
-
   it("never hides a scene whose scenario didn't read, nor one whose folder is gone", () => {
     const dir = folder()
     const project = createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
@@ -95,7 +67,7 @@ describe("the open project", () => {
     saveScene(project, recording("gone", "Gone"))
     writeFileSync(join(dir, "scenes", "broken", "scenario.yaml"), "steps: [")
     rmSync(join(dir, "scenes", "gone"), { recursive: true })
-    const view = new ProjectSession().open(dir) && projectView(openProject(dir))
+    const view = projectView(openProject(dir), "s1")
     expect(view.scenes).toMatchObject([
       {
         id: "broken",

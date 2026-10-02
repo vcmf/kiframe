@@ -1,8 +1,7 @@
 // The open project: one at a time, opened or created from a folder main chose (never a path the
 // window sent), and shown to the window as a `ProjectView`.
-import { randomBytes } from "node:crypto"
 import { existsSync, readdirSync, statSync } from "node:fs"
-import { createProject, openProject, type OpenedProject } from "@kiframe/project"
+import type { OpenedProject } from "@kiframe/project"
 import { TargetApp } from "@kiframe/schema"
 import type { ProjectView, SceneView } from "../shared/ipc.ts"
 
@@ -55,46 +54,12 @@ export function newProjectDir(picked: string): string {
   return dir
 }
 
-export class ProjectSession {
-  #opened: OpenedProject | null = null
-
-  get opened(): OpenedProject | null {
-    return this.#opened
-  }
-
-  /** Creates a project in `dir` and makes it the open one. */
-  create(dir: string, init: { name: string; url: string }): OpenedProject {
-    const opened = createProject(dir, {
-      id: `p-${randomBytes(8).toString("hex")}`,
-      name: init.name,
-      url: init.url,
-    })
-    this.#opened = opened
-    return opened
-  }
-
-  /** Opens the project in `dir` (its errors say why it doesn't read) and makes it the open one. */
-  open(dir: string): OpenedProject {
-    const opened = openProject(dir)
-    this.#opened = opened
-    return opened
-  }
-
-  close(): void {
-    this.#opened = null
-  }
-
-  view(): ProjectView | null {
-    return this.#opened === null ? null : projectView(this.#opened)
-  }
-}
-
 /**
  * The project as the window shows it: the scenes in story order, then any outside the sequence.
  * Nothing wrong is hidden: a scene with a part that didn't read, or whose folder is missing, says
  * so, and every problem is listed.
  */
-export function projectView(opened: OpenedProject): ProjectView {
+export function projectView(opened: OpenedProject, session: string): ProjectView {
   const { project, scenes, problems } = opened
   const problemsOf = (id: string) => problems.filter((p) => p.sceneId === id)
   const ids = [
@@ -133,6 +98,7 @@ export function projectView(opened: OpenedProject): ProjectView {
     views.push({ id, title: scene.title, status })
   }
   return {
+    session,
     name: project.name,
     dir: opened.dir,
     url: project.target.url ?? null,

@@ -1,15 +1,36 @@
 // The built app, launched as a user would get it (a throwaway profile, the key in memory): the
 // first run asks for the key, then for a project; the window is hardened.
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createProject, saveScene } from "@kiframe/project"
 import { parseScenarioYaml } from "@kiframe/schema"
 import { _electron as electron, type ElectronApplication, type Page } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { startFixtureServer } from "../../../packages/runtime/test/fixture-server.ts"
 
 const appDir = join(import.meta.dirname, "..")
 const shots = process.env.KIFRAME_E2E_SHOTS
+let server: Awaited<ReturnType<typeof startFixtureServer>>
+/** A risky click the scripted model asks for: once stopped, once approved. */
+const riskyCall = (id: string) => ({
+  kind: "tool_calls",
+  calls: [
+    {
+      id,
+      name: "run_step",
+      arguments: JSON.stringify({
+        scene: "tour",
+        step: {
+          id: "open",
+          action: "click",
+          target: { by: "role", role: "link", name: "Projects" },
+          risky: true,
+        },
+      }),
+    },
+  ],
+})
 let app: ElectronApplication
 let page: Page
 /** What the window's console reported (a CSP refusal shows there). */
@@ -25,6 +46,18 @@ beforeAll(async () => {
     ),
   )
   env.KIFRAME_TEST_KEYCHAIN = "memory"
+  // The model, scripted: the first run is stopped at its approval, the second approved.
+  server = await startFixtureServer()
+  const model = join(profile, "model.json")
+  writeFileSync(
+    model,
+    JSON.stringify([
+      riskyCall("c1"),
+      riskyCall("c2"),
+      { kind: "text", text: "Opened your projects." },
+    ]),
+  )
+  env.KIFRAME_TEST_MODEL = model
   app = await electron.launch({
     args: [appDir, `--user-data-dir=${profile}`],
     cwd: appDir,
@@ -39,6 +72,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app?.close()
+  await server?.close()
 })
 
 describe("the desktop app", () => {
@@ -98,6 +132,52 @@ describe("the desktop app", () => {
     if (shots !== undefined) await page.screenshot({ path: join(shots, "workspace.png") })
   })
 
+  it("runs the agent: a risky step asks in the chat, and Stop closes it with nothing more run", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "kiframe-e2e-app-")), "app.kiframe")
+    createProject(dir, { id: "p2", name: "Fixture app", url: server.url })
+    await app.evaluate(({ dialog }, picked) => {
+      dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [picked] })
+    }, dir)
+    await page.getByRole("button", { name: /Acme Billing demo/ }).click()
+    await page.getByRole("menuitem", { name: "Open another project…" }).click()
+    await expect
+      .poll(() => page.getByRole("button", { name: /Fixture app/ }).isVisible())
+      .toBe(true)
+    const box = page.getByLabel("Message the agent")
+    await box.fill("Open the projects page")
+    await box.press("Enter")
+    const card = page.getByLabel("Approve a risky step?")
+    // Taken: the composer is the status bar, and nothing says it was refused.
+    await expect.poll(() => page.getByRole("button", { name: "Stop" }).isVisible()).toBe(true)
+    expect(await page.locator(".composer-refused").count()).toBe(0)
+    await expect.poll(() => card.isVisible(), { timeout: 30_000 }).toBe(true)
+    expect(await card.textContent()).toMatch(/scene tour/)
+    if (shots !== undefined) await page.screenshot({ path: join(shots, "agent-approval.png") })
+    await page.getByRole("button", { name: "Stop" }).click()
+    await expect.poll(() => card.textContent()).toMatch(/Closed: the run stopped/)
+    await expect.poll(() => page.getByText("Stopped. Nothing more ran.").isVisible()).toBe(true)
+    expect(await page.getByRole("button", { name: "Approve this step" }).count()).toBe(0)
+  })
+
+  it("runs the step once approved, and shows the agent's browser in the live app", async () => {
+    const box = page.getByLabel("Message the agent")
+    await box.fill("Try again")
+    await box.press("Enter")
+    const approve = page.getByRole("button", { name: "Approve this step" })
+    await expect.poll(() => approve.isVisible(), { timeout: 30_000 }).toBe(true)
+    await approve.click()
+    await expect
+      .poll(() => page.getByText("Opened your projects.").isVisible(), { timeout: 30_000 })
+      .toBe(true)
+    // The composer is back, empty, and says nothing was refused.
+    expect(await page.getByLabel("Message the agent").inputValue()).toBe("")
+    expect(await page.locator(".composer-refused").count()).toBe(0)
+    const frame = page.getByRole("img", { name: /The live app at/ })
+    await expect.poll(() => frame.isVisible()).toBe(true)
+    expect(await frame.getAttribute("alt")).toMatch(/\/projects/)
+    if (shots !== undefined) await page.screenshot({ path: join(shots, "agent-live.png") })
+  })
+
   it("is served from the app's own origin, sandboxed, with a strict CSP", async () => {
     expect(page.url()).toBe("kiframe-app://app/index.html")
     const reach = await page.evaluate(() => ({
@@ -124,13 +204,13 @@ describe("the desktop app", () => {
     await app.evaluate(({ dialog }) => {
       dialog.showMessageBox = () => Promise.resolve({ response: 1, checkboxChecked: false })
     })
-    await page.getByRole("button", { name: /Acme Billing demo/ }).click()
+    await page.getByRole("button", { name: /Fixture app/ }).click()
     await page.getByRole("menuitem", { name: "Change OpenRouter key…" }).click()
     await expect.poll(() => page.getByRole("region", { name: "Scenes" }).isVisible()).toBe(true)
     await app.evaluate(({ dialog }) => {
       dialog.showMessageBox = () => Promise.resolve({ response: 0, checkboxChecked: false })
     })
-    await page.getByRole("button", { name: /Acme Billing demo/ }).click()
+    await page.getByRole("button", { name: /Fixture app/ }).click()
     await page.getByRole("menuitem", { name: "Change OpenRouter key…" }).click()
     await expect
       .poll(() => page.getByRole("heading", { name: "Connect a model" }).isVisible())

@@ -15,7 +15,8 @@ export function ErrorNote({ error }: { error: string | null | undefined }) {
 /** In the workspace: the last action's failure, under the title bar, until dismissed. */
 export function ErrorBar({ error }: { error: string | null }) {
   const dismiss = useApp((s) => s.dismissError)
-  if (error === null) return null
+  const dismissed = useApp((s) => s.dismissed)
+  if (error === null || error === dismissed) return null
   return (
     <div className="error-bar" role="alert">
       <WarningCircle size={16} weight="fill" />

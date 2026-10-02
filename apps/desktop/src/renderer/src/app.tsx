@@ -22,9 +22,10 @@ export function App() {
       ) : (
         <>
           <ErrorBar error={status.error} />
-          <div className="workspace">
+          {/* One per project: its chat, stage and their state start fresh with it. */}
+          <div className="workspace" key={status.project.session}>
             <ChatColumn />
-            <Stage key={status.project.dir} project={status.project} />
+            <Stage project={status.project} />
           </div>
         </>
       )}

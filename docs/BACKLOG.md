@@ -235,3 +235,14 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Main bundles the whole runtime:** `@kiframe/project`'s take store imports `isRecorderLeftover` from the `@kiframe/runtime` barrel, so main's bundle (≈390 KB) carries the runner and pngjs it doesn't use in S3a (S3b loads the runtime anyway). A leaf module for the leftover check, or a subpath export, if cold start matters.
 - **The JS bundle is ≈700 KB** (React and the app; icons are tree-shaken): fine from disk, measure before splitting.
 - **The sweep is synchronous:** after a crash with many leftover frames, `TakeStore.sweep()` (sync `rmSync`) blocks main for a while just after the window shows. An async sweep (fs/promises) when takes get large.
+
+## @kiframe/desktop (S3b)
+
+- **A removed scene's key:** `Registry.forgetScene` gives a reused scene id a new key (no inherited approvals), but nothing removes scenes in the app yet: wire it to the remove path when one exists (and to a scene folder deleted outside the app, noticed at open).
+- **Markdown in the agent's answers:** shown as plain text (`pre-wrap`); cooldown's Streamdown renderer when answers carry lists and code.
+- **A model picker:** the model is `deepseek/deepseek-v4.1-flash` for now (the composer shows it).
+- **The live view polls for a page switch** (every 400 ms): a popup's first frames can be missed. A page-changed callback from the studio (where it follows the runner's switch) would replace the poll.
+- **Long chats repaint whole:** each streamed update re-renders the column and scans the item list (main and window). Derived selectors and an id index when chats get long.
+- **A tool's failure read from its words:** the chat tells a failed step by the studio's wording ("failed (…)", "replay failed: …"). The studio returning failures as soft errors (`{ error }`) would make it structural.
+- **The project refreshed after a list of tools:** the host refreshes the scene strip after `save_scene` / `record_scene` by name. A project-changed callback from the studio (or `saveScene`) would cover any tool that writes the project.
+
