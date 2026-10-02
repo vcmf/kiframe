@@ -1,5 +1,15 @@
 # Kiframe backlog
 
+## Must do: data persistence (rework, not a patch)
+
+**Decided 2026-10-02, S3:** the app keeps a project's chat **in memory only**: it's gone when the app quits (the scenes, scenarios, compositions and takes it made are saved as before). This is a deliberate slice shortcut, and closing it is **a rework of the agent runtime and of storage**, not a file dump of the message list:
+
+- **A proper store** (a database in app data, e.g. SQLite; not JSON files next to the project): chats and their messages, several chats per project, written as a turn goes (a crash keeps what was said), with versioning and migrations once it ships.
+- **The agent runtime resumable from it:** a run's history (`AgentEvent.messages`, reasoning details, tool results and their elision state) stored as the loop produces it, and reloaded into `runAgent` exactly; an interrupted turn (a stop, a crash mid-tool) restored in a state the model can continue from.
+- **Never a secret value in it:** tool results are scrubbed at the boundary today (S2b); the store must keep that guarantee (and its retention and encryption follow M1-8's take rules).
+- **What links to what:** a chat's turns to the scenes and takes they made, so history survives a scene's rename or delete.
+
+
 Non-severe review findings deferred on purpose (see the review-round rule: only severe findings trigger a new round).
 
 ## @kiframe/schema (P0-2)
