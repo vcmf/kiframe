@@ -35,6 +35,7 @@ export function toolDetail(args: unknown): string {
     return oneLine(what.filter((w) => w !== "").join(" "))
   }
   if (Array.isArray(a.steps)) return `${a.steps.length} steps`
+  if (typeof a.steps === "string") return "steps"
   for (const key of ["id", "question", "scene"]) {
     if (typeof a[key] === "string") return oneLine(a[key])
   }
@@ -61,10 +62,16 @@ export function toolOutcome(
   // app's site stopped the rest: failed too).
   if (toolName === "run_steps") {
     const numbered = text.split("\n").filter((l) => /^\d+\. /.test(l))
-    const bad = numbered.find((l) => stepOutcome(l.replace(/^\d+\. /, "")) !== "ok")
+    const bad = numbered.find((l) => stepOutcome(l.replace(/^\d+\. /, "")) === "failed")
     if (bad !== undefined) return { status: "failed", result: oneLine(bad) }
     if (numbered.length > 0) {
       return { status: "ok", result: oneLine(`${numbered.length} ok; ${numbered.at(-1) ?? ""}`) }
+    }
+  }
+  if (toolName === "run_step") {
+    return {
+      status: stepOutcome(text) === "failed" ? "failed" : "ok",
+      result: oneLine(text.split("\n")[0] ?? ""),
     }
   }
   const failed = /^(failed|invalid|refused|replay failed|recording failed|no scene)\b/.test(text)

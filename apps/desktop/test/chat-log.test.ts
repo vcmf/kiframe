@@ -141,10 +141,16 @@ describe("a tool's line", () => {
     ).toEqual({ status: "failed", result: "2. failed (target-not-found): no Save" })
     expect(toolOutcome("1. invalid step: x", "run_steps").status).toBe("failed")
     expect(toolOutcome("1. ok, but it closed every page", "run_steps").status).toBe("failed")
+    // Off the app's site: the batch stopped there, but no step failed.
     expect(
       toolOutcome("1. ok. url: /docs (on github.com: NOT the app's site, minmux.dev)", "run_steps")
         .status,
-    ).toBe("failed")
+    ).toBe("ok")
+    // A single run_step is read the same way.
+    expect(toolOutcome("ok, but it closed every page: …", "run_step").status).toBe("failed")
+    expect(
+      toolOutcome("ok. url: /x (on github.com: NOT the app's site, a.b)", "run_step").status,
+    ).toBe("ok")
     // Another tool's numbered text is never read as run_steps'.
     expect(toolOutcome("1. failed attempts are retried", "list_scenes").status).toBe("ok")
     expect(toolDetail({ scene: "s", steps: [{}, {}, {}] })).toBe("3 steps")

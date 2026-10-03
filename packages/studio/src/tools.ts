@@ -2,8 +2,7 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
-import { parse as parseYaml } from "yaml"
-import { type Studio, stepOutcome } from "./studio.ts"
+import { asObject, type Studio, stepOutcome } from "./studio.ts"
 
 // The agent's tools for Kiframe: look at and act on the live app, write and check scenes, record
 // them. Each heeds the run's signal (a stop ends a step, a replay or a recording at its next step,
@@ -70,13 +69,20 @@ const runSteps = defineTool({
   }),
   run: async ({ scene, steps, part }, studio: Studio, signal) => {
     // A list sent as YAML or JSON text (FAILURE-CATALOGUE #11) is read as the list it says.
-    const list = typeof steps === "string" ? (parseYaml(steps) as unknown) : steps
+    const list = asObject(steps)
     if (!Array.isArray(list) || list.length === 0 || list.length > 20) {
       return { error: "steps: a list of 1 to 20 steps" }
     }
     const out: string[] = []
     for (const [i, step] of list.entries()) {
-      const result = await studio.runStep(step, scene, signal, part)
+      let result: string
+      try {
+        result = await studio.runStep(step, scene, signal, part)
+      } catch (error) {
+        // A stop ends the call; anything else is this step's failure, the ones before it kept.
+        if (signal.aborted) throw error
+        result = `failed: ${error instanceof Error ? error.message : String(error)}`
+      }
       out.push(`${i + 1}. ${result}`)
       // Only on: a step that failed, closed every page or left the app's site stops the rest.
       if (stepOutcome(result) !== "ok") {

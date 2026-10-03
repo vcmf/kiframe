@@ -23,6 +23,13 @@ describe("the agent's answers", () => {
     expect(container.textContent).not.toContain("**")
   })
 
+  it("renders a nested list without blank lines (a list item's own whitespace stays collapsed)", () => {
+    stubApi({})
+    const { container } = render(<AgentText text={"- one\n  - nested a\n  - nested b"} />)
+    expect(container.querySelectorAll("li")).toHaveLength(3)
+    for (const li of container.querySelectorAll("li")) expect(li.style.whiteSpace).toBe("")
+  })
+
   it("keeps the agent's single line breaks", () => {
     stubApi({})
     const { container } = render(<AgentText text={"Saved the scene.\nRecording now."} />)

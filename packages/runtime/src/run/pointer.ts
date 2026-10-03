@@ -138,6 +138,12 @@ export async function clickAtCursor(
             .map((m) => m[0].toLowerCase())
             .sort()
             .join(",")
+        // A named point is measured again on the box as it is now (the page may have moved while
+        // the user approved): the check, the click and the take's ripple all use it.
+        if (point !== undefined && action.at !== undefined) {
+          const moved = await target.boundingBox({ timeout: left() }).catch(() => null)
+          if (moved !== null) point = pointIn(moved, action.at)
+        }
         const now = point === undefined ? undefined : await probeAt(point)
         if (
           now !== undefined &&
@@ -164,10 +170,7 @@ export async function clickAtCursor(
           "action-failed",
           "the target changed right before the click: nothing was clicked",
         )
-      // A named point is measured again on the box as it is now (the page may have moved while
-      // the user approved): the click lands where the step says.
-      const aim = action.at !== undefined ? pointIn(box, action.at) : point
-      position = await clickOffset(target, box, aim, left())
+      position = await clickOffset(target, box, point, left())
     }
     // The click event the recorder logs, at our point or the box center when Playwright picks it.
     // No trial click first: Playwright's trial really presses the mouse (the button would flash

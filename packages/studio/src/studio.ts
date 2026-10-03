@@ -469,6 +469,10 @@ export function whereOf(url: string, appUrl: string): string {
   }
   // Chromium's error page: the load failed (the network, a timeout), the app wasn't left.
   if (parsed.protocol === "chrome-error:") return "(the page failed to load: try again)"
+  // A page with no host (data:, file:, blob:): never its content, only what it is.
+  if (parsed.host === "" && parsed.protocol !== "about:") {
+    return `(a ${parsed.protocol.replace(":", "")} page: not the app)`
+  }
   const app = new URL(appUrl)
   // The runtime's own rule: the exact origin (secrets are typed only there).
   if (parsed.origin === app.origin || parsed.protocol === "about:") return parsed.pathname
@@ -486,7 +490,8 @@ export function whereOf(url: string, appUrl: string): string {
  */
 export function stepOutcome(result: string): "ok" | "off-site" | "failed" {
   if (!result.startsWith("ok") || result.startsWith("ok, but")) return "failed"
-  return /NOT the app's site|the app's address redirects here/.test(result) ? "off-site" : "ok"
+  // The app's address redirecting (www.) is still the app: only a secret needs the address fixed.
+  return /NOT the app's site|: not the app\)/.test(result) ? "off-site" : "ok"
 }
 
 /** Where in a scenario an item runs. */
@@ -505,7 +510,7 @@ function formatIssue(issue: { message: string; path: PropertyKey[] } | undefined
 }
 
 /** Models sometimes send an object as a JSON or YAML string: both are accepted. */
-function asObject(raw: unknown): unknown {
+export function asObject(raw: unknown): unknown {
   if (typeof raw !== "string") return raw
   try {
     return JSON.parse(raw) as unknown

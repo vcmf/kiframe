@@ -27,7 +27,6 @@ const components: Components = {
   },
   // The agent's single line breaks kept (Markdown joins them otherwise).
   p: ({ children }) => <p style={{ whiteSpace: "pre-line" }}>{children}</p>,
-  li: ({ children }) => <li style={{ whiteSpace: "pre-line" }}>{children}</li>,
   // Images from the agent's text aren't loaded (the CSP refuses them anyway): their alt text shows.
   img: ({ alt }) => <span>{alt}</span>,
 }

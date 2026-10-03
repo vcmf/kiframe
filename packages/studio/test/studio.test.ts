@@ -576,6 +576,16 @@ presets:
       "stopped there: the 1 after it didn't run",
     ])
     expect(stepOutcome("ok. url: /x")).toBe("ok")
+    // The app's address redirecting (www.) is still the app: a batch goes on there.
+    expect(
+      stepOutcome(`ok. url: ${whereOf("https://www.app.example/x", "https://app.example")}`),
+    ).toBe("ok")
+    expect(stepOutcome(`ok. url: ${whereOf("data:text/html,hi", "https://app.example")}`)).toBe(
+      "off-site",
+    )
+    expect(whereOf("data:text/html,secret-content", "https://app.example")).toBe(
+      "(a data page: not the app)",
+    )
     expect(stepOutcome("failed (x): y")).toBe("failed")
     expect(whereOf("chrome-error://chromewebdata/", "https://app.example")).toBe(
       "(the page failed to load: try again)",
