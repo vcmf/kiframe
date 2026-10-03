@@ -1,5 +1,13 @@
 # Kiframe backlog
 
+## Must do before v0's release: secrets shown on the page (the scanner, V2–V4)
+
+**Deferred 2026-10-04** (APPROACHES "Visual rebuild V2–V4"). Today a recording protects the field a secret is typed into (blurred from the write to the end of the scene) and never shows a value to the agent; **a secret the page itself displays elsewhere is not blurred in the video**: the demo account's email in an account menu or an owner column, an API key on a settings page, a token in a toast. So **v0 records on throwaway demo accounts only**, a rule the user is told, not one the code enforces. To close before release, one of:
+
+- **The scanner, as designed** (SECRETS-DESIGN §5 R2–R10 and the §7 acceptance tests): complete scans at every step and every 300 ms, page changes streamed between them, spans that follow scrolls and recycled rows, blind stretches held or cut, model screenshots painted over, `••••` keystrokes. Live, costly while recording, and hard to get right in every frame.
+- **A post-processing step** (the user's lean): after recording and before export, a pass over the take finds the known values (in the recorded page text, or in the frames: OCR) and adds blur regions; the export refuses a take that wasn't checked. Offline, simpler to verify; costs compute at export, and needs its own design review (what text the take keeps, OCR misses, values the page draws in images or canvas).
+- **Meanwhile, in the app:** say it before the first recording of a project ("record with a demo account: a value the page shows, beyond the fields Kiframe types into, isn't blurred"), and in the export dialog.
+
 ## Must do: data persistence (rework, not a patch)
 
 **Decided 2026-10-02, S3:** the app keeps a project's chat **in memory only**: it's gone when the app quits (the scenes, scenarios, compositions and takes it made are saved as before). This is a deliberate slice shortcut, and closing it is **a rework of the agent runtime and of storage**, not a file dump of the message list:
