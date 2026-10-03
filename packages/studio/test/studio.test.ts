@@ -598,7 +598,8 @@ presets:
     )
     const framed = (await tool("snapshot").run({}, studio, never)) as string
     expect(await run(refOf(framed, /button "Inside"/))).toEqual({
-      error: expect.stringMatching(/^nothing ran: ref \S+: it's inside a frame/) as unknown,
+      // Checked when its step runs (the page's frame is read then): the step before ran.
+      error: expect.stringMatching(/^step 2 ref \S+: it's inside a frame/) as unknown,
     })
     expect(await run(refOf(framed, /button "Outside"/))).toMatch(/^2 steps ok/)
     // A ref never reaches a scene's YAML.
@@ -648,8 +649,49 @@ presets:
       ),
     ].map((m) => m[1])
     expect(await step({ id: "v", action: "expect", that: { visible: { ref: saves[1] } } })).toEqual(
-      { error: expect.stringMatching(/can't say which of several look-alikes/) as unknown },
+      {
+        error: expect.stringMatching(
+          /can't say which of the look-alikes \(no nth here\)/,
+        ) as unknown,
+      },
     )
+    await studio.close()
+  }, 60_000)
+
+  it("uses a ref only on the page its snapshot was of (a popup's refs never reach its opener)", async () => {
+    const { studio } = makeStudio()
+    const step = (s: object) => tool("run_step").run({ scene: "pop", step: s }, studio, never)
+    const refOf = (snap: string, line: RegExp) => {
+      const ref = new RegExp(`${line.source}.*\\[ref=([a-z0-9]+)\\]`).exec(snap)?.[1]
+      if (ref === undefined) throw new Error(`no ${String(line)} in the snapshot:\n${snap}`)
+      return ref
+    }
+    await step({ id: "go", action: "goto", url: "/opener" })
+    const opener = (await tool("snapshot").run({}, studio, never)) as string
+    const openPopup = refOf(opener, /button "Open popup"/)
+    // Steps sent as text, refs and all.
+    expect(
+      await tool("run_steps").run(
+        { scene: "pop", steps: [`{ id: open, action: click, target: { ref: ${openPopup} } }`] },
+        studio,
+        never,
+      ),
+    ).toMatch(/^1 step ok\n1\. ok\. url: \/popup-report/)
+    // The popup is live: the opener's snapshot isn't this page's.
+    expect(await step({ id: "again", action: "click", target: { ref: openPopup } })).toEqual({
+      error: expect.stringMatching(/the last snapshot was of another page/) as unknown,
+    })
+    const popup = (await tool("snapshot").run({}, studio, never)) as string
+    const done = refOf(popup, /button "Done"/)
+    await step({ id: "close", action: "click", target: { ref: done } })
+    // Back on the opener: the popup's refs (numbered like the opener's) never name its elements.
+    expect(await step({ id: "late", action: "click", target: { ref: done } })).toEqual({
+      error: expect.stringMatching(/the last snapshot was of another page/) as unknown,
+    })
+    // A YAML alias inside what it names: refused, never a crash.
+    expect(await step("&a { id: x, action: click, target: *a }" as unknown as object)).toEqual({
+      error: "invalid step: a YAML alias refers to itself",
+    })
     await studio.close()
   }, 60_000)
 

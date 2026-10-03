@@ -2,7 +2,7 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
-import type { Pins } from "./refs.ts"
+import { isCyclic } from "./refs.ts"
 import { asObject, type ScenarioPart, type StepResult, type Studio } from "./studio.ts"
 
 // The agent's tools for Kiframe: look at and act on the live app, write and check scenes, record
@@ -90,14 +90,12 @@ const runSteps = defineTool({
     if (!Array.isArray(list) || list.length === 0 || list.length > 20) {
       return { error: "steps: a list of 1 to 20 steps" }
     }
-    // Every ref of the batch held now: once a step runs, Playwright may forget the snapshot's refs.
-    const pins = await studio.pin(list)
-    if ("error" in pins) return { error: `nothing ran: ${pins.error}` }
-    try {
-      return await runAll(list, scene, part, studio, signal, pins)
-    } finally {
-      await pins.release()
-    }
+    // Every item read once (an item sent as text too), and its refs checked before anything runs.
+    const items = (list as unknown[]).map((item) => asObject(item))
+    if (isCyclic(items)) return { error: "nothing ran: a YAML alias refers to itself" }
+    const refused = studio.refusedRefs(items)
+    if (refused !== undefined) return { error: `nothing ran: ${refused}` }
+    return runAll(items, scene, part, studio, signal)
   },
 })
 
@@ -107,13 +105,12 @@ async function runAll(
   part: ScenarioPart,
   studio: Studio,
   signal: AbortSignal,
-  pins: Pins,
 ): Promise<string | { error: string }> {
   const out: string[] = []
   for (const [i, step] of list.entries()) {
     let result: StepResult
     try {
-      result = await studio.runStep(step, scene, signal, part, pins)
+      result = await studio.runStep(step, scene, signal, part)
     } catch (error) {
       // A stop ends the call; anything else is this step's failure, the ones before it kept.
       if (signal.aborted) throw error

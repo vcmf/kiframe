@@ -18,7 +18,8 @@ describe("the refs of a snapshot", () => {
       e3: { role: "link", name: "Issue #42" },
       e4: { role: "button", name: "It's: here" },
       e5: { role: "heading", name: 'Say "hi"' },
-      e6: { role: "paragraph" },
+      // A node's own text is kept (to check the element by), never read as a ref.
+      e6: { role: "paragraph", text: "see [ref=e2]" },
     })
   })
 

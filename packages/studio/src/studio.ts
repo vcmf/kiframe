@@ -12,6 +12,8 @@ import {
   type StepRef,
   visibleOnly,
   type ElementHint,
+  type Lasting,
+  lastingLocator,
 } from "@kiframe/runtime"
 import {
   ACTION_REFERENCE,
@@ -29,9 +31,9 @@ import {
   SetupItem,
   Step,
 } from "@kiframe/schema"
-import type { Browser, BrowserContext, Page } from "playwright"
+import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
-import { asWritten, Pins, refsIn, refsOf } from "./refs.ts"
+import { asWritten, isCyclic, REF, type RefAt, refsAt, refsOf, withAt } from "./refs.ts"
 
 // The studio: what the agent's tools act on (the project, the live app, the take store), for one
 // open project. The host (the desktop app's main process) makes one per project and passes it to
@@ -85,8 +87,8 @@ export const SNAPSHOT_MAX = 14_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
-  /** The last snapshot's refs: each one's role and name (a new snapshot replaces them). */
-  #refs = new Map<string, ElementHint>()
+  /** The last snapshot: its page, and what it said of each ref (any new snapshot replaces it). */
+  #snapshot: { page: Page; refs: Map<string, ElementHint> } | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
   /** The live page being opened (one at a time: a second caller waits for it). */
@@ -207,6 +209,8 @@ export class Studio {
 
   /** The live page's accessibility snapshot (or one region's), with its URL. */
   async snapshot(within?: unknown): Promise<StepResult> {
+    // Its refs are gone whatever this one gives (as Playwright's are).
+    this.#snapshot = undefined
     const page = await this.livePage()
     let root = page.locator("body")
     if (within !== undefined) {
@@ -224,7 +228,7 @@ export class Studio {
     try {
       // With refs (`[ref=e12]`): the agent can point at an element, and run_step writes its locator.
       text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
-      this.#refs = refsOf(text)
+      this.#snapshot = { page, refs: refsOf(text) }
     } catch (e) {
       return failed(`snapshot failed: ${this.scrub(String(e))}`)
     }
@@ -238,17 +242,28 @@ export class Studio {
   }
 
   /**
-   * The elements the refs in these items name, held before any of them runs (a step's own changes,
-   * or a snapshot, make Playwright forget refs); release them once done.
+   * Why the refs in these items can't be used at all (checked before any of them runs, without the
+   * page): one with anything beside it, one not of the last snapshot, a snapshot of another page.
    */
-  async pin(items: unknown): Promise<Pins | { error: string }> {
-    return Pins.of(await this.livePage(), refsIn(items), this.#refs)
+  refusedRefs(items: unknown): string | undefined {
+    for (const { ref, extra } of refsAt(items)) {
+      if (extra.length > 0) {
+        return `ref ${ref}: a ref goes alone ({ ref: ${ref} }), without ${extra.join(", ")}`
+      }
+      if (!REF.test(ref) || this.#snapshot?.refs.has(ref) !== true) {
+        return `ref ${ref}: not a ref of the last snapshot: take a snapshot and use one of its [ref=…]`
+      }
+      if (this.#snapshot.page !== this.currentPage) {
+        return `ref ${ref}: the last snapshot was of another page than the live one: take a snapshot of this one`
+      }
+    }
+    return undefined
   }
 
   /**
    * One item on the live page, through the real runner: an on-camera step (with its id), or a setup
-   * or teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`). Its refs (pinned by
-   * the caller for a batch, or here) become lasting locators first, and the result says the item as
+   * or teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`). Its refs become
+   * lasting locators first, the page as it is right now, and a result that worked says the item as
    * it's written in the YAML.
    */
   async runStep(
@@ -256,25 +271,62 @@ export class Studio {
     scene: string,
     signal: AbortSignal,
     part: ScenarioPart = "steps",
-    pins?: Pins,
   ): Promise<StepResult> {
     const raw = asObject(input)
-    if (refsIn(raw).size === 0) return this.#runItem(raw, scene, signal, part)
-    const own = pins ?? (await this.pin(raw))
-    if ("error" in own) return failed(own.error)
-    try {
-      const written = await own.written(await this.livePage(), raw)
-      if ("error" in written) return failed(written.error)
-      const result = await this.#runItem(written.value, scene, signal, part)
-      // Only a step that worked is one to write (a failed one's locator isn't confirmed).
-      if (!result.ok) return result
-      return {
-        ...result,
-        text: `${result.text}\nas written: ${this.scrub(asWritten(written.value))}`,
-      }
-    } finally {
-      if (pins === undefined) await own.release()
+    if (isCyclic(raw)) return failed("invalid step: a YAML alias refers to itself")
+    const refs = refsAt(raw)
+    if (refs.length === 0) return this.#runItem(raw, scene, signal, part)
+    const refused = this.refusedRefs(raw)
+    if (refused !== undefined) return failed(refused)
+    const written = await this.#written(raw, refs, part)
+    if ("error" in written) return failed(written.error)
+    const result = await this.#runItem(written.value, scene, signal, part)
+    // Only a step that worked is one to write (a failed one's locator isn't confirmed).
+    if (!result.ok) return result
+    return {
+      ...result,
+      text: `${result.text}\nas written: ${this.scrub(asWritten(written.value))}`,
     }
+  }
+
+  /**
+   * The item with each ref replaced by its lasting locator; `nth` only where the item's own schema
+   * takes it (a target: never a condition's locator, nor a step typing a secret).
+   */
+  async #written(
+    raw: unknown,
+    refs: RefAt[],
+    part: ScenarioPart,
+  ): Promise<{ value: unknown } | { error: string }> {
+    const page = await this.livePage()
+    // Built now: a value typed by the step before is a known value by this one.
+    const scrub = this.scrubber()
+    const allowed = (text: string) => scrub(text) === text
+    let value = raw
+    const nths: { at: RefAt; put: unknown }[] = []
+    for (const at of refs) {
+      const hint = this.#snapshot?.refs.get(at.ref)
+      if (hint === undefined) return { error: `ref ${at.ref}: not a ref of the last snapshot` }
+      const lasting = await lastingOfRef(page, at.ref, hint, allowed)
+      if ("error" in lasting) return { error: `ref ${at.ref}: ${lasting.error}` }
+      value = withAt(value, at.path, lasting.locator)
+      if (lasting.nth !== undefined) {
+        nths.push({ at, put: { ...lasting.locator, nth: lasting.nth } })
+      }
+    }
+    for (const { at, put } of nths) {
+      const probe = withAt(value, at.path, put)
+      // Only what `nth` there adds (the item may be wrong elsewhere: its own refusal says so).
+      const before = new Set(issuePaths(value, part).map((p) => p.map(String).join(".")))
+      const added = issuePaths(probe, part).filter((p) => !before.has(p.map(String).join(".")))
+      if (added.some((p) => overlaps(p, at.path))) {
+        return {
+          error: `ref ${at.ref}: several elements look like it, and here a locator can't say which of the look-alikes (no nth here): point at a unique element, or write a locator from the snapshot`,
+        }
+      }
+      value = probe
+    }
+    return { value }
   }
 
   async #runItem(
@@ -372,11 +424,13 @@ export class Studio {
   /** The scenario the agent wrote, checked: parsed, against the project, 5–15 on-camera steps. */
   check(yaml: string): { scenario: Scenario } | { error: string } {
     let scenario: Scenario
+    const parsed = asObject(yaml)
+    if (isCyclic(parsed)) return { error: "invalid scenario: a YAML alias refers to itself" }
     // A ref is the live page's (run_step's) only: the YAML holds the locator run_step gave back.
-    const refs = refsIn(asObject(yaml))
-    if (refs.size > 0) {
+    const refs = [...new Set(refsAt(parsed).map((r) => r.ref))]
+    if (refs.length > 0) {
       return {
-        error: `invalid scenario: a ref (${[...refs].join(", ")}) is only for run_step on the live page: write the locator its result gave ("as written: …")`,
+        error: `invalid scenario: a ref (${refs.join(", ")}) is only for run_step on the live page: write the locator its result gave ("as written: …")`,
       }
     }
     try {
@@ -596,6 +650,48 @@ export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl))
 
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"
+
+/** A ref's element as the page has it now, and its lasting locator (or why none). */
+async function lastingOfRef(
+  page: Page,
+  ref: string,
+  hint: ElementHint,
+  allowed: (text: string) => boolean,
+): Promise<Lasting> {
+  // As the page is now, without waiting: `elementHandle()` waits for something on some apps (1.6 s
+  // on Cal.com's login page: FAILURE-CATALOGUE #21). A ref names an element, never a text node.
+  const handles = (await page
+    .locator(`aria-ref=${ref}`)
+    .elementHandles()
+    .catch(() => [])) as ElementHandle<Element>[]
+  try {
+    const [handle] = handles
+    const frame = await handle?.ownerFrame().catch(() => null)
+    if (handle === undefined || frame === null || frame === undefined) {
+      return { error: "it isn't on the page anymore (the page changed): take a new snapshot" }
+    }
+    // Inside an iframe: a step's locators reach the page's own elements only.
+    if (frame !== page.mainFrame()) {
+      return { error: "it's inside a frame (an iframe): steps reach the page's own elements only" }
+    }
+    return await lastingLocator(page, handle, hint, allowed)
+  } finally {
+    await Promise.all(handles.map((h) => h.dispose().catch(() => undefined)))
+  }
+}
+
+/** The paths of an item's schema issues, under the schema of the part it's for (as it'll run). */
+function issuePaths(item: unknown, part: ScenarioPart): PropertyKey[][] {
+  const r = item as Record<string, unknown>
+  const schema = part === "teardown" ? Action : part === "steps" && "id" in r ? Step : SetupItem
+  return schema.safeParse(item).error?.issues.map((i) => i.path) ?? []
+}
+
+/** Whether one path is within the other (an issue at a ref's place, or around it). */
+function overlaps(a: PropertyKey[], b: PropertyKey[]): boolean {
+  const n = Math.min(a.length, b.length)
+  return a.slice(0, n).every((k, i) => String(k) === String(b[i]))
+}
 
 /** A failed outcome. */
 function failed(text: string): StepResult {
