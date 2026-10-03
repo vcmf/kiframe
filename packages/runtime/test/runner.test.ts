@@ -1231,6 +1231,87 @@ steps:
 `)
   })
 
+  describe("points within a target (a canvas)", () => {
+    const canvas = "{ by: role, role: img, name: Drawing canvas }"
+    const drawLog = () => page.evaluate(() => (window as unknown as { drawLog: string[] }).drawLog)
+
+    it("clicks at the step's own point, as fractions of the box", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - { id: dot, action: click, target: ${canvas}, at: { x: 0.25, y: 0.75 } }
+`)
+      // Fractions of the bounding box (402 × 302 with its 1 px border, at 100,100); offsets count from
+      // inside the border (101,101): x = 100 + 0.25 × 402 − 101 = 99.5, y = 100 + 0.75 × 302 − 101 = 225.5.
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
+    })
+
+    it("keeps the far edge on the element (at 1 is its last pixel, not the next element's)", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - { id: edge, action: click, target: ${canvas}, at: { x: 1, y: 1 } }
+`)
+      // The box is 402 × 302 at 100,100: its last pixel is 501,401, offset 400,300 inside the border.
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 400,300"])
+    })
+
+    it("drags from one point of the canvas to another (drawing)", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - id: draw
+    action: drag
+    target: ${canvas}
+    at: { x: 0.1, y: 0.2 }
+    to: { target: ${canvas}, at: { x: 0.6, y: 0.7 } }
+`)
+      const log = await drawLog()
+      expect(log.filter((l) => !l.startsWith("click"))).toEqual(["down 39,59", "up 240,210"])
+    })
+
+    it("draws off camera too (the setup), at the same points", async () => {
+      await run(`setup:
+  - { action: goto, url: /canvas }
+  - action: drag
+    target: ${canvas}
+    at: { x: 0.1, y: 0.2 }
+    to: { target: ${canvas}, at: { x: 0.6, y: 0.7 } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+      expect((await drawLog()).filter((l) => !l.startsWith("click"))).toEqual([
+        "down 39,59",
+        "up 240,210",
+      ])
+    })
+
+    // Its label reads as risky ("Trash"): the click asks once the cursor is at the point.
+    const riskyDot = `setup: [{ action: goto, url: "/canvas?trash" }]
+steps:
+  - { id: dot, action: click, target: ${canvas}, at: { x: 0.25, y: 0.75 } }
+`
+
+    it("clicks a risky point once approved, where it was approved", async () => {
+      const asked: string[] = []
+      await run(riskyDot, { approveRisky: (step) => (asked.push(step.stepId ?? ""), true) })
+      expect(asked).toEqual(["dot"])
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
+    })
+
+    it("clicks nothing when the page moved while waiting for the approval", async () => {
+      const error = await failure(riskyDot, {
+        approveRisky: async () => {
+          // The user takes their time; the page lays out again meanwhile.
+          await page.evaluate(() => {
+            document.querySelector("canvas")!.style.marginTop = "40px"
+          })
+          return true
+        },
+      })
+      expect(error.message).toMatch(
+        /the page moved while waiting for approval: nothing was clicked/,
+      )
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual([])
+    })
+  })
+
   it("returns to the opener when the click closes its page before it ends", async () => {
     // Closed as the pointer reaches it: the click finds its page closed ("Target page … closed").
     await run(`setup: [{ action: goto, url: /opener }]

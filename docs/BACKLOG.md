@@ -27,6 +27,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Caret with delegated focus:** when focus lands on a descendant (shadow host with `delegatesFocus`), the caret is moved on the target, not on the focused element.
 - **Main scroller inside shadow DOM:** `findMainScroller` doesn't search shadow roots (web-component app shells).
 - **Text conditions are substring and case-insensitive:** `expect text: Saved` passes on "Unsaved changes". Consider an `exact` option or word boundaries.
+- **A named point and a box that only resized:** a click at `at` refuses when its point moved more than 2 px between the check and the click (after an approval too), even when the target only grew a little (a scrollbar appeared, a responsive canvas) and the fraction is still the spot approved. Interim: refused, the agent runs the step again (an approval asked again). Option: compare the point within the box (fractions), and refuse only a moved box whose element changed.
 - **Settle / scroll cost on large DOMs:** a full TreeWalker per settle to find shadow roots, and an `isConnected` round trip before each scroll.
 - **Cursor when the target is off screen before a click:** `find()` scrolls the target into view first, but if it moves off screen after the cursor travel, no cursor event is emitted and `ctx.cursor` keeps the old position while Playwright moves the real mouse.
 - **No cursor events without a box:** when the target has no visible box, Playwright's regular click is used (approval required unless `risky` is set): no cursor movement is shown and `ctx.cursor` goes stale.
@@ -258,4 +259,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A studio made again once the vault reads:** it closes the live page (the agent's next step starts on a fresh one though its history says where it was). Rare (the vault unreadable at a project's first run); keep the live context when only the secrets change.
 - **Why a secret step has no resolver:** with the vault unreadable, a secret step fails "no secret resolver given"; the Secrets panel says why, the run doesn't.
 - **Stop during the approval's screenshot:** the screenshot (up to 3 s) isn't stopped by the run's signal.
+
+## Real-app fixes (PR #9)
+
+- **A point below the fold:** a step with `at` whose point is off screen is refused ("scroll it into view first"); scrolling the point itself into view (a tall canvas) when a real app needs it.
+- **A project's address that redirects:** step results say when the app's address redirects to another origin (`www.`), and the user sets the project to it; resolving it when the project is created would spare the step.
 

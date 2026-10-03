@@ -2,11 +2,19 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
-import type { Studio } from "./studio.ts"
+import { asObject, type StepResult, type Studio } from "./studio.ts"
 
 // The agent's tools for Kiframe: look at and act on the live app, write and check scenes, record
 // them. Each heeds the run's signal (a stop ends a step, a replay or a recording at its next step,
 // and closes a question to the user).
+
+/**
+ * An outcome as the model and the chat read it: its text when it worked, a failure as `{ error }`
+ * (the loop's and the chat's own protocol: never told apart by its words).
+ */
+function said(result: StepResult): string | { error: string } {
+  return result.ok ? result.text : { error: result.text }
+}
 
 const sceneId = SceneId.describe("the scene's id (kebab-case, unique in the project)")
 
@@ -38,7 +46,7 @@ const snapshot = defineTool({
       .optional()
       .describe("A locator for a region, e.g. {by: role, role: dialog}"),
   }),
-  run: ({ within }, studio: Studio) => studio.snapshot(within),
+  run: async ({ within }, studio: Studio) => said(await studio.snapshot(within)),
 })
 
 const runStep = defineTool({
@@ -53,7 +61,55 @@ const runStep = defineTool({
       .default("steps")
       .describe("the part of the scene it's for (its approvals are that part's)"),
   }),
-  run: ({ scene, step, part }, studio: Studio, signal) => studio.runStep(step, scene, signal, part),
+  run: async ({ scene, step, part }, studio: Studio, signal) =>
+    said(await studio.runStep(step, scene, signal, part)),
+})
+
+const runSteps = defineTool({
+  name: "run_steps",
+  description:
+    "Run SEVERAL steps on the live page, in order (each like run_step's); stops at the first that fails. Use it once you know the locators: one call instead of one per step.",
+  parameters: z.object({
+    scene: SceneId.describe("the id you'll save this scene under"),
+    steps: z
+      .union([z.array(z.unknown()).min(1).max(20), z.string().max(50_000)])
+      .describe("The steps, same fields as in the YAML (a list)"),
+    part: z.enum(["setup", "steps", "teardown"]).default("steps").describe("the part they're for"),
+  }),
+  run: async ({ scene, steps, part }, studio: Studio, signal) => {
+    // A list sent as YAML or JSON text (FAILURE-CATALOGUE #11) is read as the list it says.
+    const list = asObject(steps)
+    if (!Array.isArray(list) || list.length === 0 || list.length > 20) {
+      return { error: "steps: a list of 1 to 20 steps" }
+    }
+    const out: string[] = []
+    for (const [i, step] of list.entries()) {
+      let result: StepResult
+      try {
+        result = await studio.runStep(step, scene, signal, part)
+      } catch (error) {
+        // A stop ends the call; anything else is this step's failure, the ones before it kept.
+        if (signal.aborted) throw error
+        result = {
+          ok: false,
+          text: `failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
+      }
+      out.push(`${i + 1}. ${result.text}`)
+      const left = list.length - i - 1
+      const stopped = left > 0 ? [`stopped there: the ${left} after it didn't run`] : []
+      // The first line says the outcome (the line the chat shows), then every step's.
+      // A failed step: the call fails, that step's reason first.
+      if (!result.ok) {
+        return { error: [`step ${i + 1} ${result.text}`, ...out, ...stopped].join("\n") }
+      }
+      // On another site: what follows would run there (not a failure: said, and stopped).
+      if (result.site === "other") {
+        return [`step ${i + 1} left the app's site`, ...out, ...stopped].join("\n")
+      }
+    }
+    return [`${list.length} ${list.length === 1 ? "step" : "steps"} ok`, ...out].join("\n")
+  },
 })
 
 const listSecrets = defineTool({
@@ -131,7 +187,7 @@ const recordScene = defineTool({
   description:
     "Record a saved scene at human pace for the video (takes as long as the scene plays).",
   parameters: z.object({ id: sceneId }),
-  run: ({ id }, studio: Studio, signal) => studio.record(id, signal),
+  run: async ({ id }, studio: Studio, signal) => said(await studio.record(id, signal)),
 })
 
 /**
@@ -173,6 +229,7 @@ export const studioTools: Tool<Studio>[] = [
   listScenes,
   snapshot,
   runStep,
+  runSteps,
   listSecrets,
   askUser,
   saveSceneTool,

@@ -25,6 +25,7 @@ import {
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
 import type { ChatItem } from "../../../shared/ipc.ts"
 import { useChat } from "../chat-store.ts"
+import { AgentText } from "./markdown.tsx"
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>
 
@@ -32,6 +33,7 @@ const TOOL_ICONS: Record<string, ReactNode> = {
   list_scenes: <ListBullets size={15} />,
   snapshot: <MagnifyingGlass size={15} />,
   run_step: <CursorClick size={15} />,
+  run_steps: <CursorClick size={15} />,
   list_secrets: <Key size={15} />,
   ask_user: <Question size={15} />,
   save_scene: <ListChecks size={15} />,
@@ -101,7 +103,9 @@ function Item({ item }: { item: ChatItem }) {
           <span className="agent-mark" aria-hidden="true">
             <Sparkle size={14} weight="fill" />
           </span>
-          <div className="msg-agent-text">{item.text}</div>
+          <div className="msg-agent-text">
+            <AgentText text={item.text} />
+          </div>
         </div>
       )
     case "request":

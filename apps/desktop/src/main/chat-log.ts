@@ -33,13 +33,15 @@ export function toolDetail(args: unknown): string {
     ]
     return oneLine(what.filter((w) => w !== "").join(" "))
   }
+  if (Array.isArray(a.steps)) return `${a.steps.length} steps`
+  if (typeof a.steps === "string") return "steps"
   for (const key of ["id", "question", "scene"]) {
     if (typeof a[key] === "string") return oneLine(a[key])
   }
   return ""
 }
 
-/** A result's outcome and first line (the studio says failures in words: "failed (…)"). */
+/** A result's outcome and first line (a failure is `{ error }`, never told by its words). */
 export function toolOutcome(result: unknown): {
   status: "ok" | "failed" | "stopped"
   result: string
@@ -50,10 +52,10 @@ export function toolOutcome(result: unknown): {
       result: oneLine(result.message),
     }
   }
+  // Every tool says a failure as `{ error }` (above): anything else worked, whatever its words.
   if (isToolSoftError(result)) return { status: "failed", result: oneLine(result.error) }
   const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "")
-  const failed = /^(failed|invalid|refused|replay failed|recording failed|no scene)\b/.test(text)
-  return { status: failed ? "failed" : "ok", result: oneLine(text.split("\n")[0] ?? "") }
+  return { status: "ok", result: oneLine(text.split("\n")[0] ?? "") }
 }
 
 export class ChatLog {

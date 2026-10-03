@@ -47,7 +47,7 @@ describe("the chat, folded from the agent's events", () => {
       type: "tool_result",
       callId: "c2",
       toolName: "run_step",
-      result: "failed (target-not-found): …",
+      result: { error: "failed (target-not-found): …" },
     })
     expect(log.items[1]).toMatchObject({ status: "failed" })
   })
@@ -120,14 +120,31 @@ describe("a tool's line", () => {
     expect(toolDetail({ step: { action: "click", target: { name: { nested: 1 } } } })).toBe("click")
   })
 
-  it("reads the loop's failures and the studio's words", () => {
+  it("reads a failure from the protocol (`{ error }`), never from words", () => {
     expect(toolOutcome(toolAborted("run_step")).status).toBe("stopped")
     expect(toolOutcome(toolThrew("run_step", new Error("boom"))).status).toBe("failed")
     expect(toolOutcome({ error: 'scene "x" didn\'t read' })).toMatchObject({ status: "failed" })
-    expect(toolOutcome("replay failed: failed (expectation-failed): …").status).toBe("failed")
     expect(toolOutcome("saved: tour (replayed)").status).toBe("ok")
     expect(toolOutcome({ answer: "the demo account" }).status).toBe("ok")
     expect(oneLine("x".repeat(400)).length).toBe(160)
+    // Text is a success whatever its words (a page's own text may say "failed"), its first line
+    // shown; a failure comes as `{ error }`, its reason first.
+    expect(toolOutcome("2 steps ok\n1. ok. url: /\n2. ok. url: /x")).toEqual({
+      status: "ok",
+      result: "2 steps ok",
+    })
+    expect(
+      toolOutcome({
+        error: "step 2 failed (target-not-found): no Save\n1. ok. url: /\n2. failed …",
+      }),
+    ).toMatchObject({
+      status: "failed",
+      result: expect.stringMatching(/^step 2 failed \(/) as unknown,
+    })
+    expect(toolOutcome("ok. url: /failed-payments").status).toBe("ok")
+    expect(toolOutcome("failed attempts are retried").status).toBe("ok")
+    expect(toolOutcome({ error: "recording failed: no complete take" }).status).toBe("failed")
+    expect(toolDetail({ scene: "s", steps: [{}, {}, {}] })).toBe("3 steps")
     // Never half an emoji at the cut.
     const cut = oneLine(`${"x".repeat(158)}😀${"y".repeat(10)}`)
     expect(cut).toBe(`${"x".repeat(158)}😀…`)

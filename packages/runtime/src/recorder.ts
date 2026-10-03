@@ -304,7 +304,8 @@ export async function recordScenario(
               rect: rect(box),
               ...(e.secret !== undefined && { secret: e.secret }),
             })
-          } else {
+          } else if (e.step.phase === "steps") {
+            // Off camera (setup, teardown), nothing is filmed: no box there is expected.
             warnings.push(`no box for the ${kind} of ${keyOf(e.step)}: typing not logged`)
           }
           // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the

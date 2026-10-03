@@ -33,6 +33,12 @@ function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   })
 }
 
+/**
+ * Model turns per message: grounding a real app (a login, then each step tried) takes more than
+ * the loop's default (Cal.com and Excalidraw went past 30, 2026-10-03).
+ */
+export const MAX_TURNS = 80
+
 /** Assistant text repainted at most this often (tool steps and requests at once). */
 const TEXT_MS = 100
 /** Tools whose result changes the project (the scene strip is refreshed after them). */
@@ -197,6 +203,7 @@ export class AgentHost {
         system: systemPrompt(studio),
         history: this.#history,
         signal,
+        maxTurns: MAX_TURNS,
       })) {
         // The run's turns, kept as they come.
         if ("messages" in event) this.#history = [...this.#history, ...event.messages]
