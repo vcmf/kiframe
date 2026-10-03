@@ -215,13 +215,17 @@ export interface TakeRecords {
  * regions had spans fails validation: re-record it.
  */
 export function readTakeRecords(dir: string): TakeRecords {
+  // Its meta.json as the store reads it (a take of a newer Kiframe said so).
+  const stored = readTake(dir)
+  if (stored instanceof Error) throw stored
+  if (stored === undefined) throw new Error(`${dir}: not a complete take`)
   const lines = (file: string) =>
     readFileSync(join(dir, file), "utf8")
       .split("\n")
       .filter((l) => l.trim() !== "")
       .map((l) => JSON.parse(l) as unknown)
   return {
-    meta: TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"))),
+    meta: stored.meta,
     events: lines("events.jsonl").map((e) => TakeEvent.parse(e)),
     cursor: lines("cursor.jsonl").map((c) => CursorSample.parse(c)),
   }

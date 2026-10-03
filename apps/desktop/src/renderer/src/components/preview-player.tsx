@@ -1,6 +1,6 @@
 // A recorded scene played as it exports: the compositor's own player on a canvas (captions,
 // cursor, zoom, blurred secrets), with play/pause and a scrubber. A scene that can't play says why.
-import { Player } from "@kiframe/compositor"
+import { flatten, Player } from "@kiframe/compositor"
 import { Pause, Play, WarningCircle } from "@phosphor-icons/react"
 import { useEffect, useRef, useState } from "react"
 import { api } from "../api.ts"
@@ -30,12 +30,13 @@ export function PreviewPlayer({ sceneId, take }: { sceneId: string; take: string
         const target = canvas.current
         if (target === null) return
         player = await Player.load(target, {
-          // A copy on its own buffer (what a Blob takes).
-          video: new Blob([preview.video.slice()], { type: "video/webm" }),
+          // IPC hands over a buffer of its own: no copy.
+          video: new Blob([preview.video as Uint8Array<ArrayBuffer>], { type: "video/webm" }),
           composition: preview.composition,
           scenario: preview.scenario,
           take: preview.take,
-          baseStyle: preview.baseStyle,
+          // The scene's style as it exports (main resolved its layers and its output's size).
+          style: flatten(preview.style, preview.format),
         })
         if (gone) {
           player.dispose()

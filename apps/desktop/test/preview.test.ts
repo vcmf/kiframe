@@ -42,7 +42,7 @@ steps:
         duration: { mode: "auto" as const },
       }
       saveScene(opened, scene, { scenario })
-      expect(previewOf(opened, takes, "tour")).toEqual({
+      expect(await previewOf(opened, takes, "tour")).toEqual({
         ok: false,
         why: expect.stringMatching(/^Not filmed yet/) as unknown,
       })
@@ -58,7 +58,7 @@ steps:
       expect(take).toBeDefined()
       saveScene(opened, scene, { composition: generate(config, scenario, recorded).composition })
 
-      const played = previewOf(opened, takes, "tour")
+      const played = await previewOf(opened, takes, "tour")
       expect(played).toMatchObject({ ok: true, sceneId: "tour", title: "Tour" })
       if (!played.ok) throw new Error(played.why)
       expect(played.take.meta.takeKey).toBe(take?.meta.takeKey)
@@ -74,7 +74,7 @@ steps:
       const stored = opened.scenes.get("tour")
       if (stored === undefined) throw new Error("no scene")
       opened.scenes.set("tour", { ...stored, scenario: changed })
-      expect(previewOf(opened, takes, "tour")).toEqual({
+      expect(await previewOf(opened, takes, "tour")).toEqual({
         ok: false,
         why: expect.stringMatching(/changed since it was filmed/) as unknown,
       })
@@ -82,11 +82,11 @@ steps:
 
       // Its take gone from the store: said, never another take played instead.
       rmSync(dir, { recursive: true })
-      expect(previewOf(opened, takes, "tour")).toEqual({
+      expect(await previewOf(opened, takes, "tour")).toEqual({
         ok: false,
         why: expect.stringMatching(/take is gone/) as unknown,
       })
-      expect(previewOf(opened, takes, "nope")).toMatchObject({ ok: false })
+      expect(await previewOf(opened, takes, "nope")).toMatchObject({ ok: false })
     } finally {
       await browser.close()
       await server.close()

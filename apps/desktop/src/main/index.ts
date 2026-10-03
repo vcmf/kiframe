@@ -288,11 +288,6 @@ function start(): void {
           return agent === undefined ? "open a project first" : agent.send(text)
         },
         // An unreadable vault says why here (projects still open: a secret step can't run).
-        "preview:open": (sceneId) => {
-          const opened = workspace.opened
-          if (opened === null) return { ok: false, why: "No project is open." }
-          return previewOf(opened, ready().takes, sceneId)
-        },
         "secrets:list": async () => {
           const secrets = vault()
           await secrets.ready()
@@ -318,6 +313,11 @@ function start(): void {
           } catch (e) {
             return message(e)
           }
+        },
+        "preview:open": (sceneId) => {
+          const opened = workspace.opened
+          if (opened === null) return { ok: false, why: "No project is open." }
+          return previewOf(opened, ready().takes, sceneId)
         },
         "chat:stop": () => workspace.agent?.stop(),
         "chat:answer": (id, answer) => workspace.agent?.answer(id, answer),

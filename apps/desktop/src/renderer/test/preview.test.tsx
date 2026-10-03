@@ -2,7 +2,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Preview } from "../../shared/ipc.ts"
+import type { ProjectView } from "../../shared/ipc.ts"
+import { useChat } from "../src/chat-store.ts"
 import { clock, PreviewPlayer } from "../src/components/preview-player.tsx"
+import { Stage } from "../src/components/stage.tsx"
 import { stubApi } from "./stub-api.ts"
 
 // The compositor's player decodes with WebCodecs (a real browser: compositor's player.test.ts);
@@ -32,7 +35,10 @@ const fake = vi.hoisted(() => {
   }
   return { player, load: vi.fn(() => Promise.resolve(player)) }
 })
-vi.mock("@kiframe/compositor", () => ({ Player: { load: fake.load } }))
+vi.mock("@kiframe/compositor", () => ({
+  Player: { load: fake.load },
+  flatten: (style: object, format: object) => ({ ...style, ...format }),
+}))
 
 afterEach(cleanup)
 
@@ -44,7 +50,8 @@ const ready = {
   scenario: {},
   take: { meta: {}, events: [], cursor: [] },
   video: new Uint8Array([1, 2, 3]),
-  baseStyle: {},
+  style: {},
+  format: { width: 1920, height: 1080, fps: 30 },
 } as unknown as Preview
 
 describe("the preview", () => {
@@ -79,8 +86,42 @@ describe("the preview", () => {
     stubApi({ "preview:open": () => ready })
     const { rerender } = render(<PreviewPlayer sceneId="tour" take="k1" />)
     await screen.findByRole("button", { name: "Play" })
+    // Counted from here (the mock is shared with the tests before).
+    fake.player.dispose.mockClear()
     rerender(<PreviewPlayer sceneId="tour" take="k2" />)
-    await waitFor(() => expect(fake.player.dispose).toHaveBeenCalled())
+    await waitFor(() => expect(fake.player.dispose).toHaveBeenCalledTimes(1))
+  })
+
+  it("shows a scene a run filmed once its new take arrives, after the run ended", async () => {
+    stubApi({ "preview:open": () => ({ ok: false, why: "Not filmed yet: record it." }) })
+    const project = (take?: string): ProjectView => ({
+      session: "s1",
+      name: "Demo",
+      dir: "/tmp/demo",
+      url: "https://app.example",
+      problems: [],
+      scenes: [
+        { id: "intro", title: "Intro", status: "grounded" },
+        {
+          id: "tour",
+          title: "Tour",
+          status: take === undefined ? "grounded" : "recorded",
+          ...(take !== undefined && { take }),
+        },
+      ],
+    })
+    const { rerender } = render(<Stage project={project()} />)
+    act(() => useChat.setState({ running: true }))
+    expect(screen.getByRole("tab", { name: /Live app/ }).getAttribute("aria-selected")).toBe("true")
+    // The run's end comes first, the project with the new take a moment later.
+    act(() => useChat.setState({ running: false }))
+    rerender(<Stage project={project("k1")} />)
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: /Preview/ }).getAttribute("aria-selected")).toBe(
+        "true",
+      ),
+    )
+    expect(screen.getByRole("button", { name: /Tour/ }).getAttribute("aria-pressed")).toBe("true")
   })
 
   it("says times as m:ss", () => {

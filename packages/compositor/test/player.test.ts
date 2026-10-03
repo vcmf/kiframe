@@ -27,6 +27,7 @@ setup: [{ action: goto, url: /projects }]
 steps:
   - { id: open-new, action: click, target: { by: role, role: button, name: New project }, caption: "Create a project" }
   - { id: name, action: type, target: { by: label, name: Project name }, value: "Q4 Launch" }
+  - { id: beat, action: pause, ms: 4000 }
 `)
       const dir = join(mkdtempSync(join(tmpdir(), "kiframe-player-")), "take")
       const recordPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
@@ -98,6 +99,27 @@ steps:
       const paused = await page.evaluate(() => window.playerTest.state())
       await page.waitForTimeout(300)
       expect(await page.evaluate(() => window.playerTest.state().time)).toBe(paused.time)
+      // A machine too slow to decode every frame in time (the CPU throttled 12x).
+      const cdp = await page.context().newCDPSession(page)
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 12 })
+      await page.evaluate(() => window.playerTest.seek(0))
+      const began = Date.now()
+      await page.evaluate(() => window.playerTest.play())
+      const pictures = new Set<string>()
+      for (let i = 0; i < 6; i++) {
+        await page.waitForTimeout(200)
+        pictures.add((await page.evaluate(() => window.playerTest.state())).pixels)
+      }
+      const slow = await page.evaluate(() => window.playerTest.state())
+      const elapsed = Date.now() - began
+      await page.evaluate(() => window.playerTest.pause())
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 })
+      // It moves on (the picture changes, the time advances: never frozen at the start, as a
+      // player that skipped every late frame was), and never ahead of the clock. (Behind it on a
+      // machine this slow: every frame between two keyframes is decoded whatever is shown.)
+      expect(slow.time).toBeGreaterThan(500)
+      expect(slow.time).toBeLessThanOrEqual(elapsed + 100)
+      expect(pictures.size).toBeGreaterThan(2)
       // Played to the end: stopped there.
       await page.evaluate((t) => window.playerTest.seek(t), duration - 300)
       await page.evaluate(() => window.playerTest.play())

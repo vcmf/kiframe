@@ -78,8 +78,10 @@ export type Preview =
       take: { meta: TakeMeta; events: TakeEvent[]; cursor: CursorSample[] }
       /** The take's frames.webm. */
       video: Uint8Array
-      /** The project's style, below the scene's. */
-      baseStyle: Style
+      /** The scene's style as it exports: project, scene and its output's, resolved. */
+      style: Style
+      /** The output's size (the first video output playing the scene; else the default). */
+      format: { width: number; height: number; fps: number }
     }
   | { ok: false; why: string }
 

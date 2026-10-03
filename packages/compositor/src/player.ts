@@ -6,8 +6,9 @@ import { prepare, type Prepared, sceneAt, type Style } from "./scene.ts"
 
 // The preview player (docs/OBJECT-MODEL.md §5): the export's own pieces (prepare → sceneAt →
 // drawScene over the take's decoded frames) drawn to a canvas at the wall clock, so what plays is
-// what exports. Playing decodes in one forward pass (source time only moves forward); a frame due
-// before the last one drawn is skipped, so a slow machine drops frames, never time.
+// what exports. Playing decodes in one forward pass (source time only moves forward), each next
+// frame picked when the decoder is ready for it, at the wall clock's time: a slow machine shows
+// fewer frames, never a slower (or frozen) clock.
 
 export interface PlayerSource {
   /** The take's frames.webm. */
@@ -32,6 +33,9 @@ export class Player {
   readonly #ctx: Ctx
   readonly #input: Input
   #time = 0
+  /** The time the next seek shows (the latest asked), and the seeking under way. */
+  #target: number | undefined
+  #seeking: Promise<void> | undefined
   /** Bumped by every play, pause or seek: a run that sees another one stops. */
   #run = 0
   #playing = false
@@ -61,12 +65,18 @@ export class Player {
     const ctx = canvas.getContext("2d")
     if (ctx === null) throw new Error("no 2D canvas context")
     const input = new Input({ source: new BlobSource(source.video), formats: ALL_FORMATS })
-    const track = await input.getPrimaryVideoTrack()
-    if (track === null) throw new Error("the take has no video track")
-    const first = await track.getFirstTimestamp()
-    const player = new Player(ctx, prepared, input, new CanvasSink(track, { poolSize: 2 }), first)
-    await player.seek(0)
-    return player
+    try {
+      const track = await input.getPrimaryVideoTrack()
+      if (track === null) throw new Error("the take has no video track")
+      const first = await track.getFirstTimestamp()
+      const player = new Player(ctx, prepared, input, new CanvasSink(track, { poolSize: 2 }), first)
+      await player.#show(0)
+      return player
+    } catch (error) {
+      // A take that doesn't load lets go of its decoder.
+      input.dispose()
+      throw error
+    }
   }
 
   /** Output time shown, in ms. */
@@ -84,11 +94,32 @@ export class Player {
     return () => this.#listeners.delete(listener)
   }
 
-  /** Shows the frame at an output time (stops playing). */
+  /**
+   * Shows the frame at an output time (stops playing). Seeks while one is decoding are merged: only
+   * the latest is shown next (a scrubber dragged never queues a decode per pixel). A frame that
+   * doesn't decode keeps the last one shown.
+   */
   async seek(tOut: number): Promise<void> {
-    const run = ++this.#run
+    this.#run++
     this.#setPlaying(false)
-    const t = clamp(tOut, 0, this.duration)
+    this.#target = clamp(tOut, 0, this.duration)
+    if (this.#seeking !== undefined) return this.#seeking
+    this.#seeking = (async () => {
+      try {
+        while (this.#target !== undefined) {
+          const t = this.#target
+          this.#target = undefined
+          await this.#show(t).catch(() => undefined)
+        }
+      } finally {
+        this.#seeking = undefined
+      }
+    })()
+    return this.#seeking
+  }
+
+  async #show(t: number): Promise<void> {
+    const run = this.#run
     const scene = sceneAt(this.#prepared, t)
     const frame = await this.#sink.getCanvas(this.#first + scene.sourceT / 1000)
     if (run !== this.#run) return
@@ -123,30 +154,40 @@ export class Player {
   }
 
   async #play(run: number, from: number): Promise<void> {
-    const { fps } = this.style
-    const step = 1000 / fps
-    const count = Math.max(1, Math.floor((this.duration - from) / step) + 1)
-    const outs = Array.from({ length: count }, (_, i) => Math.min(this.duration, from + i * step))
-    const scenes = outs.map((t) => sceneAt(this.#prepared, t))
+    const step = 1000 / this.style.fps
     const start = performance.now() - from
-    let i = 0
-    for await (const wrapped of this.#sink.canvasesAtTimestamps(
-      scenes.map((s) => this.#first + s.sourceT / 1000),
-    )) {
+    const duration = this.duration
+    const prepared = this.#prepared
+    const first = this.#first
+    // Each next frame chosen when the decoder asks for it: the frame of the wall clock's time (on
+    // the frame grid, always after the last one), so frames the machine can't keep up with are
+    // never asked for. The scenes go with them, computed one at a time.
+    const scenes: { t: number; scene: ReturnType<typeof sceneAt> }[] = []
+    let last = -Infinity
+    function* times(): Generator<number> {
+      for (;;) {
+        const now = Math.max(0, performance.now() - start)
+        let t = Math.max(from, Math.floor(now / step) * step)
+        if (t <= last) t = last + step
+        if (t > duration) {
+          if (last >= duration) return
+          t = duration
+        }
+        last = t
+        const scene = sceneAt(prepared, t)
+        scenes.push({ t, scene })
+        yield first + scene.sourceT / 1000
+      }
+    }
+    for await (const wrapped of this.#sink.canvasesAtTimestamps(times())) {
       if (run !== this.#run) return
-      const tOut = outs[i] ?? this.duration
-      const scene = scenes[i]
-      i++
-      // Late (the next frame is already due): skipped, the clock never waits for the decoder.
-      const next = outs[i]
-      if (next !== undefined && performance.now() - start >= next) continue
-      const wait = start + tOut - performance.now()
+      const shown = scenes.shift()
+      if (shown === undefined) continue
+      const wait = start + shown.t - performance.now()
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
       if (run !== this.#run) return
-      if (wrapped !== null && scene !== undefined) {
-        drawScene(this.#ctx, wrapped.canvas, scene, this.style)
-      }
-      this.#time = tOut
+      if (wrapped !== null) drawScene(this.#ctx, wrapped.canvas, shown.scene, this.style)
+      this.#time = shown.t
       this.#emit()
     }
     if (run === this.#run) {

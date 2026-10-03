@@ -14,24 +14,28 @@ export function Stage({ project }: { project: ProjectView }) {
   const [selected, setSelected] = useState<string | null>(null)
   const running = useChat((s) => s.running)
   const frame = useChat((s) => s.frame)
-  // A run starting shows the agent at work; ending with a scene filmed, that scene's preview.
-  const takesAtStart = useRef<Map<string, string | undefined>>(new Map())
+  // A run starting shows the agent at work; once it has ended with a scene filmed, that scene's
+  // preview (the scenes it filmed may arrive after the end: watched until the next run).
+  const run = useRef<{ takes: Map<string, string | undefined>; ended: boolean } | null>(null)
   useEffect(() => {
     if (running) {
-      takesAtStart.current = new Map(project.scenes.map((s) => [s.id, s.take]))
+      run.current = { takes: new Map(project.scenes.map((s) => [s.id, s.take])), ended: false }
       setTab("live")
-      return
+    } else if (run.current !== null) {
+      run.current.ended = true
     }
+  }, [running, project.scenes])
+  useEffect(() => {
+    const ran = run.current
+    if (ran === null || !ran.ended) return
     const filmed = project.scenes.find(
-      (s) => s.take !== undefined && takesAtStart.current.get(s.id) !== s.take,
+      (s) => s.take !== undefined && ran.takes.get(s.id) !== s.take,
     )
-    takesAtStart.current = new Map(project.scenes.map((s) => [s.id, s.take]))
-    if (filmed !== undefined) {
-      setSelected(filmed.id)
-      setTab("preview")
-    }
-    // Only a run's start or end (the scenes it filmed are read then).
-  }, [running])
+    if (filmed === undefined) return
+    run.current = null
+    setSelected(filmed.id)
+    setTab("preview")
+  }, [running, project.scenes])
   // The scene the preview shows: the one picked, else the first filmed one.
   const shown =
     project.scenes.find((s) => s.id === selected) ??
