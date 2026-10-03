@@ -997,7 +997,7 @@ export async function abandonSecretWrite(write: SecretWrite | undefined): Promis
   await write?.input.dispose().catch(() => undefined)
 }
 
-/** A secret step's target has no fallbacks and no `nth` (§3 A2). */
+/** A secret step's target has no fallbacks, no `nth` and no row (§3 A2: the page picks a row). */
 export function assertSecretTarget(target: Target, step: StepRef, secret: string): void {
   // Its locator is re-run after the write (to follow the field's blur): always the A8 grammar.
   if (isGrounded(target) && target.by === "css" && !isSafeSelector(target.selector)) {
@@ -1007,11 +1007,14 @@ export function assertSecretTarget(target: Target, step: StepRef, secret: string
       `secret "${secret}": a step typing a secret needs a simple CSS selector (${SAFE_SELECTOR_RULES})`,
     )
   }
-  if (isGrounded(target) && (target.fallbacks !== undefined || target.nth !== undefined)) {
+  if (
+    isGrounded(target) &&
+    (target.fallbacks !== undefined || target.nth !== undefined || target.in !== undefined)
+  ) {
     throw new StepError(
       step,
       "secret-refused",
-      `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
+      `secret "${secret}": a step typing a secret can't have fallbacks, nth or a row (in)`,
     )
   }
 }

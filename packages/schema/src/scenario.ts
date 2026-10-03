@@ -45,8 +45,21 @@ export const Locator = z.discriminatedUnion("by", [
 ])
 export type Locator = z.infer<typeof Locator>
 
+/**
+ * A row a target is in (Playwright's own advice for look-alikes, never a position): the one element
+ * of that role holding an element whose text is exactly `has` ("the list item that says Pay rent").
+ * Exact, never a substring: a filter must not tell whether part of a value is on the page.
+ */
+export const Scope = z.strictObject({
+  role: z.string().regex(/^[a-z]{2,40}$/, "an ARIA role name (listitem, row, article…)"),
+  has: z.string().max(200).regex(/\S/, "a row's text (not blank)"),
+})
+export type Scope = z.infer<typeof Scope>
+
 /** Fields every target can carry on top of its locator. */
 const targetExtras = {
+  /** The row it's in, for a look-alike (each row's "Delete"): the locator is looked for there. */
+  in: Scope.optional(),
   /** Natural-language intent from the chat. Used to heal the locator when it breaks. */
   intent: z.string().min(1).optional(),
   /** Alternative locators tried in order if the primary one fails. */
@@ -58,13 +71,20 @@ const targetExtras = {
 }
 
 /** A grounded target: a locator plus healing metadata. */
-export const GroundedTarget = z.discriminatedUnion("by", [
-  RoleLocator.extend(targetExtras),
-  LabelLocator.extend(targetExtras),
-  TextLocator.extend(targetExtras),
-  PlaceholderLocator.extend(targetExtras),
-  CssLocator.extend(targetExtras),
-])
+export const GroundedTarget = z
+  .discriminatedUnion("by", [
+    RoleLocator.extend(targetExtras),
+    LabelLocator.extend(targetExtras),
+    TextLocator.extend(targetExtras),
+    PlaceholderLocator.extend(targetExtras),
+    CssLocator.extend(targetExtras),
+  ])
+  // A row says which look-alike: never a position on top of it, nor a fallback looked for outside it
+  // (a missing row would let a fallback act in another row).
+  .refine((t) => t.in === undefined || (t.nth === undefined && t.fallbacks === undefined), {
+    message: "a target `in` a row takes no `nth` and no `fallbacks`: the row says which one",
+    path: ["in"],
+  })
 export type GroundedTarget = z.infer<typeof GroundedTarget>
 
 /** A target the agent hasn't grounded yet: only the intent is known (scene status `draft`). */
@@ -275,11 +295,12 @@ export function typesSecret(a: { action: string; value?: unknown }): boolean {
  */
 const secretTargetIsExact = (s: { action: string; value?: unknown; target?: unknown }) => {
   if (!typesSecret(s) || typeof s.target !== "object" || s.target === null) return true
-  const t = s.target as { fallbacks?: unknown; nth?: unknown }
-  return t.fallbacks === undefined && t.nth === undefined
+  const t = s.target as { fallbacks?: unknown; nth?: unknown; in?: unknown }
+  // A row is chosen by text the page controls: another row could come to hold it (§3 A2).
+  return t.fallbacks === undefined && t.nth === undefined && t.in === undefined
 }
 const secretTargetError = {
-  message: "a step typing a secret needs one exact target: no fallbacks, no `nth`",
+  message: "a step typing a secret needs one exact target: no fallbacks, no `nth`, no row (`in`)",
   path: ["target"],
 }
 

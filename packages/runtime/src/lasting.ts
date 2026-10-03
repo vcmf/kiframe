@@ -1,13 +1,13 @@
 // A lasting locator for an element the agent picked on the live page (a snapshot's ref): the first
 // candidate, in the order the agent is told to prefer (role and name, placeholder, text, an id
 // written by hand, a role alone), that finds exactly that element and nothing else among the
-// visible ones, through the rules a replay resolves with. Never a place among look-alikes (`nth`):
-// Playwright's own advice ("may click on an element you did not intend" once the page changes);
-// a look-alike is refused, said why.
-import type { Locator as SchemaLocator } from "@kiframe/schema"
+// visible ones, through the rules a replay resolves with. A look-alike (each row's "Delete") is
+// told apart by its row (`in`: the row holding a text only it holds), Playwright's own advice;
+// never by a place among look-alikes (`nth`), which a changed page turns into another element.
+import type { Locator as SchemaLocator, Scope } from "@kiframe/schema"
 import type { ElementHandle, Page } from "playwright"
 import { exactNamesFor } from "./secret-state.ts"
-import { toPlaywright, visibleOnly } from "./targets.ts"
+import { rowOf, toPlaywright, visibleOnly } from "./targets.ts"
 
 /** What the snapshot said of the element: its role, accessible name, and its own text if any. */
 export interface ElementHint {
@@ -16,8 +16,11 @@ export interface ElementHint {
   text?: string | undefined
 }
 
-/** A locator that finds the element alone, or why there's none. */
-export type Lasting = { locator: SchemaLocator } | { error: string }
+/** A locator that finds the element alone (in its row, for a look-alike), or why there's none. */
+export type Lasting = { locator: SchemaLocator; in?: Scope } | { error: string }
+
+/** Roles of rows a look-alike is told apart by (the nearest one holding it). */
+const ROW_ROLES = ["listitem", "row", "article", "option", "treeitem"] as const
 
 /** Roles a role locator can't usefully name (Playwright matches none of them by role). */
 const NO_ROLE_LOCATOR = new Set(["generic", "none", "presentation", "text", "paragraph"])
@@ -37,6 +40,8 @@ export async function lastingLocator(
   hint: ElementHint,
   /** Whether a string may go into the locator (a secret value never does: the studio's scrubber). */
   allowed: (text: string) => boolean,
+  /** Whether a row (`in`) may tell a look-alike apart (where the step takes a target): asked only for a look-alike. */
+  options: { rows: boolean | (() => boolean) } = { rows: true },
 ): Promise<Lasting> {
   const frame = await element.ownerFrame().catch(() => null)
   const facts =
@@ -127,15 +132,141 @@ export async function lastingLocator(
     lookAlike = true
   }
   if (lookAlike) {
+    if (!(typeof options.rows === "function" ? options.rows() : options.rows)) {
+      return {
+        error:
+          "several elements look just like it (here a locator can't name its row): point at a unique element, or write its locator by hand",
+      }
+    }
+    const inRow = await inItsRow(page, element, usable, allowed, exact)
+    if (inRow.found !== undefined) return inRow.found
     return {
-      error:
-        "several elements look just like it (no locator finds it alone): write its locator by hand from the snapshot",
+      error: inRow.row
+        ? "several elements look just like it, and no row of it holds a name only that row holds: write its locator by hand from the snapshot"
+        : "several elements look just like it, and it sits in no row (a list item, a table row…): write its locator by hand from the snapshot",
     }
   }
   return {
     error:
       "no lasting locator finds it (no role and name, placeholder, text or stable id): write one from the snapshot",
   }
+}
+
+/** Words that say a time or a date: never a row's lasting name. */
+const WHEN =
+  /\b(ago|now|today|tonight|yesterday|tomorrow|due|last|next|this|week|weeks|weekend|month|year|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|am|pm)\b/i
+
+/**
+ * Whether a text names a row lastingly (a title: "Pay rent"), never a position or a passing value:
+ * a row number, an id, a count, a time, a date. On the safe side: a text with a time or date word,
+ * or a number without two words of its own ("Q4 Launch plan" is a name, "12 items" isn't), isn't
+ * one (refused, the agent writes the locator); a passing value taken for a name would act in
+ * another row later.
+ */
+export function namesARow(text: string): boolean {
+  if (!/\p{L}{2}/u.test(text)) return false // no word: a number, an id, a symbol
+  if (WHEN.test(text)) return false
+  if (/\d/.test(text) && (text.match(/\p{L}{4,}/gu) ?? []).length < 2) return false
+  return true
+}
+
+/**
+ * A look-alike told apart by its row: the nearest row-like element holding it (a list item, a table
+ * row…, whichever role is nearest), a name-like text in that row only that row holds (exactly; never
+ * a field's value nor a secret; a heading's or a link's first), and a candidate that finds the
+ * element alone in it. Undefined `row`: it sits in no row at all.
+ */
+async function inItsRow(
+  page: Page,
+  element: ElementHandle<Element>,
+  usable: SchemaLocator[],
+  allowed: (text: string) => boolean,
+  exact: boolean,
+): Promise<{ found: { locator: SchemaLocator; in: Scope } | undefined; row: boolean }> {
+  // The nearest row of each role holding the element (its depth), and its texts, titles first.
+  const nearest = await Promise.all(
+    ROW_ROLES.map((role) =>
+      page
+        .getByRole(role)
+        .evaluateAll((rows, target) => {
+          const holding = (rows as Element[]).filter((r) => r.contains(target))
+          const row = holding.find((r) => !holding.some((o) => o !== r && r.contains(o)))
+          if (row === undefined) return undefined
+          let depth = 0
+          for (let e: Element | null = row; e !== null; e = e.parentElement) depth += 1
+          // Inside the row (a row's `has` is an element in it, never the row itself), rendered (a
+          // tooltip or a closed menu's text isn't there at replay), never a field's value.
+          const skip = [
+            "INPUT",
+            "TEXTAREA",
+            "SELECT",
+            "OPTION",
+            "SCRIPT",
+            "STYLE",
+            "NOSCRIPT",
+            "TEMPLATE",
+          ]
+          const leaves = [...row.querySelectorAll("*")].filter(
+            (e) =>
+              !skip.includes(e.tagName) &&
+              !e.contains(target) &&
+              !target.contains(e) &&
+              e.checkVisibility({ visibilityProperty: true, opacityProperty: true }) &&
+              [...e.childNodes].some(
+                (n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== "",
+              ),
+          )
+          // A title first (a heading, a link, bold text: inside the row, not a link around it).
+          const title = (e: Element) => {
+            const t = e.closest("h1,h2,h3,h4,h5,h6,a,strong,b,[role=heading],[role=link]")
+            return t !== null && row.contains(t) && t !== row
+          }
+          // Titles first, then the longest texts (a name is longer than a "Draft" badge).
+          const byLength = (list: Element[]) =>
+            list.map((e) => e.textContent ?? "").sort((x, y) => y.trim().length - x.trim().length)
+          const texts = [
+            ...byLength(leaves.filter(title)),
+            ...byLength(leaves.filter((e) => !title(e))),
+          ]
+          return { depth, texts }
+        }, element)
+        .then((r) => (r === undefined ? undefined : { role, ...r }))
+        .catch((error: unknown) => {
+          if (isPageGone(error)) throw error
+          return undefined
+        }),
+    ),
+  )
+  const rows = nearest
+    .filter((r): r is NonNullable<typeof r> => r !== undefined)
+    .sort((a, b) => b.depth - a.depth)
+  for (const { role, texts } of rows) {
+    for (const has of new Set(texts.map(collapse))) {
+      if (has === "" || has.length > TEXT_MAX || !allowed(has) || !namesARow(has)) continue
+      const scope: Scope = { role, has }
+      const found = await rowOf(page, scope)
+      // A navigation mid-check is the page changing, never "no row".
+      if ("count" in found && found.count === undefined) throw new PageChanged()
+      if (!("row" in found)) continue
+      const row = found.row
+      const holds = await row
+        .evaluate((r, target) => r.contains(target), element)
+        .catch((error: unknown) => {
+          if (isPageGone(error)) throw error
+          return false
+        })
+      if (!holds) continue
+      // The element alone in its row, under both exact-names rules (as a replay may have them).
+      for (const locator of usable) {
+        const now = await indexAmong(page, locator, element, exact, row)
+        const fresh = exact ? await indexAmong(page, locator, element, false, row) : now
+        if (now?.count === 1 && now.index === 0 && fresh?.count === 1 && fresh.index === 0) {
+          return { found: { locator, in: scope }, row: true }
+        }
+      }
+    }
+  }
+  return { found: undefined, row: rows.length > 0 }
 }
 
 /** Every string a locator would carry. */
@@ -162,9 +293,10 @@ async function indexAmong(
   locator: SchemaLocator,
   element: ElementHandle<Element>,
   exact: boolean,
+  within?: Parameters<typeof toPlaywright>[3],
 ): Promise<{ index: number; count: number } | undefined> {
   try {
-    return await visibleOnly(toPlaywright(page, locator, exact)).evaluateAll(
+    return await visibleOnly(toPlaywright(page, locator, exact, within)).evaluateAll(
       (els, target) => ({ index: (els as Element[]).indexOf(target), count: els.length }),
       element,
     )
@@ -177,8 +309,17 @@ async function indexAmong(
   }
 }
 
+/** The page navigated while a locator was being found (said as the page changing). */
+export class PageChanged extends Error {
+  constructor() {
+    super("the page navigated while it was read")
+    this.name = "PageChanged"
+  }
+}
+
 /** An error that says the page or its document went away (never a locator's own fault). */
 export function isPageGone(error: unknown): boolean {
+  if (error instanceof PageChanged) return true
   return /Execution context was destroyed|Target page, context or browser has been closed|frame was detached/i.test(
     error instanceof Error ? error.message : String(error),
   )

@@ -13,13 +13,14 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
     forms: ["{ id: open, action: goto, url: /projects }"],
   },
   click: {
-    what: "click an element; `at` clicks at a point of it (fractions of its box: a canvas, a map)",
+    what: "click an element; `at` clicks at a point of it (fractions of its box: a canvas, a map); a look-alike (each row's Delete) by its row: `in: { role, has }`, the row holding that exact text",
     forms: [
       "{ id: open-new, action: click, target: <locator> }",
       "{ id: menu, action: click, target: <locator>, button: right }",
       "{ id: edit, action: click, target: <locator>, count: 2 }",
       "{ id: add, action: click, target: <locator>, modifiers: [Shift] }",
       "{ id: dot, action: click, target: <locator>, at: { x: 0.25, y: 0.6 } }",
+      '{ id: remove, action: click, target: { by: role, role: button, name: Delete, in: { role: listitem, has: "Pay rent" } } }',
     ],
   },
   hover: {

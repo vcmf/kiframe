@@ -43,6 +43,10 @@ presets:
       /one exact target/,
     )
     expect(step("{ by: label, name: Password, nth: 0 }")).toThrow(/one exact target/)
+    // A row is picked by text the page controls: another row could come to hold it.
+    expect(step("{ by: label, name: Password, in: { role: row, has: Prod } }")).toThrow(
+      /one exact target/,
+    )
     expect(step(`{ intent: "the password" }`)).not.toThrow()
     expect(step(`{ by: label, name: Password, intent: "the password" }`)).not.toThrow()
   })

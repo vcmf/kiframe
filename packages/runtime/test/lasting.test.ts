@@ -1,6 +1,6 @@
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { type ElementHint, lastingLocator } from "../src/index.ts"
+import { type ElementHint, lastingLocator, namesARow } from "../src/index.ts"
 
 let browser: Browser
 let page: Page
@@ -24,6 +24,15 @@ beforeEach(async () => {
     <menu><button>Delete</button></menu>
     <section><button id="archive">Archive</button><button>Archive</button></section>
     <input type="checkbox">
+    <ul class="todo"><li><span>Pay rent</span> <button>Remove</button></li>
+      <li><span>Call mom</span> <button>Remove</button></li></ul>
+    <table><tr><td>3</td><td>Pay rent</td><td>2 min ago</td><td><button>Drop</button></td></tr>
+      <tr><td>4</td><td>Call mom</td><td>5 min ago</td><td><button>Drop</button></td></tr></table>
+    <div class="pair"><button>Share</button><button>Share</button></div>
+    <table class="status"><tr><td>Draft</td><td>Quarterly planning</td><td><button>Edit</button></td></tr>
+      <tr><td>Live</td><td>Hiring pipeline</td><td><button>Edit</button></td></tr></table>
+    <ul class="tips"><li><span hidden>Tip one</span><span>Alpha</span> <button>Open</button></li>
+      <li><span hidden>Tip two</span><span>Beta</span> <button>Open</button></li></ul>
     <a href="#c" class="card-link"><h3>Card title</h3><p>Some description</p></a>
     <ol><li>Buy milk</li><li>Item 12</li><li>Say <span style="display:none">x</span>hi</li></ol>`)
   return () => page.close()
@@ -44,6 +53,75 @@ describe("a lasting locator for an element the agent pointed at", () => {
     expect(await lasting("button", { role: "button", name: "Save" })).toEqual({
       locator: { by: "role", role: "button", name: "Save", exact: true },
     })
+  })
+
+  it("tells a look-alike apart by its row: the text only that row holds", async () => {
+    expect(
+      await lasting(".todo li:nth-child(2) button", { role: "button", name: "Remove" }),
+    ).toEqual({
+      locator: { by: "role", role: "button", name: "Remove", exact: true },
+      in: { role: "listitem", has: "Call mom" },
+    })
+    // Not where a step takes a locator alone (a condition), nor by a secret value.
+    expect(
+      await lastingLocator(
+        page,
+        await el(".todo li:nth-child(2) button"),
+        { role: "button", name: "Remove" },
+        any,
+        { rows: false },
+      ),
+    ).toEqual(error(/here a locator can't name its row/))
+    expect(
+      await lasting(
+        ".todo li:nth-child(2) button",
+        { role: "button", name: "Remove" },
+        (t) => t !== "Call mom",
+      ),
+    ).toEqual(error(/no row of it holds a name only that row holds/))
+  })
+
+  it("names a row by its name, never a row number or a time", async () => {
+    expect(await lasting("tr:nth-child(2) button", { role: "button", name: "Drop" })).toEqual({
+      locator: { by: "role", role: "button", name: "Drop", exact: true },
+      in: { role: "row", has: "Call mom" },
+    })
+    const never = ["3", "#1042", "2 min ago", "10:42", "2026-10-03", "in 5 min", "5 minutes"]
+    const alsoNever = ["Updated 3h", "Oct 3", "Mon", "12 items", "Order #1042", "just now"]
+    // Review round 3's (each passed the earlier rule).
+    const dates = ["October 3", "March 2026", "Monday", "Due Friday", "Sept 3", "Last week"]
+    // On the safe side: a number with one word of its own isn't taken as a name either.
+    const counts = ["5 mins", "12 stars", "Q4 Launch"]
+    for (const text of [...never, ...alsoNever, ...dates, ...counts]) {
+      expect(namesARow(text), text).toBe(false)
+    }
+    for (const text of ["Pay rent", "Call mom", "Q4 Launch plan", "Water plants"]) {
+      expect(namesARow(text), text).toBe(true)
+    }
+  })
+
+  it("names a row only by text that's shown (a hidden tooltip isn't there at replay)", async () => {
+    expect(await lasting(".tips li:nth-child(2) button", { role: "button", name: "Open" })).toEqual(
+      {
+        locator: { by: "role", role: "button", name: "Open", exact: true },
+        in: { role: "listitem", has: "Beta" },
+      },
+    )
+  })
+
+  it("names a row by its name before a status (the longest text first)", async () => {
+    expect(
+      await lasting(".status tr:nth-child(1) button", { role: "button", name: "Edit" }),
+    ).toEqual({
+      locator: { by: "role", role: "button", name: "Edit", exact: true },
+      in: { role: "row", has: "Quarterly planning" },
+    })
+  })
+
+  it("says when a look-alike sits in no row", async () => {
+    expect(await lasting(".pair button:nth-child(2)", { role: "button", name: "Share" })).toEqual(
+      error(/it sits in no row/),
+    )
   })
 
   it("never gives a place among look-alikes (refused, said why)", async () => {

@@ -346,6 +346,38 @@ const pages: Record<string, string> = {
     <a href="#x">/x/</a>
     <ul id="todo"><li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button></li>
       <li><input type="checkbox"> <span>Water plants</span> <button>Delete</button></li></ul>`,
+  // A todo list: each row's "Delete" a look-alike; "Shuffle" reverses the rows (a reorder);
+  // "Twin" adds a second "Pay rent" row. Deleting logs the row's text.
+  "/todo": `<!doctype html><title>Todo</title>
+    <ul id="list">
+      <li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button><input type="file" hidden></li>
+      <li><input type="checkbox"> <span>Water plants</span> <button>Delete</button><input type="file" hidden></li>
+      <li><input type="checkbox"> <span>Call mom</span> <button>Delete</button><input type="file" hidden></li>
+    </ul>
+    <ul role="tree"><li role="treeitem"><span>src</span> <button>Rename</button>
+      <ul role="group"><li role="treeitem"><span>index.ts</span> <button>Rename</button></li></ul></li></ul>
+    <button id="shuffle">Shuffle</button><button id="twin">Twin</button>
+    <script>
+      window.deleted = []
+      window.uploaded = []
+      window.renamed = []
+      document.querySelectorAll("#list input[type=file]").forEach((input) =>
+        input.addEventListener("change", () =>
+          window.uploaded.push(input.closest("li").querySelector("span").textContent + ": " + input.files[0].name)))
+      document.querySelectorAll("[role=treeitem] > button").forEach((b) =>
+        b.addEventListener("click", () => window.renamed.push(b.parentElement.querySelector("span").textContent)))
+      const list = document.getElementById("list")
+      list.addEventListener("click", (e) => {
+        if (e.target.textContent !== "Delete") return
+        const li = e.target.closest("li")
+        window.deleted.push(li.querySelector("span").textContent)
+        li.remove()
+      })
+      document.getElementById("shuffle").onclick = () =>
+        [...list.children].reverse().forEach((li) => list.appendChild(li))
+      document.getElementById("twin").onclick = () =>
+        list.appendChild(list.firstElementChild.cloneNode(true))
+    </script>`,
   // A button of the page and one inside an iframe (a snapshot names both).
   "/framed": `<!doctype html><title>Framed</title><button>Outside</button>
     <iframe srcdoc="<button>Inside</button>"></iframe>`,

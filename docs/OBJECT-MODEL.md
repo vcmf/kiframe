@@ -272,6 +272,11 @@ steps:
     caption: "Give it a name."
     instruction: "Type your project's name in the **Project name** field."
     camera: target                             # frame the field (§2b)
+  - id: remove-old                             # a look-alike (each row has one): told apart by its row,
+    action: click                              # the list item holding exactly "Q3 Launch" (never `nth`:
+    target:                                    # a reordered list turns a position into another row)
+      { by: role, role: button, name: "Delete", in: { role: listitem, has: "Q3 Launch" } }
+    risky: true
   - id: done
     action: waitFor                            # like VHS `Wait`: a condition, not a sleep
     until: { text: "Project created" }

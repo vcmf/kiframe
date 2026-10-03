@@ -14,6 +14,7 @@ import {
   countUnderRule,
   isOnScreen,
   resolveTarget,
+  rowOf,
   stripExtras,
   toPlaywright,
   viewportOf,
@@ -458,12 +459,23 @@ async function drag(
 async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
   const locator = stripExtras(target)
+  // In its row, if it names one (exactly one row, or no file input here).
+  let within: Locator | undefined
+  if (target.in !== undefined) {
+    const found = await rowOf(ctx.page, target.in)
+    if (!("row" in found)) return undefined
+    within = found.row
+  }
   const fileInput = (l: Locator) => l.and(ctx.page.locator("input[type=file]"))
   // Counted through the one helper (§3 A8), hidden matches included: a hidden file input.
   // (Errors surface: countUnderRule already reads a navigation as no count.)
-  const r = await countUnderRule(ctx.page, locator, undefined, { refine: fileInput, hidden: true })
+  const r = await countUnderRule(ctx.page, locator, undefined, {
+    refine: fileInput,
+    hidden: true,
+    ...(within && { within }),
+  })
   if (r.count !== 1) return undefined
-  const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact))
+  const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact, within))
   const visible = await candidates.isVisible().catch(() => true)
   return visible ? undefined : candidates
 }

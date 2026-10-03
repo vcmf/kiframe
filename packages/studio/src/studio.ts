@@ -30,6 +30,7 @@ import {
   type ProjectConfig,
   type Scenario,
   SceneId,
+  typesSecret,
   SetupItem,
   Step,
 } from "@kiframe/schema"
@@ -416,7 +417,7 @@ export class Studio {
     }
     const refused = this.#refusedNow(refs)
     if (refused !== undefined) return failed(refused)
-    const written = await this.#written(raw, refs, signal)
+    const written = await this.#written(raw, refs, part, signal)
     if ("error" in written) return failed(written.error)
     const result = await this.#runItem(written.value, scene, signal, part)
     // Only a step that worked is one to write (a failed one's locator isn't confirmed).
@@ -429,12 +430,13 @@ export class Studio {
 
   /**
    * The item with each ref replaced by its lasting locator: one that finds the very element the
-   * agent pointed at and nothing else, checked right before the step runs (never a place among
-   * look-alikes: refused, said why).
+   * agent pointed at and nothing else, checked right before the step runs; a look-alike in its row
+   * (`in`), where the item takes one (never a place among look-alikes).
    */
   async #written(
     raw: unknown,
     refs: RefAt[],
+    part: ScenarioPart,
     signal: AbortSignal,
   ): Promise<{ value: unknown } | { error: string }> {
     const page = await this.livePage()
@@ -455,7 +457,11 @@ export class Studio {
       if (hint === undefined) continue // never: #refused said it's there
       // A page that moves while it's read (a redirect finishing): said as such; anything else with
       // its own words.
-      const lasting = await lastingOfRef(page, at.ref, hint, allowed).catch(
+      // A row may tell a look-alike apart only where the item's own schema takes one (a target:
+      // never a condition's locator).
+      const item = value
+      const rows = () => takesRow(item, at.path, part)
+      const lasting = await lastingOfRef(page, at.ref, hint, allowed, rows).catch(
         (error: unknown): Lasting => ({
           error: isPageGone(error)
             ? "the page changed while it was read: take a new snapshot"
@@ -463,7 +469,11 @@ export class Studio {
         }),
       )
       if ("error" in lasting) return { error: `ref ${at.ref}: ${lasting.error}` }
-      value = withAt(value, at.path, lasting.locator)
+      value = withAt(
+        value,
+        at.path,
+        lasting.in === undefined ? lasting.locator : { ...lasting.locator, in: lasting.in },
+      )
     }
     return { value }
   }
@@ -795,6 +805,7 @@ async function lastingOfRef(
   ref: string,
   hint: ElementHint,
   allowed: (text: string) => boolean,
+  rows: () => boolean,
 ): Promise<Lasting> {
   // As the page is now, without waiting: `elementHandle()` waits for something on some apps (1.6 s
   // on Cal.com's login page: FAILURE-CATALOGUE #21). A ref names an element, never a text node.
@@ -807,10 +818,47 @@ async function lastingOfRef(
     if (handle === undefined) {
       return { error: "it isn't on the page anymore (the page changed): take a new snapshot" }
     }
-    return await lastingLocator(page, handle, hint, allowed)
+    return await lastingLocator(page, handle, hint, allowed, { rows })
   } finally {
     await Promise.all(handles.map((h) => h.dispose().catch(() => undefined)))
   }
+}
+
+/**
+ * Whether the item's own schema takes a target in a row at a ref's place: a probe target with `in`
+ * put there adds no issue at that place (a step's target does; a condition's locator doesn't).
+ */
+function takesRow(item: unknown, path: (string | number)[], part: ScenarioPart): boolean {
+  // A step typing a secret: its target never has a row (§3 A2), whatever else the item says (a
+  // refinement doesn't run while another field is wrong).
+  const r = item as { action?: unknown; value?: unknown }
+  if (
+    typeof r.action === "string" &&
+    typesSecret({ ...r, action: r.action }) &&
+    path[0] === "target"
+  ) {
+    return false
+  }
+  const probe = { by: "role", role: "button", in: { role: "listitem", has: "x" } }
+  const plain = { by: "role", role: "button" }
+  const key = (p: PropertyKey[]) => p.map(String).join(".")
+  const before = new Set(issuePaths(withAt(item, path, plain), part).map(key))
+  return !issuePaths(withAt(item, path, probe), part).some(
+    (p) => !before.has(key(p)) && overlaps(p, path),
+  )
+}
+
+/** The paths of an item's schema issues, under the schema of the part it's for (as it'll run). */
+function issuePaths(item: unknown, part: ScenarioPart): PropertyKey[][] {
+  const r = item as Record<string, unknown>
+  const schema = part === "teardown" ? Action : part === "steps" && "id" in r ? Step : SetupItem
+  return schema.safeParse(item).error?.issues.map((i) => i.path) ?? []
+}
+
+/** Whether one path is within the other (an issue at a ref's place, or around it). */
+function overlaps(a: PropertyKey[], b: PropertyKey[]): boolean {
+  const n = Math.min(a.length, b.length)
+  return a.slice(0, n).every((k, i) => String(k) === String(b[i]))
 }
 
 /** A failed outcome. */
