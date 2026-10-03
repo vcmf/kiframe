@@ -343,7 +343,9 @@ const pages: Record<string, string> = {
     <label>Email <input value="a@b.c"></label>
     <ol class="done"><li>Done</li></ol><style>.done li::before { content: "* " }</style>
     <button onclick="document.querySelector('li').textContent = 'Buy eggs'">Reorder</button>
-    <a href="#x">/x/</a>`,
+    <a href="#x">/x/</a>
+    <ul id="todo"><li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button></li></ul>
+    <button onclick="document.querySelector('#todo span').textContent = 'Call mom'">Rename</button>`,
   // A button of the page and one inside an iframe (a snapshot names both).
   "/framed": `<!doctype html><title>Framed</title><button>Outside</button>
     <iframe srcdoc="<button>Inside</button>"></iframe>`,

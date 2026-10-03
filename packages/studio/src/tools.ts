@@ -96,7 +96,14 @@ const runSteps = defineTool({
       return { error: "nothing ran: a YAML alias refers to itself (or it nests too deep)" }
     const notStep = items.findIndex((item) => typeof item !== "object" || item === null)
     if (notStep >= 0) return { error: `nothing ran: item ${notStep + 1} isn't a step (an object)` }
-    const refused = await studio.refusedRefs(items)
+    let refused: string | undefined
+    try {
+      refused = await studio.refusedRefs(items, signal)
+    } catch (error) {
+      // A stop ends the call; a page that closed or moved while the refs were checked is said.
+      if (signal.aborted) throw error
+      refused = `the refs couldn't be checked: ${error instanceof Error ? error.message : String(error)}`
+    }
     if (refused !== undefined) return { error: `nothing ran: ${refused}` }
     return runAll(items, scene, part, studio, signal)
   },

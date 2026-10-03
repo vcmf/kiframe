@@ -24,6 +24,7 @@ beforeEach(async () => {
     <menu><button>Delete</button></menu>
     <section><button id="archive">Archive</button><button>Archive</button></section>
     <input type="checkbox">
+    <a href="#c" class="card-link"><h3>Card title</h3><p>Some description</p></a>
     <ol><li>Buy milk</li><li>Item 12</li><li>Say <span style="display:none">x</span>hi</li></ol>`)
   return () => page.close()
 })
@@ -85,6 +86,12 @@ describe("a lasting locator for an element the agent pointed at", () => {
     // The snapshot reads "Say hi" (hidden parts left out); getByText matches the DOM's text.
     expect(await lasting("ol li:nth-child(3)", { role: "listitem", text: "Say hi" })).toEqual({
       locator: { by: "text", text: "Say xhi", exact: true },
+    })
+  })
+
+  it("names a link by its content when the snapshot left the name out (a card)", async () => {
+    expect(await lasting(".card-link", { role: "link" })).toEqual({
+      locator: { by: "role", role: "link", name: "Card title Some description", exact: true },
     })
   })
 

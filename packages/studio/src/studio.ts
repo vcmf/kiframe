@@ -98,7 +98,17 @@ export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
   /** The last snapshot: its page, and what it said of each ref (any new snapshot replaces it). */
-  #snapshot: { page: Page; doc: number; refs: Map<string, SnapshotNode> } | undefined
+  #snapshot:
+    | {
+        page: Page
+        /** What it was of (the page's body, or the agent's region): a ref is checked there again. */
+        root: ReturnType<Page["locator"]>
+        doc: number
+        refs: Map<string, SnapshotNode>
+      }
+    | undefined
+  /** The fresh snapshot a batch's refs were just checked in (its first step's, nothing between). */
+  #checked: Map<string, SnapshotNode> | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
   /** The live page being opened (one at a time: a second caller waits for it). */
@@ -221,6 +231,7 @@ export class Studio {
   async snapshot(within?: unknown): Promise<StepResult> {
     // Its refs are gone whatever this one gives (as Playwright's are).
     this.#snapshot = undefined
+    this.#checked = undefined
     const page = await this.livePage()
     let root = page.locator("body")
     if (within !== undefined) {
@@ -233,9 +244,14 @@ export class Studio {
         // A selector the secrets rules refuse (SECRETS-DESIGN §3 A8): the agent gets the reason.
         return failed(`refused \`within\` locator: ${String(e)}`)
       }
-      if ((await root.count().catch(() => 0)) === 0) {
+      // A region still showing up (a dialog animating in) is waited for, as a snapshot did.
+      const shown = await root
+        .waitFor({ state: "visible", timeout: 5000 })
+        .then(() => true)
+        .catch(() => false)
+      if (!shown) {
         return failed(
-          "no visible element matches the `within` locator now: snapshot the page, or another region",
+          "no visible element matches the `within` locator: snapshot the page, or another region",
         )
       }
     }
@@ -247,7 +263,7 @@ export class Studio {
       text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
       const refs = refsOf(text)
       if (doc !== undefined && doc === (await documentOf(page)) && refs !== undefined) {
-        this.#snapshot = { page, doc, refs }
+        this.#snapshot = { page, root, doc, refs }
       }
     } catch (e) {
       return failed(`snapshot failed: ${this.scrub(String(e))}`)
@@ -258,23 +274,31 @@ export class Studio {
       scrubbed.length > SNAPSHOT_MAX
         ? `${scrubbed.slice(0, SNAPSHOT_MAX)}\n… (cut: ${scrubbed.length} chars; use \`within\` to look at a region)`
         : scrubbed
-    return { ok: true, text: `url: ${this.#where(page.url())}\n${cut}` }
+    // Refs it can't vouch for (the page loaded a new document while it was taken) are said so.
+    const unusable =
+      this.#snapshot === undefined
+        ? "\n(the page was changing as this was taken: its refs can't be used; snapshot again to point at them)"
+        : ""
+    return { ok: true, text: `url: ${this.#where(page.url())}${unusable}\n${cut}` }
   }
 
   /**
    * Why the refs in these items can't be used at all, checked before any of them runs, each against
    * a fresh snapshot of the page (in Playwright's own model): see `#refusedNow` and `#refused`.
    */
-  async refusedRefs(items: unknown): Promise<string | undefined> {
+  async refusedRefs(items: unknown, signal: AbortSignal): Promise<string | undefined> {
+    this.#checked = undefined
     const refs = refsAt(items)
     const now = this.#refusedNow(refs)
     if (now !== undefined || refs.length === 0) return now
-    const fresh = await this.#fresh(await this.livePage(), refs)
+    const fresh = await this.#fresh(await this.livePage(), refs, signal)
     if ("error" in fresh) return fresh.error
     for (const { ref } of refs) {
       const why = this.#refused(ref, fresh.nodes)
       if (why !== undefined) return `ref ${ref}: ${why}`
     }
+    // The first step runs next, nothing in between: its refs are checked in this very snapshot.
+    this.#checked = fresh.nodes
     return undefined
   }
 
@@ -303,9 +327,12 @@ export class Studio {
   async #fresh(
     page: Page,
     refs: RefAt[],
+    signal: AbortSignal,
   ): Promise<{ nodes: Map<string, SnapshotNode> } | { error: string }> {
     const deadline = Date.now() + 1500
+    const root = this.#snapshot?.root
     for (;;) {
+      signal.throwIfAborted()
       const doc = await documentOf(page)
       if (doc === undefined || doc !== this.#snapshot?.doc) {
         return {
@@ -313,20 +340,26 @@ export class Studio {
             "the page loaded a new document since the snapshot (a navigation or a reload): take a new snapshot",
         }
       }
+      // What the agent's snapshot was of (its region: a ref's place in it is part of what it is).
+      if (root === undefined || (await root.count().catch(() => 0)) === 0) {
+        return {
+          error: "the region of the snapshot isn't on the page anymore: take a new snapshot",
+        }
+      }
       let text: string
       try {
-        text = await page.locator("body").ariaSnapshot({ timeout: 5000, mode: "ai" })
+        text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
       } catch {
         return {
           error:
-            "the page couldn't be checked against the snapshot (too large or busy): snapshot `within` a region, then point at its refs",
+            "the page couldn't be checked against the snapshot (too large or busy): snapshot `within` a smaller region, then point at its refs",
         }
       }
       const nodes = refsOf(text)
       if (nodes === undefined) return { error: "the page's snapshot couldn't be read: try again" }
       if ((await documentOf(page)) !== doc) continue
       if (refs.every((r) => nodes.has(r.ref)) || Date.now() > deadline) return { nodes }
-      await page.waitForTimeout(200)
+      await new Promise((resolve) => setTimeout(resolve, 200))
     }
   }
 
@@ -362,10 +395,13 @@ export class Studio {
     if (isCyclic(raw))
       return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
     const refs = refsAt(raw)
-    if (refs.length === 0) return this.#runItem(raw, scene, signal, part)
+    if (refs.length === 0) {
+      this.#checked = undefined
+      return this.#runItem(raw, scene, signal, part)
+    }
     const refused = this.#refusedNow(refs)
     if (refused !== undefined) return failed(refused)
-    const written = await this.#written(raw, refs, part)
+    const written = await this.#written(raw, refs, part, signal)
     if ("error" in written) return failed(written.error)
     const result = await this.#runItem(written.value, scene, signal, part)
     // Only a step that worked is one to write (a failed one's locator isn't confirmed).
@@ -384,11 +420,14 @@ export class Studio {
     raw: unknown,
     refs: RefAt[],
     part: ScenarioPart,
+    signal: AbortSignal,
   ): Promise<{ value: unknown } | { error: string }> {
     const page = await this.livePage()
     // The page as it is right now (the steps before changed it): each ref checked in a fresh
     // snapshot, and resolved against it (no other snapshot in between: it'd replace Playwright's refs).
-    const fresh = await this.#fresh(page, refs)
+    const checked = this.#checked
+    this.#checked = undefined
+    const fresh = checked !== undefined ? { nodes: checked } : await this.#fresh(page, refs, signal)
     if ("error" in fresh) return { error: `ref ${refs[0]?.ref ?? ""}: ${fresh.error}` }
     // Built now: a value typed by the step before is a known value by this one.
     const scrub = this.scrubber()

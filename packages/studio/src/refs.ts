@@ -2,7 +2,7 @@
 // takes a locator), and the studio writes the lasting locator for it (runtime `lastingLocator`)
 // right before the step runs. A ref lives on the snapshotted page only: a scene's YAML never holds
 // one.
-import { type ElementHint, VALUE_ROLES } from "@kiframe/runtime"
+import { collapse as collapseText, type ElementHint, VALUE_ROLES } from "@kiframe/runtime"
 import { parse as parseYaml, stringify } from "yaml"
 
 /** A ref as the snapshot writes it: `e12`, or `f1e12` (a frame's: after a navigation, or an iframe's). */
@@ -17,6 +17,12 @@ const NODE = /^([a-z]+)(?: ("(?:[^"\\]|\\.)*"|\/(?:.*\/)?))?((?: \[[^\]]*\])*)$/
 /** What a snapshot says of a ref's node, and whether it's inside an iframe (under an iframe node). */
 export interface SnapshotNode extends ElementHint {
   inFrame: boolean
+  /**
+   * The nearest ancestor that says what it is (a name or text of its own): a reused row's
+   * checkbox, or its "Delete", keeps its ref and its name while the row reads "Buy eggs" for
+   * "Buy milk"; the row tells them apart.
+   */
+  context?: string | undefined
 }
 
 /**
@@ -27,10 +33,16 @@ export interface SnapshotNode extends ElementHint {
  */
 export function refsOf(snapshot: string): Map<string, SnapshotNode> | undefined {
   const refs = new Map<string, SnapshotNode>()
-  const node = (key: string, content: unknown, inFrame: boolean): boolean => {
+  /** The node (if it's one with a ref), and what it says of itself for its children's context. */
+  const node = (
+    key: string,
+    content: unknown,
+    inFrame: boolean,
+    context: string | undefined,
+  ): { iframe: boolean; says: string | undefined } => {
     const m = NODE.exec(key)
     const ref = m?.[3] !== undefined ? /\[ref=([a-z0-9]+)\]/.exec(m[3])?.[1] : undefined
-    if (m === null || ref === undefined) return false
+    if (m === null || ref === undefined) return { iframe: false, says: undefined }
     let name: string | undefined
     try {
       const quoted = m[2]
@@ -44,30 +56,38 @@ export function refsOf(snapshot: string): Map<string, SnapshotNode> | undefined 
       name = undefined
     }
     const text = ownText(content)
+    const role = m[1] ?? ""
     refs.set(ref, {
-      role: m[1] ?? "",
+      role,
       ...(name !== undefined && { name }),
       ...(text !== undefined && { text }),
       inFrame,
+      ...(context !== undefined && { context }),
     })
-    return m[1] === "iframe"
+    // A field says what it is by its name, never its value (which steps change).
+    const own = VALUE_ROLES.has(role) ? undefined : text
+    const says =
+      name !== undefined || own !== undefined
+        ? JSON.stringify([role, name ?? "", collapse(own) ?? ""])
+        : undefined
+    return { iframe: role === "iframe", says }
   }
-  const walk = (items: unknown, inFrame: boolean) => {
+  const walk = (items: unknown, inFrame: boolean, context: string | undefined) => {
     if (!Array.isArray(items)) return
     for (const item of items as unknown[]) {
-      if (typeof item === "string") node(item, undefined, inFrame)
+      if (typeof item === "string") node(item, undefined, inFrame, context)
       else if (typeof item === "object" && item !== null) {
         for (const [key, children] of Object.entries(item)) {
           // Under an iframe node: the iframe's own elements.
-          const frame = node(key, children, inFrame)
-          walk(children, inFrame || frame)
+          const { iframe, says } = node(key, children, inFrame, context)
+          walk(children, inFrame || iframe, says ?? context)
         }
       }
     }
   }
   try {
     // Every scalar as written (`~` and `.inf` are a page's text, not null and Infinity).
-    walk(parseYaml(snapshot, { schema: "failsafe" }), false)
+    walk(parseYaml(snapshot, { schema: "failsafe" }), false, undefined)
   } catch {
     return undefined
   }
@@ -86,16 +106,21 @@ function ownText(content: unknown): string | undefined {
   return parts.length > 0 ? parts.join(" ") : undefined
 }
 
-const collapse = (text: string | undefined) => text?.replace(/\s+/g, " ").trim()
+const collapse = (text: string | undefined) => (text === undefined ? undefined : collapseText(text))
 
 /**
  * Whether a fresh snapshot's node (same document, same ref) is still the element the agent saw:
  * Playwright gives a node a new ref when its role or name changes, so its role and name are
- * checked as a backstop, and the text of a nameless node is what it is (a list row's "Buy milk"):
- * never a field's, whose text is its value (what the agent's own steps type).
+ * checked as a backstop; its context (the row it's in) must say the same; and the text of a
+ * nameless node is what it is (a list row's "Buy milk"): never a field's, whose text is its value
+ * (what the agent's own steps type).
  */
-export function sameNode(saw: ElementHint, now: ElementHint): boolean {
+type Said = Pick<SnapshotNode, "role" | "name" | "text" | "context">
+
+export function sameNode(saw: Said, now: Said): boolean {
   if (saw.role !== now.role || saw.name !== now.name) return false
+  // In the same place: what its nearest self-describing ancestor says (a row's text).
+  if (saw.context !== now.context) return false
   if (saw.name !== undefined || VALUE_ROLES.has(saw.role)) return true
   return collapse(saw.text) === collapse(now.text)
 }

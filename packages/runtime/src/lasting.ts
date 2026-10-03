@@ -30,7 +30,8 @@ export const VALUE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbut
 /** The longest visible text used as a text locator (longer is a paragraph, never a lasting one). */
 const TEXT_MAX = 80
 
-const collapse = (text: string) => text.replace(/\s+/g, " ").trim()
+/** Text as a snapshot and a text locator compare it: whitespace collapsed (one helper for both). */
+export const collapse = (text: string) => text.replace(/\s+/g, " ").trim()
 
 export async function lastingLocator(
   page: Page,
@@ -47,6 +48,8 @@ export async function lastingLocator(
           .evaluate((el) => ({
             connected: el.isConnected,
             text: el.textContent ?? "",
+            // Blocks apart ("Card title Some description", where textContent runs them together).
+            shown: el instanceof HTMLElement ? el.innerText : "",
             placeholder: el.getAttribute("placeholder") ?? "",
             id: el.id,
           }))
@@ -75,6 +78,12 @@ export async function lastingLocator(
   if (role !== undefined && hint.name) {
     candidates.push({ by: "role", role, name: hint.name, exact: true })
   }
+  // A name the snapshot left out (Playwright drops one made of the element's content: a card's
+  // link): its content as shown, checked like any candidate.
+  const shown = collapse(facts.shown)
+  if (role !== undefined && !hint.name && shown !== "" && shown.length <= TEXT_MAX) {
+    candidates.push({ by: "role", role, name: shown, exact: true })
+  }
   const placeholder = facts.placeholder.trim()
   if (placeholder !== "") candidates.push({ by: "placeholder", text: placeholder })
   // Its text as the snapshot said it (Playwright's own reading), then as the DOM has it; never a
@@ -100,8 +109,8 @@ export async function lastingLocator(
   const { exact } = await exactNamesFor(page, usable)
   const counted = await Promise.all(
     usable.map(async (locator) => {
-      const now = await indexAmong(page, locator, element, exact, true)
-      const fresh = exact ? await indexAmong(page, locator, element, false, true) : now
+      const now = await indexAmong(page, locator, element, exact)
+      const fresh = exact ? await indexAmong(page, locator, element, false) : now
       const agree =
         now !== undefined &&
         fresh !== undefined &&
@@ -141,19 +150,17 @@ function stringsOf(locator: SchemaLocator): string[] {
 }
 
 /**
- * Where the element is among a locator's matches (visible ones only, as a replay counts them, when
- * `visible`; -1: not among them), and how many; undefined: a locator the rules refuse.
+ * Where the element is among a locator's visible matches (as a replay counts them, and `nth`; -1:
+ * not among them), and how many; undefined: a locator the rules refuse.
  */
 async function indexAmong(
   page: Page,
   locator: SchemaLocator,
   element: ElementHandle<Element>,
   exact: boolean,
-  visible: boolean,
 ): Promise<{ index: number; count: number } | undefined> {
   try {
-    const all = toPlaywright(page, locator, exact)
-    return await (visible ? visibleOnly(all) : all).evaluateAll(
+    return await visibleOnly(toPlaywright(page, locator, exact)).evaluateAll(
       (els, target) => ({ index: (els as Element[]).indexOf(target), count: els.length }),
       element,
     )

@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { refsOf, sameNode, type SnapshotNode } from "../src/refs.ts"
 
+/** What a snapshot says of each ref, its context aside (see its own test). */
 const read = (snapshot: string) =>
-  Object.fromEntries(refsOf(snapshot) ?? new Map<string, SnapshotNode>())
+  Object.fromEntries(
+    [...(refsOf(snapshot) ?? new Map<string, SnapshotNode>())].map(([ref, n]) => {
+      const { context: _, ...rest } = n
+      return [ref, rest]
+    }),
+  )
 
 describe("the refs of a snapshot", () => {
   it("reads each node's role, name and own text, quoted and unquoted keys too", () => {
@@ -52,6 +58,31 @@ describe("the refs of a snapshot", () => {
       f1e3: { role: "iframe", inFrame: false },
       f2e2: { role: "button", name: "In", inFrame: true },
     })
+  })
+
+  it("says each node's place: its nearest ancestor saying what it is (a row's text)", () => {
+    const refs = refsOf(`- list [ref=e1]:
+  - listitem [ref=e2]:
+    - checkbox [ref=e3]
+    - text: Buy milk
+    - button "Delete" [ref=e4]
+  - listitem [ref=e5]:
+    - checkbox [ref=e6]
+    - text: Buy eggs`)
+    expect(refs?.get("e3")?.context).toBe(refs?.get("e4")?.context)
+    expect(refs?.get("e3")?.context).toBeDefined()
+    expect(refs?.get("e3")?.context).not.toBe(refs?.get("e6")?.context)
+    // The row re-rendered with other content: its checkbox and Delete keep refs, not their place.
+    const now = refsOf(`- list [ref=e1]:
+  - listitem [ref=e2]:
+    - checkbox [ref=e3]
+    - text: Buy eggs
+    - button "Delete" [ref=e4]`)
+    for (const ref of ["e3", "e4"]) {
+      const saw = refs?.get(ref)
+      const is = now?.get(ref)
+      expect(saw !== undefined && is !== undefined && sameNode(saw, is), ref).toBe(false)
+    }
   })
 
   it("keeps a node's text as written (never YAML's null or Infinity)", () => {

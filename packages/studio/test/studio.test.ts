@@ -739,6 +739,20 @@ presets:
     ).toEqual({
       error: expect.stringMatching(/^step 2 ref \S+: it changed since the snapshot/) as unknown,
     })
+    // A row re-rendered with other content: its nameless checkbox and its "Delete" keep their refs
+    // (same role, same name), not their place: refused.
+    const todo = (await tool("snapshot").run({}, studio, never)) as string
+    const [box, del, rename] = [
+      refOf(todo, /checkbox/),
+      refOf(todo, /button "Delete"/),
+      refOf(todo, /button "Rename"/),
+    ]
+    expect(await step({ id: "rn", action: "click", target: { ref: rename } })).toMatch(/^ok/)
+    for (const ref of [box, del]) {
+      expect(await step({ id: "x", action: "click", target: { ref } }), ref).toEqual({
+        error: expect.stringMatching(/it changed since the snapshot/) as unknown,
+      })
+    }
     // A reload: a new document, its refs numbered again from e1 (whatever the old ref names now).
     await step({ id: "again", action: "goto", url: "/rows" })
     expect(await step({ id: "d2", action: "hover", target: { ref: done } })).toEqual({
