@@ -33,6 +33,7 @@ const TOOL_ICONS: Record<string, ReactNode> = {
   list_scenes: <ListBullets size={15} />,
   snapshot: <MagnifyingGlass size={15} />,
   run_step: <CursorClick size={15} />,
+  run_steps: <CursorClick size={15} />,
   list_secrets: <Key size={15} />,
   ask_user: <Question size={15} />,
   save_scene: <ListChecks size={15} />,

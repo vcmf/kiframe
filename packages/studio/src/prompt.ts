@@ -21,8 +21,9 @@ steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id (a capti
 teardown:     # off camera, after filming: remove what the steps created, so the scene can be replayed
   - { action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays (the user approves)
 
-Every action, every form (these are ALL the fields: never guess others; setup and teardown items
-have the same actions without the id):
+Every action and its forms, then the fields every step takes (never guess fields that aren't here).
+Setup and teardown items are the same actions; their id is optional, EXCEPT on a step typing a secret
+(always an id: its approval is keyed by it):
 ${stepReference()}
 
 Locators (prefer in this order; they must match exactly ONE visible element):

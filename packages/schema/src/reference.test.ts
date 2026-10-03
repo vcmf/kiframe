@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { parse as parseYaml } from "yaml"
-import { ACTION_REFERENCE, type ActionKind, EXAMPLE_LOCATOR } from "./reference.ts"
+import { ACTION_REFERENCE, type ActionKind, COMMON_FIELDS, EXAMPLE_LOCATOR } from "./reference.ts"
 import { Step } from "./scenario.ts"
 
 const KINDS = Object.keys(ACTION_REFERENCE) as ActionKind[]
@@ -18,6 +18,13 @@ describe("the step reference the agent reads", () => {
     }
     const unknown = Step.safeParse({ id: "x", action: "draw" })
     expect(unknown.error?.issues.some((i) => i.path[0] === "action")).toBe(true)
+  })
+
+  it("parses every example of the fields every step takes", () => {
+    for (const { field, example } of COMMON_FIELDS) {
+      const parsed = Step.safeParse(parseYaml(example.replaceAll("<locator>", EXAMPLE_LOCATOR)))
+      expect(parsed.success, `${field}\n${JSON.stringify(parsed.error?.issues)}`).toBe(true)
+    }
   })
 
   it("parses every form it shows, as the agent would write it", () => {

@@ -1250,3 +1250,8 @@ ul.strip-cards {
   color: var(--dim);
   font-size: 12px;
 }
+
+.md-host {
+  color: var(--dim);
+  font-size: 12px;
+}

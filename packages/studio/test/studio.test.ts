@@ -517,8 +517,10 @@ presets:
     expect(snap).not.toContain("token")
     await page.goto(`${server.url}/projects`)
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/projects\n/)
-    expect(whereOf("https://www.app.example/x", "https://app.example")).toBe("/x")
-    expect(whereOf("https://app.example/x", "https://www.app.example")).toBe("/x")
+    expect(whereOf("https://www.app.example/x", "https://app.example")).toMatch(
+      /^\/x \(on www\.app\.example: the app's address redirects here; .* https:\/\/www\.app\.example/,
+    )
+    expect(whereOf("https://app.example/x", "https://app.example")).toBe("/x")
     expect(whereOf("https://github.com/x", "https://app.example")).toMatch(/NOT the app's site/)
     await studio.close()
   }, 30_000)

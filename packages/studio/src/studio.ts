@@ -447,6 +447,8 @@ const isStopped = (error: unknown) => error instanceof StepError && error.reason
 /** The forms of the action an item meant (its `action`), for a refusal: empty if it isn't one. */
 function shapeOf(raw: object): string {
   const kind = (raw as { action?: unknown }).action
+  // A preset or an ensure isn't an action: its own error is the whole answer.
+  if ("preset" in raw || "ensure" in raw) return ""
   if (typeof kind !== "string" || !Object.hasOwn(ACTION_REFERENCE, kind)) {
     return `\nactions: ${Object.keys(ACTION_REFERENCE).join(", ")}`
   }
@@ -455,8 +457,8 @@ function shapeOf(raw: object): string {
 
 /**
  * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and the
- * site when it isn't the app's own (a link that left the app says so). With or without `www.` is
- * the same site (minmux.dev serves from www.minmux.dev).
+ * site when it isn't the app's own (a link that left the app says so). The app's own is its exact
+ * origin, as the runtime sees it: an address that redirects to `www.` says what to change.
  */
 export function whereOf(url: string, appUrl: string): string {
   let parsed: URL
@@ -466,9 +468,13 @@ export function whereOf(url: string, appUrl: string): string {
     return url.slice(0, 200)
   }
   const app = new URL(appUrl)
-  const site = (u: URL) => `${u.protocol}//${u.host.replace(/^www\./, "")}`
-  if (site(parsed) === site(app) || parsed.protocol === "about:") return parsed.pathname
-  return `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${app.host})`
+  // The runtime's own rule: the exact origin (secrets are typed only there).
+  if (parsed.origin === app.origin || parsed.protocol === "about:") return parsed.pathname
+  const bare = (h: string) => h.replace(/^www\./, "")
+  const sameButWww = bare(parsed.host) === bare(app.host) && parsed.protocol === app.protocol
+  return sameButWww
+    ? `${parsed.pathname} (on ${parsed.host}: the app's address redirects here; the user should set the project's address to ${parsed.origin}, or secrets can't be typed on this page)`
+    : `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${app.host})`
 }
 
 /** Where in a scenario an item runs. */

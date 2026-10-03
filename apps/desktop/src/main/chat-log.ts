@@ -33,6 +33,7 @@ export function toolDetail(args: unknown): string {
     ]
     return oneLine(what.filter((w) => w !== "").join(" "))
   }
+  if (Array.isArray(a.steps)) return `${a.steps.length} steps`
   for (const key of ["id", "question", "scene"]) {
     if (typeof a[key] === "string") return oneLine(a[key])
   }
@@ -52,6 +53,14 @@ export function toolOutcome(result: unknown): {
   }
   if (isToolSoftError(result)) return { status: "failed", result: oneLine(result.error) }
   const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "")
+  // run_steps: numbered lines; failed when one of them did (its line is the one shown).
+  const numbered = text.split("\n").filter((l) => /^\d+\. /.test(l))
+  if (numbered.length > 0) {
+    const bad = numbered.find((l) => !/^\d+\. ok(\.|\s|$)/.test(l) || /^\d+\. ok, but/.test(l))
+    return bad === undefined
+      ? { status: "ok", result: oneLine(`${numbered.length} ok; ${numbered.at(-1) ?? ""}`) }
+      : { status: "failed", result: oneLine(bad) }
+  }
   const failed = /^(failed|invalid|refused|replay failed|recording failed|no scene)\b/.test(text)
   return { status: failed ? "failed" : "ok", result: oneLine(text.split("\n")[0] ?? "") }
 }

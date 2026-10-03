@@ -259,3 +259,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Why a secret step has no resolver:** with the vault unreadable, a secret step fails "no secret resolver given"; the Secrets panel says why, the run doesn't.
 - **Stop during the approval's screenshot:** the screenshot (up to 3 s) isn't stopped by the run's signal.
 
+## Real-app fixes (PR #9)
+
+- **A point below the fold:** a step with `at` whose point is off screen is refused ("scroll it into view first"); scrolling the point itself into view (a tall canvas) when a real app needs it.
+- **A project's address that redirects:** step results say when the app's address redirects to another origin (`www.`), and the user sets the project to it; resolving it when the project is created would spare the step.
+

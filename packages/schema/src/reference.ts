@@ -55,6 +55,7 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
       '{ id: name, action: type, target: <locator>, value: "Q4 launch", clear: true }',
       '{ id: search, action: type, target: <locator>, value: "invoices", submit: true }',
       '{ id: pw, action: type, target: <locator>, value: "{{secrets.acme.password}}" }',
+      '{ id: fill, action: type, target: <locator>, value: "Q4", instant: true }',
     ],
   },
   press: {
@@ -74,12 +75,13 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
     ],
   },
   waitFor: {
-    what: "wait for a condition (never a fixed sleep)",
+    what: "wait for a condition (never a fixed sleep); `timeout` in ms for a slow page",
     forms: [
       '{ id: saved, action: waitFor, until: { text: "Saved" } }',
-      "{ id: shown, action: waitFor, until: { visible: <locator> } }",
+      "{ id: shown, action: waitFor, until: { visible: <locator> }, timeout: 20000 }",
       "{ id: gone, action: waitFor, until: { hidden: <locator> } }",
       "{ id: moved, action: waitFor, until: { url: /projects } }",
+      "{ id: quiet, action: waitFor, until: { networkIdle: true } }",
     ],
   },
   expect: {
@@ -87,6 +89,7 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
     forms: [
       "{ id: check, action: expect, that: { visible: <locator> } }",
       '{ id: says, action: expect, that: { text: "Welcome" } }',
+      "{ id: slow, action: expect, that: { visible: <locator> }, timeout: 20000 }",
     ],
   },
   pause: {
@@ -94,6 +97,37 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
     forms: ["{ id: beat, action: pause, ms: 800 }"],
   },
 }
+
+/**
+ * Fields any step can take besides its action's own (each line is checked as a step too). The
+ * `id` rule: every on-camera step has one; off camera (setup, teardown) it's optional, except on a
+ * step typing a secret, which always has one (its approval is keyed by it).
+ */
+export const COMMON_FIELDS: { field: string; example: string }[] = [
+  {
+    field:
+      "id: kebab-case, unique in the scene (on camera always; off camera only when it types a secret)",
+    example: "{ id: open-new, action: click, target: <locator> }",
+  },
+  {
+    field:
+      "risky: true on a delete, send, pay or invite (the user approves it); risky: false says a click is safe",
+    example: "{ id: remove, action: click, target: <locator>, risky: true }",
+  },
+  {
+    field: "caption: a short line shown in the video (on the steps that matter)",
+    example: '{ id: open, action: click, target: <locator>, caption: "Open your projects" }',
+  },
+  {
+    field: "hold: a beat after the step, in ms (never sped up)",
+    example: "{ id: look, action: click, target: <locator>, hold: 1200 }",
+  },
+  {
+    field:
+      "cursor: hide (no cursor in the video for this step); keystrokes: show (keys pressed shown)",
+    example: "{ id: shortcut, action: press, keys: Mod+k, keystrokes: show, cursor: hide }",
+  },
+]
 
 /** A locator to put in the examples when they're checked (any valid one). */
 export const EXAMPLE_LOCATOR = '{ by: role, role: button, name: "Save" }'
@@ -104,7 +138,11 @@ export function actionReference(kind: ActionKind): string {
   return [`${kind}: ${what}`, ...forms.map((f) => `  - ${f}`)].join("\n")
 }
 
-/** The whole reference: every action, every form. */
+/** The whole reference: every action, every form, then the fields every step takes. */
 export function stepReference(): string {
-  return (Object.keys(ACTION_REFERENCE) as ActionKind[]).map(actionReference).join("\n")
+  return [
+    ...(Object.keys(ACTION_REFERENCE) as ActionKind[]).map(actionReference),
+    "fields every step takes:",
+    ...COMMON_FIELDS.map((c) => `  - ${c.field}`),
+  ].join("\n")
 }

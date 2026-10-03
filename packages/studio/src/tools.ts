@@ -70,7 +70,8 @@ const runSteps = defineTool({
     for (const [i, step] of steps.entries()) {
       const result = await studio.runStep(step, scene, signal, part)
       out.push(`${i + 1}. ${result}`)
-      if (!result.startsWith("ok")) {
+      // A plain ok only (never "ok, but it closed every page": what follows would run elsewhere).
+      if (!result.startsWith("ok") || result.startsWith("ok, but")) {
         const left = steps.length - i - 1
         if (left > 0) out.push(`stopped there: the ${left} after it didn't run`)
         break

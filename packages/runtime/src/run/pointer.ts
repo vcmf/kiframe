@@ -30,8 +30,11 @@ export async function moveCursorTo(
     let to: Point
     let width: number
     if (at !== undefined) {
-      // The step's own point within the box (a canvas): exactly there, never a nearby one.
-      if (box === null) return undefined
+      // The step's own point within the box (a canvas): exactly there, never a nearby one (nor the
+      // center Playwright would pick without a box).
+      if (box === null) {
+        throw new StepError(step, "target-not-found", "the target has no box to point in yet")
+      }
       to = pointIn(box, at)
       if (to.x < 0 || to.y < 0 || to.x > viewport.width - 1 || to.y > viewport.height - 1) {
         throw new StepError(
@@ -64,7 +67,11 @@ export async function moveCursorTo(
 
 /** The point `at` (fractions of the box) of a box, in CSS pixels of the viewport. */
 export function pointIn(box: Box, at: At): Point {
-  return { x: box.x + at.x * box.width, y: box.y + at.y * box.height }
+  // 1 is the far edge's last pixel, still on the element (never the neighbour past it).
+  return {
+    x: box.x + Math.min(at.x * box.width, Math.max(0, box.width - 1)),
+    y: box.y + Math.min(at.y * box.height, Math.max(0, box.height - 1)),
+  }
 }
 
 /**

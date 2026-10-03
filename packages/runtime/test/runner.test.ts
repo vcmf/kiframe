@@ -1245,6 +1245,15 @@ steps:
       expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
     })
 
+    it("keeps the far edge on the element (at 1 is its last pixel, not the next element's)", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - { id: edge, action: click, target: ${canvas}, at: { x: 1, y: 1 } }
+`)
+      // The box is 402 × 302 at 100,100: its last pixel is 501,401, offset 400,300 inside the border.
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 400,300"])
+    })
+
     it("drags from one point of the canvas to another (drawing)", async () => {
       await run(`setup: [{ action: goto, url: /canvas }]
 steps:

@@ -30,6 +30,8 @@ describe("the agent's answers", () => {
         text={"See [the docs](https://minmux.dev/docs) or [this](javascript:alert(1))."}
       />,
     )
+    // Where it really goes, always shown.
+    expect(screen.getByText("the docs").closest("a")?.textContent).toBe("the docs (minmux.dev)")
     fireEvent.click(screen.getByText("the docs"))
     expect(invoke).toHaveBeenCalledWith("external:open", "https://minmux.dev/docs")
     fireEvent.click(screen.getByText("this"))

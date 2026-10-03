@@ -128,6 +128,19 @@ describe("a tool's line", () => {
     expect(toolOutcome("saved: tour (replayed)").status).toBe("ok")
     expect(toolOutcome({ answer: "the demo account" }).status).toBe("ok")
     expect(oneLine("x".repeat(400)).length).toBe(160)
+    // run_steps: failed when one of its numbered lines did, that line shown.
+    expect(toolOutcome("1. ok. url: /\n2. ok. url: /x")).toEqual({
+      status: "ok",
+      result: "2 ok; 2. ok. url: /x",
+    })
+    expect(
+      toolOutcome(
+        "1. ok. url: /\n2. failed (target-not-found): no Save\nstopped there: the 1 after it didn't run",
+      ),
+    ).toEqual({ status: "failed", result: "2. failed (target-not-found): no Save" })
+    expect(toolOutcome("1. invalid step: x").status).toBe("failed")
+    expect(toolOutcome("1. ok, but it closed every page").status).toBe("failed")
+    expect(toolDetail({ scene: "s", steps: [{}, {}, {}] })).toBe("3 steps")
     // Never half an emoji at the cut.
     const cut = oneLine(`${"x".repeat(158)}😀${"y".repeat(10)}`)
     expect(cut).toBe(`${"x".repeat(158)}😀…`)
