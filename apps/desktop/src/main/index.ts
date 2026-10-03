@@ -18,6 +18,7 @@ import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
+import { previewOf } from "./preview.ts"
 import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
@@ -312,6 +313,11 @@ function start(): void {
           } catch (e) {
             return message(e)
           }
+        },
+        "preview:open": (sceneId) => {
+          const opened = workspace.opened
+          if (opened === null) return { ok: false, why: "No project is open." }
+          return previewOf(opened, ready().takes, sceneId)
         },
         "chat:stop": () => workspace.agent?.stop(),
         "chat:answer": (id, answer) => workspace.agent?.answer(id, answer),

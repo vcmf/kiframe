@@ -1,9 +1,10 @@
 // The stage: Preview / Live app tabs over the well, the scene strip below. A run shows the live
 // app (view only: the agent's browser) until the user picks a tab.
 import { Browser, FilmStrip, HandPointing, Monitor } from "@phosphor-icons/react"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { ProjectView } from "../../../shared/ipc.ts"
 import { useChat } from "../chat-store.ts"
+import { PreviewPlayer } from "./preview-player.tsx"
 import { SceneStrip } from "./scene-strip.tsx"
 
 type Tab = "preview" | "live"
@@ -13,10 +14,38 @@ export function Stage({ project }: { project: ProjectView }) {
   const [selected, setSelected] = useState<string | null>(null)
   const running = useChat((s) => s.running)
   const frame = useChat((s) => s.frame)
-  // A run starting shows the agent at work.
+  // A run starting shows the agent at work (once: the user's tab is theirs after); once it has
+  // ended with a scene filmed, that scene's preview. The takes before the run are read when it
+  // starts, never again during it (a take saved mid-run is the run's); the scenes it filmed may
+  // arrive after its end, watched until the next run. A project switch starts afresh (keyed).
+  const scenes = useRef(project.scenes)
+  scenes.current = project.scenes
+  const wasRunning = useRef(running)
+  const run = useRef<{ takes: Map<string, string | undefined>; ended: boolean } | null>(null)
   useEffect(() => {
-    if (running) setTab("live")
+    if (running && !wasRunning.current) {
+      run.current = { takes: new Map(scenes.current.map((s) => [s.id, s.take])), ended: false }
+      setTab("live")
+    } else if (!running && wasRunning.current && run.current !== null) {
+      run.current.ended = true
+    }
+    wasRunning.current = running
   }, [running])
+  useEffect(() => {
+    const ran = run.current
+    if (ran === null || !ran.ended) return
+    const filmed = project.scenes.find(
+      (s) => s.take !== undefined && ran.takes.get(s.id) !== s.take,
+    )
+    if (filmed === undefined) return
+    run.current = null
+    setSelected(filmed.id)
+    setTab("preview")
+  }, [running, project.scenes])
+  // The scene the preview shows: the one picked, else the first filmed one.
+  const shown =
+    project.scenes.find((s) => s.id === selected) ??
+    project.scenes.find((s) => s.status === "recorded")
   return (
     <main className="stage">
       <div className="stage-head" role="tablist" aria-label="Stage">
@@ -49,13 +78,23 @@ export function Stage({ project }: { project: ProjectView }) {
         role="tabpanel"
         aria-label={tab === "preview" ? "Preview" : "Live app"}
       >
+        {/* Kept while the live app shows (a tab switch never loads the take again), paused. */}
+        {shown !== undefined && (
+          <PreviewPlayer
+            key={shown.id}
+            sceneId={shown.id}
+            take={shown.take}
+            version={shown.version}
+            active={tab === "preview"}
+          />
+        )}
         {tab === "live" && frame !== null ? (
           <img
             className="live-frame"
             alt={`The live app at ${frame.path}`}
             src={`data:image/jpeg;base64,${frame.jpeg}`}
           />
-        ) : (
+        ) : tab === "preview" && shown !== undefined ? null : (
           <>
             <div className="empty-icon">
               {tab === "preview" ? <FilmStrip size={24} /> : <Monitor size={24} />}
@@ -77,7 +116,7 @@ export function Stage({ project }: { project: ProjectView }) {
       <SceneStrip
         scenes={project.scenes}
         problems={project.problems}
-        selected={selected}
+        selected={shown?.id ?? null}
         onSelect={setSelected}
       />
     </main>

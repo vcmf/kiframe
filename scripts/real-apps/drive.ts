@@ -228,6 +228,27 @@ try {
   }
 
   await shot("end")
+  // The preview of what was filmed (S4): played a moment, then shown.
+  const play = page.getByRole("button", { name: "Play" })
+  const previewed = await play
+    .waitFor({ timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false)
+  if (previewed) {
+    await play.click()
+    await page.waitForTimeout(2500)
+    await shot("preview")
+    log("preview played")
+  } else {
+    log(
+      `no preview: ${
+        (await page
+          .locator(".player-note")
+          .textContent()
+          .catch(() => null)) ?? "none"
+      }`,
+    )
+  }
   const state = await page.evaluate(() =>
     (window as unknown as { kiframe: { invoke: (c: string) => Promise<unknown> } }).kiframe.invoke(
       "chat:state",

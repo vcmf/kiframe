@@ -1,5 +1,6 @@
 // The open project: one at a time, opened or created from a folder main chose (never a path the
 // window sent), and shown to the window as a `ProjectView`.
+import { createHash } from "node:crypto"
 import { existsSync, readdirSync, statSync } from "node:fs"
 import type { OpenedProject } from "@kiframe/project"
 import { TargetApp } from "@kiframe/schema"
@@ -95,7 +96,24 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
         : stored.scenario !== undefined
           ? "grounded"
           : "empty"
-    views.push({ id, title: scene.title, status })
+    const take = stored.composition?.take?.key
+    const version =
+      stored.composition === undefined
+        ? undefined
+        : createHash("sha256")
+            // Everything its preview shows: the scene, and the project's style and outputs.
+            .update(
+              JSON.stringify([stored.scenario, stored.composition, project.style, project.outputs]),
+            )
+            .digest("hex")
+            .slice(0, 16)
+    views.push({
+      id,
+      title: scene.title,
+      status,
+      ...(take !== undefined && { take }),
+      ...(version !== undefined && { version }),
+    })
   }
   return {
     session,
