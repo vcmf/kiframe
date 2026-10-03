@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { type OpenedProject, readTakeRecords, type TakeStore } from "@kiframe/project"
 import { scenarioHashOf } from "@kiframe/runtime"
-import { resolveFormat, resolveStyle } from "@kiframe/schema"
+import { resolveFormat, resolveStyle, scenesOf } from "@kiframe/schema"
 import type { Preview } from "../shared/ipc.ts"
 
 export async function previewOf(
@@ -33,7 +33,7 @@ export async function previewOf(
   }
   // The first video output playing this scene (its size and style); none: the default size.
   const output = opened.project.outputs.find(
-    (o) => o.kind === "video" && (o.include === undefined || o.include.includes(sceneId)),
+    (o) => o.kind === "video" && scenesOf(opened.project, o).includes(sceneId),
   )
   let records: ReturnType<typeof readTakeRecords>
   let video: Uint8Array
@@ -54,19 +54,17 @@ export async function previewOf(
     video,
     // As the export resolves it: project (no org settings in the app yet), scene, the output.
     style: resolveStyle(undefined, opened.project, composition.style, output),
-    format: output !== undefined ? formatOf(output) : DEFAULT_FORMAT,
+    // No output plays it (a draft, or none yet): the size an output is by default.
+    format: sizeOf(output ?? { id: "preview", kind: "video" }),
   }
 }
 
-/** The size a scene previews at when no output plays it (the export's default). */
-const DEFAULT_FORMAT = { width: 1920, height: 1080, fps: 30 }
-
-/** An output's size, every field said. */
-function formatOf(output: Parameters<typeof resolveFormat>[0]): {
+/** An output's size, its fps said (resolveFormat's type leaves it optional; its value never is). */
+function sizeOf(output: Parameters<typeof resolveFormat>[0]): {
   width: number
   height: number
   fps: number
 } {
   const f = resolveFormat(output)
-  return { width: f.width, height: f.height, fps: f.fps ?? DEFAULT_FORMAT.fps }
+  return { width: f.width, height: f.height, fps: f.fps ?? 30 }
 }

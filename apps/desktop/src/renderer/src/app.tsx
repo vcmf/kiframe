@@ -26,7 +26,7 @@ export function App() {
           {/* One per project: its chat, stage and their state start fresh with it. */}
           <div className="workspace" key={status.project.session}>
             <ChatColumn />
-            <Stage project={status.project} />
+            <Stage key={status.project.session} project={status.project} />
             <SecretDialog />
           </div>
         </>

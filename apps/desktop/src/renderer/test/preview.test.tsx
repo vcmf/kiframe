@@ -57,13 +57,13 @@ const ready = {
 describe("the preview", () => {
   it("says why a scene can't play", async () => {
     stubApi({ "preview:open": () => ({ ok: false, why: "Not filmed yet: record it." }) })
-    render(<PreviewPlayer sceneId="tour" take={undefined} />)
+    render(<PreviewPlayer sceneId="tour" take={undefined} version={undefined} />)
     expect((await screen.findByRole("status")).textContent).toBe("Not filmed yet: record it.")
   })
 
   it("plays a filmed scene: play, pause, the position and the time", async () => {
     const { invoke } = stubApi({ "preview:open": () => ready })
-    render(<PreviewPlayer sceneId="tour" take="k1" />)
+    render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
     const play = await screen.findByRole("button", { name: "Play" })
     expect(invoke).toHaveBeenCalledWith("preview:open", "tour")
     expect(fake.load).toHaveBeenCalledTimes(1)
@@ -84,11 +84,11 @@ describe("the preview", () => {
 
   it("lets go of the player when the scene changes", async () => {
     stubApi({ "preview:open": () => ready })
-    const { rerender } = render(<PreviewPlayer sceneId="tour" take="k1" />)
+    const { rerender } = render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
     await screen.findByRole("button", { name: "Play" })
     // Counted from here (the mock is shared with the tests before).
     fake.player.dispose.mockClear()
-    rerender(<PreviewPlayer sceneId="tour" take="k2" />)
+    rerender(<PreviewPlayer sceneId="tour" take="k2" version="v1" />)
     await waitFor(() => expect(fake.player.dispose).toHaveBeenCalledTimes(1))
   })
 
@@ -121,6 +121,49 @@ describe("the preview", () => {
         "true",
       ),
     )
+    expect(screen.getByRole("button", { name: /Tour/ }).getAttribute("aria-pressed")).toBe("true")
+  })
+
+  it("plays the scene again once it's edited (same take, another composition)", async () => {
+    stubApi({ "preview:open": () => ready })
+    const { rerender } = render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
+    await screen.findByRole("button", { name: "Play" })
+    fake.load.mockClear()
+    rerender(<PreviewPlayer sceneId="tour" take="k1" version="v2" />)
+    await waitFor(() => expect(fake.load).toHaveBeenCalledTimes(1))
+  })
+
+  it("shows the scene a run filmed when its take arrives during the run, and leaves the user's tab alone", async () => {
+    stubApi({ "preview:open": () => ({ ok: false, why: "Not filmed yet: record it." }) })
+    const project = (take?: string, title = "Tour"): ProjectView => ({
+      session: "s1",
+      name: "Demo",
+      dir: "/tmp/demo",
+      url: "https://app.example",
+      problems: [],
+      scenes: [
+        { id: "intro", title: "Intro", status: "recorded", take: "k0" },
+        {
+          id: "tour",
+          title,
+          status: take === undefined ? "grounded" : "recorded",
+          ...(take !== undefined && { take }),
+        },
+      ],
+    })
+    const tab = (name: RegExp) => screen.getByRole("tab", { name }).getAttribute("aria-selected")
+    const { rerender } = render(<Stage project={project()} />)
+    act(() => useChat.setState({ running: true }))
+    expect(tab(/Live app/)).toBe("true")
+    // The user picks Preview mid-run: the agent saving a scene doesn't take it back.
+    fireEvent.click(screen.getByRole("tab", { name: /Preview/ }))
+    rerender(<Stage project={project(undefined, "Tour, saved")} />)
+    expect(tab(/Preview/)).toBe("true")
+    fireEvent.click(screen.getByRole("tab", { name: /Live app/ }))
+    // The take is saved while the run still goes; the run ends after.
+    rerender(<Stage project={project("k1")} />)
+    act(() => useChat.setState({ running: false }))
+    await waitFor(() => expect(tab(/Preview/)).toBe("true"))
     expect(screen.getByRole("button", { name: /Tour/ }).getAttribute("aria-pressed")).toBe("true")
   })
 

@@ -1,6 +1,6 @@
 import type { TakeInput } from "@kiframe/generators"
 import type { Composition, Scenario, Style as SchemaStyle } from "@kiframe/schema"
-import { ALL_FORMATS, BlobSource, CanvasSink, Input } from "mediabunny"
+import { ALL_FORMATS, BlobSource, BufferSource, CanvasSink, Input } from "mediabunny"
 import { drawScene } from "./draw.ts"
 import { prepare, type Prepared, sceneAt, type Style } from "./scene.ts"
 
@@ -11,8 +11,8 @@ import { prepare, type Prepared, sceneAt, type Style } from "./scene.ts"
 // fewer frames, never a slower (or frozen) clock.
 
 export interface PlayerSource {
-  /** The take's frames.webm. */
-  video: Blob
+  /** The take's frames.webm (bytes as they came: read in place, never copied). */
+  video: Blob | Uint8Array<ArrayBuffer>
   composition: Composition
   scenario: Scenario
   take: TakeInput
@@ -64,7 +64,13 @@ export class Player {
     canvas.height = prepared.style.height
     const ctx = canvas.getContext("2d")
     if (ctx === null) throw new Error("no 2D canvas context")
-    const input = new Input({ source: new BlobSource(source.video), formats: ALL_FORMATS })
+    const input = new Input({
+      source:
+        source.video instanceof Blob
+          ? new BlobSource(source.video)
+          : new BufferSource(source.video),
+      formats: ALL_FORMATS,
+    })
     try {
       const track = await input.getPrimaryVideoTrack()
       if (track === null) throw new Error("the take has no video track")
@@ -103,6 +109,8 @@ export class Player {
     this.#run++
     this.#setPlaying(false)
     this.#target = clamp(tOut, 0, this.duration)
+    // The time is the one asked at once (a play right after starts there), its picture follows.
+    this.#time = this.#target
     if (this.#seeking !== undefined) return this.#seeking
     this.#seeking = (async () => {
       try {

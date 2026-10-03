@@ -99,6 +99,16 @@ steps:
       const paused = await page.evaluate(() => window.playerTest.state())
       await page.waitForTimeout(300)
       expect(await page.evaluate(() => window.playerTest.state().time)).toBe(paused.time)
+      // Play right after a seek (its frame still decoding) starts where the seek asked.
+      const half = duration / 2
+      await page.evaluate((t) => {
+        void window.playerTest.seek(t)
+        window.playerTest.play()
+      }, half)
+      await page.waitForTimeout(200)
+      const after = await page.evaluate(() => window.playerTest.state())
+      await page.evaluate(() => window.playerTest.pause())
+      expect(after.time).toBeGreaterThan(half)
       // A machine too slow to decode every frame in time (the CPU throttled 12x).
       const cdp = await page.context().newCDPSession(page)
       await cdp.send("Emulation.setCPUThrottlingRate", { rate: 12 })

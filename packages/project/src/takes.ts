@@ -218,6 +218,8 @@ export function readTakeRecords(dir: string): TakeRecords {
   // Its meta.json as the store reads it (a take of a newer Kiframe said so).
   const stored = readTake(dir)
   if (stored instanceof Error) throw stored
+  // Not one the store would list: why, in the meta's own words (a field, a missing file).
+  if (stored === undefined) TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")))
   if (stored === undefined) throw new Error(`${dir}: not a complete take`)
   const lines = (file: string) =>
     readFileSync(join(dir, file), "utf8")

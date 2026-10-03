@@ -26,6 +26,8 @@ export interface SceneView {
   problem?: string
   /** A recorded scene's take (its key): the preview plays it again when it changes. */
   take?: string
+  /** What a recorded scene plays (its scenario and composition, hashed): edited, played again. */
+  version?: string
 }
 
 /** The open project as the window shows it. */

@@ -10,7 +10,15 @@ type Loaded =
   | { state: "error"; why: string }
   | { state: "ready"; player: Player; title: string }
 
-export function PreviewPlayer({ sceneId, take }: { sceneId: string; take: string | undefined }) {
+export function PreviewPlayer(props: {
+  sceneId: string
+  /** The scene's take and what it plays (a new take, or the scene edited, loads it again). */
+  take: string | undefined
+  version: string | undefined
+  /** Shown (else hidden and paused, kept loaded). */
+  active?: boolean
+}) {
+  const { sceneId, take, version, active = true } = props
   const canvas = useRef<HTMLCanvasElement>(null)
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" })
   const [, setTick] = useState(0)
@@ -30,8 +38,8 @@ export function PreviewPlayer({ sceneId, take }: { sceneId: string; take: string
         const target = canvas.current
         if (target === null) return
         player = await Player.load(target, {
-          // IPC hands over a buffer of its own: no copy.
-          video: new Blob([preview.video as Uint8Array<ArrayBuffer>], { type: "video/webm" }),
+          // Read where IPC put it (a buffer of its own): never copied.
+          video: preview.video as Uint8Array<ArrayBuffer>,
           composition: preview.composition,
           scenario: preview.scenario,
           take: preview.take,
@@ -57,11 +65,14 @@ export function PreviewPlayer({ sceneId, take }: { sceneId: string; take: string
       gone = true
       player?.dispose()
     }
-  }, [sceneId, take])
+  }, [sceneId, take, version])
 
   const player = loaded.state === "ready" ? loaded.player : undefined
+  useEffect(() => {
+    if (!active) player?.pause()
+  }, [active, player])
   return (
-    <div className="player">
+    <div className="player" hidden={!active}>
       <canvas
         ref={canvas}
         className="player-canvas"
