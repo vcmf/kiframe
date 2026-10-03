@@ -336,6 +336,14 @@ const pages: Record<string, string> = {
   "/quoted-names": `<!doctype html><title>Quoted names</title>
     <button>Status: Active</button><a href="#x">Issue #42</a><button>It's: here</button>
     <p>see [ref=e2]</p>`,
+  // Rows a step reorders (the same node, new text), a filled field, text drawn by CSS, a name the
+  // snapshot writes unquoted.
+  "/rows": `<!doctype html><title>Rows</title>
+    <ul><li>Buy milk</li><li>Item 1</li></ul>
+    <label>Email <input value="a@b.c"></label>
+    <ol class="done"><li>Done</li></ol><style>.done li::before { content: "* " }</style>
+    <button onclick="document.querySelector('li').textContent = 'Buy eggs'">Reorder</button>
+    <a href="#x">/x/</a>`,
   // A button of the page and one inside an iframe (a snapshot names both).
   "/framed": `<!doctype html><title>Framed</title><button>Outside</button>
     <iframe srcdoc="<button>Inside</button>"></iframe>`,

@@ -69,8 +69,10 @@ describe("a lasting locator for an element the agent pointed at", () => {
     expect(await lasting("#archive", { role: "button", name: "Archive" })).toEqual({
       locator: { by: "css", selector: "#archive" },
     })
-    // An element with no role or text of its own can't be checked against the snapshot.
-    expect(await lasting("#logo-box", { role: "generic" })).toEqual(error(/no role or text/))
+    expect(await lasting("#logo-box", { role: "generic" })).toEqual({
+      locator: { by: "css", selector: "#logo-box" },
+    })
+    expect(await lasting("#r42", { role: "generic" })).toEqual(error(/no lasting locator/))
   })
 
   it("takes a role alone when it's the only one (no nth)", async () => {
@@ -79,33 +81,17 @@ describe("a lasting locator for an element the agent pointed at", () => {
     })
   })
 
-  it("refuses an element that isn't what the snapshot said (a node reused with new content)", async () => {
-    await page.evaluate(() => {
-      document.querySelector("button")!.textContent = "Delete everything"
-    })
-    expect(await lasting("button", { role: "button", name: "Save" })).toEqual(
-      error(/changed since the snapshot/),
-    )
-    expect(await lasting("input", { role: "button", name: "Save" })).toEqual(
-      error(/changed since the snapshot/),
-    )
-  })
-
-  it("checks a node's own text exactly (a reused list row with new text is another element)", async () => {
-    // The row the snapshot saw as "Buy milk" now shows "Buy eggs": same role, same (no) name.
-    await page.evaluate(() => {
-      document.querySelector("ol li")!.textContent = "Buy eggs"
-    })
-    expect(await lasting("ol li", { role: "listitem", text: "Buy milk" })).toEqual(
-      error(/changed since the snapshot/),
-    )
-    expect(await lasting("ol li:nth-child(2)", { role: "listitem", text: "Item 1" })).toEqual(
-      error(/changed since the snapshot/),
-    )
-    // Its text as the snapshot reads it (hidden parts left out) is the same element; the locator is
-    // the one that finds it: getByText matches the DOM's text, hidden parts included.
+  it("finds it by the page's text when the snapshot's reading of it doesn't", async () => {
+    // The snapshot reads "Say hi" (hidden parts left out); getByText matches the DOM's text.
     expect(await lasting("ol li:nth-child(3)", { role: "listitem", text: "Say hi" })).toEqual({
       locator: { by: "text", text: "Say xhi", exact: true },
+    })
+  })
+
+  it("never makes a field's value its locator (what was typed: a secret maybe)", async () => {
+    await page.fill("input[placeholder]", "Q4 launch")
+    expect(await lasting("input[placeholder]", { role: "textbox", text: "Q4 launch" })).toEqual({
+      locator: { by: "placeholder", text: "Search projects" },
     })
   })
 

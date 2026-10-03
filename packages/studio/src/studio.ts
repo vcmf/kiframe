@@ -33,7 +33,17 @@ import {
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
-import { asWritten, isCyclic, REF, type RefAt, refsAt, refsOf, withAt } from "./refs.ts"
+import {
+  asWritten,
+  isCyclic,
+  REF,
+  type RefAt,
+  refsAt,
+  refsOf,
+  sameNode,
+  type SnapshotNode,
+  withAt,
+} from "./refs.ts"
 
 // The studio: what the agent's tools act on (the project, the live app, the take store), for one
 // open project. The host (the desktop app's main process) makes one per project and passes it to
@@ -88,7 +98,7 @@ export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
   /** The last snapshot: its page, and what it said of each ref (any new snapshot replaces it). */
-  #snapshot: { page: Page; refs: Map<string, ElementHint> } | undefined
+  #snapshot: { page: Page; doc: number; refs: Map<string, SnapshotNode> } | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
   /** The live page being opened (one at a time: a second caller waits for it). */
@@ -223,12 +233,22 @@ export class Studio {
         // A selector the secrets rules refuse (SECRETS-DESIGN §3 A8): the agent gets the reason.
         return failed(`refused \`within\` locator: ${String(e)}`)
       }
+      if ((await root.count().catch(() => 0)) === 0) {
+        return failed(
+          "no visible element matches the `within` locator now: snapshot the page, or another region",
+        )
+      }
     }
     let text: string
     try {
       // With refs (`[ref=e12]`): the agent can point at an element, and run_step writes its locator.
+      // Its document, read on both sides: a ref holds only in the document it was given in.
+      const doc = await documentOf(page)
       text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
-      this.#snapshot = { page, refs: refsOf(text) }
+      const refs = refsOf(text)
+      if (doc !== undefined && doc === (await documentOf(page)) && refs !== undefined) {
+        this.#snapshot = { page, doc, refs }
+      }
     } catch (e) {
       return failed(`snapshot failed: ${this.scrub(String(e))}`)
     }
@@ -242,13 +262,25 @@ export class Studio {
   }
 
   /**
-   * Why the refs in these items can't be used at all, checked before any of them runs: one with
-   * anything beside it, one not of the last snapshot, a snapshot of another page, one whose element
-   * is gone or inside an iframe (what only the step's own moment can tell, its element being still
-   * what the snapshot said, is checked right before it).
+   * Why the refs in these items can't be used at all, checked before any of them runs, each against
+   * a fresh snapshot of the page (in Playwright's own model): see `#refusedNow` and `#refused`.
    */
   async refusedRefs(items: unknown): Promise<string | undefined> {
-    for (const { ref, extra } of refsAt(items)) {
+    const refs = refsAt(items)
+    const now = this.#refusedNow(refs)
+    if (now !== undefined || refs.length === 0) return now
+    const fresh = await this.#fresh(await this.livePage(), refs)
+    if ("error" in fresh) return fresh.error
+    for (const { ref } of refs) {
+      const why = this.#refused(ref, fresh.nodes)
+      if (why !== undefined) return `ref ${ref}: ${why}`
+    }
+    return undefined
+  }
+
+  /** What the refs say on their own: alone, of the last snapshot, of the live page. */
+  #refusedNow(refs: RefAt[]): string | undefined {
+    for (const { ref, extra } of refs) {
       if (extra.length > 0) {
         return `ref ${ref}: a ref goes alone ({ ref: ${ref} }), without ${extra.join(", ")}`
       }
@@ -258,9 +290,59 @@ export class Studio {
       if (this.#snapshot.page !== this.currentPage) {
         return `ref ${ref}: the last snapshot was of another page than the live one: take a snapshot of this one`
       }
-      const where = await whereRefIs(this.#snapshot.page, ref)
-      if (where !== undefined) return `ref ${ref}: ${where}`
     }
+    return undefined
+  }
+
+  /**
+   * A fresh snapshot of the live page, for checking refs (never shown): of the agent's snapshot's
+   * document (a navigation or reload starts refs over: a new e5 may be another row's Delete), with
+   * every ref asked for, waiting a moment for one missing (Playwright gives no ref to what can't be
+   * clicked: a closing dialog's `pointer-events: none`).
+   */
+  async #fresh(
+    page: Page,
+    refs: RefAt[],
+  ): Promise<{ nodes: Map<string, SnapshotNode> } | { error: string }> {
+    const deadline = Date.now() + 1500
+    for (;;) {
+      const doc = await documentOf(page)
+      if (doc === undefined || doc !== this.#snapshot?.doc) {
+        return {
+          error:
+            "the page loaded a new document since the snapshot (a navigation or a reload): take a new snapshot",
+        }
+      }
+      let text: string
+      try {
+        text = await page.locator("body").ariaSnapshot({ timeout: 5000, mode: "ai" })
+      } catch {
+        return {
+          error:
+            "the page couldn't be checked against the snapshot (too large or busy): snapshot `within` a region, then point at its refs",
+        }
+      }
+      const nodes = refsOf(text)
+      if (nodes === undefined) return { error: "the page's snapshot couldn't be read: try again" }
+      if ((await documentOf(page)) !== doc) continue
+      if (refs.every((r) => nodes.has(r.ref)) || Date.now() > deadline) return { nodes }
+      await page.waitForTimeout(200)
+    }
+  }
+
+  /** Why a ref is no use in a fresh snapshot of the same document: gone, in an iframe, changed. */
+  #refused(ref: string, nodes: Map<string, SnapshotNode>): string | undefined {
+    const saw = this.#snapshot?.refs.get(ref)
+    const now = nodes.get(ref)
+    if (saw === undefined) return "not a ref of the last snapshot"
+    if (now === undefined) {
+      return "it isn't on the page now, or can't be acted on (hidden, or under `pointer-events: none`): take a new snapshot"
+    }
+    if (saw.inFrame || now.inFrame) {
+      return "it's inside a frame (an iframe): steps reach the page's own elements only"
+    }
+    // Never what it says now: it may show a value typed by a step (a secret).
+    if (!sameNode(saw, now)) return "it changed since the snapshot: take a new snapshot"
     return undefined
   }
 
@@ -281,7 +363,7 @@ export class Studio {
       return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
     const refs = refsAt(raw)
     if (refs.length === 0) return this.#runItem(raw, scene, signal, part)
-    const refused = await this.refusedRefs(raw)
+    const refused = this.#refusedNow(refs)
     if (refused !== undefined) return failed(refused)
     const written = await this.#written(raw, refs, part)
     if ("error" in written) return failed(written.error)
@@ -304,13 +386,19 @@ export class Studio {
     part: ScenarioPart,
   ): Promise<{ value: unknown } | { error: string }> {
     const page = await this.livePage()
+    // The page as it is right now (the steps before changed it): each ref checked in a fresh
+    // snapshot, and resolved against it (no other snapshot in between: it'd replace Playwright's refs).
+    const fresh = await this.#fresh(page, refs)
+    if ("error" in fresh) return { error: `ref ${refs[0]?.ref ?? ""}: ${fresh.error}` }
     // Built now: a value typed by the step before is a known value by this one.
     const scrub = this.scrubber()
     const allowed = (text: string) => scrub(text) === text
     let value = raw
     const nths: { at: RefAt; put: unknown }[] = []
     for (const at of refs) {
-      const hint = this.#snapshot?.refs.get(at.ref)
+      const why = this.#refused(at.ref, fresh.nodes)
+      if (why !== undefined) return { error: `ref ${at.ref}: ${why}` }
+      const hint = fresh.nodes.get(at.ref)
       if (hint === undefined) return { error: `ref ${at.ref}: not a ref of the last snapshot` }
       // A page that moves while it's read (a redirect finishing): said, never a raw error.
       const lasting = await lastingOfRef(page, at.ref, hint, allowed).catch((): Lasting => ({
@@ -658,24 +746,9 @@ export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl))
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"
 
-/** Why a ref's element can't be acted on now (gone, inside an iframe), if it can't. */
-async function whereRefIs(page: Page, ref: string): Promise<string | undefined> {
-  const handles = (await page
-    .locator(`aria-ref=${ref}`)
-    .elementHandles()
-    .catch(() => [])) as ElementHandle<Element>[]
-  try {
-    const frame = await handles[0]?.ownerFrame().catch(() => null)
-    if (frame === null || frame === undefined) {
-      return "it isn't on the page anymore (the page changed): take a new snapshot"
-    }
-    if (frame !== page.mainFrame()) {
-      return "it's inside a frame (an iframe): steps reach the page's own elements only"
-    }
-    return undefined
-  } finally {
-    await Promise.all(handles.map((h) => h.dispose().catch(() => undefined)))
-  }
+/** The page's document (its time origin: a new one per navigation or reload, none changed). */
+async function documentOf(page: Page): Promise<number | undefined> {
+  return page.evaluate(() => performance.timeOrigin).catch(() => undefined)
 }
 
 /** A ref's element as the page has it now, and its lasting locator (or why none). */
@@ -693,13 +766,8 @@ async function lastingOfRef(
     .catch(() => [])) as ElementHandle<Element>[]
   try {
     const [handle] = handles
-    const frame = await handle?.ownerFrame().catch(() => null)
-    if (handle === undefined || frame === null || frame === undefined) {
+    if (handle === undefined) {
       return { error: "it isn't on the page anymore (the page changed): take a new snapshot" }
-    }
-    // Inside an iframe: a step's locators reach the page's own elements only.
-    if (frame !== page.mainFrame()) {
-      return { error: "it's inside a frame (an iframe): steps reach the page's own elements only" }
     }
     return await lastingLocator(page, handle, hint, allowed)
   } finally {

@@ -545,7 +545,7 @@ presets:
       expect.stringMatching(/^ok\. url: \/projects/) as unknown,
       "as written: { id: open, action: click, target: { by: role, role: link, name: Projects, exact: true } }",
     ])
-    // The old page's ref: its element is gone.
+    // The old document's ref (numbering starts over in a new one): refused, whatever it'd name now.
     expect(
       await tool("run_step").run(
         { scene: "tour", step: { id: "again", action: "click", target: { ref: link } } },
@@ -553,7 +553,7 @@ presets:
         never,
       ),
     ).toEqual({
-      error: expect.stringMatching(/^ref (f\d+)?e\d+: it isn't on the page anymore/) as unknown,
+      error: expect.stringMatching(/^ref (f\d+)?e\d+: the page loaded a new document/) as unknown,
     })
     // Look-alikes: its place among them. Several refs in one batch, held before any step runs.
     const snap = (await tool("snapshot").run({}, studio, never)) as string
@@ -691,6 +691,58 @@ presets:
     // A YAML alias inside what it names: refused, never a crash.
     expect(await step("&a { id: x, action: click, target: *a }" as unknown as object)).toEqual({
       error: "invalid step: a YAML alias refers to itself (or it nests too deep)",
+    })
+    await studio.close()
+  }, 60_000)
+
+  it("checks a ref's element in Playwright's own reading: still there, the same, in the same document", async () => {
+    const { studio } = makeStudio()
+    const step = (s: object) => tool("run_step").run({ scene: "rows", step: s }, studio, never)
+    const refOf = (snap: string, line: RegExp) => {
+      const ref = new RegExp(`${line.source}.*?\\[ref=([a-z0-9]+)\\]`).exec(snap)?.[1]
+      if (ref === undefined) throw new Error(`no ${String(line)} in the snapshot:\n${snap}`)
+      return ref
+    }
+    await step({ id: "go", action: "goto", url: "/rows" })
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    const [row, email, done, path, reorder] = [
+      refOf(snap, /listitem/),
+      refOf(snap, /textbox "Email"/),
+      // Its text drawn by CSS ("* ") is in the snapshot's reading.
+      refOf(snap, /listitem(?= \[ref=[a-z0-9]+\]: "\* Done")/),
+      refOf(snap, /link \/x\//),
+      refOf(snap, /button "Reorder"/),
+    ]
+    // A filled field (its snapshot text is its value), text drawn by CSS, a name written unquoted.
+    expect(
+      await step({ id: "e", action: "type", target: { ref: email }, value: "z@z.z", clear: true }),
+    ).toContain("target: { by: role, role: textbox, name: Email, exact: true }")
+    expect(await step({ id: "d", action: "hover", target: { ref: done } })).toMatch(/^ok/)
+    expect(await step({ id: "p", action: "hover", target: { ref: path } })).toContain(
+      "target: { by: role, role: link, name: /x/, exact: true }",
+    )
+    // The field is still the same field once typed into (its value changed).
+    expect(await step({ id: "e2", action: "hover", target: { ref: email } })).toMatch(/^ok/)
+    // A row a step rewrote ("Buy milk" now "Buy eggs": same node, same ref): another element.
+    expect(
+      await tool("run_steps").run(
+        {
+          scene: "rows",
+          steps: [
+            { id: "r", action: "click", target: { ref: reorder } },
+            { id: "row", action: "hover", target: { ref: row } },
+          ],
+        },
+        studio,
+        never,
+      ),
+    ).toEqual({
+      error: expect.stringMatching(/^step 2 ref \S+: it changed since the snapshot/) as unknown,
+    })
+    // A reload: a new document, its refs numbered again from e1 (whatever the old ref names now).
+    await step({ id: "again", action: "goto", url: "/rows" })
+    expect(await step({ id: "d2", action: "hover", target: { ref: done } })).toEqual({
+      error: expect.stringMatching(/the page loaded a new document/) as unknown,
     })
     await studio.close()
   }, 60_000)

@@ -1,6 +1,5 @@
-// A lasting locator for an element the agent picked on the live page (a snapshot's ref). First the
-// element must still be what the snapshot said (a reused node with new content is another element),
-// then the first candidate, in the order the agent is told to prefer (role and name, placeholder,
+// A lasting locator for an element the agent picked on the live page (a snapshot's ref): the first
+// candidate, in the order the agent is told to prefer (role and name, placeholder,
 // text, an id written by hand, a role alone), that finds exactly that element among the visible
 // ones, through the rules a replay resolves with; else, among look-alikes, the candidate with the
 // fewest, and the element's place among them (`nth`: where the step's schema takes one).
@@ -25,6 +24,9 @@ export type Lasting =
 /** Roles a role locator can't usefully name (Playwright matches none of them by role). */
 const NO_ROLE_LOCATOR = new Set(["generic", "none", "presentation", "text", "paragraph"])
 
+/** Roles whose snapshot text is a value (what's typed or picked), never what the element is. */
+export const VALUE_ROLES = new Set(["textbox", "searchbox", "combobox", "spinbutton", "slider"])
+
 /** The longest visible text used as a text locator (longer is a paragraph, never a lasting one). */
 const TEXT_MAX = 80
 
@@ -45,7 +47,6 @@ export async function lastingLocator(
           .evaluate((el) => ({
             connected: el.isConnected,
             text: el.textContent ?? "",
-            shown: el instanceof HTMLElement ? el.innerText : (el.textContent ?? ""),
             placeholder: el.getAttribute("placeholder") ?? "",
             id: el.id,
           }))
@@ -65,46 +66,23 @@ export async function lastingLocator(
     }
   }
 
-  // Still what the snapshot said: its role (and name), and its own text when the snapshot gave it
-  // (the page's text, whitespace collapsed, hidden parts left out: compared with what's shown and
-  // with the DOM's, case aside, exactly: "Item 12" isn't "Item 1").
+  // That it's still the element the snapshot showed is the caller's to check (in Playwright's own
+  // model: a fresh snapshot of the same document); here, the locator that finds it.
   const role =
     !NO_ROLE_LOCATOR.has(hint.role) && /^[a-z]{2,40}$/.test(hint.role) ? hint.role : undefined
   const text = collapse(facts.text)
-  const said: SchemaLocator | undefined =
-    role === undefined
-      ? undefined
-      : { by: "role", role, ...(hint.name !== undefined && { name: hint.name, exact: true }) }
-  if (said === undefined && hint.text === undefined) {
-    return {
-      error:
-        "it has no role or text of its own to check it by: point at an element with one, or write a locator from the snapshot",
-    }
-  }
-  const sameText = (said: string) =>
-    [facts.shown, facts.text].some(
-      (t) => collapse(t).toLowerCase() === collapse(said).toLowerCase(),
-    )
-  const same =
-    (said === undefined ||
-      ((await indexAmong(page, said, element, false, false))?.index ?? -1) >= 0) &&
-    (hint.text === undefined || sameText(hint.text))
-  if (!same) {
-    return {
-      error:
-        "it changed since the snapshot (it isn't what the snapshot said anymore): take a new snapshot",
-    }
-  }
-
   const candidates: SchemaLocator[] = []
   if (role !== undefined && hint.name) {
     candidates.push({ by: "role", role, name: hint.name, exact: true })
   }
   const placeholder = facts.placeholder.trim()
   if (placeholder !== "") candidates.push({ by: "placeholder", text: placeholder })
-  // Its text as the snapshot said it (Playwright's own reading), then as the DOM has it.
-  for (const t of new Set([collapse(hint.text ?? ""), text])) {
-    if (t !== "" && t.length <= TEXT_MAX) candidates.push({ by: "text", text: t, exact: true })
+  // Its text as the snapshot said it (Playwright's own reading), then as the DOM has it; never a
+  // field's (its text is its value: what was typed, a secret maybe, and no text locator finds it).
+  if (!VALUE_ROLES.has(hint.role)) {
+    for (const t of new Set([collapse(hint.text ?? ""), text])) {
+      if (t !== "" && t.length <= TEXT_MAX) candidates.push({ by: "text", text: t, exact: true })
+    }
   }
   // An id that reads as written by hand (no digits: generated ids change per load).
   if (/^[A-Za-z][A-Za-z_-]*$/.test(facts.id)) {

@@ -2,59 +2,102 @@
 // takes a locator), and the studio writes the lasting locator for it (runtime `lastingLocator`)
 // right before the step runs. A ref lives on the snapshotted page only: a scene's YAML never holds
 // one.
-import type { ElementHint } from "@kiframe/runtime"
+import { type ElementHint, VALUE_ROLES } from "@kiframe/runtime"
 import { parse as parseYaml, stringify } from "yaml"
 
 /** A ref as the snapshot writes it: `e12`, or `f1e12` (a frame's: after a navigation, or an iframe's). */
 export const REF = /^(f\d{1,4})?e\d{1,6}$/
 
-/** A node of the snapshot, as its YAML key says it: `button "Save" [level=1] [ref=e8]`. */
-const NODE = /^([a-z]+)(?: ("(?:[^"\\]|\\.)*"))?((?: \[[^\]]*\])*)$/
+/**
+ * A node of the snapshot, as its YAML key says it: `button "Save" [level=1] [ref=e8]`; a name that
+ * starts and ends with "/" is written unquoted (`link /docs/ [ref=e9]`).
+ */
+const NODE = /^([a-z]+)(?: ("(?:[^"\\]|\\.)*"|\/(?:.*\/)?))?((?: \[[^\]]*\])*)$/
+
+/** What a snapshot says of a ref's node, and whether it's inside an iframe (under an iframe node). */
+export interface SnapshotNode extends ElementHint {
+  inFrame: boolean
+}
 
 /**
  * What a snapshot (Playwright's `mode: "ai"` YAML) says of each ref: its role, name, and its own
- * text (a node's text content: `- generic [ref=e9]: Open the board`). Read from its nodes as YAML
- * (a name with ": " or " #" is a quoted key): the page's text never names a ref.
+ * text (its scalar content, or its `text:` children: `- generic [ref=e9]: Open the board`). Read
+ * from its nodes as YAML (a name with ": " or " #" is a quoted key), every scalar as written: the
+ * page's text never names a ref. Undefined: it isn't a snapshot Playwright wrote.
  */
-export function refsOf(snapshot: string): Map<string, ElementHint> {
-  const refs = new Map<string, ElementHint>()
-  const node = (key: string, content: unknown) => {
+export function refsOf(snapshot: string): Map<string, SnapshotNode> | undefined {
+  const refs = new Map<string, SnapshotNode>()
+  const node = (key: string, content: unknown, inFrame: boolean): boolean => {
     const m = NODE.exec(key)
     const ref = m?.[3] !== undefined ? /\[ref=([a-z0-9]+)\]/.exec(m[3])?.[1] : undefined
-    if (m === null || ref === undefined) return
+    if (m === null || ref === undefined) return false
     let name: string | undefined
     try {
-      name = m[2] === undefined ? undefined : (JSON.parse(m[2]) as string)
+      const quoted = m[2]
+      name =
+        quoted === undefined
+          ? undefined
+          : quoted.startsWith('"')
+            ? (JSON.parse(quoted) as string)
+            : quoted
     } catch {
       name = undefined
     }
-    const text =
-      typeof content === "string" || typeof content === "number" ? String(content) : undefined
+    const text = ownText(content)
     refs.set(ref, {
       role: m[1] ?? "",
       ...(name !== undefined && { name }),
       ...(text !== undefined && { text }),
+      inFrame,
     })
+    return m[1] === "iframe"
   }
-  const walk = (items: unknown) => {
+  const walk = (items: unknown, inFrame: boolean) => {
     if (!Array.isArray(items)) return
     for (const item of items as unknown[]) {
-      if (typeof item === "string") node(item, undefined)
+      if (typeof item === "string") node(item, undefined, inFrame)
       else if (typeof item === "object" && item !== null) {
         for (const [key, children] of Object.entries(item)) {
-          node(key, children)
-          walk(children)
+          // Under an iframe node: the iframe's own elements.
+          const frame = node(key, children, inFrame)
+          walk(children, inFrame || frame)
         }
       }
     }
   }
   try {
     // Every scalar as written (`~` and `.inf` are a page's text, not null and Infinity).
-    walk(parseYaml(snapshot, { schema: "failsafe" }))
+    walk(parseYaml(snapshot, { schema: "failsafe" }), false)
   } catch {
-    // Not YAML (never seen): no refs, each refused as not of the last snapshot.
+    return undefined
   }
   return refs
+}
+
+/** A node's own text: its scalar content, or its `text:` children joined (never its elements'). */
+function ownText(content: unknown): string | undefined {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return undefined
+  const parts = (content as unknown[]).flatMap((c) =>
+    typeof c === "object" && c !== null && typeof (c as { text?: unknown }).text === "string"
+      ? [(c as { text: string }).text]
+      : [],
+  )
+  return parts.length > 0 ? parts.join(" ") : undefined
+}
+
+const collapse = (text: string | undefined) => text?.replace(/\s+/g, " ").trim()
+
+/**
+ * Whether a fresh snapshot's node (same document, same ref) is still the element the agent saw:
+ * Playwright gives a node a new ref when its role or name changes, so its role and name are
+ * checked as a backstop, and the text of a nameless node is what it is (a list row's "Buy milk"):
+ * never a field's, whose text is its value (what the agent's own steps type).
+ */
+export function sameNode(saw: ElementHint, now: ElementHint): boolean {
+  if (saw.role !== now.role || saw.name !== now.name) return false
+  if (saw.name !== undefined || VALUE_ROLES.has(saw.role)) return true
+  return collapse(saw.text) === collapse(now.text)
 }
 
 /** The deepest a step is walked (a step is a few levels; far deeper is no step). */
