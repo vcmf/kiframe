@@ -2,7 +2,7 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
-import { asObject, type Studio, stepOutcome } from "./studio.ts"
+import { asObject, type StepResult, type Studio } from "./studio.ts"
 
 // The agent's tools for Kiframe: look at and act on the live app, write and check scenes, record
 // them. Each heeds the run's signal (a stop ends a step, a replay or a recording at its next step,
@@ -53,7 +53,11 @@ const runStep = defineTool({
       .default("steps")
       .describe("the part of the scene it's for (its approvals are that part's)"),
   }),
-  run: ({ scene, step, part }, studio: Studio, signal) => studio.runStep(step, scene, signal, part),
+  // Its text when it worked; a failure as `{ error }` (the loop's and the chat's own protocol).
+  run: async ({ scene, step, part }, studio: Studio, signal) => {
+    const result = await studio.runStep(step, scene, signal, part)
+    return result.ok ? result.text : { error: result.text }
+  },
 })
 
 const runSteps = defineTool({
@@ -75,21 +79,29 @@ const runSteps = defineTool({
     }
     const out: string[] = []
     for (const [i, step] of list.entries()) {
-      let result: string
+      let result: StepResult
       try {
         result = await studio.runStep(step, scene, signal, part)
       } catch (error) {
         // A stop ends the call; anything else is this step's failure, the ones before it kept.
         if (signal.aborted) throw error
-        result = `failed: ${error instanceof Error ? error.message : String(error)}`
+        result = {
+          ok: false,
+          text: `failed: ${error instanceof Error ? error.message : String(error)}`,
+        }
       }
-      out.push(`${i + 1}. ${result}`)
-      // Only on: a step that failed, closed every page or left the app's site stops the rest.
-      if (stepOutcome(result) !== "ok") {
-        const left = list.length - i - 1
-        if (left > 0) out.push(`stopped there: the ${left} after it didn't run`)
-        break
+      out.push(`${i + 1}. ${result.text}`)
+      const left = list.length - i - 1
+      const stopped = (why: string) =>
+        left > 0 ? [`stopped there (${why}): the ${left} after it didn't run`] : []
+      // A failed step: the call fails, that step's reason first (the line a chat shows), then all.
+      if (!result.ok) {
+        return {
+          error: [`step ${i + 1} ${result.text}`, ...out, ...stopped("it failed")].join("\n"),
+        }
       }
+      // On another site: what follows would run there (not a failure: said, and stopped).
+      if (result.site === "other") return [...out, ...stopped("not the app's site")].join("\n")
     }
     return out.join("\n")
   },

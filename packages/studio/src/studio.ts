@@ -188,6 +188,13 @@ export class Studio {
     return whereOf(url, this.options.config.target.url)
   }
 
+  /** A step done, and where its page is: a page that failed to load makes it a failure. */
+  #landed(url: string, said: string): StepResult {
+    const site = siteOf(url, this.options.config.target.url)
+    const text = `${said}. url: ${this.#where(url)}`
+    return site === "unloaded" ? { ok: false, text, site } : { ok: true, text, site }
+  }
+
   /** The live page's accessibility snapshot (or one region's), with its URL. */
   async snapshot(within?: unknown): Promise<string> {
     const page = await this.livePage()
@@ -224,10 +231,13 @@ export class Studio {
     scene: string,
     signal: AbortSignal,
     part: ScenarioPart = "steps",
-  ): Promise<string> {
+  ): Promise<StepResult> {
+    const failed = (text: string): StepResult => ({ ok: false, text })
     const raw = asObject(input)
     if (typeof raw !== "object" || raw === null) {
-      return "invalid step: expected an object like {id: open-new, action: click, target: {...}}"
+      return failed(
+        "invalid step: expected an object like {id: open-new, action: click, target: {...}}",
+      )
     }
     // Run in the part it's for: its approvals are keyed there, as the replay's will be (A1).
     const step = part === "steps" ? Step.safeParse(raw) : { success: false as const }
@@ -239,12 +249,16 @@ export class Studio {
         : SetupItem.safeParse(raw)
     const teardownItem = part === "teardown" ? Action.safeParse(raw) : undefined
     if (teardownItem !== undefined && !teardownItem.success) {
-      return `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}${shapeOf(raw)}`
+      return failed(
+        `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}${shapeOf(raw)}`,
+      )
     }
     if (teardownItem === undefined && !step.success && setupItem?.success !== true) {
       const r = raw as Record<string, unknown>
       if (part === "steps" && !("id" in r) && Action.safeParse(raw).success) {
-        return "invalid step: an on-camera step needs an id (a setup or teardown action: give its part)"
+        return failed(
+          "invalid step: an on-camera step needs an id (a setup or teardown action: give its part)",
+        )
       }
       // Parsed against the shape the agent meant (a union's error only says "Invalid input").
       const [what, schema] =
@@ -257,7 +271,9 @@ export class Studio {
               : (["setup action", Action] as const)
       const result = schema.safeParse(raw)
       // The issue, then the forms of the action it meant (never a guess at the field names).
-      return `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}${shapeOf(raw)}`
+      return failed(
+        `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}${shapeOf(raw)}`,
+      )
     }
     const scenario: Scenario =
       teardownItem?.success === true
@@ -276,9 +292,11 @@ export class Studio {
       })
       const now = this.#live?.page.isClosed() === false ? this.#live.page : this.#backPage()
       if (now === undefined) {
-        return "ok, but it closed every page: the next tool opens the app fresh (signed out, nothing kept)"
+        return failed(
+          "it closed every page: the next tool opens the app fresh (signed out, nothing kept)",
+        )
       }
-      return `ok. url: ${this.#where(now.url())}`
+      return this.#landed(now.url(), "ok")
     } catch (error) {
       // Stopped: the call is aborted, not a failure to fix.
       if (isStopped(error)) throw error
@@ -287,17 +305,18 @@ export class Studio {
       const back =
         error instanceof StepError && error.reason === "page-closed" ? this.#backPage() : undefined
       if (back !== undefined) {
-        const url = this.#where(back.url())
         return step.success || !("preset" in raw || "ensure" in raw)
-          ? `ok (the page closed itself: back on the page that opened it). url: ${url}`
-          : `failed (page-closed): ${(error as StepError).message}; the rest of it didn't run (back on the page that opened it, url: ${url}): run its remaining steps one by one`
+          ? this.#landed(back.url(), "ok (the page closed itself: back on the page that opened it)")
+          : failed(
+              `failed (page-closed): ${(error as StepError).message}; the rest of it didn't run (back on the page that opened it, url: ${this.#where(back.url())}): run its remaining steps one by one`,
+            )
       }
       // An ensure checked alone doesn't know the scene's teardown or setup: said so.
       const alone =
         "ensure" in (raw as Record<string, unknown>)
           ? " (ensure checked alone: your teardown and setup aren't known here; save_scene's replay runs them)"
           : ""
-      return failure(error) + alone
+      return failed(failure(error) + alone)
     }
   }
 
@@ -456,42 +475,59 @@ function shapeOf(raw: object): string {
 }
 
 /**
- * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and the
- * site when it isn't the app's own (a link that left the app says so). The app's own is its exact
- * origin, as the runtime sees it: an address that redirects to `www.` says what to change.
+ * Where a page is, against the app's address (read from the URLs, never from text): the app's
+ * origin; the app's own host under `www.` or upgraded from http to https (a redirect: the app, but
+ * a secret is typed on the exact origin only); another site; or Chromium's error page (the load
+ * failed). A blob: URL is its creator's origin; data: and file: pages are another site.
  */
-export function whereOf(url: string, appUrl: string): string {
-  let parsed: URL
+export type Site = "app" | "app-redirect" | "other" | "unloaded"
+
+export function siteOf(url: string, appUrl: string): Site {
+  let page: URL
   try {
-    parsed = new URL(url)
+    page = new URL(url)
   } catch {
-    return url.slice(0, 200)
+    return "other"
   }
-  // Chromium's error page: the load failed (the network, a timeout), the app wasn't left.
-  if (parsed.protocol === "chrome-error:") return "(the page failed to load: try again)"
-  // A page with no host (data:, file:, blob:): never its content, only what it is.
-  if (parsed.host === "" && parsed.protocol !== "about:") {
-    return `(a ${parsed.protocol.replace(":", "")} page: not the app)`
-  }
+  if (page.protocol === "chrome-error:") return "unloaded"
+  if (page.protocol === "about:") return "app"
   const app = new URL(appUrl)
-  // The runtime's own rule: the exact origin (secrets are typed only there).
-  if (parsed.origin === app.origin || parsed.protocol === "about:") return parsed.pathname
-  const bare = (h: string) => h.replace(/^www\./, "")
-  const sameButWww = bare(parsed.host) === bare(app.host) && parsed.protocol === app.protocol
-  return sameButWww
-    ? `${parsed.pathname} (on ${parsed.host}: the app's address redirects here; the user should set the project's address to ${parsed.origin}, or secrets can't be typed on this page)`
-    : `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${app.host})`
+  if (page.origin === app.origin) return "app"
+  if (page.origin === "null") return "other"
+  const host = (u: URL) => new URL(u.origin).host.replace(/^www\./, "")
+  const protocol = (u: URL) => new URL(u.origin).protocol
+  const upgraded =
+    protocol(page) === protocol(app) || (protocol(app) === "http:" && protocol(page) === "https:")
+  return host(page) === host(app) && upgraded ? "app-redirect" : "other"
+}
+
+/** A step's outcome: ok or not, what the agent reads, and where the page is (when it was read). */
+export interface StepResult {
+  ok: boolean
+  text: string
+  site?: Site
 }
 
 /**
- * How a step went, read from `runStep`'s answer (one reading for every caller: run_steps, the
- * host's chat): ok, ok but the page is off the app's site (what follows would run elsewhere), or
- * failed (a refusal, a failure, a page that closed every tab).
+ * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and
+ * what its site is when it isn't the app's own origin (`siteOf`).
  */
-export function stepOutcome(result: string): "ok" | "off-site" | "failed" {
-  if (!result.startsWith("ok") || result.startsWith("ok, but")) return "failed"
-  // The app's address redirecting (www.) is still the app: only a secret needs the address fixed.
-  return /NOT the app's site|: not the app\)/.test(result) ? "off-site" : "ok"
+export function whereOf(url: string, appUrl: string): string {
+  const site = siteOf(url, appUrl)
+  if (site === "unloaded") return "(the page failed to load: try again)"
+  let page: URL
+  try {
+    page = new URL(url)
+  } catch {
+    return "(an unreadable address: not the app)"
+  }
+  if (site === "app") return page.pathname
+  const app = new URL(appUrl)
+  if (page.origin === "null") return `(a ${page.protocol.replace(":", "")} page: not the app)`
+  const shown = new URL(page.origin)
+  return site === "app-redirect"
+    ? `${page.pathname} (on ${shown.origin}: the app's address redirects here; the user should set the project's address to ${shown.origin}, or secrets can't be typed on this page)`
+    : `${page.pathname} (on ${shown.host}: NOT the app's site, ${app.host})`
 }
 
 /** Where in a scenario an item runs. */

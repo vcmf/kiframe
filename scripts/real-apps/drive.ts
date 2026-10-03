@@ -6,7 +6,14 @@
 // Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20]
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
@@ -72,6 +79,20 @@ const out = join(root, ".kiframe-local", "real-apps", `${values.app}-${Date.now(
 mkdirSync(out, { recursive: true })
 const log = (line: string) => console.log(`[${values.app}] ${line}`)
 
+/** The complete takes under a take store's folder (a take is complete once its meta.json says so). */
+function completeTakes(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let count = 0
+  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || entry.name !== "meta.json") continue
+    const meta = JSON.parse(readFileSync(join(entry.parentPath, entry.name), "utf8")) as {
+      outcome?: { status?: string }
+    }
+    if (meta.outcome?.status === "complete") count += 1
+  }
+  return count
+}
+
 async function credits(): Promise<number | undefined> {
   const res = await fetch("https://openrouter.ai/api/v1/key", {
     headers: { authorization: `Bearer ${key}` },
@@ -88,6 +109,14 @@ const env = Object.fromEntries(
   ),
 )
 env.KIFRAME_TEST_KEYCHAIN = "memory"
+// The app gets the key and the secrets only through its own UI (as a user gives them): never from
+// the environment.
+for (const name of [
+  "OPENROUTER_API_KEY",
+  ...Object.values(APPS).flatMap((a) => a.secrets.map((s) => s.env)),
+]) {
+  delete env[name]
+}
 const profile = mkdtempSync(join(tmpdir(), "kiframe-real-"))
 const usageBefore = await credits()
 const started = Date.now()
@@ -227,7 +256,8 @@ try {
       usageBefore !== undefined && usageAfter !== undefined
         ? Math.round((usageAfter - usageBefore) * 10000) / 10000
         : null,
-    takes: existsSync(join(profile, "data", "takes")),
+    // Complete takes only (a take folder exists once a recording starts).
+    takes: completeTakes(join(profile, "data", "takes")),
     status,
     chat: state,
   }

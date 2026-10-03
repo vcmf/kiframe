@@ -2,7 +2,6 @@
 // Each change gives back the items that changed; the window replaces them by id.
 import { randomBytes } from "node:crypto"
 import { type AgentEvent, isToolFailure, isToolSoftError } from "@kiframe/agent"
-import { stepOutcome } from "@kiframe/studio"
 import type { ChatItem, ChatRequest } from "../shared/ipc.ts"
 
 const LINE_MAX = 160
@@ -58,21 +57,9 @@ export function toolOutcome(
   }
   if (isToolSoftError(result)) return { status: "failed", result: oneLine(result.error) }
   const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "")
-  // run_steps: a numbered line per step, read as the studio reads one (a step that left the
-  // app's site stopped the rest: failed too).
-  if (toolName === "run_steps") {
-    const numbered = text.split("\n").filter((l) => /^\d+\. /.test(l))
-    const bad = numbered.find((l) => stepOutcome(l.replace(/^\d+\. /, "")) === "failed")
-    if (bad !== undefined) return { status: "failed", result: oneLine(bad) }
-    if (numbered.length > 0) {
-      return { status: "ok", result: oneLine(`${numbered.length} ok; ${numbered.at(-1) ?? ""}`) }
-    }
-  }
-  if (toolName === "run_step") {
-    return {
-      status: stepOutcome(text) === "failed" ? "failed" : "ok",
-      result: oneLine(text.split("\n")[0] ?? ""),
-    }
+  // The steps' tools say a failure as `{ error }` (above): their text is a success.
+  if (toolName === "run_step" || toolName === "run_steps") {
+    return { status: "ok", result: oneLine(text.split("\n").at(-1) ?? "") }
   }
   const failed = /^(failed|invalid|refused|replay failed|recording failed|no scene)\b/.test(text)
   return { status: failed ? "failed" : "ok", result: oneLine(text.split("\n")[0] ?? "") }

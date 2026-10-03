@@ -32,17 +32,7 @@ export async function moveCursorTo(
     if (at !== undefined) {
       // The step's own point within the box (a canvas): exactly there, never a nearby one (nor the
       // center Playwright would pick without a box).
-      if (box === null) {
-        throw new StepError(step, "target-not-found", "the target has no box to point in yet")
-      }
-      to = pointIn(box, at)
-      if (!onScreen(to, viewport)) {
-        throw new StepError(
-          step,
-          "target-not-found",
-          `the point at (${at.x}, ${at.y}) of the target is off screen: scroll it into view first`,
-        )
-      }
+      to = namedPoint(box, at, viewport, step, "the target")
       width = 24
     } else {
       // No box (display: contents, re-rendering…): skip the visual movement, the action still runs.
@@ -63,6 +53,33 @@ export async function moveCursorTo(
     )
     return ctx.cursor
   })
+}
+
+/** A step's named point is covered (never another point clicked instead). */
+export const COVERED_AT_POINT = "something covers the target at that point"
+
+/**
+ * A step's named point (`at`) of an element's box, on screen, or why not (no box yet, off screen):
+ * one rule for the press and the drop.
+ */
+export function namedPoint(
+  box: Box | null,
+  at: At,
+  viewport: { width: number; height: number },
+  step: StepRef,
+  what: string,
+): Point {
+  if (box === null)
+    throw new StepError(step, "target-not-found", `${what} has no box to point in yet`)
+  const p = pointIn(box, at)
+  if (!onScreen(p, viewport)) {
+    throw new StepError(
+      step,
+      "target-not-found",
+      `the point at (${at.x}, ${at.y}) of ${what} is off screen: scroll it into view first`,
+    )
+  }
+  return p
 }
 
 /** Whether a point is on the viewport's pixels, [0, width-1] × [0, height-1]. */
@@ -114,7 +131,7 @@ export async function clickAtCursor(
       // Still covered at our point: let Playwright choose one (it reports interceptions clearly);
       // never another point when the step named its own (a canvas: another spot is another click).
       if (!probe.hits && action.at !== undefined) {
-        throw new StepError(step, "action-failed", "something covers the target at that point")
+        throw new StepError(step, "action-failed", COVERED_AT_POINT)
       }
       if (!probe.hits) point = undefined
     }
@@ -141,8 +158,16 @@ export async function clickAtCursor(
         // A named point is measured again on the box as it is now (the page may have moved while
         // the user approved): the check, the click and the take's ripple all use it.
         if (point !== undefined && action.at !== undefined) {
-          const moved = await target.boundingBox({ timeout: left() }).catch(() => null)
-          if (moved !== null) point = pointIn(moved, action.at)
+          const box = await target.boundingBox({ timeout: left() }).catch(() => null)
+          const now = box === null ? undefined : pointIn(box, action.at)
+          // Moved (the cursor was filmed at the old spot, the approval was for it): nothing clicked.
+          if (now === undefined || Math.hypot(now.x - point.x, now.y - point.y) > 2) {
+            throw new StepError(
+              step,
+              "action-failed",
+              "the page moved while waiting for approval: nothing was clicked",
+            )
+          }
         }
         const now = point === undefined ? undefined : await probeAt(point)
         if (

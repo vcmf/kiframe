@@ -13,7 +13,7 @@ import {
   studioTools,
   systemPrompt,
   type UserRequest,
-  stepOutcome,
+  siteOf,
   whereOf,
 } from "../src/index.ts"
 
@@ -112,7 +112,7 @@ describe("studio tools", () => {
         studio,
         never,
       ),
-    ).toMatch(/failed \(/)
+    ).toEqual({ error: expect.stringMatching(/^failed \(/) as unknown })
     await studio.close()
   }, 30_000)
 
@@ -340,7 +340,7 @@ describe("studio tools", () => {
         studio,
         never,
       ),
-    ).toMatch(/kebab-case/)
+    ).toEqual({ error: expect.stringMatching(/kebab-case/) as unknown })
     await studio.close()
   }, 30_000)
 
@@ -394,7 +394,9 @@ presets:
       action: "click",
       target: { by: "role", role: "button", name: "Open popup" },
     })
-    expect(await run({ preset: "finish" })).toMatch(/^failed \(page-closed\).*didn't run/)
+    expect(await run({ preset: "finish" })).toEqual({
+      error: expect.stringMatching(/^failed \(page-closed\).*didn't run/) as unknown,
+    })
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/opener/)
     await studio.close()
   }, 60_000)
@@ -464,7 +466,7 @@ presets:
     ).rejects.toThrow(/stopped/)
     expect(
       await tool("run_step").run({ scene: "s", step: { action: "pause", ms: 1 } }, studio, never),
-    ).toMatch(/needs an id/)
+    ).toEqual({ error: expect.stringMatching(/needs an id/) as unknown })
     await studio.close()
   }, 30_000)
 
@@ -492,17 +494,17 @@ presets:
       },
       studio,
       never,
-    )) as string
-    expect(refused).toMatch(/^invalid step: /)
-    expect(refused).toMatch(/drag: press on the target/)
-    expect(refused).toMatch(/to: \{ dx: 120, dy: 0 \}/)
-    expect(refused).toMatch(/at: \{ x: 0\.6, y: 0\.7 \}/)
+    )) as { error: string }
+    expect(refused.error).toMatch(/^invalid step: /)
+    expect(refused.error).toMatch(/drag: press on the target/)
+    expect(refused.error).toMatch(/to: \{ dx: 120, dy: 0 \}/)
+    expect(refused.error).toMatch(/at: \{ x: 0\.6, y: 0\.7 \}/)
     const unknown = (await tool("run_step").run(
       { scene: "s", step: { id: "d", action: "draw", target: { by: "css", selector: "canvas" } } },
       studio,
       never,
-    )) as string
-    expect(unknown).toMatch(/actions: goto, click, hover/)
+    )) as { error: string }
+    expect(unknown.error).toMatch(/actions: goto, click, hover/)
     await studio.close()
   }, 30_000)
 
@@ -519,7 +521,7 @@ presets:
     await page.goto(`${server.url}/projects`)
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/projects\n/)
     expect(whereOf("https://www.app.example/x", "https://app.example")).toMatch(
-      /^\/x \(on www\.app\.example: the app's address redirects here; .* https:\/\/www\.app\.example/,
+      /^\/x \(on https:\/\/www\.app\.example: the app's address redirects here; .* https:\/\/www\.app\.example/,
     )
     expect(whereOf("https://app.example/x", "https://app.example")).toBe("/x")
     expect(whereOf("https://github.com/x", "https://app.example")).toMatch(/NOT the app's site/)
@@ -544,12 +546,13 @@ presets:
       },
       studio,
       never,
-    )) as string
-    const lines = result.split("\n")
+    )) as { error: string }
+    const lines = result.error.split("\n")
+    expect(lines.shift()).toMatch(/^step 3 failed \(target-not-found\)/)
     expect(lines[0]).toMatch(/^1\. ok/)
     expect(lines[1]).toMatch(/^2\. ok\. url: \/projects/)
     expect(lines[2]).toMatch(/^3\. failed \(target-not-found\)/)
-    expect(lines[3]).toBe("stopped there: the 1 after it didn't run")
+    expect(lines[3]).toBe("stopped there (it failed): the 1 after it didn't run")
     // A list sent as text (a model's habit) is read as the list it says.
     const asText = (await tool("run_steps").run(
       { scene: "tour", steps: "[{ id: go, action: goto, url: / }]" },
@@ -573,20 +576,22 @@ presets:
     )) as string
     expect(offSite.split("\n")).toEqual([
       expect.stringMatching(/^1\. ok\. url: \/ \(on localhost/) as unknown,
-      "stopped there: the 1 after it didn't run",
+      "stopped there (not the app's site): the 1 after it didn't run",
     ])
-    expect(stepOutcome("ok. url: /x")).toBe("ok")
-    // The app's address redirecting (www.) is still the app: a batch goes on there.
-    expect(
-      stepOutcome(`ok. url: ${whereOf("https://www.app.example/x", "https://app.example")}`),
-    ).toBe("ok")
-    expect(stepOutcome(`ok. url: ${whereOf("data:text/html,hi", "https://app.example")}`)).toBe(
-      "off-site",
-    )
-    expect(whereOf("data:text/html,secret-content", "https://app.example")).toBe(
-      "(a data page: not the app)",
-    )
-    expect(stepOutcome("failed (x): y")).toBe("failed")
+    const app = "https://app.example"
+    expect(siteOf("https://app.example/x", app)).toBe("app")
+    // The app's address redirecting (www., either way; http to https) is still the app: a batch
+    // goes on there.
+    expect(siteOf("https://www.app.example/x", app)).toBe("app-redirect")
+    expect(siteOf("https://app.example/x", "https://www.app.example")).toBe("app-redirect")
+    expect(siteOf("https://app.example/x", "http://app.example")).toBe("app-redirect")
+    expect(siteOf("http://app.example/x", app)).toBe("other")
+    expect(siteOf("blob:https://app.example/1234", app)).toBe("app")
+    expect(siteOf("about:blank", app)).toBe("app")
+    expect(siteOf("data:text/html,hi", app)).toBe("other")
+    expect(siteOf("https://github.com/x", app)).toBe("other")
+    expect(siteOf("chrome-error://chromewebdata/", app)).toBe("unloaded")
+    expect(whereOf("data:text/html,secret-content", app)).toBe("(a data page: not the app)")
     expect(whereOf("chrome-error://chromewebdata/", "https://app.example")).toBe(
       "(the page failed to load: try again)",
     )

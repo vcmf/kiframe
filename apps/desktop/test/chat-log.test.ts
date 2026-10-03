@@ -47,7 +47,7 @@ describe("the chat, folded from the agent's events", () => {
       type: "tool_result",
       callId: "c2",
       toolName: "run_step",
-      result: "failed (target-not-found): …",
+      result: { error: "failed (target-not-found): …" },
     })
     expect(log.items[1]).toMatchObject({ status: "failed" })
   })
@@ -128,29 +128,23 @@ describe("a tool's line", () => {
     expect(toolOutcome("saved: tour (replayed)").status).toBe("ok")
     expect(toolOutcome({ answer: "the demo account" }).status).toBe("ok")
     expect(oneLine("x".repeat(400)).length).toBe(160)
-    // run_steps: failed when one of its numbered lines did, that line shown.
+    // The steps' tools say a failure as `{ error }` (the failed step's reason first): their text is
+    // a success, whatever its words (a page's own text may say "failed"), its last line shown.
     expect(toolOutcome("1. ok. url: /\n2. ok. url: /x", "run_steps")).toEqual({
       status: "ok",
-      result: "2 ok; 2. ok. url: /x",
+      result: "2. ok. url: /x",
     })
     expect(
       toolOutcome(
-        "1. ok. url: /\n2. failed (target-not-found): no Save\nstopped there: the 1 after it didn't run",
+        { error: "step 2 failed (target-not-found): no Save\n1. ok. url: /\n2. failed …" },
         "run_steps",
       ),
-    ).toEqual({ status: "failed", result: "2. failed (target-not-found): no Save" })
-    expect(toolOutcome("1. invalid step: x", "run_steps").status).toBe("failed")
-    expect(toolOutcome("1. ok, but it closed every page", "run_steps").status).toBe("failed")
-    // Off the app's site: the batch stopped there, but no step failed.
-    expect(
-      toolOutcome("1. ok. url: /docs (on github.com: NOT the app's site, minmux.dev)", "run_steps")
-        .status,
-    ).toBe("ok")
-    // A single run_step is read the same way.
-    expect(toolOutcome("ok, but it closed every page: …", "run_step").status).toBe("failed")
-    expect(
-      toolOutcome("ok. url: /x (on github.com: NOT the app's site, a.b)", "run_step").status,
-    ).toBe("ok")
+    ).toMatchObject({
+      status: "failed",
+      result: expect.stringMatching(/^step 2 failed \(/) as unknown,
+    })
+    expect(toolOutcome("ok. url: /failed-payments", "run_step").status).toBe("ok")
+    expect(toolOutcome({ error: "ok, but it closed every page" }, "run_step").status).toBe("failed")
     // Another tool's numbered text is never read as run_steps'.
     expect(toolOutcome("1. failed attempts are retried", "list_scenes").status).toBe("ok")
     expect(toolDetail({ scene: "s", steps: [{}, {}, {}] })).toBe("3 steps")

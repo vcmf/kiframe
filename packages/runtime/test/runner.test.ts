@@ -1281,6 +1281,35 @@ steps: [{ id: a, action: pause, ms: 1 }]
         "up 240,210",
       ])
     })
+
+    // Its label reads as risky ("Trash"): the click asks once the cursor is at the point.
+    const riskyDot = `setup: [{ action: goto, url: "/canvas?trash" }]
+steps:
+  - { id: dot, action: click, target: ${canvas}, at: { x: 0.25, y: 0.75 } }
+`
+
+    it("clicks a risky point once approved, where it was approved", async () => {
+      const asked: string[] = []
+      await run(riskyDot, { approveRisky: (step) => (asked.push(step.stepId ?? ""), true) })
+      expect(asked).toEqual(["dot"])
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
+    })
+
+    it("clicks nothing when the page moved while waiting for the approval", async () => {
+      const error = await failure(riskyDot, {
+        approveRisky: async () => {
+          // The user takes their time; the page lays out again meanwhile.
+          await page.evaluate(() => {
+            document.querySelector("canvas")!.style.marginTop = "40px"
+          })
+          return true
+        },
+      })
+      expect(error.message).toMatch(
+        /the page moved while waiting for approval: nothing was clicked/,
+      )
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual([])
+    })
   })
 
   it("returns to the opener when the click closes its page before it ends", async () => {

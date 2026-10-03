@@ -1,5 +1,6 @@
 // The agent's answers as Markdown: no raw HTML (react-markdown escapes it), and a link never
 // navigates the window: an https one opens in the user's browser (main checks it again).
+import { memo } from "react"
 import Markdown, { type Components } from "react-markdown"
 import { api } from "../api.ts"
 
@@ -40,10 +41,11 @@ function hostOf(href: string | undefined): string | undefined {
   }
 }
 
-export function AgentText({ text }: { text: string }) {
+/** Parsed once per text (a chat update never re-parses every past answer). */
+export const AgentText = memo(function AgentText({ text }: { text: string }) {
   return (
     <div className="md">
       <Markdown components={components}>{text}</Markdown>
     </div>
   )
-}
+})

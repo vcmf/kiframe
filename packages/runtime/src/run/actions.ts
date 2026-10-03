@@ -29,7 +29,15 @@ import {
   timeoutOf,
 } from "./context.ts"
 import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
-import { clickAtCursor, moveCursorTo, onScreen, pointIn, travel, visiblePart } from "./pointer.ts"
+import {
+  COVERED_AT_POINT,
+  clickAtCursor,
+  moveCursorTo,
+  namedPoint,
+  onScreen,
+  travel,
+  visiblePart,
+} from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
   abandonSecretWrite,
@@ -94,7 +102,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
             .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
             .catch(() => false))
         if (!hovered && action.at !== undefined) {
-          throw new StepError(step, "action-failed", "something covers the target at that point")
+          throw new StepError(step, "action-failed", COVERED_AT_POINT)
         }
         if (!hovered) {
           await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
@@ -383,19 +391,7 @@ async function drag(
       return p
     }
     const box = await guard(step, () => dest.boundingBox({ timeout: ctx.timeoutMs }))
-    if (toPoint !== undefined) {
-      if (box === null)
-        throw new StepError(step, "target-not-found", "the drop target isn't on screen")
-      const p = pointIn(box, toPoint.at)
-      if (!onScreen(p, viewport)) {
-        throw new StepError(
-          step,
-          "target-not-found",
-          `the drag's end at (${toPoint.at.x}, ${toPoint.at.y}) of its target is off screen`,
-        )
-      }
-      return p
-    }
+    if (toPoint !== undefined) return namedPoint(box, toPoint.at, viewport, step, "the drop target")
     const visible = visiblePart(box, viewport)
     if (visible === undefined) {
       throw new StepError(step, "target-not-found", "the drop target isn't on screen")
