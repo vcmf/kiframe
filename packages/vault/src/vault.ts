@@ -321,9 +321,29 @@ export class Vault {
     }))
   }
 
+  /**
+   * Takes a secret off one origin: its grants there go; the secret itself (value, metadata) only
+   * when no other origin keeps it.
+   */
+  async removeOrigin(name: string, origin: string): Promise<void> {
+    const meta = this.#find(name)
+    if (meta === undefined) throw new Error(`secret "${name}" isn't in the vault`)
+    if (!meta.origins.includes(origin)) throw new Error(`secret "${name}" isn't used on ${origin}`)
+    if (meta.origins.length === 1) return this.remove(name)
+    this.#update((file) => ({
+      ...file,
+      secrets: file.secrets.map((s) =>
+        s.name === name ? { ...s, origins: s.origins.filter((o) => o !== origin) } : s,
+      ),
+      grants: file.grants.filter((g) => !(g.secret === name && g.origin === origin)),
+    }))
+  }
+
   /** Removes a secret: its value from the keychain, its metadata and grants from the vault. */
   async remove(name: string): Promise<void> {
-    await this.#backend.delete(name)
+    // A secret name only (never another keychain entry of its service: the grants' key), with or
+    // without its metadata (a value whose metadata write failed can still be removed).
+    await this.#backend.delete(SecretName.parse(name))
     this.#update((file) => ({
       ...file,
       secrets: file.secrets.filter((s) => s.name !== name),

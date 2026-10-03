@@ -1,0 +1,22 @@
+{
+  "name": "@kiframe/studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@kiframe/agent": "workspace:*",
+    "@kiframe/generators": "workspace:*",
+    "@kiframe/project": "workspace:*",
+    "@kiframe/runtime": "workspace:*",
+    "@kiframe/schema": "workspace:*",
+    "playwright": "1.63.0",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
+  }
+}

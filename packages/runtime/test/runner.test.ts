@@ -184,6 +184,22 @@ ${extra}`
       },
     })
 
+    it("scrolls the field into view for the approval's screenshot (its outline is in it)", async () => {
+      const vault = await vaultWithPassword()
+      const asked: ApprovalRequest[] = []
+      await run(
+        `setup: [{ action: goto, url: /login-below }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`,
+        approving(vault, asked),
+      )
+      const { box, shot } = asked[0]!
+      expect(box).toBeDefined()
+      expect(box!.y).toBeGreaterThanOrEqual(0)
+      expect(box!.y + box!.height).toBeLessThanOrEqual(shot!.height)
+    })
+
     it("asks once in an interactive run, then types without asking", async () => {
       const vault = await vaultWithPassword()
       const asked: ApprovalRequest[] = []
@@ -197,6 +213,18 @@ ${extra}`
         element: { tag: "input", type: "password", label: "Password input" },
       })
       expect(asked[0]?.box).toBeDefined()
+      // The page as it is, to outline the field on: before the value is typed.
+      const shot = asked[0]?.shot
+      expect(shot).toMatchObject({
+        width: expect.any(Number) as unknown,
+        height: expect.any(Number) as unknown,
+      })
+      // A JPEG of the page as it is (the user's own screen).
+      expect(
+        Buffer.from(shot?.jpeg ?? "", "base64")
+          .subarray(0, 2)
+          .toString("hex"),
+      ).toBe("ffd8")
       // Headless now: granted, no hook needed.
       await run(into(password), { ...scope, resolveSecret: vault.resolver() })
       expect(asked).toHaveLength(1)
@@ -417,7 +445,7 @@ steps:
         ...approving(vault, []),
         timeoutMs: 1500,
       }).catch((e: unknown) => e)
-      expect(String(error)).toMatch(/can't have fallbacks or nth/)
+      expect(String(error)).toMatch(/can't have fallbacks, nth/)
     })
 
     it("keeps its protections across runs on the same browser context", async () => {
@@ -529,7 +557,7 @@ steps:
         ...approving(vault, []),
         timeoutMs: 1500,
       }).catch((e: unknown) => e)
-      expect(String(error)).toMatch(/can't have fallbacks or nth/)
+      expect(String(error)).toMatch(/can't have fallbacks, nth/)
       expect(await page.getByLabel("Email").inputValue()).toBe("keep me")
     })
 
@@ -1199,6 +1227,168 @@ setup: [{ action: goto, url: /opener }]
 steps:
   - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
   - { id: done, action: click, target: { by: role, role: button, name: Done } }
+  - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
+`)
+  })
+
+  describe("points within a target (a canvas)", () => {
+    const canvas = "{ by: role, role: img, name: Drawing canvas }"
+    const drawLog = () => page.evaluate(() => (window as unknown as { drawLog: string[] }).drawLog)
+
+    it("clicks at the step's own point, as fractions of the box", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - { id: dot, action: click, target: ${canvas}, at: { x: 0.25, y: 0.75 } }
+`)
+      // Fractions of the bounding box (402 × 302 with its 1 px border, at 100,100); offsets count from
+      // inside the border (101,101): x = 100 + 0.25 × 402 − 101 = 99.5, y = 100 + 0.75 × 302 − 101 = 225.5.
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
+    })
+
+    it("keeps the far edge on the element (at 1 is its last pixel, not the next element's)", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - { id: edge, action: click, target: ${canvas}, at: { x: 1, y: 1 } }
+`)
+      // The box is 402 × 302 at 100,100: its last pixel is 501,401, offset 400,300 inside the border.
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 400,300"])
+    })
+
+    it("drags from one point of the canvas to another (drawing)", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - id: draw
+    action: drag
+    target: ${canvas}
+    at: { x: 0.1, y: 0.2 }
+    to: { target: ${canvas}, at: { x: 0.6, y: 0.7 } }
+`)
+      const log = await drawLog()
+      expect(log.filter((l) => !l.startsWith("click"))).toEqual(["down 39,59", "up 240,210"])
+    })
+
+    it("draws off camera too (the setup), at the same points", async () => {
+      await run(`setup:
+  - { action: goto, url: /canvas }
+  - action: drag
+    target: ${canvas}
+    at: { x: 0.1, y: 0.2 }
+    to: { target: ${canvas}, at: { x: 0.6, y: 0.7 } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+      expect((await drawLog()).filter((l) => !l.startsWith("click"))).toEqual([
+        "down 39,59",
+        "up 240,210",
+      ])
+    })
+
+    // Its label reads as risky ("Trash"): the click asks once the cursor is at the point.
+    const riskyDot = `setup: [{ action: goto, url: "/canvas?trash" }]
+steps:
+  - { id: dot, action: click, target: ${canvas}, at: { x: 0.25, y: 0.75 } }
+`
+
+    it("clicks a risky point once approved, where it was approved", async () => {
+      const asked: string[] = []
+      await run(riskyDot, { approveRisky: (step) => (asked.push(step.stepId ?? ""), true) })
+      expect(asked).toEqual(["dot"])
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
+    })
+
+    it("clicks nothing when the page moved while waiting for the approval", async () => {
+      const error = await failure(riskyDot, {
+        approveRisky: async () => {
+          // The user takes their time; the page lays out again meanwhile.
+          await page.evaluate(() => {
+            document.querySelector("canvas")!.style.marginTop = "40px"
+          })
+          return true
+        },
+      })
+      expect(error.message).toMatch(
+        /the page moved while waiting for approval: nothing was clicked/,
+      )
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual([])
+    })
+  })
+
+  describe("a target in its row (look-alikes)", () => {
+    const deleteIn = (row: string) =>
+      `{ by: role, role: button, name: Delete, in: { role: listitem, has: "${row}" } }`
+    const deleted = () => page.evaluate(() => (window as unknown as { deleted: string[] }).deleted)
+
+    it("acts in the row that holds the text, wherever the row is now", async () => {
+      await run(
+        `setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: shuffle, action: click, target: { by: role, role: button, name: Shuffle } }
+  - { id: del, action: click, target: ${deleteIn("Water plants")} }
+  - { id: del2, action: click, target: ${deleteIn("Pay rent")} }
+`,
+        // "Delete" asks first, as on any page: approved here.
+        { approveRisky: () => true },
+      )
+      expect(await deleted()).toEqual(["Water plants", "Pay rent"])
+    })
+
+    it("never guesses a row: none is not found, two are ambiguous (said by the row)", async () => {
+      const none = await failure(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: del, action: click, target: ${deleteIn("Buy milk")} }
+`)
+      expect(none.reason).toBe("target-not-found")
+      expect(none.message).toMatch(/in the listitem holding "Buy milk"/)
+      const two = await failure(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: twin, action: click, target: { by: role, role: button, name: Twin } }
+  - { id: del, action: click, target: ${deleteIn("Pay rent")} }
+`)
+      expect(two.reason).toBe("target-ambiguous")
+      expect(two.message).toMatch(/2 elements are the listitem holding "Pay rent"/)
+      expect(await deleted()).toEqual([])
+    })
+
+    it("finds the innermost row (a tree item inside another holding the same text isn't it)", async () => {
+      await run(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: rn, action: click, target: { by: role, role: button, name: Rename, in: { role: treeitem, has: index.ts } } }
+`)
+      expect(
+        await page.evaluate(() => (window as unknown as { renamed: string[] }).renamed),
+      ).toEqual(["index.ts"])
+    })
+
+    it("uploads into the file input of its row", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "kiframe-asset-"))
+      const asset = `${"b".repeat(64)}.txt`
+      writeFileSync(join(dir, asset), "hello")
+      await run(
+        `setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: up, action: upload, target: { by: css, selector: "input[type=file]", in: { role: listitem, has: Water plants } }, file: ${asset} }
+`,
+        { resolveAsset: (file) => join(dir, file) },
+      )
+      expect(
+        await page.evaluate(() => (window as unknown as { uploaded: string[] }).uploaded),
+      ).toEqual([`Water plants: ${asset}`])
+    })
+
+    it("holds the row's text exactly (never part of it)", async () => {
+      const part = await failure(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: del, action: click, target: ${deleteIn("Pay")} }
+`)
+      expect(part.reason).toBe("target-not-found")
+    })
+  })
+
+  it("returns to the opener when the click closes its page before it ends", async () => {
+    // Closed as the pointer reaches it: the click finds its page closed ("Target page … closed").
+    await run(`setup: [{ action: goto, url: /opener }]
+steps:
+  - { id: open, action: click, target: { by: role, role: button, name: Open popup } }
+  - { id: done, action: click, target: { by: role, role: button, name: Close at once } }
   - { id: back, action: expect, that: { visible: { by: role, role: link, name: Open report } } }
 `)
   })

@@ -2,9 +2,9 @@ import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { readTake } from "../src/take.ts"
+import { readTakeRecords } from "../src/index.ts"
 
-describe("readTake", () => {
+describe("readTakeRecords", () => {
   it("refuses a take whose secret regions have no spans (recorded before them): re-record", () => {
     const dir = mkdtempSync(join(tmpdir(), "kiframe-take-"))
     writeFileSync(join(dir, "meta.json"), JSON.stringify({ version: 1 }))
@@ -18,6 +18,6 @@ describe("readTake", () => {
     }
     writeFileSync(join(dir, "events.jsonl"), JSON.stringify(old) + "\n")
     writeFileSync(join(dir, "cursor.jsonl"), "")
-    expect(() => readTake(dir)).toThrow()
+    expect(() => readTakeRecords(dir)).toThrow()
   })
 })

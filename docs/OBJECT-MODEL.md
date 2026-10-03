@@ -30,7 +30,7 @@ There are **no edges** between scenes. The order lives in a list (`sequence`). T
 **No scene depends on the scene before it** for app state:
 - Each scene has its own **off-camera `setup`**: navigate there, and create or check the data it needs with `ensure` (§2). Common setup is shared as **presets**.
 - **Login is not repeated per scene.** A preset marked `session: true` (for example `login-as-manager`) runs **once per recording batch**. Its `storageState` is then reused for every scene of the batch (APPROACHES §7.2).
-- Each scene can have an off-camera **`teardown`** that removes what it created. It's pre-approved on sandbox environments.
+- Each scene can have an off-camera **`teardown`** that removes what it created. It's pre-approved on sandbox environments. A stopped run doesn't run it: the scene's next `ensure` cleans what it left (APPROACHES §0).
 - Benefits: you can **reorder freely**, **re-record or heal one scene alone**, and reuse a scene in several outputs.
 - Cost: recordings take longer because setup is repeated off-camera. That's acceptable, since it's invisible and needs no LLM.
 - Joins between scenes are handled by **transitions** (cut, fade, slide), set in the Sequence view.
@@ -138,7 +138,7 @@ q4-release.kiframe/
 ```
 **Takes are not in the project folder.** They live in the app's **take store**, in the protected app-data directory, encrypted at rest (§0.7, §3):
 ```
-<app-data>/Kiframe/takes/<projectId>/<sceneId>/<takeKey>/
+<app-data>/Kiframe/takes/<projectId>/<sceneId>/take-<time>-<id>/   (looked up by meta.takeKey)
   frames.webm  events.jsonl  cursor.jsonl  shots/<stepId>.jpg  meta.json  pin.json?
 ```
 Why outside the folder: takes are **heavy**, and they're **sensitive**, since raw frames aren't blurred (APPROACHES §7.4). They must never end up in git or in a folder shared by mistake.
@@ -272,6 +272,11 @@ steps:
     caption: "Give it a name."
     instruction: "Type your project's name in the **Project name** field."
     camera: target                             # frame the field (§2b)
+  - id: remove-old                             # a look-alike (each row has one): told apart by its row,
+    action: click                              # the list item holding exactly "Q3 Launch" (never `nth`:
+    target:                                    # a reordered list turns a position into another row)
+      { by: role, role: button, name: "Delete", in: { role: listitem, has: "Q3 Launch" } }
+    risky: true
   - id: done
     action: waitFor                            # like VHS `Wait`: a condition, not a sleep
     until: { text: "Project created" }
@@ -413,7 +418,7 @@ camera: { …, until: done }                 # keep this framing until step `don
 One replay of a scene produces a **take** in the take store (§0.6):
 
 ```
-<app-data>/Kiframe/takes/<projectId>/<sceneId>/<takeKey>/
+<app-data>/Kiframe/takes/<projectId>/<sceneId>/take-<time>-<id>/   (looked up by meta.takeKey)
   frames.webm          raw video at DPR 2, WITHOUT a cursor (the cursor is drawn at render time). NOT blurred → sensitive, encrypted at rest
   events.jsonl         timestamped semantic events
   cursor.jsonl         cursor samples (real mouse positions, so hover states happened in the app)

@@ -205,17 +205,27 @@ export async function runScenario(
           ? (error as Error)
           : new StepError(current, "action-failed", firstLine(error), { cause: error })
     }
+    // Stopped: a stop, whatever failed with it (a dialog it closed), and nothing more runs, even
+    // after the last step (the scene's next `ensure` cleans what this run left).
+    const stopped = options.signal?.aborted === true
+    if (stopped && !(failure instanceof StepError && failure.reason === "stopped")) {
+      const at =
+        failure instanceof StepError
+          ? failure.step
+          : (current ?? { phase: "teardown" as const, index: 0, action: "teardown" })
+      failure = new StepError(at, "stopped", "the run was stopped", { cause: failure })
+    }
     // Teardown is best effort: every step runs (cleanup must go as far as it can), each failure is
     // reported, and the first one is thrown if nothing failed before. Not after an `ensure`
     // failure: no scene step ran, so what the teardown would delete wasn't created by this run.
-    const ensureFailed = failure instanceof StepError && failure.step.action === "ensure"
+    const noTeardown = stopped || (failure instanceof StepError && failure.step.action === "ensure")
     // The teardown cleans the app where the scene started, not a tab or popup it followed, and
     // never follows a page the scene opened late.
     ctx.opened.length = 0
     let returnFailure: StepError | undefined
     const root = ctx.openers[0]
     if (
-      !ensureFailed &&
+      !noTeardown &&
       root !== undefined &&
       !root.isClosed() &&
       (scenario.teardown ?? []).length > 0
@@ -245,7 +255,7 @@ export async function runScenario(
       }
     }
     let teardownFailure: StepError | undefined = returnFailure
-    for (const [index, action] of (ensureFailed ? [] : (scenario.teardown ?? [])).entries()) {
+    for (const [index, action] of (noTeardown ? [] : (scenario.teardown ?? [])).entries()) {
       const ref: StepRef = {
         phase: "teardown",
         index,
@@ -256,11 +266,16 @@ export async function runScenario(
       try {
         await runOne(ctx, action, ref)
       } catch (error) {
+        ctx.clearListenerError()
+        // Stopped during the teardown: the rest of it doesn't run.
+        if (options.signal?.aborted === true) {
+          teardownFailure ??= new StepError(ref, "stopped", "the run was stopped", { cause: error })
+          break
+        }
         const stepError =
           error instanceof StepError
             ? error
             : new StepError(ref, "action-failed", firstLine(error), { cause: error })
-        ctx.clearListenerError()
         // The first teardown failure is thrown when nothing failed before: it isn't also reported
         // as an event. Every other one is (it would be lost otherwise).
         if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
@@ -276,11 +291,21 @@ export async function runScenario(
         }
       }
     }
+    let thrown = failure ?? teardownFailure ?? listenerError
+    // Stopped by then (in the teardown, after a failure): a stop, whatever failed first.
+    if (
+      options.signal?.aborted === true &&
+      !(thrown instanceof StepError && thrown.reason === "stopped")
+    ) {
+      const at =
+        thrown instanceof StepError
+          ? thrown.step
+          : (current ?? { phase: "teardown" as const, index: 0, action: "teardown" })
+      thrown = new StepError(at, "stopped", "the run was stopped", { cause: thrown })
+    }
     // Errors leave the runner scrubbed of every secret value (a Playwright message can quote a URL
     // or a value that carries one).
-    if (failure !== undefined) throw scrubError(failure, secretValues)
-    if (teardownFailure !== undefined) throw scrubError(teardownFailure, secretValues)
-    if (listenerError !== undefined) throw scrubError(listenerError, secretValues)
+    if (thrown !== undefined) throw scrubError(thrown, secretValues)
   } finally {
     clearInterval(scan)
     // A scan still running reports before the run ends (the recorder writes right after).
@@ -297,4 +322,4 @@ export async function runScenario(
 export type { RunnerEvent, RunOptions } from "./run/context.ts"
 export { firstLine } from "./run/context.ts"
 export { urlMatches } from "./run/conditions.ts"
-export { pathOnly, scrubSecrets } from "./run/secrets.ts"
+export { pathOnly, scrubSecrets, secretScrubber } from "./run/secrets.ts"

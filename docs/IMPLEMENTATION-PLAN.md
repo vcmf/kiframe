@@ -97,6 +97,31 @@ Dependencies: P0-1 → P0-2 → (P0-3, P0-4) → P0-5 → P0-6 → P0-7. P0-8 ne
 
 The milestones below can partly run in parallel. Recommended order: **M1 → M2 → M3**, with **M4** starting after M1, and **M5 / M6** in parallel.
 
+**Revised order (2026-09-30): a vertical slice first.** `epic/app-slice` builds a thin version of each layer so the product can be clicked through early, then each layer deepens:
+
+| PR | Scope | From |
+|---|---|---|
+| S1 | Project store (minimal): create and open a `.kiframe` folder (`project.json`, `scenes/<id>/scene.json`, `scenario.yaml`, `composition.json`), a minimal take store in app data (private, outside the project; encryption with M1-8) | M1-9, M1-8 |
+| S2 | `packages/agent`: cooldown's loop and OpenRouter client with the essential fixes (cancellation, call ids, max-turns event, retries), scene tools, a record tool (grounding from P0-8 + recording), approvals through `requestUser`. Every tool heeds the run's signal: the runtime's `recordScenario` / `recordBatch` get an abort path (a stop ends a recording at its next step) | M2-1…M2-4, M2-7 (basic) |
+| S3 | `apps/desktop`: Electron, the agent in the main process, typed IPC, React chat (streaming, tool steps, approval dialogs), the OpenRouter key in the keychain. One app instance (Electron's single-instance lock: the take store relies on one process), leftovers swept at start. Every tool and `requestUser` dialog heeds the run's signal (a stop closes the dialog) | M4-1, M4-2, M4-5 (basic) |
+| S4 | Preview: the scene strip and a player rendering takes through the compositor | M4-3, M4-4 (basic) |
+
+#### S3 in detail (2026-10-02): two PRs into `epic/app-slice`
+
+Built on minmux's shell (`~/workspace/term`: electron-vite, React 19, zustand, plain CSS on `:root` tokens, `@phosphor-icons/react`, the single-instance lock, a dev profile in its own userData) and cooldown's chat pieces (the event-to-steps mapper, the promise bridge for approvals, the throttled repaint), re-keyed on `@kiframe/agent`'s events (call ids, one end event). The look is APPROACHES §0 "App look (v0)".
+
+| PR | Scope |
+|---|---|
+| S3a: the shell | `apps/desktop` (electron-vite, Electron 44 like the exporter). **Main** split per domain (window, project, settings, takes), never one file. **Hardened** where minmux isn't: `sandbox: true` with a CJS preload, `contextIsolation`, a CSP, every window open denied, navigation blocked, every permission request denied, external links only `https:` and only through one checked handler. **One IPC contract** (`src/shared/ipc.ts`: each channel's args, result and events) that the preload `satisfies` and main's typed `handle` / `emit` wrappers use; main validates every renderer payload with Zod. Single-instance lock, the take store swept at start, a dev profile in its own userData. **OpenRouter key** in the OS keychain through `@kiframe/vault`'s keyring backend, under its own service (never one of the project's secrets: the agent can't list it). First run: enter the key, create or open a `.kiframe` folder. The window from the mockup: title bar, chat column, stage (tabs, scene strip read from the project) |
+| S3b: the agent | The agent (`runAgent` + `Studio`, a Playwright Chromium launched by main) in the main process; its events streamed to the renderer (text repainted at most ~10 per second, tool steps at once). Chat: messages, collapsible tool steps with status, the composer turning into the status bar with **Stop** (aborts the run's signal). `requestUser` bridged over IPC by id: a risky step's approval and the agent's questions are cards in the chat; a stop or closing the project closes them (the S2 contract). Each project folder gets the host's own approval scope and each scene its key (a registry in app data, never project.json). **Live app** tab: the live page's screencast frames shown in the stage, view only. Scene strip statuses refresh after `save_scene` / `record_scene` |
+| S3c: secrets in the app | The vault (`@kiframe/vault`) wired into the studio: a project's secrets listed and added (values to the keychain, never to the window), `resolveSecret`, `requestApproval` as the dialog of the mockup (the field outlined), every known value given to the studio (R6: blurred on screen even when not typed). Split from S3b: until secrets can be added, a scene typing one fails with "no secret resolver" (never half-wired) |
+
+**Tests.** Vitest projects: main and shared code under `node`, the renderer under `jsdom` with Testing Library and a typed stub of the preload API (minmux's pattern, typed from the contract). One Playwright `_electron` smoke test in CI under `xvfb-run`: it launches the built app with a throwaway userData and a scripted model (an env-selected fake `LlmClient`, test builds only) and drives one turn end to end: a message, a tool step, an approval card, Stop.
+
+**Deferred** (BACKLOG): **chat persistence needs its own rework, not a patch** (BACKLOG "Data persistence": S3 keeps a project's chat in memory only, by the user's choice), several chats per project, packaging and signing (electron-builder), the live view taking the user's own clicks, a dark theme.
+
+Then the visual rebuild V2–V4 (SECRETS-DESIGN §5), then M1-8, M1-10 and the rest of M2–M4.
+
 ### M1: Core engine (spike → production)
 | PR | Objective | Scope | Cx | LOC |
 |---|---|---|---|---|

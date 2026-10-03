@@ -9,6 +9,7 @@
   "dependencies": {
     "@kiframe/compositor": "workspace:*",
     "@kiframe/generators": "workspace:*",
+    "@kiframe/project": "workspace:*",
     "@kiframe/schema": "workspace:*"
   },
   "devDependencies": {

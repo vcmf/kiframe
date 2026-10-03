@@ -223,6 +223,7 @@ const pages: Record<string, string> = {
   "/quick-close": `<!doctype html><title>Provider</title><script>window.close()</script>`,
   // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
   "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
+    <button onmouseover="window.close()">Close at once</button>
     <button onclick="fetch('/').then(() => setTimeout(() => window.close(), 200))">Authorize</button>
     <label>Code <input id="code" style="position:absolute; left:300px; top:285px; width:200px; height:30px; box-sizing:border-box"></label>
     <style>@keyframes spin { to { transform: rotate(360deg) } } #spin { width: 40px; height: 40px; background: #888; animation: spin 0.5s linear infinite }</style><div id="spin"></div>`,
@@ -315,6 +316,75 @@ const pages: Record<string, string> = {
         }
       })
     </script>`,
+  // A drawing canvas (400×300 at 100,100) logging where the pointer goes down, moves and comes up;
+  // `?trash`: its label reads as a risky click ("Trash"), so a click on it asks for approval.
+  "/canvas": `<!doctype html><title>Canvas</title><style>body{margin:0}</style>
+    <canvas aria-label="Drawing canvas" role="img" width="400" height="300"
+      style="position:absolute; left:100px; top:100px; border:1px solid #888"></canvas>
+    <pre id="log"></pre>
+    <script>
+      const c = document.querySelector("canvas"), log = []
+      if (location.search === "?trash") c.setAttribute("aria-label", "Trash drawing canvas")
+      const at = (e) => [Math.round(e.offsetX), Math.round(e.offsetY)].join(",")
+      c.addEventListener("pointerdown", (e) => log.push("down " + at(e)))
+      c.addEventListener("pointerup", (e) => log.push("up " + at(e)))
+      c.addEventListener("click", (e) => log.push("click " + at(e)))
+      window.drawLog = log
+    </script>`,
+  // Names a snapshot writes as quoted YAML keys (": ", " #", an apostrophe), and page text that
+  // looks like a ref.
+  "/quoted-names": `<!doctype html><title>Quoted names</title>
+    <button>Status: Active</button><a href="#x">Issue #42</a><button>It's: here</button>
+    <p>see [ref=e2]</p>`,
+  // Rows a step reorders (the same node, new text), a filled field, text drawn by CSS, a name the
+  // snapshot writes unquoted.
+  "/rows": `<!doctype html><title>Rows</title>
+    <ul><li>Buy milk</li><li>Item 1</li></ul>
+    <label>Email <input value="a@b.c"></label>
+    <ol class="done"><li>Done</li></ol><style>.done li::before { content: "* " }</style>
+    <button onclick="document.querySelector('li').textContent = 'Buy eggs'">Reorder</button>
+    <a href="#x">/x/</a>
+    <ul id="todo"><li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button></li>
+      <li><input type="checkbox"> <span>Water plants</span> <button>Delete</button></li></ul>`,
+  // A todo list: each row's "Delete" a look-alike; "Shuffle" reverses the rows (a reorder);
+  // "Twin" adds a second "Pay rent" row. Deleting logs the row's text.
+  "/todo": `<!doctype html><title>Todo</title>
+    <ul id="list">
+      <li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button><input type="file" hidden></li>
+      <li><input type="checkbox"> <span>Water plants</span> <button>Delete</button><input type="file" hidden></li>
+      <li><input type="checkbox"> <span>Call mom</span> <button>Delete</button><input type="file" hidden></li>
+    </ul>
+    <ul role="tree"><li role="treeitem"><span>src</span> <button>Rename</button>
+      <ul role="group"><li role="treeitem"><span>index.ts</span> <button>Rename</button></li></ul></li></ul>
+    <button id="shuffle">Shuffle</button><button id="twin">Twin</button>
+    <script>
+      window.deleted = []
+      window.uploaded = []
+      window.renamed = []
+      document.querySelectorAll("#list input[type=file]").forEach((input) =>
+        input.addEventListener("change", () =>
+          window.uploaded.push(input.closest("li").querySelector("span").textContent + ": " + input.files[0].name)))
+      document.querySelectorAll("[role=treeitem] > button").forEach((b) =>
+        b.addEventListener("click", () => window.renamed.push(b.parentElement.querySelector("span").textContent)))
+      const list = document.getElementById("list")
+      list.addEventListener("click", (e) => {
+        if (e.target.textContent !== "Delete") return
+        const li = e.target.closest("li")
+        window.deleted.push(li.querySelector("span").textContent)
+        li.remove()
+      })
+      document.getElementById("shuffle").onclick = () =>
+        [...list.children].reverse().forEach((li) => list.appendChild(li))
+      document.getElementById("twin").onclick = () =>
+        list.appendChild(list.firstElementChild.cloneNode(true))
+    </script>`,
+  // A button of the page and one inside an iframe (a snapshot names both).
+  "/framed": `<!doctype html><title>Framed</title><button>Outside</button>
+    <iframe srcdoc="<button>Inside</button>"></iframe>`,
+  // A login whose password field is below the fold.
+  "/login-below": `<!doctype html><title>Login (below)</title>
+    <div style="height:2400px">A long page</div>
+    <div class="password-field"><span>Password</span><input type="password" aria-label="Password input"></div>`,
   "/login-form": `<!doctype html><title>Login form</title>
     <label>Email <input type="email"></label>
     <label>Age <input type="number"></label>

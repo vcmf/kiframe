@@ -30,6 +30,13 @@ export type StepErrorReason =
   | "action-failed"
   | "invalid-setup"
   | "ensure-failed"
+  /** The run's signal was aborted (the user stopped it): nothing more ran, not even the teardown. */
+  | "stopped"
+  /**
+   * A step closed the page it ran on and the run knows no page to return to (a popup a new run
+   * started on: the host's own opener may still be open).
+   */
+  | "page-closed"
 
 /**
  * A step failed. The message says which step and why, in words a user (or the agent) can act on:
@@ -87,4 +94,11 @@ export interface ApprovalRequest {
   use: SecretUse
   /** The element's box on the page (CSS pixels): what the prompt outlines. */
   box?: { x: number; y: number; width: number; height: number } | undefined
+  /**
+   * The page as it is (a JPEG, base64, of the viewport, `width`×`height` CSS pixels), the element in
+   * view (the step brought it there): the prompt shows it outlined (§3 A3: built from the live page).
+   * Taken before the value is typed; the user's own screen, for their prompt only (never the
+   * agent, a take or a file).
+   */
+  shot?: { jpeg: string; width: number; height: number } | undefined
 }

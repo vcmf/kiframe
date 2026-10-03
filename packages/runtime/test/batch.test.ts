@@ -161,7 +161,8 @@ steps:
     )
     expect(results.map((r) => r.ok)).toEqual([true, true])
     expect(asked).toEqual(["scene:scene-0/steps/pw", "scene:scene-1/steps/pw"])
-  })
+    // Two recordings, each asking once (a screenshot for the prompt): slow on CI runners.
+  }, 30_000)
 })
 
 describe("recordBatch known values", () => {

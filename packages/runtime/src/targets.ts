@@ -1,5 +1,5 @@
 import { assertNotProbing, exactNamesFor, isPartialName } from "./secret-state.ts"
-import type { GroundedTarget, Locator as SchemaLocator, Target } from "@kiframe/schema"
+import type { GroundedTarget, Locator as SchemaLocator, Scope, Target } from "@kiframe/schema"
 import { isGrounded } from "@kiframe/schema"
 import type { Locator, Page } from "playwright"
 
@@ -11,27 +11,70 @@ export async function locatorFor(page: Page, locator: SchemaLocator): Promise<Lo
   return toPlaywright(page, locator, (await exactNamesFor(page, [locator])).exact)
 }
 
-/** Builds the Playwright locator; `forced`: exact names (A8), decided by the caller just now. */
-export function toPlaywright(page: Page, locator: SchemaLocator, forced: boolean): Locator {
+/**
+ * Builds the Playwright locator; `forced`: exact names (A8), decided by the caller just now;
+ * `within`: the row a target is in (`scopeOf`), the locator looked for inside it.
+ */
+export function toPlaywright(
+  page: Page,
+  locator: SchemaLocator,
+  forced: boolean,
+  within?: Locator,
+): Locator {
   const exact = (own: boolean | undefined) =>
     forced ? { exact: true } : own !== undefined ? { exact: own } : {}
+  const base = within ?? page
   switch (locator.by) {
     case "role":
       // Spliced into Playwright's selector unescaped: only a role name, never selector syntax.
       if (!/^[a-z]{2,40}$/.test(locator.role)) throw new Error(`not an ARIA role: ${locator.role}`)
-      return page.getByRole(locator.role as Parameters<Page["getByRole"]>[0], {
+      return base.getByRole(locator.role as Parameters<Page["getByRole"]>[0], {
         ...(locator.name !== undefined && { name: locator.name, ...exact(locator.exact) }),
       })
     case "label":
-      return page.getByLabel(locator.name, exact(locator.exact))
+      return base.getByLabel(locator.name, exact(locator.exact))
     case "text":
-      return page.getByText(locator.text, exact(locator.exact))
+      return base.getByText(locator.text, exact(locator.exact))
     case "placeholder":
-      return page.getByPlaceholder(locator.text, exact(undefined))
+      return base.getByPlaceholder(locator.text, exact(undefined))
     case "css":
       assertNotProbing(page.context(), locator.selector)
-      return page.locator(locator.selector)
+      return base.locator(locator.selector)
   }
+}
+
+/**
+ * The rows a target's `in` names: the visible elements of that role holding an element whose text
+ * is exactly `has` (never a substring: no filter tells whether part of a value is on the page), the
+ * innermost ones (a tree item holding a sub-item with that text isn't that row).
+ */
+export function scopeOf(page: Page, scope: Scope): Locator {
+  // Spliced into Playwright's selector unescaped: only a role name, never selector syntax.
+  if (!/^[a-z]{2,40}$/.test(scope.role)) throw new Error(`not an ARIA role: ${scope.role}`)
+  const role = scope.role as Parameters<Page["getByRole"]>[0]
+  const holding = page.getByRole(role).filter({ has: page.getByText(scope.has, { exact: true }) })
+  return visibleOnly(holding.filter({ hasNot: holding }))
+}
+
+/** A row as messages say it. */
+export function describeScope(scope: Scope): string {
+  return `the ${scope.role} holding "${scope.has}"`
+}
+
+/**
+ * The one row a target's `in` names, or why not: none (yet), or several (a row must say which one:
+ * never the first of them).
+ */
+export async function rowOf(
+  page: Page,
+  scope: Scope,
+): Promise<{ row: Locator } | { count: number | undefined }> {
+  const rows = scopeOf(page, scope)
+  const count = await rows.count().catch((error: unknown) => {
+    if (isNavigationError(error)) return undefined
+    throw error
+  })
+  return count === 1 ? { row: rows } : { count }
 }
 
 /** Short human description of a locator, for error messages. */
@@ -91,10 +134,10 @@ export async function resolveTarget(
       detail: `target not grounded yet — intent "${target.intent}"`,
     }
   }
-  const { fallbacks = [], nth } = target
-  // `nth` belongs to the primary locator only: each fallback is its own locator.
-  const candidates: { locator: SchemaLocator; nth: number | undefined }[] = [
-    { locator: stripExtras(target), nth },
+  const { fallbacks = [], nth, in: scope } = target
+  // `nth` and the row (`in`) belong to the primary locator only: each fallback is its own locator.
+  const candidates: { locator: SchemaLocator; nth: number | undefined; scope?: Scope }[] = [
+    { locator: stripExtras(target), nth, ...(scope !== undefined && { scope }) },
     ...fallbacks.map((locator) => ({ locator, nth: undefined })),
   ]
   let exact: boolean
@@ -113,7 +156,20 @@ export async function resolveTarget(
     )
     exact = names.exact
     for (const [i, candidate] of candidates.entries()) {
-      const r = await countUnderRule(page, candidate.locator, names)
+      // In its row: that one row first (none yet: not found; several: which one is never guessed).
+      let within: Locator | undefined
+      if (candidate.scope !== undefined) {
+        const found = await rowOf(page, candidate.scope)
+        if ("count" in found) {
+          if ((found.count ?? 0) > 1) {
+            ambiguous = `${found.count} elements are ${describeScope(candidate.scope)} — make \`has\` a text only that row holds`
+            break
+          }
+          continue
+        }
+        within = found.row
+      }
+      const r = await countUnderRule(page, candidate.locator, names, { ...(within && { within }) })
       exact ||= r.exact
       // The helper's confirmation turned the rule on: every candidate again, at once, exactly
       // (once per poll: a field that keeps flapping waits for the next one).
@@ -125,10 +181,13 @@ export async function resolveTarget(
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
-        ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
+        ambiguous =
+          candidate.scope !== undefined
+            ? `${describeLocator(candidate.locator)} matches ${count} visible elements in ${describeScope(candidate.scope)} — a more precise locator (a row takes no \`nth\`)`
+            : `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
         break
       }
-      const visible = visibleOnly(toPlaywright(page, candidate.locator, r.exact))
+      const visible = visibleOnly(toPlaywright(page, candidate.locator, r.exact, within))
       const locator = candidate.nth === undefined ? visible : visible.nth(candidate.nth)
       return {
         ok: true,
@@ -145,7 +204,12 @@ export async function resolveTarget(
   if (ambiguous !== undefined) {
     return { ok: false, reason: "target-ambiguous", detail: ambiguous, exact }
   }
-  const tried = candidates.map((c) => describeLocator(c.locator)).join(", then ")
+  const tried = candidates
+    .map(
+      (c) =>
+        describeLocator(c.locator) + (c.scope !== undefined ? ` in ${describeScope(c.scope)}` : ""),
+    )
+    .join(", then ")
   return {
     ok: false,
     reason: "target-not-found",
@@ -161,6 +225,7 @@ export function stripExtras(target: GroundedTarget): SchemaLocator {
     fallbacks: _fallbacks,
     fingerprint: _fingerprint,
     nth: _nth,
+    in: _in,
     ...locator
   } = target
   return locator
@@ -330,10 +395,12 @@ export async function countUnderRule(
     hidden?: boolean
     /** Skip the confirmation (the caller confirms once for several counts). */
     confirm?: boolean
+    /** The row it's looked for in (a target's `in`). */
+    within?: Locator
   } = {},
 ): Promise<{ count: number | undefined; exact: boolean; unsure: boolean }> {
   const build = (exact: boolean) => {
-    const base = (o.refine ?? ((l: Locator) => l))(toPlaywright(page, locator, exact))
+    const base = (o.refine ?? ((l: Locator) => l))(toPlaywright(page, locator, exact, o.within))
     return o.hidden === true ? base : visibleOnly(base)
   }
   const countWith = (exact: boolean) =>
@@ -354,4 +421,9 @@ export async function countUnderRule(
     }
   }
   return { count, exact, unsure }
+}
+
+/** The page's document (its time origin: a new one per navigation or reload, none changed). */
+export async function documentOf(page: Page): Promise<number | undefined> {
+  return page.evaluate(() => performance.timeOrigin).catch(() => undefined)
 }

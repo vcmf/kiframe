@@ -304,7 +304,8 @@ export async function recordScenario(
               rect: rect(box),
               ...(e.secret !== undefined && { secret: e.secret }),
             })
-          } else {
+          } else if (e.step.phase === "steps") {
+            // Off camera (setup, teardown), nothing is filmed: no box there is expected.
             warnings.push(`no box for the ${kind} of ${keyOf(e.step)}: typing not logged`)
           }
           // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
@@ -446,7 +447,7 @@ export async function recordScenario(
       if (frameSize === undefined)
         warnings.push("couldn't read the frame size: assuming the CSS viewport")
       const size = frameSize ?? viewport
-      const scenarioHash = sha256(JSON.stringify(scenario))
+      const scenarioHash = scenarioHashOf(scenario)
       meta = TakeMeta.parse({
         version: 1,
         takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
@@ -539,10 +540,27 @@ export async function recordScenario(
 }
 
 /**
+ * Whether `name` is something the recorder leaves next to the take folder `take` while recording
+ * or when a recording fails or is cut short: its staging folder (`.<take>.recording-…`), its failed
+ * take (`<take>.failed`), or a replaced take set aside (`<take>.old-…`, `<take>.failed.old-…`). For a
+ * take store sweeping what a crash left: never the take itself. A set-aside take is only a leftover
+ * once `take` exists (a crash mid-swap may leave the aside as the only copy of the previous take).
+ */
+export function isRecorderLeftover(name: string, take: string): boolean {
+  return (
+    name.startsWith(`.${take}.recording-`) ||
+    name === `${take}.failed` ||
+    name.startsWith(`${take}.old-`) ||
+    name.startsWith(`${take}.failed.old-`)
+  )
+}
+
+/**
  * Puts the take at `src` in place of `dest`: the old take is moved aside first, the new one renamed
  * in, then the old one deleted; if the rename fails, the old take is put back. `dest` is re-checked
  * (it must still be a take or absent). Returns the old take's path if it couldn't be deleted.
  */
+
 function swapInto(src: string, dest: string): string | undefined {
   checkReplaceable(dest)
   const aside = existsSync(dest) ? `${dest}.old-${process.pid}-${Date.now()}` : undefined
@@ -649,6 +667,14 @@ export function jpegSize(data: Buffer): { width: number; height: number } | unde
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
+
+/**
+ * The hash a take records of the scenario it filmed (`meta.scenarioHash`): a scene's take is its
+ * current one only while the scenario hashes the same (one function for the recorder and readers).
+ */
+export function scenarioHashOf(scenario: Scenario): string {
+  return sha256(JSON.stringify(scenario))
+}
 
 /**
  * The take folder's real location: symlinks are followed (a take store on an encrypted volume

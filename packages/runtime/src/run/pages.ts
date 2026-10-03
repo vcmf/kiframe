@@ -92,7 +92,7 @@ export async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
     if (back === undefined) {
       throw new StepError(
         step,
-        "action-failed",
+        "page-closed",
         "the page was closed and there's no page to return to",
       )
     }

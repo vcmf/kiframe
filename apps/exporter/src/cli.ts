@@ -17,7 +17,7 @@ import {
   type Composition,
 } from "@kiframe/schema"
 import { build } from "esbuild"
-import { readTake } from "./take.ts"
+import { readTakeRecords } from "@kiframe/project/take-records"
 import type { ExportJob } from "./main.ts"
 
 const { values } = parseArgs({
@@ -52,7 +52,7 @@ if (ext !== format) {
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const takeDir = resolve(values.take)
-const take = readTake(takeDir)
+const take = readTakeRecords(takeDir)
 // An edited composition is rendered as is; otherwise the generators make one from the take.
 let composition: Composition
 if (values.composition === undefined) {

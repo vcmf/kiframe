@@ -14,6 +14,7 @@ import {
   countUnderRule,
   isOnScreen,
   resolveTarget,
+  rowOf,
   stripExtras,
   toPlaywright,
   viewportOf,
@@ -29,7 +30,15 @@ import {
   timeoutOf,
 } from "./context.ts"
 import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
-import { clickAtCursor, moveCursorTo, travel, visiblePart } from "./pointer.ts"
+import {
+  COVERED_AT_POINT,
+  clickAtCursor,
+  moveCursorTo,
+  namedPoint,
+  onScreen,
+  travel,
+  visiblePart,
+} from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
   abandonSecretWrite,
@@ -85,14 +94,17 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       const target = await find(ctx, action.target, step)
       await explainOffScreen(ctx, target, step, async () => {
         // The cursor's own (real) mouse move ends over the target; without a box, Playwright hovers.
-        const at = await moveCursorTo(ctx, target, step)
+        const at = await moveCursorTo(ctx, target, step, { at: action.at })
         // Something on top (a sticky header, a toast) can take the hover: then Playwright hovers,
-        // with its own actionability and hit checks.
+        // with its own actionability and hit checks (never at another point than the step's own).
         const hovered =
           at !== undefined &&
           (await target
             .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
             .catch(() => false))
+        if (!hovered && action.at !== undefined) {
+          throw new StepError(step, "action-failed", COVERED_AT_POINT)
+        }
         if (!hovered) {
           await guard(step, () => target.hover({ timeout: ctx.timeoutMs }))
           // Playwright hovered the center: the cursor (and its next travel) starts from there.
@@ -320,7 +332,16 @@ async function drag(
 ): Promise<void> {
   const source = await find(ctx, action.target, step)
   await assertDragKeepsSecrets(ctx, step, source)
-  const dest = "dx" in action.to ? undefined : await find(ctx, action.to, step)
+  const to = action.to
+  // A point on an element (`{ target, at }`: drawing on a canvas), an element, or an offset.
+  const toPoint = "at" in to && "target" in to ? to : undefined
+  const dest =
+    "dx" in to
+      ? undefined
+      : await find(ctx, toPoint !== undefined ? toPoint.target : (to as Target), step)
+  // Points named by the step: always the cursor's own drag (Playwright's dragTo goes center to
+  // center).
+  const exact = action.at !== undefined || toPoint !== undefined
   // Playwright's own drag (its actionability and hit checks), several moves: pointer drag
   // libraries ignore the move that starts a drag. The cursor ends where the drop was.
   const platformDrag = async (to: Locator) => {
@@ -331,10 +352,10 @@ async function drag(
   }
   // Filmed (even with instant pacing: the cursor and the press are still reported), or not.
   const onCamera = step.phase === "steps"
-  if (!onCamera && dest !== undefined) return platformDrag(dest)
+  if (!onCamera && dest !== undefined && !exact) return platformDrag(dest)
   // Pressed where the cursor is, on the source: never elsewhere (scrolling to the drop target can
   // push the source off screen: then the two don't fit together, and the step says so).
-  const start = await moveCursorTo(ctx, source, step)
+  const start = await moveCursorTo(ctx, source, step, { at: action.at })
   if (start === undefined) {
     throw new StepError(
       step,
@@ -348,7 +369,7 @@ async function drag(
     .evaluate((el) => el.matches(":hover"), undefined, { timeout: ctx.timeoutMs })
     .catch(() => false)
   if (!onSource) {
-    if (dest !== undefined) return platformDrag(dest)
+    if (dest !== undefined && !exact) return platformDrag(dest)
     throw new StepError(
       step,
       "action-failed",
@@ -361,7 +382,7 @@ async function drag(
       const offset = action.to as { dx: number; dy: number }
       const p = { x: start.x + offset.dx, y: start.y + offset.dy }
       // Never a shorter drag than asked (a slider would stop at the wrong value): say so instead.
-      if (p.x < 0 || p.y < 0 || p.x > viewport.width - 1 || p.y > viewport.height - 1) {
+      if (!onScreen(p, viewport)) {
         throw new StepError(
           step,
           "action-failed",
@@ -371,6 +392,7 @@ async function drag(
       return p
     }
     const box = await guard(step, () => dest.boundingBox({ timeout: ctx.timeoutMs }))
+    if (toPoint !== undefined) return namedPoint(box, toPoint.at, viewport, step, "the drop target")
     const visible = visiblePart(box, viewport)
     if (visible === undefined) {
       throw new StepError(step, "target-not-found", "the drop target isn't on screen")
@@ -437,12 +459,23 @@ async function drag(
 async function hiddenFileInput(ctx: Ctx, target: Target): Promise<Locator | undefined> {
   if (!isGrounded(target)) return undefined
   const locator = stripExtras(target)
+  // In its row, if it names one (exactly one row, or no file input here).
+  let within: Locator | undefined
+  if (target.in !== undefined) {
+    const found = await rowOf(ctx.page, target.in)
+    if (!("row" in found)) return undefined
+    within = found.row
+  }
   const fileInput = (l: Locator) => l.and(ctx.page.locator("input[type=file]"))
   // Counted through the one helper (§3 A8), hidden matches included: a hidden file input.
   // (Errors surface: countUnderRule already reads a navigation as no count.)
-  const r = await countUnderRule(ctx.page, locator, undefined, { refine: fileInput, hidden: true })
+  const r = await countUnderRule(ctx.page, locator, undefined, {
+    refine: fileInput,
+    hidden: true,
+    ...(within && { within }),
+  })
   if (r.count !== 1) return undefined
-  const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact))
+  const candidates = fileInput(toPlaywright(ctx.page, locator, r.exact, within))
   const visible = await candidates.isVisible().catch(() => true)
   return visible ? undefined : candidates
 }

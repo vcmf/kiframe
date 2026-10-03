@@ -6,7 +6,13 @@ import {
   type Target,
 } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
-import { isSecretRefusal, type SecretUse, StepError, type StepRef } from "../errors.ts"
+import {
+  type ApprovalRequest,
+  isSecretRefusal,
+  type SecretUse,
+  StepError,
+  type StepRef,
+} from "../errors.ts"
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { isNavigationError, viewportOf } from "../targets.ts"
@@ -416,7 +422,8 @@ async function resolveSecret(
       const ask = ctx.options.requestApproval
       if (!isSecretRefusal(error) || error.reason !== "no-grant" || ask === undefined) throw error
       const box = (await input.boundingBox().catch(() => null)) ?? undefined
-      if (!(await guard(step, async () => ask({ secret: name, use, box })))) {
+      const shot = await pageShot(ctx.page)
+      if (!(await guard(step, async () => ask({ secret: name, use, box, shot })))) {
         throw new StepError(
           step,
           "secret-declined",
@@ -436,6 +443,20 @@ async function resolveSecret(
   }
 }
 
+/**
+ * The viewport as it is, for an approval prompt (undefined if it can't be taken): the user's own
+ * screen, shown to them only (APPROACHES §0: never masked; it never reaches the agent or a take).
+ */
+async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
+  const size = page.viewportSize()
+  if (size === null) return undefined
+  const jpeg = await page
+    .screenshot({ type: "jpeg", quality: 75, timeout: 3000, caret: "initial", animations: "allow" })
+    .catch(() => undefined)
+  if (jpeg === undefined) return undefined
+  return { jpeg: jpeg.toString("base64"), width: size.width, height: size.height }
+}
+
 /** How `value` appears in a URL path (WHATWG path percent-encoding), or undefined if it can't. */
 function urlPath(value: string): string | undefined {
   // Per character, never through the URL parser: it would cut the value at ? or # and resolve ".."
@@ -453,6 +474,11 @@ function urlPath(value: string): string | undefined {
  * whitespace or line breaks (page text across DOM nodes, an accessibility snapshot) is matched too.
  */
 export function scrubSecrets(text: string, values: Iterable<string>): string {
+  return secretScrubber(values)(text)
+}
+
+/** `scrubSecrets` for many texts: the values' variants and their pattern built once. */
+export function secretScrubber(values: Iterable<string>): (text: string) => string {
   const list = [...values]
   const variants = new Set<string>()
   const encode = (f: (s: string) => string, s: string): string | undefined => {
@@ -492,7 +518,7 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
       if (v !== undefined && v !== "") variants.add(v)
     }
   }
-  if (variants.size === 0) return text
+  if (variants.size === 0) return (text) => text
   // Patterns with the length of the text they can match (a split value: its characters, at least).
   const patterns: { source: string; length: number }[] = [...variants].map((v) => ({
     source: escapeRegExp(v),
@@ -513,7 +539,8 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
     .sort((a, b) => b.length - a.length)
     .map((p) => p.source)
     .join("|")
-  return text.replace(new RegExp(alternation, "giu"), "[secret]")
+  const pattern = new RegExp(alternation, "giu")
+  return (text) => text.replace(pattern, "[secret]")
 }
 
 function htmlEscape(value: string, apostrophe: string): string {
@@ -970,7 +997,7 @@ export async function abandonSecretWrite(write: SecretWrite | undefined): Promis
   await write?.input.dispose().catch(() => undefined)
 }
 
-/** A secret step's target has no fallbacks and no `nth` (§3 A2). */
+/** A secret step's target has no fallbacks, no `nth` and no row (§3 A2: the page picks a row). */
 export function assertSecretTarget(target: Target, step: StepRef, secret: string): void {
   // Its locator is re-run after the write (to follow the field's blur): always the A8 grammar.
   if (isGrounded(target) && target.by === "css" && !isSafeSelector(target.selector)) {
@@ -980,11 +1007,14 @@ export function assertSecretTarget(target: Target, step: StepRef, secret: string
       `secret "${secret}": a step typing a secret needs a simple CSS selector (${SAFE_SELECTOR_RULES})`,
     )
   }
-  if (isGrounded(target) && (target.fallbacks !== undefined || target.nth !== undefined)) {
+  if (
+    isGrounded(target) &&
+    (target.fallbacks !== undefined || target.nth !== undefined || target.in !== undefined)
+  ) {
     throw new StepError(
       step,
       "secret-refused",
-      `secret "${secret}": a step typing a secret can't have fallbacks or nth`,
+      `secret "${secret}": a step typing a secret can't have fallbacks, nth or a row (in)`,
     )
   }
 }

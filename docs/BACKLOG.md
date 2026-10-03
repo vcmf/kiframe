@@ -1,5 +1,15 @@
 # Kiframe backlog
 
+## Must do: data persistence (rework, not a patch)
+
+**Decided 2026-10-02, S3:** the app keeps a project's chat **in memory only**: it's gone when the app quits (the scenes, scenarios, compositions and takes it made are saved as before). This is a deliberate slice shortcut, and closing it is **a rework of the agent runtime and of storage**, not a file dump of the message list:
+
+- **A proper store** (a database in app data, e.g. SQLite; not JSON files next to the project): chats and their messages, several chats per project, written as a turn goes (a crash keeps what was said), with versioning and migrations once it ships.
+- **The agent runtime resumable from it:** a run's history (`AgentEvent.messages`, reasoning details, tool results and their elision state) stored as the loop produces it, and reloaded into `runAgent` exactly; an interrupted turn (a stop, a crash mid-tool) restored in a state the model can continue from.
+- **Never a secret value in it:** tool results are scrubbed at the boundary today (S2b); the store must keep that guarantee (and its retention and encryption follow M1-8's take rules).
+- **What links to what:** a chat's turns to the scenes and takes they made, so history survives a scene's rename or delete.
+
+
 Non-severe review findings deferred on purpose (see the review-round rule: only severe findings trigger a new round).
 
 ## @kiframe/schema (P0-2)
@@ -17,6 +27,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Caret with delegated focus:** when focus lands on a descendant (shadow host with `delegatesFocus`), the caret is moved on the target, not on the focused element.
 - **Main scroller inside shadow DOM:** `findMainScroller` doesn't search shadow roots (web-component app shells).
 - **Text conditions are substring and case-insensitive:** `expect text: Saved` passes on "Unsaved changes". Consider an `exact` option or word boundaries.
+- **A named point and a box that only resized:** a click at `at` refuses when its point moved more than 2 px between the check and the click (after an approval too), even when the target only grew a little (a scrollbar appeared, a responsive canvas) and the fraction is still the spot approved. Interim: refused, the agent runs the step again (an approval asked again). Option: compare the point within the box (fractions), and refuse only a moved box whose element changed.
 - **Settle / scroll cost on large DOMs:** a full TreeWalker per settle to find shadow roots, and an `isConnected` round trip before each scroll.
 - **Cursor when the target is off screen before a click:** `find()` scrolls the target into view first, but if it moves off screen after the cursor travel, no cursor event is emitted and `ctx.cursor` keeps the old position while Playwright moves the real mouse.
 - **No cursor events without a box:** when the target has no visible box, Playwright's regular click is used (approval required unless `risky` is set): no cursor movement is shown and `ctx.cursor` goes stale.
@@ -31,6 +42,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 ## @kiframe/runtime recorder (P0-5)
 - **Sensitive rects follow the element within a step:** a vault-filled field is re-measured at each step end (a new `sensitive` rect when it moved, an empty rect when it's gone). During a step that moves it (smooth scroll, re-layout) the blur lags; sampling per frame would fix it. Also the DOM-text scan for secret text shown elsewhere (APPROACHES §7.4), before v0.
 - **Stale recording folders after a crash:** `.<name>.recording-*` and `<name>.old-*` are removed in-process only; after a kill they stay (unblurred frames). Sweep folders whose pid is dead at the next recording / app start.
+- **A first frame of another shape:** the take's frame size is the first frame's; on a slow machine (CI, 2026-09-30) that frame can have another aspect ratio than the viewport, and `TakeMeta.parse` throws a raw ZodError out of `recordScenario` (seen once in `recorder.test.ts` "keeps the good take…"). Take the size from frames matching the viewport's shape (or the most common one), and make a mismatch a failed take, not a thrown ZodError.
 - **Frame size change mid-take:** only warned; `meta.frameSize` is the first frame's, and ffmpeg gets mixed sizes. Split the take or scale frames when a real app resizes during a take.
 - **Frames through a pipe:** frames are written as JPEG files then encoded by ffmpeg after the run; piping them into ffmpeg (image2pipe) would avoid the temporary files. Needs ffmpeg on PATH (Phase 0).
 - **Secrets encoded inside larger values:** the scrubber catches each secret and its common encodings, but not a secret embedded in a larger encoded value (e.g. `base64("user:hunter2")` in a URL). The vault's grants (SECRETS-DESIGN §3) and keeping URLs out of takes where possible are the real defences.
@@ -83,6 +95,18 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Off-screen for conditions too:** `expect`/`waitFor` `visible` still count an element in a collapsed panel as visible (only click/hover check it can be brought on screen): a shared "reachable" filter next to `visibleOnly`.
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
+
+## Preview (S4)
+- **The take over IPC:** a preview reads frames.webm (async) and sends it to the window whole (tens of MB, cloned once). Stream it from the app's protocol instead (a range-capable URL for Mediabunny's `UrlSource`), with the project and take checked per request.
+- **A slow machine:** Mediabunny asks for frame times ahead (up to the next keyframe) and inter-frame video decodes every frame between keyframes, so a machine that can't decode in real time skips late frames (one drawn at least every 100 ms: never frozen) and can fall behind the clock. A lower-resolution proxy of the take, or a decode in a worker, would fix it.
+- **Not yet:** thumbnails in the scene strip, the whole video (every scene in sequence, transitions) in one player, export from the app.
+
+## Acting by ref (PR #10)
+- **Row-scoped targets (done):** a look-alike's target says its row (`in: { role, has }`), never a position. Gaps: a row whose distinguishing text sits in the row element itself (`<li>Acme <button>`; Playwright's `has` looks at descendants only) gets no row, so its ref is refused; rows are list items, table rows, articles, options and tree items (a card grid of `generic` divs has none). A row is named by a name-like text (`namesARow`), on the safe side: no time or date word, and no number without two words of its own ("Q4 Launch" is refused, so its row's look-alikes are written by hand). It stays a heuristic: a changing value said in words it doesn't know ("Sprint Alpha" renamed weekly) could still name a row; the replay checks the scene. A sturdier name would come from the app itself (the row's accessible name, a heading), when apps give one. Speed: a look-alike's row is found with sequential page round trips (decide each text's uniqueness in one page pass).
+- **A unique element whose surroundings changed:** a ref's element is the same node, role and name (and, nameless, the same text) in the same document; the row it sits in isn't compared (a "row context" refused normal flows: a counter changing beside a button). The only checkbox of a list whose one row was renamed is still that checkbox.
+- **A ref lost to a passing state:** a fresh snapshot taken while a button reads "Saving…" gives it a new ref (Playwright re-refs a node whose name changes), so the agent's ref for "Save" is refused later in the batch even once it reads "Save" again. Interim: refused, said why; a new snapshot gives it again.
+- **Playwright's own generator:** `locator.normalize()` (what Playwright MCP reports) writes role/text/filter locators and checks uniqueness; map its output into the schema's locators (under the exact-names rule) instead of our own candidates, with the row-scoped targets above.
+- **Cost:** each step with refs takes a fresh full-page snapshot (and up to 1.5 s of them when a ref is missing). Measure on large apps; check only after a step changed the page.
 
 ## Loading frames (Phase 0 report)
 - **White loading frames:** a navigation shows the blank page while the next one loads (Cal.com after "Continue"). Events can't tell loading from idle: detect near-blank or unchanged frames by frame difference, then cut or speed them (clips generator), and keep the camera wide over them.
@@ -198,3 +222,58 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Motion between reads beyond the padding** (shake animations, elastic overscroll): widen a box to its clipping container while the element or an ancestor has running animations (`getAnimations()`).
 - **Blur held on a static page (over-blur, T4):** a box left at `end` lasts until the next frame, and the screencast only sends frames on repaint: after a login lands on a static page, the old field's blur can stay for seconds (to the end of the scene if nothing repaints). Fix: when a box is left and no frame follows within ~100 ms, the recorder takes one screenshot (fresh by construction) and adds it as a frame at its capture time.
 - **A gone field back while every read stays unsure (fails open, rare):** a field reported gone that re-mounts while its reads keep failing (a stuck page, timeouts) isn't reopened until a sure read finds it; reopening on "unknown" would blur whole pages after every flaky read. (A target matching several elements counts as present, the union of its rendered matches: never gone, never stuck.)
+
+## @kiframe/project (S1)
+
+- **A crash between two files of one scene save:** `saveScene` writes scene.json, scenario.yaml and composition.json one after another (each atomic). A crash in between can pair a new scenario with the old composition, whose take key names a take of the old scenario: a caller showing a take checks its `meta.scenarioHash` against the scenario (S4's preview), until a scene-level journal or one file per scene.
+- **A duplicated project folder shares its id:** two folders with the same `project.json` id share one take directory (each lists the other's takes as its own; takes are matched by key, so a composition still finds its own). Fix: the app's open flow keeps a registry of project folders and gives a copy a new id.
+- **Sync I/O on the main process:** the store is synchronous (small files; `latest` reads every take's meta of the scene: bounded once retention lands). An async API if the main process shows stalls.
+- **Take retention (with M1-8):** every re-record keeps its take (raw, unblurred, unencrypted until M1-8): keep the takes a composition or export names plus the last few, and evict the rest (the LRU of OBJECT-MODEL §0.7).
+- **Take durability:** the recorder's files aren't fsynced (a power loss right after a recording can leave a take whose frames are truncated while its meta survived). fsync in the recorder's swap, or check frames.webm on read.
+- **Staleness: which take is a scene's current one (M1-8, needs a design):** today `latest()` is the newest complete take. The rule needs the inputs that shape footage (the scenario's actions, not its captions; the presets it uses, pacing, interrupt/hide/redaction rules, the app and viewport), in a canonical, versioned form (record key order, defaults across Kiframe updates). A review of a first attempt (whole config hashed) found it both over-stale and non-deterministic.
+
+## @kiframe/agent (S2a)
+
+- **A provider repeating call ids across turns:** the loop keeps the provider's ids (a thought signature in `reasoning_details` is bound to its call's id) and renames only a missing one or one repeated within a turn. A provider numbering calls per turn (`call_0` every turn) would repeat ids in the history: rename both the call and its reasoning entry's id then, once such a provider is used.
+- **History is the engine's own output:** a history from another client isn't normalized (duplicate ids, dangling calls). Validate it on import, once one exists.
+- **Reasoning history size:** streamed `reasoning_details` fragments are kept as received (OpenRouter's rule), which makes stored chats larger with thinking models. Compaction of old turns if it matters.
+
+## @kiframe/studio (S2b)
+
+- **A snapshot scrubbed twice:** it's scrubbed whole before its cut (a split value), then again at the tools' boundary: one scrubber passed in would do both.
+- **Two error scrubs:** the tools' boundary rebuilds a scrubbed error (name kept) beside the runtime's `scrubError`; a StepError through a tool loses its reason and step. One shared helper when a tool needs them.
+
+## @kiframe/desktop (S3a)
+
+- **Main bundles the whole runtime:** `@kiframe/project`'s take store imports `isRecorderLeftover` from the `@kiframe/runtime` barrel, so main's bundle (≈390 KB) carries the runner and pngjs it doesn't use in S3a (S3b loads the runtime anyway). A leaf module for the leftover check, or a subpath export, if cold start matters.
+- **The JS bundle is ≈700 KB** (React and the app; icons are tree-shaken): fine from disk, measure before splitting.
+- **The sweep is synchronous:** after a crash with many leftover frames, `TakeStore.sweep()` (sync `rmSync`) blocks main for a while just after the window shows. An async sweep (fs/promises) when takes get large.
+
+## @kiframe/desktop (S3b)
+
+- **A removed scene's key:** `Registry.forgetScene` gives a reused scene id a new key (no inherited approvals), but nothing removes scenes in the app yet: wire it to the remove path when one exists (and to a scene folder deleted outside the app, noticed at open).
+- **Markdown in the agent's answers:** shown as plain text (`pre-wrap`); cooldown's Streamdown renderer when answers carry lists and code.
+- **A model picker:** the model is `deepseek/deepseek-v4.1-flash` for now (the composer shows it).
+- **The live view polls for a page switch** (every 400 ms): a popup's first frames can be missed. A page-changed callback from the studio (where it follows the runner's switch) would replace the poll.
+- **Long chats repaint whole:** each streamed update re-renders the column and scans the item list (main and window). Derived selectors and an id index when chats get long.
+- **A tool's failure read from its words:** the chat tells a failed step by the studio's wording ("failed (…)", "replay failed: …"). The studio returning failures as soft errors (`{ error }`) would make it structural.
+- **The project refreshed after a list of tools:** the host refreshes the scene strip after `save_scene` / `record_scene` by name. A project-changed callback from the studio (or `saveScene`) would cover any tool that writes the project.
+
+## @kiframe/desktop (S3c)
+
+- **Approve for a wider path** (§3 A3's third choice): the dialog has Allow and Decline; a grant covers the page's path pattern (ids as `*`). Add the wider choice when a real app needs it.
+- **The approvals, listed:** the panel lists secrets, not their grants; removing a secret (or taking it off an app) drops its approvals. A per-step list with revoke (the vault has `grants` / `revoke`) when users ask what they approved.
+- **The approval's screenshot is the page as it is** (APPROACHES §0, 2026-10-02): the user's own values typed earlier show in it (their own screen, to them only, never the agent or a take). Masking them proved fragile; revisit if screen sharing during approvals becomes a real case.
+- **One secret for several apps:** the panel refuses a name another app already uses (its value there would be replaced unseen). Sharing one secret across apps (staging and prod logins alike) needs its own choice in the panel.
+- **A secret on the app's other origins:** a secret is added for the project URL's origin only; a login that redirects to `www.` or an SSO host is refused there ("isn't allowed on …", not an approval). The panel adding origins to a secret (the vault keeps several) when a real app does this.
+- **The approval's step from its key:** the dialog's "Step" line is parsed from the runtime's step key; an `ApprovalRequest` carrying the step's parts (phase, id, preset, rule, scene key) would make it structural.
+- **A grant stored before the chat says "Allowed":** the request is settled when the user answers, then the grant is stored; if storing fails (the secret removed meanwhile) the chat is revised to declined and the step fails as "unavailable". Storing first, then settling, would say it right the first time.
+- **A studio made again once the vault reads:** it closes the live page (the agent's next step starts on a fresh one though its history says where it was). Rare (the vault unreadable at a project's first run); keep the live context when only the secrets change.
+- **Why a secret step has no resolver:** with the vault unreadable, a secret step fails "no secret resolver given"; the Secrets panel says why, the run doesn't.
+- **Stop during the approval's screenshot:** the screenshot (up to 3 s) isn't stopped by the run's signal.
+
+## Real-app fixes (PR #9)
+
+- **A point below the fold:** a step with `at` whose point is off screen is refused ("scroll it into view first"); scrolling the point itself into view (a tall canvas) when a real app needs it.
+- **A project's address that redirects:** step results say when the app's address redirects to another origin (`www.`), and the user sets the project to it; resolving it when the project is created would spare the step.
+
