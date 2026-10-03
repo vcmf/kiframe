@@ -1312,6 +1312,51 @@ steps:
     })
   })
 
+  describe("a target in its row (look-alikes)", () => {
+    const deleteIn = (row: string) =>
+      `{ by: role, role: button, name: Delete, in: { role: listitem, has: "${row}" } }`
+    const deleted = () => page.evaluate(() => (window as unknown as { deleted: string[] }).deleted)
+
+    it("acts in the row that holds the text, wherever the row is now", async () => {
+      await run(
+        `setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: shuffle, action: click, target: { by: role, role: button, name: Shuffle } }
+  - { id: del, action: click, target: ${deleteIn("Water plants")} }
+  - { id: del2, action: click, target: ${deleteIn("Pay rent")} }
+`,
+        // "Delete" asks first, as on any page: approved here.
+        { approveRisky: () => true },
+      )
+      expect(await deleted()).toEqual(["Water plants", "Pay rent"])
+    })
+
+    it("never guesses a row: none is not found, two are ambiguous (said by the row)", async () => {
+      const none = await failure(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: del, action: click, target: ${deleteIn("Buy milk")} }
+`)
+      expect(none.reason).toBe("target-not-found")
+      expect(none.message).toMatch(/in the listitem holding "Buy milk"/)
+      const two = await failure(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: twin, action: click, target: { by: role, role: button, name: Twin } }
+  - { id: del, action: click, target: ${deleteIn("Pay rent")} }
+`)
+      expect(two.reason).toBe("target-ambiguous")
+      expect(two.message).toMatch(/2 elements are the listitem holding "Pay rent"/)
+      expect(await deleted()).toEqual([])
+    })
+
+    it("holds the row's text exactly (never part of it)", async () => {
+      const part = await failure(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: del, action: click, target: ${deleteIn("Pay")} }
+`)
+      expect(part.reason).toBe("target-not-found")
+    })
+  })
+
   it("returns to the opener when the click closes its page before it ends", async () => {
     // Closed as the pointer reaches it: the click finds its page closed ("Target page … closed").
     await run(`setup: [{ action: goto, url: /opener }]

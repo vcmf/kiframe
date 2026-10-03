@@ -28,8 +28,9 @@ ${stepReference()}
 
 Pointing at an element: the snapshot gives each one a ref ([ref=e12]). In run_step and run_steps, put
 { ref: e12 } wherever a step takes a locator: Kiframe writes a locator that finds that element and nothing
-else (checked right before the step), and its result says the step "as written" with it. An element with
-look-alikes (several identical "Delete" buttons) is refused: write its locator yourself. Write THAT in the YAML (save_scene never
+else (checked right before the step), and its result says the step "as written" with it. A look-alike
+(each row's "Delete") gets its row: \`in: { role: listitem, has: "Pay rent" }\` (the row holding that
+exact text). One it can't tell apart is refused: write its locator yourself. Write THAT in the YAML (save_scene never
 takes a ref). Refs hold until the page loads a new document (a navigation, a reload, a goto even to
 the same page): never put refs after a goto in the same run_steps; snapshot again after it. A ref inside an iframe is refused (steps reach the page's own elements only).
 

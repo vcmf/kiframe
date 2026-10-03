@@ -740,14 +740,25 @@ presets:
     ).toEqual({
       error: expect.stringMatching(/^step 2 ref \S+: it changed since the snapshot/) as unknown,
     })
-    // Look-alikes (each row's checkbox and "Delete"): refused, never a place among them (a changed
-    // list turns a place into another row: the user decided, 2026-10-03; row-scoped refs come next).
+    // Look-alikes (each row's checkbox and "Delete"): told apart by their row, never by a place
+    // among them (a changed list turns a place into another row).
     const todo = (await tool("snapshot").run({}, studio, never)) as string
-    for (const ref of [refOf(todo, /checkbox/), refOf(todo, /button "Delete"/)]) {
-      expect(await step({ id: "x", action: "click", target: { ref } }), ref).toEqual({
-        error: expect.stringMatching(/several elements look just like it/) as unknown,
-      })
-    }
+    expect(
+      await step({ id: "x", action: "hover", target: { ref: refOf(todo, /checkbox/) } }),
+    ).toContain("target: { by: role, role: checkbox, in: { role: listitem, has: Pay rent } }")
+    expect(
+      await step({ id: "y", action: "hover", target: { ref: refOf(todo, /button "Delete"/) } }),
+    ).toContain(
+      "target: { by: role, role: button, name: Delete, exact: true, in: { role: listitem, has: Pay rent } }",
+    )
+    // Where a step takes a locator alone (a condition), a look-alike's row can't be said: refused.
+    expect(
+      await step({
+        id: "z",
+        action: "expect",
+        that: { visible: { ref: refOf(todo, /button "Delete"/) } },
+      }),
+    ).toEqual({ error: expect.stringMatching(/here a locator can't name its row/) as unknown })
     // A reload: a new document, its refs numbered again from e1 (whatever the old ref names now).
     await step({ id: "again", action: "goto", url: "/rows" })
     expect(await step({ id: "d2", action: "hover", target: { ref: done } })).toEqual({

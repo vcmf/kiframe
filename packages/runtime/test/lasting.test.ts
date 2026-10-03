@@ -24,6 +24,8 @@ beforeEach(async () => {
     <menu><button>Delete</button></menu>
     <section><button id="archive">Archive</button><button>Archive</button></section>
     <input type="checkbox">
+    <ul class="todo"><li><span>Pay rent</span> <button>Remove</button></li>
+      <li><span>Call mom</span> <button>Remove</button></li></ul>
     <a href="#c" class="card-link"><h3>Card title</h3><p>Some description</p></a>
     <ol><li>Buy milk</li><li>Item 12</li><li>Say <span style="display:none">x</span>hi</li></ol>`)
   return () => page.close()
@@ -44,6 +46,32 @@ describe("a lasting locator for an element the agent pointed at", () => {
     expect(await lasting("button", { role: "button", name: "Save" })).toEqual({
       locator: { by: "role", role: "button", name: "Save", exact: true },
     })
+  })
+
+  it("tells a look-alike apart by its row: the text only that row holds", async () => {
+    expect(
+      await lasting(".todo li:nth-child(2) button", { role: "button", name: "Remove" }),
+    ).toEqual({
+      locator: { by: "role", role: "button", name: "Remove", exact: true },
+      in: { role: "listitem", has: "Call mom" },
+    })
+    // Not where a step takes a locator alone (a condition), nor by a secret value.
+    expect(
+      await lastingLocator(
+        page,
+        await el(".todo li:nth-child(2) button"),
+        { role: "button", name: "Remove" },
+        any,
+        { rows: false },
+      ),
+    ).toEqual(error(/here a locator can't name its row/))
+    expect(
+      await lasting(
+        ".todo li:nth-child(2) button",
+        { role: "button", name: "Remove" },
+        (t) => t !== "Call mom",
+      ),
+    ).toEqual(error(/no row of it holds a text only that row holds/))
   })
 
   it("never gives a place among look-alikes (refused, said why)", async () => {

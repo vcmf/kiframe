@@ -1,13 +1,13 @@
 // A lasting locator for an element the agent picked on the live page (a snapshot's ref): the first
 // candidate, in the order the agent is told to prefer (role and name, placeholder, text, an id
 // written by hand, a role alone), that finds exactly that element and nothing else among the
-// visible ones, through the rules a replay resolves with. Never a place among look-alikes (`nth`):
-// Playwright's own advice ("may click on an element you did not intend" once the page changes);
-// a look-alike is refused, said why.
-import type { Locator as SchemaLocator } from "@kiframe/schema"
+// visible ones, through the rules a replay resolves with. A look-alike (each row's "Delete") is
+// told apart by its row (`in`: the row holding a text only it holds), Playwright's own advice;
+// never by a place among look-alikes (`nth`), which a changed page turns into another element.
+import type { Locator as SchemaLocator, Scope } from "@kiframe/schema"
 import type { ElementHandle, Page } from "playwright"
 import { exactNamesFor } from "./secret-state.ts"
-import { toPlaywright, visibleOnly } from "./targets.ts"
+import { rowOf, toPlaywright, visibleOnly } from "./targets.ts"
 
 /** What the snapshot said of the element: its role, accessible name, and its own text if any. */
 export interface ElementHint {
@@ -16,8 +16,11 @@ export interface ElementHint {
   text?: string | undefined
 }
 
-/** A locator that finds the element alone, or why there's none. */
-export type Lasting = { locator: SchemaLocator } | { error: string }
+/** A locator that finds the element alone (in its row, for a look-alike), or why there's none. */
+export type Lasting = { locator: SchemaLocator; in?: Scope } | { error: string }
+
+/** Roles of rows a look-alike is told apart by (the nearest one holding it). */
+const ROW_ROLES = ["listitem", "row", "article", "option", "treeitem"] as const
 
 /** Roles a role locator can't usefully name (Playwright matches none of them by role). */
 const NO_ROLE_LOCATOR = new Set(["generic", "none", "presentation", "text", "paragraph"])
@@ -37,6 +40,8 @@ export async function lastingLocator(
   hint: ElementHint,
   /** Whether a string may go into the locator (a secret value never does: the studio's scrubber). */
   allowed: (text: string) => boolean,
+  /** Whether a row (`in`) may tell a look-alike apart (where the step takes a target). */
+  options: { rows: boolean } = { rows: true },
 ): Promise<Lasting> {
   const frame = await element.ownerFrame().catch(() => null)
   const facts =
@@ -127,15 +132,76 @@ export async function lastingLocator(
     lookAlike = true
   }
   if (lookAlike) {
+    const inRow = options.rows ? await inItsRow(page, element, usable, allowed) : undefined
+    if (inRow !== undefined) return inRow
     return {
-      error:
-        "several elements look just like it (no locator finds it alone): write its locator by hand from the snapshot",
+      error: options.rows
+        ? "several elements look just like it, and no row of it holds a text only that row holds: write its locator by hand from the snapshot"
+        : "several elements look just like it (here a locator can't name its row): point at a unique element, or write its locator by hand",
     }
   }
   return {
     error:
       "no lasting locator finds it (no role and name, placeholder, text or stable id): write one from the snapshot",
   }
+}
+
+/**
+ * A look-alike told apart by its row: the nearest row-like element holding it (a list item, a table
+ * row…), a text in that row only that row holds (exactly: the row's name, never a field's value nor
+ * a secret), and a candidate that finds the element alone in it.
+ */
+async function inItsRow(
+  page: Page,
+  element: ElementHandle<Element>,
+  usable: SchemaLocator[],
+  allowed: (text: string) => boolean,
+): Promise<{ locator: SchemaLocator; in: Scope } | undefined> {
+  for (const role of ROW_ROLES) {
+    // The nearest row of this role holding the element, and its texts (its leaves' own texts).
+    const texts = await page
+      .getByRole(role)
+      .evaluateAll((rows, target) => {
+        const holding = (rows as Element[]).filter((r) => r.contains(target))
+        const row = holding.find((r) => !holding.some((o) => o !== r && r.contains(o)))
+        if (row === undefined) return undefined
+        // Inside the row (a row's `has` is an element in it, never the row itself).
+        const leaves = [...row.querySelectorAll("*")].filter(
+          (e) =>
+            !["INPUT", "TEXTAREA", "SELECT", "OPTION", "SCRIPT", "STYLE"].includes(e.tagName) &&
+            !e.contains(target) &&
+            !target.contains(e) &&
+            [...e.childNodes].some((n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== ""),
+        )
+        return leaves.map((e) => (e.textContent ?? "").replace(/\s+/g, " ").trim())
+      }, element)
+      .catch((error: unknown) => {
+        if (isPageGone(error)) throw error
+        return undefined
+      })
+    if (texts === undefined) continue
+    for (const has of new Set(texts)) {
+      if (has === "" || has.length > TEXT_MAX || !allowed(has)) continue
+      const scope: Scope = { role, has }
+      const found = await rowOf(page, scope)
+      if (!("row" in found)) continue
+      const row = found.row
+      const holds = await row
+        .evaluate((r, target) => r.contains(target), element)
+        .catch(() => false)
+      if (!holds) continue
+      // The element alone in its row, under both exact-names rules (as a replay may have them).
+      const { exact } = await exactNamesFor(page, usable)
+      for (const locator of usable) {
+        const now = await indexAmong(page, locator, element, exact, row)
+        const fresh = exact ? await indexAmong(page, locator, element, false, row) : now
+        if (now?.count === 1 && now.index === 0 && fresh?.count === 1 && fresh.index === 0) {
+          return { locator, in: scope }
+        }
+      }
+    }
+  }
+  return undefined
 }
 
 /** Every string a locator would carry. */
@@ -162,9 +228,10 @@ async function indexAmong(
   locator: SchemaLocator,
   element: ElementHandle<Element>,
   exact: boolean,
+  within?: Parameters<typeof toPlaywright>[3],
 ): Promise<{ index: number; count: number } | undefined> {
   try {
-    return await visibleOnly(toPlaywright(page, locator, exact)).evaluateAll(
+    return await visibleOnly(toPlaywright(page, locator, exact, within)).evaluateAll(
       (els, target) => ({ index: (els as Element[]).indexOf(target), count: els.length }),
       element,
     )

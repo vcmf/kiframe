@@ -45,8 +45,21 @@ export const Locator = z.discriminatedUnion("by", [
 ])
 export type Locator = z.infer<typeof Locator>
 
+/**
+ * A row a target is in (Playwright's own advice for look-alikes, never a position): the one element
+ * of that role holding an element whose text is exactly `has` ("the list item that says Pay rent").
+ * Exact, never a substring: a filter must not tell whether part of a value is on the page.
+ */
+export const Scope = z.strictObject({
+  role: z.string().regex(/^[a-z]{2,40}$/, "an ARIA role name (listitem, row, article…)"),
+  has: z.string().min(1).max(200),
+})
+export type Scope = z.infer<typeof Scope>
+
 /** Fields every target can carry on top of its locator. */
 const targetExtras = {
+  /** The row it's in, for a look-alike (each row's "Delete"): the locator is looked for there. */
+  in: Scope.optional(),
   /** Natural-language intent from the chat. Used to heal the locator when it breaks. */
   intent: z.string().min(1).optional(),
   /** Alternative locators tried in order if the primary one fails. */
@@ -58,13 +71,19 @@ const targetExtras = {
 }
 
 /** A grounded target: a locator plus healing metadata. */
-export const GroundedTarget = z.discriminatedUnion("by", [
-  RoleLocator.extend(targetExtras),
-  LabelLocator.extend(targetExtras),
-  TextLocator.extend(targetExtras),
-  PlaceholderLocator.extend(targetExtras),
-  CssLocator.extend(targetExtras),
-])
+export const GroundedTarget = z
+  .discriminatedUnion("by", [
+    RoleLocator.extend(targetExtras),
+    LabelLocator.extend(targetExtras),
+    TextLocator.extend(targetExtras),
+    PlaceholderLocator.extend(targetExtras),
+    CssLocator.extend(targetExtras),
+  ])
+  // A row says which look-alike: never a position on top of it.
+  .refine((t) => t.in === undefined || t.nth === undefined, {
+    message: "a target `in` a row takes no `nth`: the row says which one",
+    path: ["nth"],
+  })
 export type GroundedTarget = z.infer<typeof GroundedTarget>
 
 /** A target the agent hasn't grounded yet: only the intent is known (scene status `draft`). */

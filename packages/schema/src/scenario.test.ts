@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
+  canonicalTarget,
   Composition,
+  GroundedTarget,
   isGrounded,
   NRect,
   parseScenarioYaml,
@@ -21,6 +23,24 @@ describe("Scenario", () => {
     )
     const step = s.steps[0]
     expect(step?.action === "click" && isGrounded(step.target)).toBe(false)
+  })
+
+  it("takes a target in a row (a look-alike), never with a position on top", () => {
+    const row = "{ by: role, role: button, name: Delete, in: { role: listitem, has: Pay rent } }"
+    const s = parseScenarioYaml(minimal(`  - { id: del, action: click, target: ${row} }\n`))
+    const step = s.steps[0]
+    expect(step?.action === "click" && step.target).toMatchObject({
+      in: { role: "listitem", has: "Pay rent" },
+    })
+    const withNth = row.replace(/ }$/, ", nth: 1 }")
+    expect(() =>
+      parseScenarioYaml(minimal(`  - { id: del, action: click, target: ${withNth} }\n`)),
+    ).toThrow(/takes no `nth`/)
+    // The row is part of what a secret approval binds.
+    const base = { by: "role", role: "textbox", name: "Key" } as const
+    expect(canonicalTarget(GroundedTarget.parse(base))).not.toBe(
+      canonicalTarget(GroundedTarget.parse({ ...base, in: { role: "row", has: "Prod" } })),
+    )
   })
 
   it("rejects duplicate step ids", () => {

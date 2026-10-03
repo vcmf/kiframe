@@ -25,7 +25,12 @@ describe("docs/OBJECT-MODEL.md examples", () => {
 
   it("scene-level example (§2) is a valid scenario", () => {
     const scenario = parseScenarioYaml(yamlBlockAfter("**Scene level**"))
-    expect(scenario.steps.map((s) => s.id)).toEqual(["open-new", "name-project", "done"])
+    expect(scenario.steps.map((s) => s.id)).toEqual([
+      "open-new",
+      "name-project",
+      "remove-old",
+      "done",
+    ])
     expect(scenario.setup).toHaveLength(3)
     expect(scenario.teardown?.[1]?.risky).toBe(true)
   })
