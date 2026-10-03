@@ -184,20 +184,8 @@ export class Studio {
     return back
   }
 
-  /**
-   * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and
-   * the site when it isn't the app's own (a link that left the app says so).
-   */
   #where(url: string): string {
-    let parsed: URL
-    try {
-      parsed = new URL(url)
-    } catch {
-      return url.slice(0, 200)
-    }
-    const app = new URL(this.options.config.target.url).origin
-    if (parsed.origin === app || parsed.protocol === "about:") return parsed.pathname
-    return `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${new URL(app).host})`
+    return whereOf(url, this.options.config.target.url)
   }
 
   /** The live page's accessibility snapshot (or one region's), with its URL. */
@@ -463,6 +451,24 @@ function shapeOf(raw: object): string {
     return `\nactions: ${Object.keys(ACTION_REFERENCE).join(", ")}`
   }
   return `\n${actionReference(kind as ActionKind)}`
+}
+
+/**
+ * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and the
+ * site when it isn't the app's own (a link that left the app says so). With or without `www.` is
+ * the same site (minmux.dev serves from www.minmux.dev).
+ */
+export function whereOf(url: string, appUrl: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return url.slice(0, 200)
+  }
+  const app = new URL(appUrl)
+  const site = (u: URL) => `${u.protocol}//${u.host.replace(/^www\./, "")}`
+  if (site(parsed) === site(app) || parsed.protocol === "about:") return parsed.pathname
+  return `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${app.host})`
 }
 
 /** Where in a scenario an item runs. */

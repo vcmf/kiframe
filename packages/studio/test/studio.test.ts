@@ -7,7 +7,14 @@ import { parseProjectYaml } from "@kiframe/schema"
 import { type Browser, chromium } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../runtime/test/fixture-server.ts"
-import { SNAPSHOT_MAX, Studio, studioTools, systemPrompt, type UserRequest } from "../src/index.ts"
+import {
+  SNAPSHOT_MAX,
+  Studio,
+  studioTools,
+  systemPrompt,
+  type UserRequest,
+  whereOf,
+} from "../src/index.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
 let browser: Browser
@@ -510,6 +517,9 @@ presets:
     expect(snap).not.toContain("token")
     await page.goto(`${server.url}/projects`)
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/projects\n/)
+    expect(whereOf("https://www.app.example/x", "https://app.example")).toBe("/x")
+    expect(whereOf("https://app.example/x", "https://www.app.example")).toBe("/x")
+    expect(whereOf("https://github.com/x", "https://app.example")).toMatch(/NOT the app's site/)
     await studio.close()
   }, 30_000)
 
