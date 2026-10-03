@@ -195,6 +195,18 @@ export async function clickAtCursor(
           "action-failed",
           "the target changed right before the click: nothing was clicked",
         )
+      // A named point is a spot of the target: if the target moved since the check, the checked
+      // screen point is another spot of it (or another element): nothing clicked.
+      if (action.at !== undefined) {
+        const now = pointIn(box, action.at)
+        if (Math.hypot(now.x - point.x, now.y - point.y) > 2) {
+          throw new StepError(
+            step,
+            "action-failed",
+            "the target moved right before the click: nothing was clicked",
+          )
+        }
+      }
       position = await clickOffset(target, box, point, left())
     }
     // The click event the recorder logs, at our point or the box center when Playwright picks it.

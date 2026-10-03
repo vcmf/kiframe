@@ -430,9 +430,9 @@ presets:
       },
       { scenario: parseScenarioYaml(SCENE) },
     )
-    expect(await tool("record_scene").run({ id: "intro" }, studio, never)).toMatch(
-      /card scene: only recordings/,
-    )
+    expect(await tool("record_scene").run({ id: "intro" }, studio, never)).toEqual({
+      error: expect.stringMatching(/card scene: only recordings/) as unknown,
+    })
     await studio.close()
   }, 30_000)
 
@@ -552,14 +552,14 @@ presets:
     expect(lines[0]).toMatch(/^1\. ok/)
     expect(lines[1]).toMatch(/^2\. ok\. url: \/projects/)
     expect(lines[2]).toMatch(/^3\. failed \(target-not-found\)/)
-    expect(lines[3]).toBe("stopped there (it failed): the 1 after it didn't run")
+    expect(lines[3]).toBe("stopped there: the 1 after it didn't run")
     // A list sent as text (a model's habit) is read as the list it says.
     const asText = (await tool("run_steps").run(
       { scene: "tour", steps: "[{ id: go, action: goto, url: / }]" },
       studio,
       never,
     )) as string
-    expect(asText).toMatch(/^1\. ok/)
+    expect(asText.split("\n")).toEqual(["1 step ok", expect.stringMatching(/^1\. ok/) as unknown])
     // A step that leaves the app's site stops the rest.
     const page = await studio.livePage()
     await page.goto(`${server.url.replace("127.0.0.1", "localhost")}/`)
@@ -575,8 +575,9 @@ presets:
       never,
     )) as string
     expect(offSite.split("\n")).toEqual([
+      "step 1 left the app's site",
       expect.stringMatching(/^1\. ok\. url: \/ \(on localhost/) as unknown,
-      "stopped there (not the app's site): the 1 after it didn't run",
+      "stopped there: the 1 after it didn't run",
     ])
     const app = "https://app.example"
     expect(siteOf("https://app.example/x", app)).toBe("app")
@@ -592,6 +593,7 @@ presets:
     expect(siteOf("https://github.com/x", app)).toBe("other")
     expect(siteOf("chrome-error://chromewebdata/", app)).toBe("unloaded")
     expect(whereOf("data:text/html,secret-content", app)).toBe("(a data page: not the app)")
+    expect(whereOf("about:blank", app)).toBe("(a blank page)")
     expect(whereOf("chrome-error://chromewebdata/", "https://app.example")).toBe(
       "(the page failed to load: try again)",
     )

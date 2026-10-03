@@ -41,11 +41,8 @@ export function toolDetail(args: unknown): string {
   return ""
 }
 
-/** A result's outcome and first line (the studio says failures in words: "failed (…)"). */
-export function toolOutcome(
-  result: unknown,
-  toolName = "",
-): {
+/** A result's outcome and first line (a failure is `{ error }`, never told by its words). */
+export function toolOutcome(result: unknown): {
   status: "ok" | "failed" | "stopped"
   result: string
 } {
@@ -55,14 +52,10 @@ export function toolOutcome(
       result: oneLine(result.message),
     }
   }
+  // Every tool says a failure as `{ error }` (above): anything else worked, whatever its words.
   if (isToolSoftError(result)) return { status: "failed", result: oneLine(result.error) }
   const text = typeof result === "string" ? result : (JSON.stringify(result) ?? "")
-  // The steps' tools say a failure as `{ error }` (above): their text is a success.
-  if (toolName === "run_step" || toolName === "run_steps") {
-    return { status: "ok", result: oneLine(text.split("\n").at(-1) ?? "") }
-  }
-  const failed = /^(failed|invalid|refused|replay failed|recording failed|no scene)\b/.test(text)
-  return { status: failed ? "failed" : "ok", result: oneLine(text.split("\n")[0] ?? "") }
+  return { status: "ok", result: oneLine(text.split("\n")[0] ?? "") }
 }
 
 export class ChatLog {
@@ -158,7 +151,7 @@ export class ChatLog {
           item?.kind === "tool"
             ? item
             : { kind: "tool" as const, id, name: event.toolName, detail: "" }
-        return [this.#put({ ...base, ...toolOutcome(event.result, event.toolName) })]
+        return [this.#put({ ...base, ...toolOutcome(event.result) })]
       }
       default: {
         this.#assistant = undefined

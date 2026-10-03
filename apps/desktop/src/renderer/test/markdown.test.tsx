@@ -53,4 +53,16 @@ describe("the agent's answers", () => {
     fireEvent.click(screen.getByText("this"))
     expect(invoke).toHaveBeenCalledTimes(1)
   })
+
+  it("shows a link that wouldn't open (http:, a path) as its text, never a dead link", () => {
+    stubApi({})
+    const { container } = render(
+      <AgentText
+        text={"Open [the local app](http://localhost:3000/x) or [settings](/settings)."}
+      />,
+    )
+    expect(container.querySelector("a")).toBeNull()
+    // Where it would go is still said.
+    expect(container.textContent).toContain("the local app (localhost:3000)")
+  })
 })

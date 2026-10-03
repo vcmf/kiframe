@@ -8,6 +8,14 @@ import { asObject, type StepResult, type Studio } from "./studio.ts"
 // them. Each heeds the run's signal (a stop ends a step, a replay or a recording at its next step,
 // and closes a question to the user).
 
+/**
+ * An outcome as the model and the chat read it: its text when it worked, a failure as `{ error }`
+ * (the loop's and the chat's own protocol: never told apart by its words).
+ */
+function said(result: StepResult): string | { error: string } {
+  return result.ok ? result.text : { error: result.text }
+}
+
 const sceneId = SceneId.describe("the scene's id (kebab-case, unique in the project)")
 
 const listScenes = defineTool({
@@ -38,7 +46,7 @@ const snapshot = defineTool({
       .optional()
       .describe("A locator for a region, e.g. {by: role, role: dialog}"),
   }),
-  run: ({ within }, studio: Studio) => studio.snapshot(within),
+  run: async ({ within }, studio: Studio) => said(await studio.snapshot(within)),
 })
 
 const runStep = defineTool({
@@ -53,11 +61,8 @@ const runStep = defineTool({
       .default("steps")
       .describe("the part of the scene it's for (its approvals are that part's)"),
   }),
-  // Its text when it worked; a failure as `{ error }` (the loop's and the chat's own protocol).
-  run: async ({ scene, step, part }, studio: Studio, signal) => {
-    const result = await studio.runStep(step, scene, signal, part)
-    return result.ok ? result.text : { error: result.text }
-  },
+  run: async ({ scene, step, part }, studio: Studio, signal) =>
+    said(await studio.runStep(step, scene, signal, part)),
 })
 
 const runSteps = defineTool({
@@ -92,18 +97,18 @@ const runSteps = defineTool({
       }
       out.push(`${i + 1}. ${result.text}`)
       const left = list.length - i - 1
-      const stopped = (why: string) =>
-        left > 0 ? [`stopped there (${why}): the ${left} after it didn't run`] : []
-      // A failed step: the call fails, that step's reason first (the line a chat shows), then all.
+      const stopped = left > 0 ? [`stopped there: the ${left} after it didn't run`] : []
+      // The first line says the outcome (the line the chat shows), then every step's.
+      // A failed step: the call fails, that step's reason first.
       if (!result.ok) {
-        return {
-          error: [`step ${i + 1} ${result.text}`, ...out, ...stopped("it failed")].join("\n"),
-        }
+        return { error: [`step ${i + 1} ${result.text}`, ...out, ...stopped].join("\n") }
       }
       // On another site: what follows would run there (not a failure: said, and stopped).
-      if (result.site === "other") return [...out, ...stopped("not the app's site")].join("\n")
+      if (result.site === "other") {
+        return [`step ${i + 1} left the app's site`, ...out, ...stopped].join("\n")
+      }
     }
-    return out.join("\n")
+    return [`${list.length} ${list.length === 1 ? "step" : "steps"} ok`, ...out].join("\n")
   },
 })
 
@@ -182,7 +187,7 @@ const recordScene = defineTool({
   description:
     "Record a saved scene at human pace for the video (takes as long as the scene plays).",
   parameters: z.object({ id: sceneId }),
-  run: ({ id }, studio: Studio, signal) => studio.record(id, signal),
+  run: async ({ id }, studio: Studio, signal) => said(await studio.record(id, signal)),
 })
 
 /**

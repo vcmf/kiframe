@@ -6,17 +6,11 @@
 // Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20]
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
+import { TakeStore } from "@kiframe/project"
 import { _electron as electron } from "playwright"
 import { loadDotEnv } from "../lib/secrets.ts"
 
@@ -70,6 +64,9 @@ if (run === undefined) {
   console.error(`usage: --app ${Object.keys(APPS).join("|")} [--minutes 20]`)
   process.exit(2)
 }
+// The app's environment: this process's own, before the `.env` is read (none of its values reach
+// the app: the key and the secrets go through the app's UI, as a user gives them).
+const inherited = { ...process.env }
 loadDotEnv()
 const key = process.env.OPENROUTER_API_KEY
 if (key === undefined || key === "") throw new Error("OPENROUTER_API_KEY isn't set (root .env)")
@@ -79,18 +76,24 @@ const out = join(root, ".kiframe-local", "real-apps", `${values.app}-${Date.now(
 mkdirSync(out, { recursive: true })
 const log = (line: string) => console.log(`[${values.app}] ${line}`)
 
-/** The complete takes under a take store's folder (a take is complete once its meta.json says so). */
-function completeTakes(dir: string): number {
+/** The complete takes the app's take store holds (its own reading: leftovers and bad ones skipped). */
+function completeTakes(data: string): number {
+  const store = new TakeStore(data)
+  const dir = join(data, "takes")
   if (!existsSync(dir)) return 0
-  let count = 0
-  for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
-    if (!entry.isFile() || entry.name !== "meta.json") continue
-    const meta = JSON.parse(readFileSync(join(entry.parentPath, entry.name), "utf8")) as {
-      outcome?: { status?: string }
-    }
-    if (meta.outcome?.status === "complete") count += 1
-  }
-  return count
+  const subdirs = (d: string) =>
+    readdirSync(d, { withFileTypes: true }).filter(
+      (e) => e.isDirectory() && !e.name.startsWith("."),
+    )
+  return subdirs(dir).reduce(
+    (n, project) =>
+      n +
+      subdirs(join(dir, project.name)).reduce(
+        (m, scene) => m + store.takes(project.name, scene.name).length,
+        0,
+      ),
+    0,
+  )
 }
 
 async function credits(): Promise<number | undefined> {
@@ -103,20 +106,12 @@ async function credits(): Promise<number | undefined> {
 }
 
 const env = Object.fromEntries(
-  Object.entries(process.env).filter(
+  Object.entries(inherited).filter(
     (e): e is [string, string] =>
       e[1] !== undefined && e[0] !== "ELECTRON_RENDERER_URL" && e[0] !== "ELECTRON_RUN_AS_NODE",
   ),
 )
 env.KIFRAME_TEST_KEYCHAIN = "memory"
-// The app gets the key and the secrets only through its own UI (as a user gives them): never from
-// the environment.
-for (const name of [
-  "OPENROUTER_API_KEY",
-  ...Object.values(APPS).flatMap((a) => a.secrets.map((s) => s.env)),
-]) {
-  delete env[name]
-}
 const profile = mkdtempSync(join(tmpdir(), "kiframe-real-"))
 const usageBefore = await credits()
 const started = Date.now()
@@ -169,7 +164,6 @@ try {
 
   const deadline = started + Number(values.minutes) * 60_000
   let nudged = false
-  let answered = 0
   for (;;) {
     if (Date.now() > deadline) {
       log("time's up: stopping")
@@ -184,10 +178,9 @@ try {
     const approve = page.getByRole("button", { name: "Approve this step" })
     const reply = page.getByLabel("Your answer")
     if (await allow.isVisible().catch(() => false)) {
-      await shot(`secret-approval-${answered}`)
+      // Never a screenshot here: the approval shows the page unmasked (APPROACHES: never to a file).
       await allow.click()
       log("secret use allowed")
-      answered += 1
     } else if (
       await approve
         .first()
@@ -196,7 +189,6 @@ try {
     ) {
       await approve.first().click()
       log("risky step approved")
-      answered += 1
     } else if (
       await reply
         .first()
@@ -206,7 +198,6 @@ try {
       await reply.first().fill("Use your best judgment; keep the scene short.")
       await page.getByRole("button", { name: "Answer" }).first().click()
       log("question answered")
-      answered += 1
     }
     const running = await page
       .getByRole("button", { name: "Stop" })
@@ -257,7 +248,7 @@ try {
         ? Math.round((usageAfter - usageBefore) * 10000) / 10000
         : null,
     // Complete takes only (a take folder exists once a recording starts).
-    takes: completeTakes(join(profile, "data", "takes")),
+    takes: completeTakes(join(profile, "data")),
     status,
     chat: state,
   }

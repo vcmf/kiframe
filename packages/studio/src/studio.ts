@@ -184,42 +184,51 @@ export class Studio {
     return back
   }
 
-  #where(url: string): string {
-    return whereOf(url, this.options.config.target.url)
+  #where(url: string, site?: Site): string {
+    return whereOf(url, this.options.config.target.url, site)
   }
 
   /** A step done, and where its page is: a page that failed to load makes it a failure. */
   #landed(url: string, said: string): StepResult {
     const site = siteOf(url, this.options.config.target.url)
-    const text = `${said}. url: ${this.#where(url)}`
-    return site === "unloaded" ? { ok: false, text, site } : { ok: true, text, site }
+    if (site === "unloaded") {
+      return {
+        ok: false,
+        text: "failed (page-not-loaded): the page failed to load: try again",
+        site,
+      }
+    }
+    return { ok: true, text: `${said}. url: ${this.#where(url, site)}`, site }
   }
 
   /** The live page's accessibility snapshot (or one region's), with its URL. */
-  async snapshot(within?: unknown): Promise<string> {
+  async snapshot(within?: unknown): Promise<StepResult> {
     const page = await this.livePage()
     let root = page.locator("body")
     if (within !== undefined) {
       const parsed = Locator.safeParse(asObject(within))
       if (!parsed.success)
-        return `invalid \`within\` locator: ${formatIssue(parsed.error.issues[0])}`
+        return failed(`invalid \`within\` locator: ${formatIssue(parsed.error.issues[0])}`)
       try {
         root = visibleOnly(await locatorFor(page, parsed.data)).first()
       } catch (e) {
         // A selector the secrets rules refuse (SECRETS-DESIGN §3 A8): the agent gets the reason.
-        return `refused \`within\` locator: ${String(e)}`
+        return failed(`refused \`within\` locator: ${String(e)}`)
       }
     }
-    const text = await root
-      .ariaSnapshot({ timeout: 5000 })
-      .catch((e: unknown) => `snapshot failed: ${String(e)}`)
+    let text: string
+    try {
+      text = await root.ariaSnapshot({ timeout: 5000 })
+    } catch (e) {
+      return failed(`snapshot failed: ${this.scrub(String(e))}`)
+    }
     // Scrubbed whole, then cut (a value the cut splits would pass the scrubber in part).
     const scrubbed = this.scrub(text)
     const cut =
       scrubbed.length > SNAPSHOT_MAX
         ? `${scrubbed.slice(0, SNAPSHOT_MAX)}\n… (cut: ${scrubbed.length} chars; use \`within\` to look at a region)`
         : scrubbed
-    return `url: ${this.#where(page.url())}\n${cut}`
+    return { ok: true, text: `url: ${this.#where(page.url())}\n${cut}` }
   }
 
   /**
@@ -232,7 +241,6 @@ export class Studio {
     signal: AbortSignal,
     part: ScenarioPart = "steps",
   ): Promise<StepResult> {
-    const failed = (text: string): StepResult => ({ ok: false, text })
     const raw = asObject(input)
     if (typeof raw !== "object" || raw === null) {
       return failed(
@@ -354,11 +362,14 @@ export class Studio {
    * Records a scene into the take store (human pacing, a fresh browser), then generates its
    * composition from the take and saves it with the scene.
    */
-  async record(sceneId: string, signal: AbortSignal): Promise<string> {
+  async record(sceneId: string, signal: AbortSignal): Promise<StepResult> {
     const stored = this.project.scenes.get(sceneId)
-    if (stored?.scenario === undefined) return `no scene "${sceneId}" with a scenario to record`
+    if (stored?.scenario === undefined)
+      return failed(`no scene "${sceneId}" with a scenario to record`)
     if (stored.scene.source.kind !== "recording") {
-      return `scene "${sceneId}" is a ${stored.scene.source.kind} scene: only recordings are filmed`
+      return failed(
+        `scene "${sceneId}" is a ${stored.scene.source.kind} scene: only recordings are filmed`,
+      )
     }
     const { scenario } = stored
     const { config, takes } = this.options
@@ -368,7 +379,7 @@ export class Studio {
       deviceScaleFactor: config.target.viewport.deviceScaleFactor,
     })
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
-    let failed: string | undefined
+    let why: string | undefined
     let stopped: StepError | undefined
     try {
       recorded = await recordScenario(await context.newPage(), scenario, config, {
@@ -377,7 +388,7 @@ export class Studio {
       })
     } catch (error) {
       if (isStopped(error)) stopped = error as StepError
-      failed = failure(error)
+      why = failure(error)
     } finally {
       await context.close().catch(() => undefined)
     }
@@ -386,28 +397,32 @@ export class Studio {
       take = takes.settle(dir)
     } catch (error) {
       if (stopped !== undefined) throw stopped
-      return `recording failed: ${failed ?? failure(error)}`
+      return failed(`recording failed: ${why ?? failure(error)}`)
     }
     if (stopped !== undefined) throw stopped
     if (take === undefined || recorded === undefined) {
       // A complete take the recorder failed after (a file error) is kept, but without its result
       // no composition is made from it: filmed again.
       const kept = take !== undefined ? " (its take was kept, but record again)" : ""
-      return `recording failed: ${failed ?? "no complete take"}${kept}`
+      return failed(`recording failed: ${why ?? "no complete take"}${kept}`)
     }
     let made: ReturnType<typeof generate>
     try {
       made = generate(config, scenario, recorded)
       saveScene(this.project, stored.scene, { composition: made.composition })
     } catch (error) {
-      return `recorded, but its composition wasn't saved (the take was kept): ${String(error)}`
+      return failed(
+        `recorded, but its composition wasn't saved (the take was kept): ${String(error)}`,
+      )
     }
     const { warnings } = made
     const notes = [...recorded.warnings, ...warnings]
-    return (
-      `recorded (${Math.round(take.meta.durationMs / 100) / 10} s)` +
-      (notes.length > 0 ? `; warnings: ${notes.join("; ")}` : "")
-    )
+    return {
+      ok: true,
+      text:
+        `recorded (${Math.round(take.meta.durationMs / 100) / 10} s)` +
+        (notes.length > 0 ? `; warnings: ${notes.join("; ")}` : ""),
+    }
   }
 
   /** Closes the live page (the browser is the host's); every tool and dialog still running stops. */
@@ -512,8 +527,7 @@ export interface StepResult {
  * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and
  * what its site is when it isn't the app's own origin (`siteOf`).
  */
-export function whereOf(url: string, appUrl: string): string {
-  const site = siteOf(url, appUrl)
+export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl)): string {
   if (site === "unloaded") return "(the page failed to load: try again)"
   let page: URL
   try {
@@ -521,6 +535,8 @@ export function whereOf(url: string, appUrl: string): string {
   } catch {
     return "(an unreadable address: not the app)"
   }
+  // A blank page (a popup not loaded yet, the first page before a goto): the app's, but empty.
+  if (page.protocol === "about:") return "(a blank page)"
   if (site === "app") return page.pathname
   const app = new URL(appUrl)
   if (page.origin === "null") return `(a ${page.protocol.replace(":", "")} page: not the app)`
@@ -532,6 +548,11 @@ export function whereOf(url: string, appUrl: string): string {
 
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"
+
+/** A failed outcome. */
+function failed(text: string): StepResult {
+  return { ok: false, text }
+}
 
 /** A step failure as the agent reads it. */
 function failure(error: unknown): string {

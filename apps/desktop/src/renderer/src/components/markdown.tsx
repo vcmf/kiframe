@@ -1,5 +1,6 @@
 // The agent's answers as Markdown: no raw HTML (react-markdown escapes it), and a link never
-// navigates the window: an https one opens in the user's browser (main checks it again).
+// navigates the window: an https one opens in the user's browser (main checks it again); any
+// other is shown as text.
 import { memo } from "react"
 import Markdown, { type Components } from "react-markdown"
 import { api } from "../api.ts"
@@ -7,17 +8,24 @@ import { api } from "../api.ts"
 const components: Components = {
   a: ({ href, children }) => {
     const host = hostOf(href)
+    // Only an https link opens: any other (http:, mailto:, a path) is its text, never a dead link.
+    if (href === undefined || !href.startsWith("https://")) {
+      return (
+        <span title={href}>
+          {children}
+          {host !== undefined && <span className="md-host"> ({host})</span>}
+        </span>
+      )
+    }
     return (
       <a
         href={href}
         title={href}
         onClick={(event) => {
           event.preventDefault()
-          if (href !== undefined && href.startsWith("https://")) {
-            void api()
-              .invoke("external:open", href)
-              .catch(() => undefined)
-          }
+          void api()
+            .invoke("external:open", href)
+            .catch(() => undefined)
         }}
       >
         {children}
