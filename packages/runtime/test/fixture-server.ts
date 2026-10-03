@@ -350,13 +350,22 @@ const pages: Record<string, string> = {
   // "Twin" adds a second "Pay rent" row. Deleting logs the row's text.
   "/todo": `<!doctype html><title>Todo</title>
     <ul id="list">
-      <li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button></li>
-      <li><input type="checkbox"> <span>Water plants</span> <button>Delete</button></li>
-      <li><input type="checkbox"> <span>Call mom</span> <button>Delete</button></li>
+      <li><input type="checkbox"> <span>Pay rent</span> <button>Delete</button><input type="file" hidden></li>
+      <li><input type="checkbox"> <span>Water plants</span> <button>Delete</button><input type="file" hidden></li>
+      <li><input type="checkbox"> <span>Call mom</span> <button>Delete</button><input type="file" hidden></li>
     </ul>
+    <ul role="tree"><li role="treeitem"><span>src</span> <button>Rename</button>
+      <ul role="group"><li role="treeitem"><span>index.ts</span> <button>Rename</button></li></ul></li></ul>
     <button id="shuffle">Shuffle</button><button id="twin">Twin</button>
     <script>
       window.deleted = []
+      window.uploaded = []
+      window.renamed = []
+      document.querySelectorAll("#list input[type=file]").forEach((input) =>
+        input.addEventListener("change", () =>
+          window.uploaded.push(input.closest("li").querySelector("span").textContent + ": " + input.files[0].name)))
+      document.querySelectorAll("[role=treeitem] > button").forEach((b) =>
+        b.addEventListener("click", () => window.renamed.push(b.parentElement.querySelector("span").textContent)))
       const list = document.getElementById("list")
       list.addEventListener("click", (e) => {
         if (e.target.textContent !== "Delete") return

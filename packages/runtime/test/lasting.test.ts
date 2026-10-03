@@ -1,6 +1,6 @@
 import { chromium, type Browser, type Page } from "playwright"
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { type ElementHint, lastingLocator } from "../src/index.ts"
+import { type ElementHint, lastingLocator, namesARow } from "../src/index.ts"
 
 let browser: Browser
 let page: Page
@@ -26,6 +26,9 @@ beforeEach(async () => {
     <input type="checkbox">
     <ul class="todo"><li><span>Pay rent</span> <button>Remove</button></li>
       <li><span>Call mom</span> <button>Remove</button></li></ul>
+    <table><tr><td>3</td><td>Pay rent</td><td>2 min ago</td><td><button>Drop</button></td></tr>
+      <tr><td>4</td><td>Call mom</td><td>5 min ago</td><td><button>Drop</button></td></tr></table>
+    <div class="pair"><button>Share</button><button>Share</button></div>
     <a href="#c" class="card-link"><h3>Card title</h3><p>Some description</p></a>
     <ol><li>Buy milk</li><li>Item 12</li><li>Say <span style="display:none">x</span>hi</li></ol>`)
   return () => page.close()
@@ -71,7 +74,28 @@ describe("a lasting locator for an element the agent pointed at", () => {
         { role: "button", name: "Remove" },
         (t) => t !== "Call mom",
       ),
-    ).toEqual(error(/no row of it holds a text only that row holds/))
+    ).toEqual(error(/no row of it holds a name only that row holds/))
+  })
+
+  it("names a row by its name, never a row number or a time", async () => {
+    expect(await lasting("tr:nth-child(2) button", { role: "button", name: "Drop" })).toEqual({
+      locator: { by: "role", role: "button", name: "Drop", exact: true },
+      in: { role: "row", has: "Call mom" },
+    })
+    expect(["3", "#1042", "2 min ago", "10:42", "2026-10-03", "Pay rent"].map(namesARow)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+    ])
+  })
+
+  it("says when a look-alike sits in no row", async () => {
+    expect(await lasting(".pair button:nth-child(2)", { role: "button", name: "Share" })).toEqual(
+      error(/it sits in no row/),
+    )
   })
 
   it("never gives a place among look-alikes (refused, said why)", async () => {

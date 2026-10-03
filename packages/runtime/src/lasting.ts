@@ -132,12 +132,18 @@ export async function lastingLocator(
     lookAlike = true
   }
   if (lookAlike) {
-    const inRow = options.rows ? await inItsRow(page, element, usable, allowed) : undefined
-    if (inRow !== undefined) return inRow
+    if (!options.rows) {
+      return {
+        error:
+          "several elements look just like it (here a locator can't name its row): point at a unique element, or write its locator by hand",
+      }
+    }
+    const inRow = await inItsRow(page, element, usable, allowed, exact)
+    if (inRow.found !== undefined) return inRow.found
     return {
-      error: options.rows
-        ? "several elements look just like it, and no row of it holds a text only that row holds: write its locator by hand from the snapshot"
-        : "several elements look just like it (here a locator can't name its row): point at a unique element, or write its locator by hand",
+      error: inRow.row
+        ? "several elements look just like it, and no row of it holds a name only that row holds: write its locator by hand from the snapshot"
+        : "several elements look just like it, and it sits in no row (a list item, a table row…): write its locator by hand from the snapshot",
     }
   }
   return {
@@ -147,41 +153,70 @@ export async function lastingLocator(
 }
 
 /**
+ * Whether a text names a row (a title: "Pay rent"), never a position or a passing value: a row
+ * number ("3"), an id ("#1042"), a time ("2 min ago", "10:42"), a date ("2026-10-03").
+ */
+export function namesARow(text: string): boolean {
+  if (!/\p{L}{2}/u.test(text)) return false // no word: a number, an id, a symbol
+  if (/\b(ago|just now|today|yesterday|tomorrow)\b/i.test(text)) return false
+  if (/\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(text)) return false
+  return true
+}
+
+/**
  * A look-alike told apart by its row: the nearest row-like element holding it (a list item, a table
- * row…), a text in that row only that row holds (exactly: the row's name, never a field's value nor
- * a secret), and a candidate that finds the element alone in it.
+ * row…, whichever role is nearest), a name-like text in that row only that row holds (exactly; never
+ * a field's value nor a secret; a heading's or a link's first), and a candidate that finds the
+ * element alone in it. Undefined `row`: it sits in no row at all.
  */
 async function inItsRow(
   page: Page,
   element: ElementHandle<Element>,
   usable: SchemaLocator[],
   allowed: (text: string) => boolean,
-): Promise<{ locator: SchemaLocator; in: Scope } | undefined> {
-  for (const role of ROW_ROLES) {
-    // The nearest row of this role holding the element, and its texts (its leaves' own texts).
-    const texts = await page
-      .getByRole(role)
-      .evaluateAll((rows, target) => {
-        const holding = (rows as Element[]).filter((r) => r.contains(target))
-        const row = holding.find((r) => !holding.some((o) => o !== r && r.contains(o)))
-        if (row === undefined) return undefined
-        // Inside the row (a row's `has` is an element in it, never the row itself).
-        const leaves = [...row.querySelectorAll("*")].filter(
-          (e) =>
-            !["INPUT", "TEXTAREA", "SELECT", "OPTION", "SCRIPT", "STYLE"].includes(e.tagName) &&
-            !e.contains(target) &&
-            !target.contains(e) &&
-            [...e.childNodes].some((n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== ""),
-        )
-        return leaves.map((e) => (e.textContent ?? "").replace(/\s+/g, " ").trim())
-      }, element)
-      .catch((error: unknown) => {
-        if (isPageGone(error)) throw error
-        return undefined
-      })
-    if (texts === undefined) continue
+  exact: boolean,
+): Promise<{ found: { locator: SchemaLocator; in: Scope } | undefined; row: boolean }> {
+  // The nearest row of each role holding the element (its depth), and its texts, titles first.
+  const nearest = await Promise.all(
+    ROW_ROLES.map((role) =>
+      page
+        .getByRole(role)
+        .evaluateAll((rows, target) => {
+          const holding = (rows as Element[]).filter((r) => r.contains(target))
+          const row = holding.find((r) => !holding.some((o) => o !== r && r.contains(o)))
+          if (row === undefined) return undefined
+          let depth = 0
+          for (let e: Element | null = row; e !== null; e = e.parentElement) depth += 1
+          // Inside the row (a row's `has` is an element in it, never the row itself).
+          const leaves = [...row.querySelectorAll("*")].filter(
+            (e) =>
+              !["INPUT", "TEXTAREA", "SELECT", "OPTION", "SCRIPT", "STYLE"].includes(e.tagName) &&
+              !e.contains(target) &&
+              !target.contains(e) &&
+              [...e.childNodes].some(
+                (n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== "",
+              ),
+          )
+          const title = (e: Element) =>
+            e.closest("h1,h2,h3,h4,h5,h6,a,strong,b,[role=heading],[role=link]") !== null
+          const texts = [...leaves.filter(title), ...leaves.filter((e) => !title(e))].map((e) =>
+            (e.textContent ?? "").replace(/\s+/g, " ").trim(),
+          )
+          return { depth, texts }
+        }, element)
+        .then((r) => (r === undefined ? undefined : { role, ...r }))
+        .catch((error: unknown) => {
+          if (isPageGone(error)) throw error
+          return undefined
+        }),
+    ),
+  )
+  const rows = nearest
+    .filter((r): r is NonNullable<typeof r> => r !== undefined)
+    .sort((a, b) => b.depth - a.depth)
+  for (const { role, texts } of rows) {
     for (const has of new Set(texts)) {
-      if (has === "" || has.length > TEXT_MAX || !allowed(has)) continue
+      if (has === "" || has.length > TEXT_MAX || !allowed(has) || !namesARow(has)) continue
       const scope: Scope = { role, has }
       const found = await rowOf(page, scope)
       if (!("row" in found)) continue
@@ -191,17 +226,16 @@ async function inItsRow(
         .catch(() => false)
       if (!holds) continue
       // The element alone in its row, under both exact-names rules (as a replay may have them).
-      const { exact } = await exactNamesFor(page, usable)
       for (const locator of usable) {
         const now = await indexAmong(page, locator, element, exact, row)
         const fresh = exact ? await indexAmong(page, locator, element, false, row) : now
         if (now?.count === 1 && now.index === 0 && fresh?.count === 1 && fresh.index === 0) {
-          return { locator, in: scope }
+          return { found: { locator, in: scope }, row: true }
         }
       }
     }
   }
-  return undefined
+  return { found: undefined, row: rows.length > 0 }
 }
 
 /** Every string a locator would carry. */

@@ -294,11 +294,12 @@ export function typesSecret(a: { action: string; value?: unknown }): boolean {
  */
 const secretTargetIsExact = (s: { action: string; value?: unknown; target?: unknown }) => {
   if (!typesSecret(s) || typeof s.target !== "object" || s.target === null) return true
-  const t = s.target as { fallbacks?: unknown; nth?: unknown }
-  return t.fallbacks === undefined && t.nth === undefined
+  const t = s.target as { fallbacks?: unknown; nth?: unknown; in?: unknown }
+  // A row is chosen by text the page controls: another row could come to hold it (§3 A2).
+  return t.fallbacks === undefined && t.nth === undefined && t.in === undefined
 }
 const secretTargetError = {
-  message: "a step typing a secret needs one exact target: no fallbacks, no `nth`",
+  message: "a step typing a secret needs one exact target: no fallbacks, no `nth`, no row (`in`)",
   path: ["target"],
 }
 

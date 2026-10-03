@@ -45,16 +45,15 @@ export function toPlaywright(
 
 /**
  * The rows a target's `in` names: the visible elements of that role holding an element whose text
- * is exactly `has` (never a substring: no filter tells whether part of a value is on the page).
+ * is exactly `has` (never a substring: no filter tells whether part of a value is on the page), the
+ * innermost ones (a tree item holding a sub-item with that text isn't that row).
  */
 export function scopeOf(page: Page, scope: Scope): Locator {
   // Spliced into Playwright's selector unescaped: only a role name, never selector syntax.
   if (!/^[a-z]{2,40}$/.test(scope.role)) throw new Error(`not an ARIA role: ${scope.role}`)
-  return visibleOnly(
-    page
-      .getByRole(scope.role as Parameters<Page["getByRole"]>[0])
-      .filter({ has: page.getByText(scope.has, { exact: true }) }),
-  )
+  const role = scope.role as Parameters<Page["getByRole"]>[0]
+  const holding = page.getByRole(role).filter({ has: page.getByText(scope.has, { exact: true }) })
+  return visibleOnly(holding.filter({ hasNot: holding }))
 }
 
 /** A row as messages say it. */
@@ -182,7 +181,10 @@ export async function resolveTarget(
       if (count === 0 || (candidate.nth !== undefined && count <= candidate.nth)) continue
       if (candidate.nth === undefined && count > 1) {
         // Stop here: falling through to a fallback could act on a different element.
-        ambiguous = `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
+        ambiguous =
+          candidate.scope !== undefined
+            ? `${describeLocator(candidate.locator)} matches ${count} visible elements in ${describeScope(candidate.scope)} — a more precise locator (a row takes no \`nth\`)`
+            : `${describeLocator(candidate.locator)} matches ${count} visible elements — add \`nth\` or a more precise locator`
         break
       }
       const visible = visibleOnly(toPlaywright(page, candidate.locator, r.exact, within))

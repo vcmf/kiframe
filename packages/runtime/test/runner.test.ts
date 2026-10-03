@@ -445,7 +445,7 @@ steps:
         ...approving(vault, []),
         timeoutMs: 1500,
       }).catch((e: unknown) => e)
-      expect(String(error)).toMatch(/can't have fallbacks or nth/)
+      expect(String(error)).toMatch(/can't have fallbacks, nth/)
     })
 
     it("keeps its protections across runs on the same browser context", async () => {
@@ -557,7 +557,7 @@ steps:
         ...approving(vault, []),
         timeoutMs: 1500,
       }).catch((e: unknown) => e)
-      expect(String(error)).toMatch(/can't have fallbacks or nth/)
+      expect(String(error)).toMatch(/can't have fallbacks, nth/)
       expect(await page.getByLabel("Email").inputValue()).toBe("keep me")
     })
 
@@ -1346,6 +1346,32 @@ steps:
       expect(two.reason).toBe("target-ambiguous")
       expect(two.message).toMatch(/2 elements are the listitem holding "Pay rent"/)
       expect(await deleted()).toEqual([])
+    })
+
+    it("finds the innermost row (a tree item inside another holding the same text isn't it)", async () => {
+      await run(`setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: rn, action: click, target: { by: role, role: button, name: Rename, in: { role: treeitem, has: index.ts } } }
+`)
+      expect(
+        await page.evaluate(() => (window as unknown as { renamed: string[] }).renamed),
+      ).toEqual(["index.ts"])
+    })
+
+    it("uploads into the file input of its row", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "kiframe-asset-"))
+      const asset = `${"b".repeat(64)}.txt`
+      writeFileSync(join(dir, asset), "hello")
+      await run(
+        `setup: [{ action: goto, url: /todo }]
+steps:
+  - { id: up, action: upload, target: { by: css, selector: "input[type=file]", in: { role: listitem, has: Water plants } }, file: ${asset} }
+`,
+        { resolveAsset: (file) => join(dir, file) },
+      )
+      expect(
+        await page.evaluate(() => (window as unknown as { uploaded: string[] }).uploaded),
+      ).toEqual([`Water plants: ${asset}`])
     })
 
     it("holds the row's text exactly (never part of it)", async () => {
