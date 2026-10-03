@@ -23,6 +23,15 @@ describe("the agent's answers", () => {
     expect(container.textContent).not.toContain("**")
   })
 
+  it("keeps the agent's single line breaks", () => {
+    stubApi({})
+    const { container } = render(<AgentText text={"Saved the scene.\nRecording now."} />)
+    const p = container.querySelector("p")
+    expect(p?.textContent).toBe("Saved the scene.\nRecording now.")
+    // Kept on screen by the paragraph's own white-space.
+    expect(p?.style.whiteSpace).toBe("pre-line")
+  })
+
   it("opens an https link in the user's browser (never in the window), nothing else", () => {
     const { invoke } = stubApi({ "external:open": () => undefined })
     render(

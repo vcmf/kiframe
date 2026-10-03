@@ -129,17 +129,24 @@ describe("a tool's line", () => {
     expect(toolOutcome({ answer: "the demo account" }).status).toBe("ok")
     expect(oneLine("x".repeat(400)).length).toBe(160)
     // run_steps: failed when one of its numbered lines did, that line shown.
-    expect(toolOutcome("1. ok. url: /\n2. ok. url: /x")).toEqual({
+    expect(toolOutcome("1. ok. url: /\n2. ok. url: /x", "run_steps")).toEqual({
       status: "ok",
       result: "2 ok; 2. ok. url: /x",
     })
     expect(
       toolOutcome(
         "1. ok. url: /\n2. failed (target-not-found): no Save\nstopped there: the 1 after it didn't run",
+        "run_steps",
       ),
     ).toEqual({ status: "failed", result: "2. failed (target-not-found): no Save" })
-    expect(toolOutcome("1. invalid step: x").status).toBe("failed")
-    expect(toolOutcome("1. ok, but it closed every page").status).toBe("failed")
+    expect(toolOutcome("1. invalid step: x", "run_steps").status).toBe("failed")
+    expect(toolOutcome("1. ok, but it closed every page", "run_steps").status).toBe("failed")
+    expect(
+      toolOutcome("1. ok. url: /docs (on github.com: NOT the app's site, minmux.dev)", "run_steps")
+        .status,
+    ).toBe("failed")
+    // Another tool's numbered text is never read as run_steps'.
+    expect(toolOutcome("1. failed attempts are retried", "list_scenes").status).toBe("ok")
     expect(toolDetail({ scene: "s", steps: [{}, {}, {}] })).toBe("3 steps")
     // Never half an emoji at the cut.
     const cut = oneLine(`${"x".repeat(158)}😀${"y".repeat(10)}`)

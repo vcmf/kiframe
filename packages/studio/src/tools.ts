@@ -2,7 +2,8 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
-import type { Studio } from "./studio.ts"
+import { parse as parseYaml } from "yaml"
+import { type Studio, stepOutcome } from "./studio.ts"
 
 // The agent's tools for Kiframe: look at and act on the live app, write and check scenes, record
 // them. Each heeds the run's signal (a stop ends a step, a replay or a recording at its next step,
@@ -62,17 +63,24 @@ const runSteps = defineTool({
     "Run SEVERAL steps on the live page, in order (each like run_step's); stops at the first that fails. Use it once you know the locators: one call instead of one per step.",
   parameters: z.object({
     scene: SceneId.describe("the id you'll save this scene under"),
-    steps: z.array(z.unknown()).min(1).max(20).describe("The steps, same fields as in the YAML"),
+    steps: z
+      .union([z.array(z.unknown()).min(1).max(20), z.string().max(50_000)])
+      .describe("The steps, same fields as in the YAML (a list)"),
     part: z.enum(["setup", "steps", "teardown"]).default("steps").describe("the part they're for"),
   }),
   run: async ({ scene, steps, part }, studio: Studio, signal) => {
+    // A list sent as YAML or JSON text (FAILURE-CATALOGUE #11) is read as the list it says.
+    const list = typeof steps === "string" ? (parseYaml(steps) as unknown) : steps
+    if (!Array.isArray(list) || list.length === 0 || list.length > 20) {
+      return { error: "steps: a list of 1 to 20 steps" }
+    }
     const out: string[] = []
-    for (const [i, step] of steps.entries()) {
+    for (const [i, step] of list.entries()) {
       const result = await studio.runStep(step, scene, signal, part)
       out.push(`${i + 1}. ${result}`)
-      // A plain ok only (never "ok, but it closed every page": what follows would run elsewhere).
-      if (!result.startsWith("ok") || result.startsWith("ok, but")) {
-        const left = steps.length - i - 1
+      // Only on: a step that failed, closed every page or left the app's site stops the rest.
+      if (stepOutcome(result) !== "ok") {
+        const left = list.length - i - 1
         if (left > 0) out.push(`stopped there: the ${left} after it didn't run`)
         break
       }

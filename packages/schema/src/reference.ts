@@ -99,33 +99,39 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
 }
 
 /**
- * Fields any step can take besides its action's own (each line is checked as a step too). The
- * `id` rule: every on-camera step has one; off camera (setup, teardown) it's optional, except on a
- * step typing a secret, which always has one (its approval is keyed by it).
+ * Fields steps take besides their action's own. `offCamera`: also in setup and teardown (only `id`
+ * and `risky` are; the presentation fields are on camera only). The `id` rule: every on-camera
+ * step has one; off camera it's optional, except on a step typing a secret (its approval is keyed
+ * by it). Each example is checked against the schema of where it goes.
  */
-export const COMMON_FIELDS: { field: string; example: string }[] = [
+export const COMMON_FIELDS: { field: string; example: string; offCamera: boolean }[] = [
   {
     field:
       "id: kebab-case, unique in the scene (on camera always; off camera only when it types a secret)",
     example: "{ id: open-new, action: click, target: <locator> }",
+    offCamera: true,
   },
   {
     field:
       "risky: true on a delete, send, pay or invite (the user approves it); risky: false says a click is safe",
-    example: "{ id: remove, action: click, target: <locator>, risky: true }",
+    example: "{ action: click, target: <locator>, risky: true }",
+    offCamera: true,
   },
   {
-    field: "caption: a short line shown in the video (on the steps that matter)",
+    field: "caption (on camera only): a short line shown in the video, on the steps that matter",
     example: '{ id: open, action: click, target: <locator>, caption: "Open your projects" }',
+    offCamera: false,
   },
   {
-    field: "hold: a beat after the step, in ms (never sped up)",
+    field: "hold (on camera only): a beat after the step, in ms (never sped up)",
     example: "{ id: look, action: click, target: <locator>, hold: 1200 }",
+    offCamera: false,
   },
   {
     field:
-      "cursor: hide (no cursor in the video for this step); keystrokes: show (keys pressed shown)",
+      "cursor: hide / keystrokes: show (on camera only): no cursor for this step / the keys pressed shown",
     example: "{ id: shortcut, action: press, keys: Mod+k, keystrokes: show, cursor: hide }",
+    offCamera: false,
   },
 ]
 
@@ -142,7 +148,7 @@ export function actionReference(kind: ActionKind): string {
 export function stepReference(): string {
   return [
     ...(Object.keys(ACTION_REFERENCE) as ActionKind[]).map(actionReference),
-    "fields every step takes:",
+    "fields steps take (setup and teardown items: only id and risky):",
     ...COMMON_FIELDS.map((c) => `  - ${c.field}`),
   ].join("\n")
 }

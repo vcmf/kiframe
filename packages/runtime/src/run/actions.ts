@@ -29,7 +29,7 @@ import {
   timeoutOf,
 } from "./context.ts"
 import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
-import { clickAtCursor, moveCursorTo, pointIn, travel, visiblePart } from "./pointer.ts"
+import { clickAtCursor, moveCursorTo, onScreen, pointIn, travel, visiblePart } from "./pointer.ts"
 import { explainOffScreen } from "./risky.ts"
 import {
   abandonSecretWrite,
@@ -373,7 +373,7 @@ async function drag(
       const offset = action.to as { dx: number; dy: number }
       const p = { x: start.x + offset.dx, y: start.y + offset.dy }
       // Never a shorter drag than asked (a slider would stop at the wrong value): say so instead.
-      if (p.x < 0 || p.y < 0 || p.x > viewport.width - 1 || p.y > viewport.height - 1) {
+      if (!onScreen(p, viewport)) {
         throw new StepError(
           step,
           "action-failed",
@@ -387,7 +387,7 @@ async function drag(
       if (box === null)
         throw new StepError(step, "target-not-found", "the drop target isn't on screen")
       const p = pointIn(box, toPoint.at)
-      if (p.x < 0 || p.y < 0 || p.x > viewport.width - 1 || p.y > viewport.height - 1) {
+      if (!onScreen(p, viewport)) {
         throw new StepError(
           step,
           "target-not-found",

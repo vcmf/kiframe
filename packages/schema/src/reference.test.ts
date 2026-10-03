@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { parse as parseYaml } from "yaml"
 import { ACTION_REFERENCE, type ActionKind, COMMON_FIELDS, EXAMPLE_LOCATOR } from "./reference.ts"
-import { Step } from "./scenario.ts"
+import { Action, Step } from "./scenario.ts"
 
 const KINDS = Object.keys(ACTION_REFERENCE) as ActionKind[]
 
@@ -20,10 +20,14 @@ describe("the step reference the agent reads", () => {
     expect(unknown.error?.issues.some((i) => i.path[0] === "action")).toBe(true)
   })
 
-  it("parses every example of the fields every step takes", () => {
-    for (const { field, example } of COMMON_FIELDS) {
-      const parsed = Step.safeParse(parseYaml(example.replaceAll("<locator>", EXAMPLE_LOCATOR)))
-      expect(parsed.success, `${field}\n${JSON.stringify(parsed.error?.issues)}`).toBe(true)
+  it("parses every example of the fields steps take, where it says they go", () => {
+    for (const { field, example, offCamera } of COMMON_FIELDS) {
+      const item: unknown = parseYaml(example.replaceAll("<locator>", EXAMPLE_LOCATOR))
+      if ("id" in (item as object)) {
+        expect(Step.safeParse(item).success, `on camera: ${field}`).toBe(true)
+      }
+      // Off camera (setup, teardown): accepted exactly when it says so.
+      expect(Action.safeParse(item).success, `off camera: ${field}`).toBe(offCamera)
     }
   })
 

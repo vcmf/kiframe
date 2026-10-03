@@ -13,6 +13,7 @@ import {
   studioTools,
   systemPrompt,
   type UserRequest,
+  stepOutcome,
   whereOf,
 } from "../src/index.ts"
 
@@ -549,6 +550,36 @@ presets:
     expect(lines[1]).toMatch(/^2\. ok\. url: \/projects/)
     expect(lines[2]).toMatch(/^3\. failed \(target-not-found\)/)
     expect(lines[3]).toBe("stopped there: the 1 after it didn't run")
+    // A list sent as text (a model's habit) is read as the list it says.
+    const asText = (await tool("run_steps").run(
+      { scene: "tour", steps: "[{ id: go, action: goto, url: / }]" },
+      studio,
+      never,
+    )) as string
+    expect(asText).toMatch(/^1\. ok/)
+    // A step that leaves the app's site stops the rest.
+    const page = await studio.livePage()
+    await page.goto(`${server.url.replace("127.0.0.1", "localhost")}/`)
+    const offSite = (await tool("run_steps").run(
+      {
+        scene: "tour",
+        steps: [
+          { id: "look", action: "pause", ms: 1 },
+          { id: "more", action: "pause", ms: 1 },
+        ],
+      },
+      studio,
+      never,
+    )) as string
+    expect(offSite.split("\n")).toEqual([
+      expect.stringMatching(/^1\. ok\. url: \/ \(on localhost/) as unknown,
+      "stopped there: the 1 after it didn't run",
+    ])
+    expect(stepOutcome("ok. url: /x")).toBe("ok")
+    expect(stepOutcome("failed (x): y")).toBe("failed")
+    expect(whereOf("chrome-error://chromewebdata/", "https://app.example")).toBe(
+      "(the page failed to load: try again)",
+    )
     await studio.close()
   }, 60_000)
 })

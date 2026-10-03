@@ -4,24 +4,30 @@ import Markdown, { type Components } from "react-markdown"
 import { api } from "../api.ts"
 
 const components: Components = {
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      title={href}
-      onClick={(event) => {
-        event.preventDefault()
-        if (href !== undefined && href.startsWith("https://")) {
-          void api()
-            .invoke("external:open", href)
-            .catch(() => undefined)
-        }
-      }}
-    >
-      {children}
-      {/* Where it really goes, always (the agent's words, a link's label, can be steered). */}
-      {hostOf(href) !== undefined && <span className="md-host"> ({hostOf(href)})</span>}
-    </a>
-  ),
+  a: ({ href, children }) => {
+    const host = hostOf(href)
+    return (
+      <a
+        href={href}
+        title={href}
+        onClick={(event) => {
+          event.preventDefault()
+          if (href !== undefined && href.startsWith("https://")) {
+            void api()
+              .invoke("external:open", href)
+              .catch(() => undefined)
+          }
+        }}
+      >
+        {children}
+        {/* Where it really goes, always (the agent's words, a link's label, can be steered). */}
+        {host !== undefined && <span className="md-host"> ({host})</span>}
+      </a>
+    )
+  },
+  // The agent's single line breaks kept (Markdown joins them otherwise).
+  p: ({ children }) => <p style={{ whiteSpace: "pre-line" }}>{children}</p>,
+  li: ({ children }) => <li style={{ whiteSpace: "pre-line" }}>{children}</li>,
   // Images from the agent's text aren't loaded (the CSP refuses them anyway): their alt text shows.
   img: ({ alt }) => <span>{alt}</span>,
 }

@@ -467,6 +467,8 @@ export function whereOf(url: string, appUrl: string): string {
   } catch {
     return url.slice(0, 200)
   }
+  // Chromium's error page: the load failed (the network, a timeout), the app wasn't left.
+  if (parsed.protocol === "chrome-error:") return "(the page failed to load: try again)"
   const app = new URL(appUrl)
   // The runtime's own rule: the exact origin (secrets are typed only there).
   if (parsed.origin === app.origin || parsed.protocol === "about:") return parsed.pathname
@@ -475,6 +477,16 @@ export function whereOf(url: string, appUrl: string): string {
   return sameButWww
     ? `${parsed.pathname} (on ${parsed.host}: the app's address redirects here; the user should set the project's address to ${parsed.origin}, or secrets can't be typed on this page)`
     : `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${app.host})`
+}
+
+/**
+ * How a step went, read from `runStep`'s answer (one reading for every caller: run_steps, the
+ * host's chat): ok, ok but the page is off the app's site (what follows would run elsewhere), or
+ * failed (a refusal, a failure, a page that closed every tab).
+ */
+export function stepOutcome(result: string): "ok" | "off-site" | "failed" {
+  if (!result.startsWith("ok") || result.startsWith("ok, but")) return "failed"
+  return /NOT the app's site|the app's address redirects here/.test(result) ? "off-site" : "ok"
 }
 
 /** Where in a scenario an item runs. */

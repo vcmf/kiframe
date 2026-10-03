@@ -21,9 +21,9 @@ steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id (a capti
 teardown:     # off camera, after filming: remove what the steps created, so the scene can be replayed
   - { action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays (the user approves)
 
-Every action and its forms, then the fields every step takes (never guess fields that aren't here).
-Setup and teardown items are the same actions; their id is optional, EXCEPT on a step typing a secret
-(always an id: its approval is keyed by it):
+Every action and its forms, then the fields steps take (never guess fields that aren't here).
+Setup and teardown items are the same actions with only id and risky (no caption, hold…); their id is
+optional, EXCEPT on a step typing a secret (always an id: its approval is keyed by it):
 ${stepReference()}
 
 Locators (prefer in this order; they must match exactly ONE visible element):
@@ -51,6 +51,7 @@ Rules:
 - As soon as every step and the teardown ran ok once, call save_scene. Don't start over by hand to re-check:
   save_scene replays the whole scene from scratch in a fresh browser and tells you what fails.
 - A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.
+  A point (\`at\`) off screen is below the fold: scroll to it first.
 - The replay starts in a FRESH browser (no cookies, no storage): panels, sidebars and menus are in their
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.

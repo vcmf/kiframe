@@ -36,7 +36,7 @@ export async function moveCursorTo(
         throw new StepError(step, "target-not-found", "the target has no box to point in yet")
       }
       to = pointIn(box, at)
-      if (to.x < 0 || to.y < 0 || to.x > viewport.width - 1 || to.y > viewport.height - 1) {
+      if (!onScreen(to, viewport)) {
         throw new StepError(
           step,
           "target-not-found",
@@ -63,6 +63,11 @@ export async function moveCursorTo(
     )
     return ctx.cursor
   })
+}
+
+/** Whether a point is on the viewport's pixels, [0, width-1] × [0, height-1]. */
+export function onScreen(p: Point, viewport: { width: number; height: number }): boolean {
+  return p.x >= 0 && p.y >= 0 && p.x <= viewport.width - 1 && p.y <= viewport.height - 1
 }
 
 /** The point `at` (fractions of the box) of a box, in CSS pixels of the viewport. */
@@ -159,7 +164,10 @@ export async function clickAtCursor(
           "action-failed",
           "the target changed right before the click: nothing was clicked",
         )
-      position = await clickOffset(target, box, point, left())
+      // A named point is measured again on the box as it is now (the page may have moved while
+      // the user approved): the click lands where the step says.
+      const aim = action.at !== undefined ? pointIn(box, action.at) : point
+      position = await clickOffset(target, box, aim, left())
     }
     // The click event the recorder logs, at our point or the box center when Playwright picks it.
     // No trial click first: Playwright's trial really presses the mouse (the button would flash
