@@ -30,7 +30,7 @@ import {
   type ProjectConfig,
   type Scenario,
   SceneId,
-  secretRefName,
+  typesSecret,
   SetupItem,
   Step,
 } from "@kiframe/schema"
@@ -430,8 +430,8 @@ export class Studio {
 
   /**
    * The item with each ref replaced by its lasting locator: one that finds the very element the
-   * agent pointed at and nothing else, checked right before the step runs (never a place among
-   * look-alikes: refused, said why).
+   * agent pointed at and nothing else, checked right before the step runs; a look-alike in its row
+   * (`in`), where the item takes one (never a place among look-alikes).
    */
   async #written(
     raw: unknown,
@@ -459,7 +459,8 @@ export class Studio {
       // its own words.
       // A row may tell a look-alike apart only where the item's own schema takes one (a target:
       // never a condition's locator).
-      const rows = takesRow(value, at.path, part)
+      const item = value
+      const rows = () => takesRow(item, at.path, part)
       const lasting = await lastingOfRef(page, at.ref, hint, allowed, rows).catch(
         (error: unknown): Lasting => ({
           error: isPageGone(error)
@@ -804,7 +805,7 @@ async function lastingOfRef(
   ref: string,
   hint: ElementHint,
   allowed: (text: string) => boolean,
-  rows: boolean,
+  rows: () => boolean,
 ): Promise<Lasting> {
   // As the page is now, without waiting: `elementHandle()` waits for something on some apps (1.6 s
   // on Cal.com's login page: FAILURE-CATALOGUE #21). A ref names an element, never a text node.
@@ -832,9 +833,8 @@ function takesRow(item: unknown, path: (string | number)[], part: ScenarioPart):
   // refinement doesn't run while another field is wrong).
   const r = item as { action?: unknown; value?: unknown }
   if (
-    r.action === "type" &&
-    typeof r.value === "string" &&
-    secretRefName(r.value) !== undefined &&
+    typeof r.action === "string" &&
+    typesSecret({ ...r, action: r.action }) &&
     path[0] === "target"
   ) {
     return false

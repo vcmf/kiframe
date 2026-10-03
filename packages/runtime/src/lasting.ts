@@ -40,8 +40,8 @@ export async function lastingLocator(
   hint: ElementHint,
   /** Whether a string may go into the locator (a secret value never does: the studio's scrubber). */
   allowed: (text: string) => boolean,
-  /** Whether a row (`in`) may tell a look-alike apart (where the step takes a target). */
-  options: { rows: boolean } = { rows: true },
+  /** Whether a row (`in`) may tell a look-alike apart (where the step takes a target): asked only for a look-alike. */
+  options: { rows: boolean | (() => boolean) } = { rows: true },
 ): Promise<Lasting> {
   const frame = await element.ownerFrame().catch(() => null)
   const facts =
@@ -132,7 +132,7 @@ export async function lastingLocator(
     lookAlike = true
   }
   if (lookAlike) {
-    if (!options.rows) {
+    if (!(typeof options.rows === "function" ? options.rows() : options.rows)) {
       return {
         error:
           "several elements look just like it (here a locator can't name its row): point at a unique element, or write its locator by hand",
@@ -152,33 +152,21 @@ export async function lastingLocator(
   }
 }
 
-/** Words a count, an id or a time is said with ("12 items", "Order #1042", "5 minutes"). */
-const COUNTED = new Set(
-  "item items file files comment comments reply replies member members user users order orders invoice ticket issue task tasks second seconds minute minutes hour hours days week weeks month months year years updated created edited views likes votes".split(
-    " ",
-  ),
-)
+/** Words that say a time or a date: never a row's lasting name. */
+const WHEN =
+  /\b(ago|now|today|tonight|yesterday|tomorrow|due|last|next|this|week|weeks|weekend|month|year|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|am|pm)\b/i
 
 /**
- * Whether a text names a row (a title: "Pay rent"), never a position or a passing value: a row
- * number ("3"), an id ("#1042"), a time ("2 min ago", "10:42"), a date ("2026-10-03").
+ * Whether a text names a row lastingly (a title: "Pay rent"), never a position or a passing value:
+ * a row number, an id, a count, a time, a date. On the safe side: a text with a time or date word,
+ * or a number without two words of its own ("Q4 Launch plan" is a name, "12 items" isn't), isn't
+ * one (refused, the agent writes the locator); a passing value taken for a name would act in
+ * another row later.
  */
 export function namesARow(text: string): boolean {
   if (!/\p{L}{2}/u.test(text)) return false // no word: a number, an id, a symbol
-  // A number with only units or labels around it ("12 items", "Order #1042", "3h", "5 minutes"):
-  // a count, an id, a time; with a word of its own ("Q4 Launch") it's a name.
-  if (/\d/.test(text)) {
-    const words = text.toLowerCase().match(/\p{L}{4,}/gu) ?? []
-    if (!words.some((w) => !COUNTED.has(w))) return false
-  }
-  // Times and dates in words ("just now", "in 5 min", "Mon", "Oct 3", "Updated yesterday").
-  if (
-    /\b(ago|just now|now|today|yesterday|tomorrow|in \d+|mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
-      text,
-    )
-  ) {
-    return false
-  }
+  if (WHEN.test(text)) return false
+  if (/\d/.test(text) && (text.match(/\p{L}{4,}/gu) ?? []).length < 2) return false
   return true
 }
 
@@ -233,9 +221,13 @@ async function inItsRow(
             const t = e.closest("h1,h2,h3,h4,h5,h6,a,strong,b,[role=heading],[role=link]")
             return t !== null && row.contains(t) && t !== row
           }
-          const texts = [...leaves.filter(title), ...leaves.filter((e) => !title(e))].map(
-            (e) => e.textContent ?? "",
-          )
+          // Titles first, then the longest texts (a name is longer than a "Draft" badge).
+          const byLength = (list: Element[]) =>
+            list.map((e) => e.textContent ?? "").sort((x, y) => y.trim().length - x.trim().length)
+          const texts = [
+            ...byLength(leaves.filter(title)),
+            ...byLength(leaves.filter((e) => !title(e))),
+          ]
           return { depth, texts }
         }, element)
         .then((r) => (r === undefined ? undefined : { role, ...r }))
@@ -254,14 +246,15 @@ async function inItsRow(
       const scope: Scope = { role, has }
       const found = await rowOf(page, scope)
       // A navigation mid-check is the page changing, never "no row".
-      if ("count" in found && found.count === undefined) {
-        throw new Error("Execution context was destroyed: the page navigated")
-      }
+      if ("count" in found && found.count === undefined) throw new PageChanged()
       if (!("row" in found)) continue
       const row = found.row
       const holds = await row
         .evaluate((r, target) => r.contains(target), element)
-        .catch(() => false)
+        .catch((error: unknown) => {
+          if (isPageGone(error)) throw error
+          return false
+        })
       if (!holds) continue
       // The element alone in its row, under both exact-names rules (as a replay may have them).
       for (const locator of usable) {
@@ -316,8 +309,17 @@ async function indexAmong(
   }
 }
 
+/** The page navigated while a locator was being found (said as the page changing). */
+export class PageChanged extends Error {
+  constructor() {
+    super("the page navigated while it was read")
+    this.name = "PageChanged"
+  }
+}
+
 /** An error that says the page or its document went away (never a locator's own fault). */
 export function isPageGone(error: unknown): boolean {
+  if (error instanceof PageChanged) return true
   return /Execution context was destroyed|Target page, context or browser has been closed|frame was detached/i.test(
     error instanceof Error ? error.message : String(error),
   )

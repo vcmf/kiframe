@@ -29,6 +29,8 @@ beforeEach(async () => {
     <table><tr><td>3</td><td>Pay rent</td><td>2 min ago</td><td><button>Drop</button></td></tr>
       <tr><td>4</td><td>Call mom</td><td>5 min ago</td><td><button>Drop</button></td></tr></table>
     <div class="pair"><button>Share</button><button>Share</button></div>
+    <table class="status"><tr><td>Draft</td><td>Quarterly planning</td><td><button>Edit</button></td></tr>
+      <tr><td>Live</td><td>Hiring pipeline</td><td><button>Edit</button></td></tr></table>
     <ul class="tips"><li><span hidden>Tip one</span><span>Alpha</span> <button>Open</button></li>
       <li><span hidden>Tip two</span><span>Beta</span> <button>Open</button></li></ul>
     <a href="#c" class="card-link"><h3>Card title</h3><p>Some description</p></a>
@@ -86,8 +88,14 @@ describe("a lasting locator for an element the agent pointed at", () => {
     })
     const never = ["3", "#1042", "2 min ago", "10:42", "2026-10-03", "in 5 min", "5 minutes"]
     const alsoNever = ["Updated 3h", "Oct 3", "Mon", "12 items", "Order #1042", "just now"]
-    for (const text of [...never, ...alsoNever]) expect(namesARow(text), text).toBe(false)
-    for (const text of ["Pay rent", "Call mom", "Q4 Launch", "Water plants"]) {
+    // Review round 3's (each passed the earlier rule).
+    const dates = ["October 3", "March 2026", "Monday", "Due Friday", "Sept 3", "Last week"]
+    // On the safe side: a number with one word of its own isn't taken as a name either.
+    const counts = ["5 mins", "12 stars", "Q4 Launch"]
+    for (const text of [...never, ...alsoNever, ...dates, ...counts]) {
+      expect(namesARow(text), text).toBe(false)
+    }
+    for (const text of ["Pay rent", "Call mom", "Q4 Launch plan", "Water plants"]) {
       expect(namesARow(text), text).toBe(true)
     }
   })
@@ -99,6 +107,15 @@ describe("a lasting locator for an element the agent pointed at", () => {
         in: { role: "listitem", has: "Beta" },
       },
     )
+  })
+
+  it("names a row by its name before a status (the longest text first)", async () => {
+    expect(
+      await lasting(".status tr:nth-child(1) button", { role: "button", name: "Edit" }),
+    ).toEqual({
+      locator: { by: "role", role: "button", name: "Edit", exact: true },
+      in: { role: "row", has: "Quarterly planning" },
+    })
   })
 
   it("says when a look-alike sits in no row", async () => {
