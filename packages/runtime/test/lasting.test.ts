@@ -23,7 +23,8 @@ beforeEach(async () => {
     <button style="display:none">Hidden thing</button>
     <menu><button>Delete</button></menu>
     <section><button id="archive">Archive</button><button>Archive</button></section>
-    <input type="checkbox">`)
+    <input type="checkbox">
+    <ol><li>Buy milk</li><li>Item 12</li><li>Say <span style="display:none">x</span>hi</li></ol>`)
   return () => page.close()
 })
 
@@ -88,6 +89,24 @@ describe("a lasting locator for an element the agent pointed at", () => {
     expect(await lasting("input", { role: "button", name: "Save" })).toEqual(
       error(/changed since the snapshot/),
     )
+  })
+
+  it("checks a node's own text exactly (a reused list row with new text is another element)", async () => {
+    // The row the snapshot saw as "Buy milk" now shows "Buy eggs": same role, same (no) name.
+    await page.evaluate(() => {
+      document.querySelector("ol li")!.textContent = "Buy eggs"
+    })
+    expect(await lasting("ol li", { role: "listitem", text: "Buy milk" })).toEqual(
+      error(/changed since the snapshot/),
+    )
+    expect(await lasting("ol li:nth-child(2)", { role: "listitem", text: "Item 1" })).toEqual(
+      error(/changed since the snapshot/),
+    )
+    // Its text as the snapshot reads it (hidden parts left out) is the same element; the locator is
+    // the one that finds it: getByText matches the DOM's text, hidden parts included.
+    expect(await lasting("ol li:nth-child(3)", { role: "listitem", text: "Say hi" })).toEqual({
+      locator: { by: "text", text: "Say xhi", exact: true },
+    })
   })
 
   it("never puts a secret value in a locator", async () => {

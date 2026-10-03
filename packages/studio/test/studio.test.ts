@@ -598,8 +598,8 @@ presets:
     )
     const framed = (await tool("snapshot").run({}, studio, never)) as string
     expect(await run(refOf(framed, /button "Inside"/))).toEqual({
-      // Checked when its step runs (the page's frame is read then): the step before ran.
-      error: expect.stringMatching(/^step 2 ref \S+: it's inside a frame/) as unknown,
+      // Checked before anything runs (the step before it never ran).
+      error: expect.stringMatching(/^nothing ran: ref \S+: it's inside a frame/) as unknown,
     })
     expect(await run(refOf(framed, /button "Outside"/))).toMatch(/^2 steps ok/)
     // A ref never reaches a scene's YAML.
@@ -690,7 +690,7 @@ presets:
     })
     // A YAML alias inside what it names: refused, never a crash.
     expect(await step("&a { id: x, action: click, target: *a }" as unknown as object)).toEqual({
-      error: "invalid step: a YAML alias refers to itself",
+      error: "invalid step: a YAML alias refers to itself (or it nests too deep)",
     })
     await studio.close()
   }, 60_000)

@@ -92,8 +92,11 @@ const runSteps = defineTool({
     }
     // Every item read once (an item sent as text too), and its refs checked before anything runs.
     const items = (list as unknown[]).map((item) => asObject(item))
-    if (isCyclic(items)) return { error: "nothing ran: a YAML alias refers to itself" }
-    const refused = studio.refusedRefs(items)
+    if (isCyclic(items))
+      return { error: "nothing ran: a YAML alias refers to itself (or it nests too deep)" }
+    const notStep = items.findIndex((item) => typeof item !== "object" || item === null)
+    if (notStep >= 0) return { error: `nothing ran: item ${notStep + 1} isn't a step (an object)` }
+    const refused = await studio.refusedRefs(items)
     if (refused !== undefined) return { error: `nothing ran: ${refused}` }
     return runAll(items, scene, part, studio, signal)
   },

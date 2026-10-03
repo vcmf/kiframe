@@ -23,6 +23,13 @@ describe("the refs of a snapshot", () => {
     })
   })
 
+  it("keeps a node's text as written (never YAML's null or Infinity)", () => {
+    expect(Object.fromEntries(refsOf("- listitem [ref=e1]: ~\n- generic [ref=e2]: .inf"))).toEqual({
+      e1: { role: "listitem", text: "~" },
+      e2: { role: "generic", text: ".inf" },
+    })
+  })
+
   it("reads nothing from text that isn't a snapshot", () => {
     expect(refsOf("not: [valid").size).toBe(0)
   })

@@ -45,6 +45,7 @@ export async function lastingLocator(
           .evaluate((el) => ({
             connected: el.isConnected,
             text: el.textContent ?? "",
+            shown: el instanceof HTMLElement ? el.innerText : (el.textContent ?? ""),
             placeholder: el.getAttribute("placeholder") ?? "",
             id: el.id,
           }))
@@ -58,13 +59,15 @@ export async function lastingLocator(
         "it's on another page than the one the step runs on (a step before opened or closed one): take a new snapshot",
     }
   }
-  if (!(await element.isVisible())) {
+  if (!(await element.isVisible().catch(() => false))) {
     return {
       error: "it isn't visible: open what shows it first (a menu, a panel), then a snapshot",
     }
   }
 
-  // Still what the snapshot said: by its role (and name), else by its own text.
+  // Still what the snapshot said: its role (and name), and its own text when the snapshot gave it
+  // (the page's text, whitespace collapsed, hidden parts left out: compared with what's shown and
+  // with the DOM's, case aside, exactly: "Item 12" isn't "Item 1").
   const role =
     !NO_ROLE_LOCATOR.has(hint.role) && /^[a-z]{2,40}$/.test(hint.role) ? hint.role : undefined
   const text = collapse(facts.text)
@@ -78,10 +81,14 @@ export async function lastingLocator(
         "it has no role or text of its own to check it by: point at an element with one, or write a locator from the snapshot",
     }
   }
+  const sameText = (said: string) =>
+    [facts.shown, facts.text].some(
+      (t) => collapse(t).toLowerCase() === collapse(said).toLowerCase(),
+    )
   const same =
-    said !== undefined
-      ? ((await indexAmong(page, said, element, false, false))?.index ?? -1) >= 0
-      : hint.text !== undefined && text.toLowerCase().includes(collapse(hint.text).toLowerCase())
+    (said === undefined ||
+      ((await indexAmong(page, said, element, false, false))?.index ?? -1) >= 0) &&
+    (hint.text === undefined || sameText(hint.text))
   if (!same) {
     return {
       error:
@@ -95,7 +102,10 @@ export async function lastingLocator(
   }
   const placeholder = facts.placeholder.trim()
   if (placeholder !== "") candidates.push({ by: "placeholder", text: placeholder })
-  if (text !== "" && text.length <= TEXT_MAX) candidates.push({ by: "text", text, exact: true })
+  // Its text as the snapshot said it (Playwright's own reading), then as the DOM has it.
+  for (const t of new Set([collapse(hint.text ?? ""), text])) {
+    if (t !== "" && t.length <= TEXT_MAX) candidates.push({ by: "text", text: t, exact: true })
+  }
   // An id that reads as written by hand (no digits: generated ids change per load).
   if (/^[A-Za-z][A-Za-z_-]*$/.test(facts.id)) {
     candidates.push({ by: "css", selector: `#${facts.id}` })

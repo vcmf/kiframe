@@ -82,7 +82,7 @@ export interface StudioOptions {
 /** How long a step may take on a real app (Cal.com's login hydrates in more than 6 s). */
 export const STEP_TIMEOUT_MS = 15_000
 /** How much of a page's accessibility snapshot the agent reads at once. */
-export const SNAPSHOT_MAX = 14_000
+export const SNAPSHOT_MAX = 20_000
 
 export class Studio {
   readonly options: StudioOptions
@@ -242,10 +242,12 @@ export class Studio {
   }
 
   /**
-   * Why the refs in these items can't be used at all (checked before any of them runs, without the
-   * page): one with anything beside it, one not of the last snapshot, a snapshot of another page.
+   * Why the refs in these items can't be used at all, checked before any of them runs: one with
+   * anything beside it, one not of the last snapshot, a snapshot of another page, one whose element
+   * is gone or inside an iframe (what only the step's own moment can tell, its element being still
+   * what the snapshot said, is checked right before it).
    */
-  refusedRefs(items: unknown): string | undefined {
+  async refusedRefs(items: unknown): Promise<string | undefined> {
     for (const { ref, extra } of refsAt(items)) {
       if (extra.length > 0) {
         return `ref ${ref}: a ref goes alone ({ ref: ${ref} }), without ${extra.join(", ")}`
@@ -256,6 +258,8 @@ export class Studio {
       if (this.#snapshot.page !== this.currentPage) {
         return `ref ${ref}: the last snapshot was of another page than the live one: take a snapshot of this one`
       }
+      const where = await whereRefIs(this.#snapshot.page, ref)
+      if (where !== undefined) return `ref ${ref}: ${where}`
     }
     return undefined
   }
@@ -273,10 +277,11 @@ export class Studio {
     part: ScenarioPart = "steps",
   ): Promise<StepResult> {
     const raw = asObject(input)
-    if (isCyclic(raw)) return failed("invalid step: a YAML alias refers to itself")
+    if (isCyclic(raw))
+      return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
     const refs = refsAt(raw)
     if (refs.length === 0) return this.#runItem(raw, scene, signal, part)
-    const refused = this.refusedRefs(raw)
+    const refused = await this.refusedRefs(raw)
     if (refused !== undefined) return failed(refused)
     const written = await this.#written(raw, refs, part)
     if ("error" in written) return failed(written.error)
@@ -307,7 +312,10 @@ export class Studio {
     for (const at of refs) {
       const hint = this.#snapshot?.refs.get(at.ref)
       if (hint === undefined) return { error: `ref ${at.ref}: not a ref of the last snapshot` }
-      const lasting = await lastingOfRef(page, at.ref, hint, allowed)
+      // A page that moves while it's read (a redirect finishing): said, never a raw error.
+      const lasting = await lastingOfRef(page, at.ref, hint, allowed).catch((): Lasting => ({
+        error: "the page changed while it was read: take a new snapshot",
+      }))
       if ("error" in lasting) return { error: `ref ${at.ref}: ${lasting.error}` }
       value = withAt(value, at.path, lasting.locator)
       if (lasting.nth !== undefined) {
@@ -424,18 +432,17 @@ export class Studio {
   /** The scenario the agent wrote, checked: parsed, against the project, 5–15 on-camera steps. */
   check(yaml: string): { scenario: Scenario } | { error: string } {
     let scenario: Scenario
-    const parsed = asObject(yaml)
-    if (isCyclic(parsed)) return { error: "invalid scenario: a YAML alias refers to itself" }
-    // A ref is the live page's (run_step's) only: the YAML holds the locator run_step gave back.
-    const refs = [...new Set(refsAt(parsed).map((r) => r.ref))]
-    if (refs.length > 0) {
-      return {
-        error: `invalid scenario: a ref (${refs.join(", ")}) is only for run_step on the live page: write the locator its result gave ("as written: …")`,
-      }
-    }
     try {
       scenario = parseScenarioYaml(yaml)
     } catch (error) {
+      // A ref is the live page's (run_step's) only, and the schema refuses it: said as such.
+      const parsed = asObject(yaml)
+      const refs = isCyclic(parsed) ? [] : [...new Set(refsAt(parsed).map((r) => r.ref))]
+      if (refs.length > 0) {
+        return {
+          error: `invalid scenario: a ref (${refs.join(", ")}) is only for run_step on the live page: write the locator its result gave ("as written: …")`,
+        }
+      }
       return { error: `invalid scenario: ${String(error).slice(0, 1500)}` }
     }
     const issues = checkScenarioAgainstProject(scenario, this.options.config)
@@ -650,6 +657,26 @@ export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl))
 
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"
+
+/** Why a ref's element can't be acted on now (gone, inside an iframe), if it can't. */
+async function whereRefIs(page: Page, ref: string): Promise<string | undefined> {
+  const handles = (await page
+    .locator(`aria-ref=${ref}`)
+    .elementHandles()
+    .catch(() => [])) as ElementHandle<Element>[]
+  try {
+    const frame = await handles[0]?.ownerFrame().catch(() => null)
+    if (frame === null || frame === undefined) {
+      return "it isn't on the page anymore (the page changed): take a new snapshot"
+    }
+    if (frame !== page.mainFrame()) {
+      return "it's inside a frame (an iframe): steps reach the page's own elements only"
+    }
+    return undefined
+  } finally {
+    await Promise.all(handles.map((h) => h.dispose().catch(() => undefined)))
+  }
+}
 
 /** A ref's element as the page has it now, and its lasting locator (or why none). */
 async function lastingOfRef(

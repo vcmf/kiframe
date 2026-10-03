@@ -49,20 +49,24 @@ export function refsOf(snapshot: string): Map<string, ElementHint> {
     }
   }
   try {
-    walk(parseYaml(snapshot))
+    // Every scalar as written (`~` and `.inf` are a page's text, not null and Infinity).
+    walk(parseYaml(snapshot, { schema: "failsafe" }))
   } catch {
     // Not YAML (never seen): no refs, each refused as not of the last snapshot.
   }
   return refs
 }
 
+/** The deepest a step is walked (a step is a few levels; far deeper is no step). */
+const MAX_DEPTH = 64
+
 /**
- * Whether a value refers to itself (a YAML alias inside what it names: `&a { x: *a }`), which no
- * walk over it ends. An alias used twice side by side is no cycle.
+ * Whether a value refers to itself (a YAML alias inside what it names: `&a { x: *a }`), or nests
+ * past any step's depth: no walk over it is safe. An alias used twice side by side is no cycle.
  */
 export function isCyclic(value: unknown, ancestors = new Set<object>()): boolean {
   if (typeof value !== "object" || value === null) return false
-  if (ancestors.has(value)) return true
+  if (ancestors.has(value) || ancestors.size >= MAX_DEPTH) return true
   ancestors.add(value)
   const cyclic = Object.values(value).some((v) => isCyclic(v, ancestors))
   ancestors.delete(value)
