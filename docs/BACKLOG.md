@@ -98,7 +98,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Preview (S4)
 - **The take over IPC:** a preview reads frames.webm (async) and sends it to the window whole (tens of MB, cloned once). Stream it from the app's protocol instead (a range-capable URL for Mediabunny's `UrlSource`), with the project and take checked per request.
-- **Behind the clock on a slow machine:** the player asks only for the frames it can show, but inter-frame video decodes every frame between keyframes, so a machine that can't decode in real time plays behind the clock (never frozen). A lower-resolution proxy of the take would fix it.
+- **A slow machine:** Mediabunny asks for frame times ahead (up to the next keyframe) and inter-frame video decodes every frame between keyframes, so a machine that can't decode in real time skips late frames (one drawn at least every 100 ms: never frozen) and can fall behind the clock. A lower-resolution proxy of the take, or a decode in a worker, would fix it.
 - **Not yet:** thumbnails in the scene strip, the whole video (every scene in sequence, transitions) in one player, export from the app.
 
 ## Acting by ref (PR #10)

@@ -10,7 +10,8 @@ import {
 } from "node:fs"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
-import { CursorSample, ProjectId, SceneId, TakeEvent, TakeMeta } from "@kiframe/schema"
+import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
+import { newerTake } from "./take-records.ts"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
 // project folder (they're heavy, and raw frames aren't blurred). The whole store is the user's only
@@ -33,8 +34,6 @@ export interface StoredTake {
 const TAKE_NAME = "take-\\d{13}-[0-9a-f]{12}"
 const TAKE_DIR = new RegExp(`^${TAKE_NAME}$`)
 const LEFTOVER_OF = new RegExp(`^\\.?(${TAKE_NAME})`)
-/** The newest take format this Kiframe reads (a newer one is refused, never skipped as not a take). */
-const TAKE_VERSION = 1
 
 export class TakeStore {
   readonly root: string
@@ -95,9 +94,12 @@ export class TakeStore {
     return this.#takes(projectId, sceneId, true)[0]
   }
 
-  /** The take a composition names (`composition.take.key`), if it's still there. */
+  /**
+   * The take a composition names (`composition.take.key`), if it's still there. A take folder that
+   * can't be read is thrown (it may be that one: never said to be gone).
+   */
   take(projectId: string, sceneId: string, takeKey: string): StoredTake | undefined {
-    return this.takes(projectId, sceneId).find((t) => t.meta.takeKey === takeKey)
+    return this.#takes(projectId, sceneId, true).find((t) => t.meta.takeKey === takeKey)
   }
 
   /** The scene's complete takes, newest first; one that can't be read is skipped or thrown. */
@@ -183,12 +185,8 @@ function readTake(dir: string): StoredTake | Error | undefined {
   } catch {
     return undefined
   }
-  const version = (raw as { version?: unknown } | null)?.version
-  if (typeof version === "number" && version > TAKE_VERSION) {
-    return new Error(
-      `${dir}: recorded by a newer Kiframe (take version ${version}): update Kiframe`,
-    )
-  }
+  const newer = newerTake(raw, dir)
+  if (newer !== undefined) return newer
   const meta = TakeMeta.safeParse(raw)
   return meta.success && meta.data.outcome.status === "complete"
     ? { dir, meta: meta.data }
@@ -200,35 +198,5 @@ function list(dir: string): string[] {
     return readdirSync(dir)
   } catch {
     return []
-  }
-}
-
-/** A take's records as the compositor reads them (validated: a take is data from disk). */
-export interface TakeRecords {
-  meta: TakeMeta
-  events: TakeEvent[]
-  cursor: CursorSample[]
-}
-
-/**
- * Reads a take folder's records (meta.json, events.jsonl, cursor.jsonl). A take from before secret
- * regions had spans fails validation: re-record it.
- */
-export function readTakeRecords(dir: string): TakeRecords {
-  // Its meta.json as the store reads it (a take of a newer Kiframe said so).
-  const stored = readTake(dir)
-  if (stored instanceof Error) throw stored
-  // Not one the store would list: why, in the meta's own words (a field, a missing file).
-  if (stored === undefined) TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")))
-  if (stored === undefined) throw new Error(`${dir}: not a complete take`)
-  const lines = (file: string) =>
-    readFileSync(join(dir, file), "utf8")
-      .split("\n")
-      .filter((l) => l.trim() !== "")
-      .map((l) => JSON.parse(l) as unknown)
-  return {
-    meta: stored.meta,
-    events: lines("events.jsonl").map((e) => TakeEvent.parse(e)),
-    cursor: lines("cursor.jsonl").map((c) => CursorSample.parse(c)),
   }
 }

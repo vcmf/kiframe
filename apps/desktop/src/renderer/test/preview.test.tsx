@@ -167,6 +167,20 @@ describe("the preview", () => {
     expect(screen.getByRole("button", { name: /Tour/ }).getAttribute("aria-pressed")).toBe("true")
   })
 
+  it("waits while hidden: an edit loads the take only once the preview shows", async () => {
+    const { invoke } = stubApi({ "preview:open": () => ready })
+    const { rerender } = render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
+    await screen.findByRole("button", { name: "Play" })
+    invoke.mockClear()
+    rerender(<PreviewPlayer sceneId="tour" take="k1" version="v1" active={false} />)
+    rerender(<PreviewPlayer sceneId="tour" take="k1" version="v2" active={false} />)
+    rerender(<PreviewPlayer sceneId="tour" take="k1" version="v3" active={false} />)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(invoke).not.toHaveBeenCalled()
+    rerender(<PreviewPlayer sceneId="tour" take="k1" version="v3" active />)
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1))
+  })
+
   it("says times as m:ss", () => {
     expect([0, 999, 61_000, 600_500].map(clock)).toEqual(["0:00", "0:00", "1:01", "10:00"])
   })

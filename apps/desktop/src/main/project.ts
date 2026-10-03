@@ -101,7 +101,10 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
       stored.composition === undefined
         ? undefined
         : createHash("sha256")
-            .update(JSON.stringify([stored.scenario, stored.composition]))
+            // Everything its preview shows: the scene, and the project's style and outputs.
+            .update(
+              JSON.stringify([stored.scenario, stored.composition, project.style, project.outputs]),
+            )
             .digest("hex")
             .slice(0, 16)
     views.push({

@@ -6,9 +6,10 @@ import { prepare, type Prepared, sceneAt, type Style } from "./scene.ts"
 
 // The preview player (docs/OBJECT-MODEL.md §5): the export's own pieces (prepare → sceneAt →
 // drawScene over the take's decoded frames) drawn to a canvas at the wall clock, so what plays is
-// what exports. Playing decodes in one forward pass (source time only moves forward), each next
-// frame picked when the decoder is ready for it, at the wall clock's time: a slow machine shows
-// fewer frames, never a slower (or frozen) clock.
+// what exports. Playing decodes in one forward pass (source time only moves forward). Mediabunny
+// asks for the frame times ahead (up to the next keyframe), so a frame can come late: a late one
+// is skipped, except that one is drawn at least every 100 ms (a machine too slow for the video
+// shows fewer frames, a picture that keeps moving, never a frozen one).
 
 export interface PlayerSource {
   /** The take's frames.webm (bytes as they came: read in place, never copied). */
@@ -109,8 +110,10 @@ export class Player {
     this.#run++
     this.#setPlaying(false)
     this.#target = clamp(tOut, 0, this.duration)
-    // The time is the one asked at once (a play right after starts there), its picture follows.
+    // The time is the one asked at once (a play right after starts there, a scrubber's thumb
+    // stays where it was dragged), its picture follows.
     this.#time = this.#target
+    this.#emit()
     if (this.#seeking !== undefined) return this.#seeking
     this.#seeking = (async () => {
       try {
@@ -168,10 +171,10 @@ export class Player {
     const prepared = this.#prepared
     const first = this.#first
     // Each next frame chosen when the decoder asks for it: the frame of the wall clock's time (on
-    // the frame grid, always after the last one), so frames the machine can't keep up with are
-    // never asked for. The scenes go with them, computed one at a time.
+    // the frame grid, always after the last one). The scenes go with them, one at a time.
     const scenes: { t: number; scene: ReturnType<typeof sceneAt> }[] = []
     let last = -Infinity
+    let drawn = performance.now()
     function* times(): Generator<number> {
       for (;;) {
         const now = Math.max(0, performance.now() - start)
@@ -191,10 +194,14 @@ export class Player {
       if (run !== this.#run) return
       const shown = scenes.shift()
       if (shown === undefined) continue
+      // Late by more than a frame: skipped, unless nothing was drawn for a while.
+      const late = performance.now() - (start + shown.t)
+      if (late > step && performance.now() - drawn < 100) continue
       const wait = start + shown.t - performance.now()
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
       if (run !== this.#run) return
       if (wrapped !== null) drawScene(this.#ctx, wrapped.canvas, shown.scene, this.style)
+      drawn = performance.now()
       this.#time = shown.t
       this.#emit()
     }

@@ -22,6 +22,14 @@ export function PreviewPlayer(props: {
   const canvas = useRef<HTMLCanvasElement>(null)
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" })
   const [, setTick] = useState(0)
+  // What to load: the scene as it is, taken in while shown (hidden, a run's edits wait: never a
+  // take sent over for nobody). Each load draws on its own canvas (keyed by it): a load left
+  // behind never draws over a newer one.
+  const now = `${sceneId}|${take ?? ""}|${version ?? ""}`
+  const [want, setWant] = useState(now)
+  useEffect(() => {
+    if (active) setWant(now)
+  }, [active, now])
 
   useEffect(() => {
     let gone = false
@@ -65,7 +73,8 @@ export function PreviewPlayer(props: {
       gone = true
       player?.dispose()
     }
-  }, [sceneId, take, version])
+    // Loaded again when what's wanted changes (the scene's own id never does: keyed by it).
+  }, [want, sceneId])
 
   const player = loaded.state === "ready" ? loaded.player : undefined
   useEffect(() => {
@@ -74,6 +83,7 @@ export function PreviewPlayer(props: {
   return (
     <div className="player" hidden={!active}>
       <canvas
+        key={want}
         ref={canvas}
         className="player-canvas"
         hidden={loaded.state !== "ready"}

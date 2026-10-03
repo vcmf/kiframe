@@ -19,11 +19,20 @@ export async function previewOf(
     return { ok: false, why: "A title card: it shows in the exported video." }
   }
   const { scenario, composition } = stored
+  // A part that didn't read is said as such (never "not filmed").
+  const broken = opened.problems.find((p) => p.sceneId === sceneId && p.part !== undefined)
+  if (broken !== undefined) return { ok: false, why: `It didn’t read: ${broken.message}` }
   if (scenario === undefined) return { ok: false, why: "Not grounded yet: no steps to film." }
   if (composition?.take === undefined) {
     return { ok: false, why: "Not filmed yet: the agent records it once its steps work." }
   }
-  const take = takes.take(opened.project.id, sceneId, composition.take.key)
+  let take: ReturnType<TakeStore["take"]>
+  try {
+    take = takes.take(opened.project.id, sceneId, composition.take.key)
+  } catch (error) {
+    // A take folder that can't be read may be that one: never said to be gone.
+    return { ok: false, why: `Its take didn’t read: ${message(error)}` }
+  }
   if (take === undefined) {
     return { ok: false, why: "Its take is gone from this computer: record the scene again." }
   }
@@ -41,8 +50,8 @@ export async function previewOf(
     records = readTakeRecords(take.dir)
     // Read without holding main's thread (a take is tens of MB).
     video = await readFile(join(take.dir, "frames.webm"))
-  } catch {
-    return { ok: false, why: "Its take didn’t read: record the scene again." }
+  } catch (error) {
+    return { ok: false, why: `Its take didn’t read: ${message(error)}` }
   }
   return {
     ok: true,
@@ -67,4 +76,8 @@ function sizeOf(output: Parameters<typeof resolveFormat>[0]): {
 } {
   const f = resolveFormat(output)
   return { width: f.width, height: f.height, fps: f.fps ?? 30 }
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }

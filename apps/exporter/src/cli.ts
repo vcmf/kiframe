@@ -17,7 +17,7 @@ import {
   type Composition,
 } from "@kiframe/schema"
 import { build } from "esbuild"
-import { readTakeRecords } from "@kiframe/project"
+import { readTakeRecords } from "@kiframe/project/take-records"
 import type { ExportJob } from "./main.ts"
 
 const { values } = parseArgs({
