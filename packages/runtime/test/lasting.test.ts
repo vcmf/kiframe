@@ -46,11 +46,10 @@ describe("a lasting locator for an element the agent pointed at", () => {
     })
   })
 
-  it("says its place among look-alikes (visible matches only), for the caller to place", async () => {
-    expect(await lasting("li:nth-child(2) button", { role: "button", name: "Delete" })).toEqual({
-      locator: { by: "role", role: "button", name: "Delete", exact: true },
-      nth: 1,
-    })
+  it("never gives a place among look-alikes (refused, said why)", async () => {
+    expect(await lasting("li:nth-child(2) button", { role: "button", name: "Delete" })).toEqual(
+      error(/several elements look just like it/),
+    )
   })
 
   it("uses a field's placeholder, an element's own text (as the page has it, not as styled)", async () => {

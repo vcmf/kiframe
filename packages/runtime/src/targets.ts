@@ -355,3 +355,8 @@ export async function countUnderRule(
   }
   return { count, exact, unsure }
 }
+
+/** The page's document (its time origin: a new one per navigation or reload, none changed). */
+export async function documentOf(page: Page): Promise<number | undefined> {
+  return page.evaluate(() => performance.timeOrigin).catch(() => undefined)
+}

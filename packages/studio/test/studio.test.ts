@@ -555,11 +555,12 @@ presets:
     ).toEqual({
       error: expect.stringMatching(/^ref (f\d+)?e\d+: the page loaded a new document/) as unknown,
     })
-    // Look-alikes: its place among them. Several refs in one batch, held before any step runs.
+    // Look-alikes: refused before anything runs (never a place among them, which a changed page
+    // turns into another element).
     const snap = (await tool("snapshot").run({}, studio, never)) as string
     const saves = [...snap.matchAll(/button "Save" \[ref=((?:f\d+)?e\d+)\]/g)].map((m) => m[1])
     expect(saves).toHaveLength(2)
-    const batch = (await tool("run_steps").run(
+    const batch = await tool("run_steps").run(
       {
         scene: "tour",
         steps: [
@@ -569,10 +570,12 @@ presets:
       },
       studio,
       never,
-    )) as string
-    expect(batch).toContain(
-      "as written: { id: second, action: hover, target: { by: role, role: button, name: Save, exact: true, nth: 1 } }",
     )
+    expect(batch).toEqual({
+      error: expect.stringMatching(
+        /^step 1 ref \S+: several elements look just like it/,
+      ) as unknown,
+    })
     // Not a ref of the last snapshot, or inside a frame: nothing runs, and why.
     const run = (ref: string) =>
       tool("run_steps").run(
@@ -641,7 +644,7 @@ presets:
       timeout: 300,
     })
     expect(failedStep).toEqual({ error: expect.not.stringContaining("as written") as unknown })
-    // A condition takes a locator alone: no place among look-alikes there.
+    // Look-alikes, wherever the ref is (a condition's locator too): refused.
     await step({ id: "p", action: "goto", url: "/projects" })
     const saves = [
       ...((await tool("snapshot").run({}, studio, never)) as string).matchAll(
@@ -650,9 +653,7 @@ presets:
     ].map((m) => m[1])
     expect(await step({ id: "v", action: "expect", that: { visible: { ref: saves[1] } } })).toEqual(
       {
-        error: expect.stringMatching(
-          /can't say which of the look-alikes \(no nth here\)/,
-        ) as unknown,
+        error: expect.stringMatching(/several elements look just like it/) as unknown,
       },
     )
     await studio.close()
@@ -739,18 +740,12 @@ presets:
     ).toEqual({
       error: expect.stringMatching(/^step 2 ref \S+: it changed since the snapshot/) as unknown,
     })
-    // A row re-rendered with other content: its nameless checkbox and its "Delete" keep their refs
-    // (same role, same name), not their place: refused.
+    // Look-alikes (each row's checkbox and "Delete"): refused, never a place among them (a changed
+    // list turns a place into another row: the user decided, 2026-10-03; row-scoped refs come next).
     const todo = (await tool("snapshot").run({}, studio, never)) as string
-    const [box, del, rename] = [
-      refOf(todo, /checkbox/),
-      refOf(todo, /button "Delete"/),
-      refOf(todo, /button "Rename"/),
-    ]
-    expect(await step({ id: "rn", action: "click", target: { ref: rename } })).toMatch(/^ok/)
-    for (const ref of [box, del]) {
+    for (const ref of [refOf(todo, /checkbox/), refOf(todo, /button "Delete"/)]) {
       expect(await step({ id: "x", action: "click", target: { ref } }), ref).toEqual({
-        error: expect.stringMatching(/it changed since the snapshot/) as unknown,
+        error: expect.stringMatching(/several elements look just like it/) as unknown,
       })
     }
     // A reload: a new document, its refs numbered again from e1 (whatever the old ref names now).

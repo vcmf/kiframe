@@ -3,7 +3,7 @@ import { StepError, type StepRef } from "../errors.ts"
 import { EXACT_NAMES_HINT, ProbeRefusal } from "../secret-state.ts"
 import type { Locator as SchemaLocator } from "@kiframe/schema"
 import type { Page } from "playwright"
-import { countUnderRule, describeLocator } from "../targets.ts"
+import { countUnderRule, describeLocator, documentOf } from "../targets.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
 // Conditions for `waitFor` / `expect` / `ensure`, and URL matching.
@@ -161,9 +161,7 @@ export async function pollLocator(
     exactSeen ||= r.exact
     // The document, for an absence only (twice on the same one).
     const doc =
-      absence && r.count === 0 && !r.exact && !r.unsure
-        ? await page.evaluate(() => performance.timeOrigin).catch(() => undefined)
-        : undefined
+      absence && r.count === 0 && !r.exact && !r.unsure ? await documentOf(page) : undefined
     last =
       r.count !== undefined && r.count > 0
         ? "seen"

@@ -1,8 +1,9 @@
 // A lasting locator for an element the agent picked on the live page (a snapshot's ref): the first
-// candidate, in the order the agent is told to prefer (role and name, placeholder,
-// text, an id written by hand, a role alone), that finds exactly that element among the visible
-// ones, through the rules a replay resolves with; else, among look-alikes, the candidate with the
-// fewest, and the element's place among them (`nth`: where the step's schema takes one).
+// candidate, in the order the agent is told to prefer (role and name, placeholder, text, an id
+// written by hand, a role alone), that finds exactly that element and nothing else among the
+// visible ones, through the rules a replay resolves with. Never a place among look-alikes (`nth`):
+// Playwright's own advice ("may click on an element you did not intend" once the page changes);
+// a look-alike is refused, said why.
 import type { Locator as SchemaLocator } from "@kiframe/schema"
 import type { ElementHandle, Page } from "playwright"
 import { exactNamesFor } from "./secret-state.ts"
@@ -15,11 +16,8 @@ export interface ElementHint {
   text?: string | undefined
 }
 
-/** Alone; or a place among look-alikes (the caller decides whether `nth` can go there); or why not. */
-export type Lasting =
-  | { locator: SchemaLocator; nth?: undefined }
-  | { locator: SchemaLocator; nth: number }
-  | { error: string }
+/** A locator that finds the element alone, or why there's none. */
+export type Lasting = { locator: SchemaLocator } | { error: string }
 
 /** Roles a role locator can't usefully name (Playwright matches none of them by role). */
 const NO_ROLE_LOCATOR = new Set(["generic", "none", "presentation", "text", "paragraph"])
@@ -80,8 +78,15 @@ export async function lastingLocator(
   }
   // A name the snapshot left out (Playwright drops one made of the element's content: a card's
   // link): its content as shown, checked like any candidate.
+  // Never a field's (its content is its value: what's typed or picked).
   const shown = collapse(facts.shown)
-  if (role !== undefined && !hint.name && shown !== "" && shown.length <= TEXT_MAX) {
+  if (
+    role !== undefined &&
+    !hint.name &&
+    !VALUE_ROLES.has(role) &&
+    shown !== "" &&
+    shown.length <= TEXT_MAX
+  ) {
     candidates.push({ by: "role", role, name: shown, exact: true })
   }
   const placeholder = facts.placeholder.trim()
@@ -125,9 +130,12 @@ export async function lastingLocator(
   )
   const alone = found.find((c) => c.count === 1)
   if (alone !== undefined) return { locator: alone.locator }
-  // Among look-alikes: the candidate with the fewest (an id is never one of several).
-  const fewest = found.filter((c) => c.locator.by !== "css").sort((a, b) => a.count - b.count)[0]
-  if (fewest !== undefined) return { locator: fewest.locator, nth: fewest.index }
+  if (found.length > 0) {
+    return {
+      error:
+        "several elements look just like it (no locator finds it alone): write its locator by hand from the snapshot",
+    }
+  }
   return {
     error:
       "no lasting locator finds it (no role and name, placeholder, text or stable id): write one from the snapshot",
@@ -164,8 +172,18 @@ async function indexAmong(
       (els, target) => ({ index: (els as Element[]).indexOf(target), count: els.length }),
       element,
     )
-  } catch {
+  } catch (error) {
+    // The page moving under it (a navigation finishing, the page closing) is no locator's fault:
+    // said by the caller ("the page changed").
+    if (isPageGone(error)) throw error
     // A locator the rules refuse (a css probing a secret field): not this one.
     return undefined
   }
+}
+
+/** An error that says the page or its document went away (never a locator's own fault). */
+function isPageGone(error: unknown): boolean {
+  return /Execution context was destroyed|Target page, context or browser has been closed|frame was detached/i.test(
+    error instanceof Error ? error.message : String(error),
+  )
 }

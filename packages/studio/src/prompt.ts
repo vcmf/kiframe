@@ -27,8 +27,9 @@ optional, EXCEPT on a step typing a secret (always an id: its approval is keyed 
 ${stepReference()}
 
 Pointing at an element: the snapshot gives each one a ref ([ref=e12]). In run_step and run_steps, put
-{ ref: e12 } wherever a step takes a locator: the step acts on that very element, and its result says the
-step "as written", with the lasting locator Kiframe found for it. Write THAT in the YAML (save_scene never
+{ ref: e12 } wherever a step takes a locator: Kiframe writes a locator that finds that element and nothing
+else (checked right before the step), and its result says the step "as written" with it. An element with
+look-alikes (several identical "Delete" buttons) is refused: write its locator yourself. Write THAT in the YAML (save_scene never
 takes a ref). Refs hold until the page loads a new document (a navigation, a reload, a goto even to
 the same page): never put refs after a goto in the same run_steps; snapshot again after it. A ref inside an iframe is refused (steps reach the page's own elements only).
 

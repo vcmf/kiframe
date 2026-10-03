@@ -12,6 +12,7 @@ import {
   type StepRef,
   visibleOnly,
   type ElementHint,
+  documentOf,
   type Lasting,
   lastingLocator,
 } from "@kiframe/runtime"
@@ -256,13 +257,22 @@ export class Studio {
       }
     }
     let text: string
+    // Why its refs can't be used, if they can't (said with the snapshot).
+    let unusable = ""
     try {
       // With refs (`[ref=e12]`): the agent can point at an element, and run_step writes its locator.
       // Its document, read on both sides: a ref holds only in the document it was given in.
       const doc = await documentOf(page)
       text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
+      const after = await documentOf(page)
       const refs = refsOf(text)
-      if (doc !== undefined && doc === (await documentOf(page)) && refs !== undefined) {
+      if (doc === undefined || after === undefined) {
+        unusable = "the page's document couldn't be read"
+      } else if (doc !== after) {
+        unusable = "the page loaded a new document as this was taken"
+      } else if (refs === undefined) {
+        unusable = "its refs couldn't be read"
+      } else {
         this.#snapshot = { page, root, doc, refs }
       }
     } catch (e) {
@@ -274,12 +284,11 @@ export class Studio {
       scrubbed.length > SNAPSHOT_MAX
         ? `${scrubbed.slice(0, SNAPSHOT_MAX)}\n… (cut: ${scrubbed.length} chars; use \`within\` to look at a region)`
         : scrubbed
-    // Refs it can't vouch for (the page loaded a new document while it was taken) are said so.
-    const unusable =
-      this.#snapshot === undefined
-        ? "\n(the page was changing as this was taken: its refs can't be used; snapshot again to point at them)"
-        : ""
-    return { ok: true, text: `url: ${this.#where(page.url())}${unusable}\n${cut}` }
+    const note =
+      unusable === ""
+        ? ""
+        : `\n(${unusable}: its refs can't be used; snapshot again to point at them, or write locators)`
+    return { ok: true, text: `url: ${this.#where(page.url())}${note}\n${cut}` }
   }
 
   /**
@@ -340,16 +349,14 @@ export class Studio {
             "the page loaded a new document since the snapshot (a navigation or a reload): take a new snapshot",
         }
       }
-      // What the agent's snapshot was of (its region: a ref's place in it is part of what it is).
-      if (root === undefined || (await root.count().catch(() => 0)) === 0) {
-        return {
-          error: "the region of the snapshot isn't on the page anymore: take a new snapshot",
-        }
+      // The whole page (a ref keeps its number in the document, whatever the snapshot was of); the
+      // agent's region if the page is too large for it.
+      let text: string | undefined
+      for (const of of [page.locator("body"), root]) {
+        if (of === undefined || text !== undefined) continue
+        text = await of.ariaSnapshot({ timeout: 5000, mode: "ai" }).catch(() => undefined)
       }
-      let text: string
-      try {
-        text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
-      } catch {
+      if (text === undefined) {
         return {
           error:
             "the page couldn't be checked against the snapshot (too large or busy): snapshot `within` a smaller region, then point at its refs",
@@ -401,7 +408,7 @@ export class Studio {
     }
     const refused = this.#refusedNow(refs)
     if (refused !== undefined) return failed(refused)
-    const written = await this.#written(raw, refs, part, signal)
+    const written = await this.#written(raw, refs, signal)
     if ("error" in written) return failed(written.error)
     const result = await this.#runItem(written.value, scene, signal, part)
     // Only a step that worked is one to write (a failed one's locator isn't confirmed).
@@ -413,13 +420,13 @@ export class Studio {
   }
 
   /**
-   * The item with each ref replaced by its lasting locator; `nth` only where the item's own schema
-   * takes it (a target: never a condition's locator, nor a step typing a secret).
+   * The item with each ref replaced by its lasting locator: one that finds the very element the
+   * agent pointed at and nothing else, checked right before the step runs (never a place among
+   * look-alikes: refused, said why).
    */
   async #written(
     raw: unknown,
     refs: RefAt[],
-    part: ScenarioPart,
     signal: AbortSignal,
   ): Promise<{ value: unknown } | { error: string }> {
     const page = await this.livePage()
@@ -433,7 +440,6 @@ export class Studio {
     const scrub = this.scrubber()
     const allowed = (text: string) => scrub(text) === text
     let value = raw
-    const nths: { at: RefAt; put: unknown }[] = []
     for (const at of refs) {
       const why = this.#refused(at.ref, fresh.nodes)
       if (why !== undefined) return { error: `ref ${at.ref}: ${why}` }
@@ -445,21 +451,6 @@ export class Studio {
       }))
       if ("error" in lasting) return { error: `ref ${at.ref}: ${lasting.error}` }
       value = withAt(value, at.path, lasting.locator)
-      if (lasting.nth !== undefined) {
-        nths.push({ at, put: { ...lasting.locator, nth: lasting.nth } })
-      }
-    }
-    for (const { at, put } of nths) {
-      const probe = withAt(value, at.path, put)
-      // Only what `nth` there adds (the item may be wrong elsewhere: its own refusal says so).
-      const before = new Set(issuePaths(value, part).map((p) => p.map(String).join(".")))
-      const added = issuePaths(probe, part).filter((p) => !before.has(p.map(String).join(".")))
-      if (added.some((p) => overlaps(p, at.path))) {
-        return {
-          error: `ref ${at.ref}: several elements look like it, and here a locator can't say which of the look-alikes (no nth here): point at a unique element, or write a locator from the snapshot`,
-        }
-      }
-      value = probe
     }
     return { value }
   }
@@ -785,11 +776,6 @@ export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl))
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"
 
-/** The page's document (its time origin: a new one per navigation or reload, none changed). */
-async function documentOf(page: Page): Promise<number | undefined> {
-  return page.evaluate(() => performance.timeOrigin).catch(() => undefined)
-}
-
 /** A ref's element as the page has it now, and its lasting locator (or why none). */
 async function lastingOfRef(
   page: Page,
@@ -812,19 +798,6 @@ async function lastingOfRef(
   } finally {
     await Promise.all(handles.map((h) => h.dispose().catch(() => undefined)))
   }
-}
-
-/** The paths of an item's schema issues, under the schema of the part it's for (as it'll run). */
-function issuePaths(item: unknown, part: ScenarioPart): PropertyKey[][] {
-  const r = item as Record<string, unknown>
-  const schema = part === "teardown" ? Action : part === "steps" && "id" in r ? Step : SetupItem
-  return schema.safeParse(item).error?.issues.map((i) => i.path) ?? []
-}
-
-/** Whether one path is within the other (an issue at a ref's place, or around it). */
-function overlaps(a: PropertyKey[], b: PropertyKey[]): boolean {
-  const n = Math.min(a.length, b.length)
-  return a.slice(0, n).every((k, i) => String(k) === String(b[i]))
 }
 
 /** A failed outcome. */
