@@ -34,6 +34,11 @@ export class Workspace<A extends Agent> {
     return this.#agent
   }
 
+  /** The open project as its agent keeps it (the scenes it saved and filmed). */
+  get opened(): OpenedProject | null {
+    return this.#opened
+  }
+
   view(): ProjectView | null {
     return this.#opened === null ? null : projectView(this.#opened, this.#session)
   }

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@kiframe/agent": "workspace:*",
+    "@kiframe/compositor": "workspace:*",
     "@kiframe/generators": "workspace:*",
     "@kiframe/project": "workspace:*",
     "@kiframe/runtime": "workspace:*",

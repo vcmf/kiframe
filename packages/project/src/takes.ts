@@ -10,7 +10,7 @@ import {
 } from "node:fs"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
-import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
+import { CursorSample, ProjectId, SceneId, TakeEvent, TakeMeta } from "@kiframe/schema"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
 // project folder (they're heavy, and raw frames aren't blurred). The whole store is the user's only
@@ -200,5 +200,29 @@ function list(dir: string): string[] {
     return readdirSync(dir)
   } catch {
     return []
+  }
+}
+
+/** A take's records as the compositor reads them (validated: a take is data from disk). */
+export interface TakeRecords {
+  meta: TakeMeta
+  events: TakeEvent[]
+  cursor: CursorSample[]
+}
+
+/**
+ * Reads a take folder's records (meta.json, events.jsonl, cursor.jsonl). A take from before secret
+ * regions had spans fails validation: re-record it.
+ */
+export function readTakeRecords(dir: string): TakeRecords {
+  const lines = (file: string) =>
+    readFileSync(join(dir, file), "utf8")
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => JSON.parse(l) as unknown)
+  return {
+    meta: TakeMeta.parse(JSON.parse(readFileSync(join(dir, "meta.json"), "utf8"))),
+    events: lines("events.jsonl").map((e) => TakeEvent.parse(e)),
+    cursor: lines("cursor.jsonl").map((c) => CursorSample.parse(c)),
   }
 }

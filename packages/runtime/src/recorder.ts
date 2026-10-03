@@ -447,7 +447,7 @@ export async function recordScenario(
       if (frameSize === undefined)
         warnings.push("couldn't read the frame size: assuming the CSS viewport")
       const size = frameSize ?? viewport
-      const scenarioHash = sha256(JSON.stringify(scenario))
+      const scenarioHash = scenarioHashOf(scenario)
       meta = TakeMeta.parse({
         version: 1,
         takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
@@ -667,6 +667,14 @@ export function jpegSize(data: Buffer): { width: number; height: number } | unde
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v))
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
+
+/**
+ * The hash a take records of the scenario it filmed (`meta.scenarioHash`): a scene's take is its
+ * current one only while the scenario hashes the same (one function for the recorder and readers).
+ */
+export function scenarioHashOf(scenario: Scenario): string {
+  return sha256(JSON.stringify(scenario))
+}
 
 /**
  * The take folder's real location: symlinks are followed (a take store on an encrypted volume

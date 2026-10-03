@@ -16,6 +16,7 @@ export const INVOKE_CHANNELS = [
   "secrets:list",
   "secrets:add",
   "secrets:remove",
+  "preview:open",
 ] as const
 
 export const EVENT_CHANNELS = ["status", "chat:item", "chat:running", "live:frame"] as const

@@ -2,3 +2,4 @@
 export * from "./scene.ts"
 export * from "./draw.ts"
 export * from "./export.ts"
+export * from "./player.ts"

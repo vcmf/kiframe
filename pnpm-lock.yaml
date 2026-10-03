@@ -77,6 +77,9 @@ importers:
       '@kiframe/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@kiframe/compositor':
+        specifier: workspace:*
+        version: link:../../packages/compositor
       '@kiframe/generators':
         specifier: workspace:*
         version: link:../../packages/generators
@@ -171,6 +174,9 @@ importers:
       '@kiframe/generators':
         specifier: workspace:*
         version: link:../../packages/generators
+      '@kiframe/project':
+        specifier: workspace:*
+        version: link:../../packages/project
       '@kiframe/schema':
         specifier: workspace:*
         version: link:../../packages/schema

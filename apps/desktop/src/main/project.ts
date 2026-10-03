@@ -95,7 +95,8 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
         : stored.scenario !== undefined
           ? "grounded"
           : "empty"
-    views.push({ id, title: scene.title, status })
+    const take = stored.composition?.take?.key
+    views.push({ id, title: scene.title, status, ...(take !== undefined && { take }) })
   }
   return {
     session,

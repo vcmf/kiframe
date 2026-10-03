@@ -1,6 +1,14 @@
 // The one IPC contract between the main process and the window: each request channel's arguments
 // (a Zod schema: main validates every payload, the window is never trusted), its result, and the
 // events main pushes. The preload, main's handlers and the window's API are all typed from here.
+import type {
+  Composition,
+  CursorSample,
+  Scenario,
+  Style,
+  TakeEvent,
+  TakeMeta,
+} from "@kiframe/schema"
 import { z } from "zod"
 import { INVOKE_CHANNELS, EVENT_CHANNELS } from "./channels.ts"
 
@@ -16,6 +24,8 @@ export interface SceneView {
   status: "recorded" | "grounded" | "empty" | "card" | "unreadable" | "missing"
   /** What didn't read, when something didn't. */
   problem?: string
+  /** A recorded scene's take (its key): the preview plays it again when it changes. */
+  take?: string
 }
 
 /** The open project as the window shows it. */
@@ -53,6 +63,25 @@ export type ChatRequest =
       shot?: { jpeg: string; width: number; height: number }
       box?: { x: number; y: number; width: number; height: number }
     }
+
+/**
+ * A scene's preview for the player: its composition, scenario and take (records and frames), or
+ * why it can't play (said in words: not filmed, a take of an older scenario, gone).
+ */
+export type Preview =
+  | {
+      ok: true
+      sceneId: string
+      title: string
+      composition: Composition
+      scenario: Scenario
+      take: { meta: TakeMeta; events: TakeEvent[]; cursor: CursorSample[] }
+      /** The take's frames.webm. */
+      video: Uint8Array
+      /** The project's style, below the scene's. */
+      baseStyle: Style
+    }
+  | { ok: false; why: string }
 
 /** A secret as the window shows it: never its value. */
 export interface SecretView {
@@ -170,6 +199,8 @@ export const invokeArgs = {
    * no other app uses it. Its name is checked in main.
    */
   "secrets:remove": z.tuple([z.string().max(120)]),
+  /** A scene of the open project, to play (its id, checked against the project in main). */
+  "preview:open": z.tuple([z.string().min(1).max(200)]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
 
 export type InvokeChannel = keyof typeof invokeArgs
@@ -193,6 +224,7 @@ export interface InvokeResults {
   /** null when done; else why not, in words. */
   "secrets:add": string | null
   "secrets:remove": string | null
+  "preview:open": Preview
 }
 
 /** What main pushes to the window. */

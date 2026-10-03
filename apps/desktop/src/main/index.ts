@@ -18,6 +18,7 @@ import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
 import { KeyStore } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
+import { previewOf } from "./preview.ts"
 import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
@@ -287,6 +288,11 @@ function start(): void {
           return agent === undefined ? "open a project first" : agent.send(text)
         },
         // An unreadable vault says why here (projects still open: a secret step can't run).
+        "preview:open": (sceneId) => {
+          const opened = workspace.opened
+          if (opened === null) return { ok: false, why: "No project is open." }
+          return previewOf(opened, ready().takes, sceneId)
+        },
         "secrets:list": async () => {
           const secrets = vault()
           await secrets.ready()
