@@ -266,6 +266,8 @@ export class Studio {
       const written = await own.written(await this.livePage(), raw)
       if ("error" in written) return failed(written.error)
       const result = await this.#runItem(written.value, scene, signal, part)
+      // Only a step that worked is one to write (a failed one's locator isn't confirmed).
+      if (!result.ok) return result
       return {
         ...result,
         text: `${result.text}\nas written: ${this.scrub(asWritten(written.value))}`,

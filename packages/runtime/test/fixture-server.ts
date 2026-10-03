@@ -331,6 +331,11 @@ const pages: Record<string, string> = {
       c.addEventListener("click", (e) => log.push("click " + at(e)))
       window.drawLog = log
     </script>`,
+  // Names a snapshot writes as quoted YAML keys (": ", " #", an apostrophe), and page text that
+  // looks like a ref.
+  "/quoted-names": `<!doctype html><title>Quoted names</title>
+    <button>Status: Active</button><a href="#x">Issue #42</a><button>It's: here</button>
+    <p>see [ref=e2]</p>`,
   // A button of the page and one inside an iframe (a snapshot names both).
   "/framed": `<!doctype html><title>Framed</title><button>Outside</button>
     <iframe srcdoc="<button>Inside</button>"></iframe>`,

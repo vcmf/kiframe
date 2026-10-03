@@ -20,7 +20,8 @@ beforeEach(async () => {
     <div id="logo-box" style="width:40px;height:20px;background:#ccc"></div>
     <div id="r42" style="width:40px;height:20px;background:#ccc"></div>
     <button style="display:none">Hidden thing</button>
-    <menu><button>Delete</button></menu>`)
+    <menu><button>Delete</button></menu>
+    <section><button id="archive">Archive</button><button>Archive</button></section>`)
   return () => page.close()
 })
 
@@ -62,6 +63,37 @@ describe("a lasting locator for an element the agent pointed at", () => {
     expect(await lasting("#r42", { role: "generic" })).toMatchObject({
       error: expect.stringMatching(/no lasting locator/) as unknown,
     })
+  })
+
+  it("prefers an id written by hand to a place among look-alikes", async () => {
+    expect(await lasting("#archive", { role: "button", name: "Archive" })).toEqual({
+      locator: { by: "css", selector: "#archive" },
+    })
+  })
+
+  it("gives no place among look-alikes where a locator can't take one", async () => {
+    const second = "li:nth-child(2) button"
+    expect(
+      await lastingLocator(
+        page,
+        await el(second),
+        { role: "button", name: "Delete" },
+        { nth: false },
+      ),
+    ).toEqual({ error: expect.stringMatching(/can't say which of several look-alikes/) as unknown })
+  })
+
+  it("refuses an element of another page than the step's", async () => {
+    const other = await browser.newPage()
+    try {
+      expect(
+        await lastingLocator(other, await el("button"), { role: "button", name: "Save" }),
+      ).toEqual({
+        error: expect.stringMatching(/on another page than the one the step runs on/) as unknown,
+      })
+    } finally {
+      await other.close()
+    }
   })
 
   it("refuses an element that's hidden or gone", async () => {

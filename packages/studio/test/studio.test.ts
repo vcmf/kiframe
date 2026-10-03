@@ -617,6 +617,42 @@ presets:
     await studio.close()
   }, 60_000)
 
+  it("writes a ref's locator where the step takes it, and only for a step that worked", async () => {
+    const { studio } = makeStudio()
+    const step = (s: object) => tool("run_step").run({ scene: "tour", step: s }, studio, never)
+    await step({ id: "go", action: "goto", url: "/quoted-names" })
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    // A name the snapshot quotes (": "): its ref read all the same; page text saying a ref isn't one.
+    const status = /'button "Status: Active" \[ref=([a-z0-9]+)\]'/.exec(snap)?.[1]
+    expect(status, snap).toBeDefined()
+    expect(await step({ id: "s", action: "hover", target: { ref: status } })).toContain(
+      'as written: { id: s, action: hover, target: { by: role, role: button, name: "Status: Active", exact: true } }',
+    )
+    // A ref with anything beside it: refused, said why.
+    expect(await step({ id: "s", action: "hover", target: { ref: status, nth: 0 } })).toEqual({
+      error: expect.stringMatching(/a ref goes alone .*without nth/) as unknown,
+    })
+    // A step that fails says no "as written" (its locator isn't confirmed).
+    const failedStep = await step({
+      id: "t",
+      action: "expect",
+      that: { hidden: { ref: status } },
+      timeout: 300,
+    })
+    expect(failedStep).toEqual({ error: expect.not.stringContaining("as written") as unknown })
+    // A condition takes a locator alone: no place among look-alikes there.
+    await step({ id: "p", action: "goto", url: "/projects" })
+    const saves = [
+      ...((await tool("snapshot").run({}, studio, never)) as string).matchAll(
+        /button "Save" \[ref=([a-z0-9]+)\]/g,
+      ),
+    ].map((m) => m[1])
+    expect(await step({ id: "v", action: "expect", that: { visible: { ref: saves[1] } } })).toEqual(
+      { error: expect.stringMatching(/can't say which of several look-alikes/) as unknown },
+    )
+    await studio.close()
+  }, 60_000)
+
   it("runs several steps in one call, stopping at the first that fails", async () => {
     const { studio } = makeStudio()
     const result = (await tool("run_steps").run(
