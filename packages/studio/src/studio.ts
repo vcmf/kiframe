@@ -13,6 +13,9 @@ import {
   visibleOnly,
 } from "@kiframe/runtime"
 import {
+  ACTION_REFERENCE,
+  type ActionKind,
+  actionReference,
   Action,
   checkScenarioAgainstProject,
   Ensure,
@@ -181,6 +184,22 @@ export class Studio {
     return back
   }
 
+  /**
+   * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and
+   * the site when it isn't the app's own (a link that left the app says so).
+   */
+  #where(url: string): string {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      return url.slice(0, 200)
+    }
+    const app = new URL(this.options.config.target.url).origin
+    if (parsed.origin === app || parsed.protocol === "about:") return parsed.pathname
+    return `${parsed.pathname} (on ${parsed.host}: NOT the app's site, ${new URL(app).host})`
+  }
+
   /** The live page's accessibility snapshot (or one region's), with its URL. */
   async snapshot(within?: unknown): Promise<string> {
     const page = await this.livePage()
@@ -205,7 +224,7 @@ export class Studio {
       scrubbed.length > SNAPSHOT_MAX
         ? `${scrubbed.slice(0, SNAPSHOT_MAX)}\n… (cut: ${scrubbed.length} chars; use \`within\` to look at a region)`
         : scrubbed
-    return `url: ${new URL(page.url()).pathname}\n${cut}`
+    return `url: ${this.#where(page.url())}\n${cut}`
   }
 
   /**
@@ -232,7 +251,7 @@ export class Studio {
         : SetupItem.safeParse(raw)
     const teardownItem = part === "teardown" ? Action.safeParse(raw) : undefined
     if (teardownItem !== undefined && !teardownItem.success) {
-      return `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}`
+      return `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}${shapeOf(raw)}`
     }
     if (teardownItem === undefined && !step.success && setupItem?.success !== true) {
       const r = raw as Record<string, unknown>
@@ -249,7 +268,8 @@ export class Studio {
               ? (["step", Step] as const)
               : (["setup action", Action] as const)
       const result = schema.safeParse(raw)
-      return `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}`
+      // The issue, then the forms of the action it meant (never a guess at the field names).
+      return `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}${shapeOf(raw)}`
     }
     const scenario: Scenario =
       teardownItem?.success === true
@@ -270,7 +290,7 @@ export class Studio {
       if (now === undefined) {
         return "ok, but it closed every page: the next tool opens the app fresh (signed out, nothing kept)"
       }
-      return `ok. url: ${new URL(now.url()).pathname}`
+      return `ok. url: ${this.#where(now.url())}`
     } catch (error) {
       // Stopped: the call is aborted, not a failure to fix.
       if (isStopped(error)) throw error
@@ -279,7 +299,7 @@ export class Studio {
       const back =
         error instanceof StepError && error.reason === "page-closed" ? this.#backPage() : undefined
       if (back !== undefined) {
-        const url = new URL(back.url()).pathname
+        const url = this.#where(back.url())
         return step.success || !("preset" in raw || "ensure" in raw)
           ? `ok (the page closed itself: back on the page that opened it). url: ${url}`
           : `failed (page-closed): ${(error as StepError).message}; the rest of it didn't run (back on the page that opened it, url: ${url}): run its remaining steps one by one`
@@ -435,6 +455,15 @@ async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<
 }
 
 const isStopped = (error: unknown) => error instanceof StepError && error.reason === "stopped"
+
+/** The forms of the action an item meant (its `action`), for a refusal: empty if it isn't one. */
+function shapeOf(raw: object): string {
+  const kind = (raw as { action?: unknown }).action
+  if (typeof kind !== "string" || !Object.hasOwn(ACTION_REFERENCE, kind)) {
+    return `\nactions: ${Object.keys(ACTION_REFERENCE).join(", ")}`
+  }
+  return `\n${actionReference(kind as ActionKind)}`
+}
 
 /** Where in a scenario an item runs. */
 export type ScenarioPart = "setup" | "steps" | "teardown"

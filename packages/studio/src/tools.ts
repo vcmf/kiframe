@@ -56,6 +56,30 @@ const runStep = defineTool({
   run: ({ scene, step, part }, studio: Studio, signal) => studio.runStep(step, scene, signal, part),
 })
 
+const runSteps = defineTool({
+  name: "run_steps",
+  description:
+    "Run SEVERAL steps on the live page, in order (each like run_step's); stops at the first that fails. Use it once you know the locators: one call instead of one per step.",
+  parameters: z.object({
+    scene: SceneId.describe("the id you'll save this scene under"),
+    steps: z.array(z.unknown()).min(1).max(20).describe("The steps, same fields as in the YAML"),
+    part: z.enum(["setup", "steps", "teardown"]).default("steps").describe("the part they're for"),
+  }),
+  run: async ({ scene, steps, part }, studio: Studio, signal) => {
+    const out: string[] = []
+    for (const [i, step] of steps.entries()) {
+      const result = await studio.runStep(step, scene, signal, part)
+      out.push(`${i + 1}. ${result}`)
+      if (!result.startsWith("ok")) {
+        const left = steps.length - i - 1
+        if (left > 0) out.push(`stopped there: the ${left} after it didn't run`)
+        break
+      }
+    }
+    return out.join("\n")
+  },
+})
+
 const listSecrets = defineTool({
   name: "list_secrets",
   description: "Names of the secrets the user provided (never their values).",
@@ -173,6 +197,7 @@ export const studioTools: Tool<Studio>[] = [
   listScenes,
   snapshot,
   runStep,
+  runSteps,
   listSecrets,
   askUser,
   saveSceneTool,

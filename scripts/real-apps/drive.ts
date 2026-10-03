@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
-import { _electron as electron, type Page } from "playwright"
+import { _electron as electron } from "playwright"
 import { loadDotEnv } from "../lib/secrets.ts"
 
 interface AppRun {

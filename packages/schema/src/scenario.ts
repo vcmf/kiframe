@@ -178,24 +178,37 @@ const Goto = z.strictObject({
       message: "goto URL must be relative to the environment (e.g. `/projects`)",
     }),
 })
+/**
+ * A point within the target's box, as fractions of its width and height (0 = left / top, 1 =
+ * right / bottom): for canvases, maps and boards, where what's drawn has no element of its own.
+ * Fractions keep it in place when the box changes size. Without it: near the target's center.
+ */
+export const At = z.strictObject({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })
+export type At = z.infer<typeof At>
+
 /** Moves the pointer over the target (menus and buttons that only show on hover). */
-const Hover = z.strictObject({ action: z.literal("hover"), target: Target })
+const Hover = z.strictObject({ action: z.literal("hover"), target: Target, at: At.optional() })
 /** A native `<select>` (custom dropdowns are clicks): the option's label or value. */
 const Select = z.strictObject({
   action: z.literal("select"),
   target: Target,
   option: z.string().min(1).max(500),
 })
-/** Drag the target to another element, or by an offset in CSS pixels (sliders, kanban, reorder). */
+/**
+ * Drag from the target (at `at` within it) to another element, a point on one (`{ target, at }`:
+ * drawing on a canvas), or by an offset in CSS pixels (sliders, kanban, reorder).
+ */
 const Drag = z.strictObject({
   action: z.literal("drag"),
   target: Target,
+  at: At.optional(),
   to: z.union([
     Target,
     z.strictObject({
       dx: z.number().int().min(-10_000).max(10_000),
       dy: z.number().int().min(-10_000).max(10_000),
     }),
+    z.strictObject({ target: Target, at: At }),
   ]),
 })
 /** A project asset (content-addressed, `assets/<sha256>.<ext>`). */
@@ -207,6 +220,7 @@ const Upload = z.strictObject({ action: z.literal("upload"), target: Target, fil
 const Click = z.strictObject({
   action: z.literal("click"),
   target: Target,
+  at: At.optional(),
   button: z.enum(["left", "right"]).optional(),
   count: z.union([z.literal(1), z.literal(2)]).optional(),
   modifiers: z.array(z.enum(["Alt", "Control", "Meta", "Shift", "Mod"])).optional(),

@@ -1231,6 +1231,49 @@ steps:
 `)
   })
 
+  describe("points within a target (a canvas)", () => {
+    const canvas = "{ by: role, role: img, name: Drawing canvas }"
+    const drawLog = () => page.evaluate(() => (window as unknown as { drawLog: string[] }).drawLog)
+
+    it("clicks at the step's own point, as fractions of the box", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - { id: dot, action: click, target: ${canvas}, at: { x: 0.25, y: 0.75 } }
+`)
+      // Fractions of the bounding box (402 × 302 with its 1 px border, at 100,100); offsets count from
+      // inside the border (101,101): x = 100 + 0.25 × 402 − 101 = 99.5, y = 100 + 0.75 × 302 − 101 = 225.5.
+      expect((await drawLog()).filter((l) => l.startsWith("click"))).toEqual(["click 100,226"])
+    })
+
+    it("drags from one point of the canvas to another (drawing)", async () => {
+      await run(`setup: [{ action: goto, url: /canvas }]
+steps:
+  - id: draw
+    action: drag
+    target: ${canvas}
+    at: { x: 0.1, y: 0.2 }
+    to: { target: ${canvas}, at: { x: 0.6, y: 0.7 } }
+`)
+      const log = await drawLog()
+      expect(log.filter((l) => !l.startsWith("click"))).toEqual(["down 39,59", "up 240,210"])
+    })
+
+    it("draws off camera too (the setup), at the same points", async () => {
+      await run(`setup:
+  - { action: goto, url: /canvas }
+  - action: drag
+    target: ${canvas}
+    at: { x: 0.1, y: 0.2 }
+    to: { target: ${canvas}, at: { x: 0.6, y: 0.7 } }
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+      expect((await drawLog()).filter((l) => !l.startsWith("click"))).toEqual([
+        "down 39,59",
+        "up 240,210",
+      ])
+    })
+  })
+
   it("returns to the opener when the click closes its page before it ends", async () => {
     // Closed as the pointer reaches it: the click finds its page closed ("Target page … closed").
     await run(`setup: [{ action: goto, url: /opener }]

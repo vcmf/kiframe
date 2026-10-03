@@ -1,5 +1,6 @@
 import type { Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
+import type { At } from "@kiframe/schema"
 import { type Box, clickPoint, planPath, type Point, seededRandom } from "../motion.ts"
 import { pointProbe, type ProbeArgs, viewportOf } from "../targets.ts"
 import { type AnyAction, type Ctx, guard, MIN_TIMEOUT_MS, seedOf, sleep } from "./context.ts"
@@ -18,29 +19,52 @@ export async function moveCursorTo(
   ctx: Ctx,
   target: Locator,
   step: StepRef,
-  { correction = false }: { correction?: boolean } = {},
+  { correction = false, at }: { correction?: boolean; at?: At | undefined } = {},
 ): Promise<Point | undefined> {
   return guard(step, async () => {
     const viewport = await viewportOf(ctx.page)
     const onCamera = step.phase === "steps" && ctx.pacing.cursor !== "instant"
     const pacing = !onCamera ? "instant" : correction ? "fast" : ctx.pacing.cursor
     const random = seededRandom(`${seedOf(step)}:cursor${correction ? ":again" : ""}`)
-    // No box (display: contents, re-rendering…): skip the visual movement, the action still runs.
-    const visible = visiblePart(await target.boundingBox({ timeout: ctx.timeoutMs }), viewport)
-    if (visible === undefined) return undefined
-    const to = clickPoint(visible, random)
+    const box = await target.boundingBox({ timeout: ctx.timeoutMs })
+    let to: Point
+    let width: number
+    if (at !== undefined) {
+      // The step's own point within the box (a canvas): exactly there, never a nearby one.
+      if (box === null) return undefined
+      to = pointIn(box, at)
+      if (to.x < 0 || to.y < 0 || to.x > viewport.width - 1 || to.y > viewport.height - 1) {
+        throw new StepError(
+          step,
+          "target-not-found",
+          `the point at (${at.x}, ${at.y}) of the target is off screen: scroll it into view first`,
+        )
+      }
+      width = 24
+    } else {
+      // No box (display: contents, re-rendering…): skip the visual movement, the action still runs.
+      const visible = visiblePart(box, viewport)
+      if (visible === undefined) return undefined
+      to = clickPoint(visible, random)
+      width = visible.width
+    }
     await travel(
       ctx,
       step,
       planPath(ctx.cursor ?? center(viewport), to, {
         pacing,
-        targetWidth: visible.width,
+        targetWidth: width,
         viewport,
         random,
       }),
     )
     return ctx.cursor
   })
+}
+
+/** The point `at` (fractions of the box) of a box, in CSS pixels of the viewport. */
+export function pointIn(box: Box, at: At): Point {
+  return { x: box.x + at.x * box.width, y: box.y + at.y * box.height }
 }
 
 /**
@@ -59,7 +83,7 @@ export async function clickAtCursor(
   step: StepRef,
   action: Extract<AnyAction, { action: "click" }>,
 ): Promise<void> {
-  let point = await moveCursorTo(ctx, target, step)
+  let point = await moveCursorTo(ctx, target, step, { at: action.at })
   let deadline = Date.now() + ctx.timeoutMs
   const left = () => Math.max(MIN_TIMEOUT_MS, deadline - Date.now())
   // A token marks the element found under the point, so a later probe can tell it's the SAME node.
@@ -72,10 +96,14 @@ export async function clickAtCursor(
       // Covered at our point: an interrupt that just appeared (a modal) is handled first, off
       // camera, before any approval and before the press: nothing has happened yet. Then aim again.
       await handleInterrupts(ctx, step)
-      point = (await moveCursorTo(ctx, target, step, { correction: true })) ?? point
+      point = (await moveCursorTo(ctx, target, step, { correction: true, at: action.at })) ?? point
       deadline = Date.now() + ctx.timeoutMs // the corrective travel doesn't count either
       probe = await probeAt(point)
-      // Still covered at our point: let Playwright choose one (it reports interceptions clearly).
+      // Still covered at our point: let Playwright choose one (it reports interceptions clearly);
+      // never another point when the step named its own (a canvas: another spot is another click).
+      if (!probe.hits && action.at !== undefined) {
+        throw new StepError(step, "action-failed", "something covers the target at that point")
+      }
       if (!probe.hits) point = undefined
     }
     // `point` defined ⇔ a verified point on the target, with `probe` describing what it activates.

@@ -316,6 +316,19 @@ const pages: Record<string, string> = {
         }
       })
     </script>`,
+  // A drawing canvas (400×300 at 100,100) logging where the pointer goes down, moves and comes up.
+  "/canvas": `<!doctype html><title>Canvas</title><style>body{margin:0}</style>
+    <canvas aria-label="Drawing canvas" role="img" width="400" height="300"
+      style="position:absolute; left:100px; top:100px; border:1px solid #888"></canvas>
+    <pre id="log"></pre>
+    <script>
+      const c = document.querySelector("canvas"), log = []
+      const at = (e) => [Math.round(e.offsetX), Math.round(e.offsetY)].join(",")
+      c.addEventListener("pointerdown", (e) => log.push("down " + at(e)))
+      c.addEventListener("pointerup", (e) => log.push("up " + at(e)))
+      c.addEventListener("click", (e) => log.push("click " + at(e)))
+      window.drawLog = log
+    </script>`,
   // A login whose password field is below the fold.
   "/login-below": `<!doctype html><title>Login (below)</title>
     <div style="height:2400px">A long page</div>

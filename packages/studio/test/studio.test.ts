@@ -469,4 +469,74 @@ presets:
     await studio.close()
     expect(browser.contexts().length).toBe(before - 1)
   }, 30_000)
+
+  it("shows an action's forms when a step is refused (never a guess at its fields)", async () => {
+    const { studio } = makeStudio()
+    const refused = (await tool("run_step").run(
+      {
+        scene: "s",
+        step: {
+          id: "draw",
+          action: "drag",
+          target: { by: "css", selector: "canvas" },
+          to: { x: 10 },
+        },
+      },
+      studio,
+      never,
+    )) as string
+    expect(refused).toMatch(/^invalid step: /)
+    expect(refused).toMatch(/drag: press on the target/)
+    expect(refused).toMatch(/to: \{ dx: 120, dy: 0 \}/)
+    expect(refused).toMatch(/at: \{ x: 0\.6, y: 0\.7 \}/)
+    const unknown = (await tool("run_step").run(
+      { scene: "s", step: { id: "d", action: "draw", target: { by: "css", selector: "canvas" } } },
+      studio,
+      never,
+    )) as string
+    expect(unknown).toMatch(/actions: goto, click, hover/)
+    await studio.close()
+  }, 30_000)
+
+  it("says when the page is on another site than the app's", async () => {
+    const { studio } = makeStudio()
+    const page = await studio.livePage()
+    // The same server under another host name: another site.
+    await page.goto(`${server.url.replace("127.0.0.1", "localhost")}/projects?token=abc`)
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    expect(snap).toMatch(
+      /^url: \/projects \(on localhost:\d+: NOT the app's site, 127\.0\.0\.1:\d+\)/,
+    )
+    expect(snap).not.toContain("token")
+    await page.goto(`${server.url}/projects`)
+    expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/projects\n/)
+    await studio.close()
+  }, 30_000)
+
+  it("runs several steps in one call, stopping at the first that fails", async () => {
+    const { studio } = makeStudio()
+    const result = (await tool("run_steps").run(
+      {
+        scene: "tour",
+        steps: [
+          { id: "go", action: "goto", url: "/" },
+          { id: "open", action: "click", target: { by: "role", role: "link", name: "Projects" } },
+          {
+            id: "nope",
+            action: "click",
+            target: { by: "role", role: "button", name: "Nothing here" },
+          },
+          { id: "never", action: "pause", ms: 1 },
+        ],
+      },
+      studio,
+      never,
+    )) as string
+    const lines = result.split("\n")
+    expect(lines[0]).toMatch(/^1\. ok/)
+    expect(lines[1]).toMatch(/^2\. ok\. url: \/projects/)
+    expect(lines[2]).toMatch(/^3\. failed \(target-not-found\)/)
+    expect(lines[3]).toBe("stopped there: the 1 after it didn't run")
+    await studio.close()
+  }, 60_000)
 })

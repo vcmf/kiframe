@@ -778,8 +778,53 @@ ul.strip-cards {
 .msg-agent-text {
   padding-top: 2px;
   line-height: 1.55;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.md > :first-child {
+  margin-top: 0;
+}
+
+.md > :last-child {
+  margin-bottom: 0;
+}
+
+.md p,
+.md ul,
+.md ol {
+  margin: 0 0 8px;
+}
+
+.md ul,
+.md ol {
+  padding-left: 20px;
+}
+
+.md code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--hover);
+}
+
+.md pre {
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  overflow-x: auto;
+}
+
+.md pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.md a {
+  color: var(--accent);
 }
 
 .tool-group {
