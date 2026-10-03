@@ -30,6 +30,7 @@ import {
   type ProjectConfig,
   type Scenario,
   SceneId,
+  secretRefName,
   SetupItem,
   Step,
 } from "@kiframe/schema"
@@ -827,6 +828,17 @@ async function lastingOfRef(
  * put there adds no issue at that place (a step's target does; a condition's locator doesn't).
  */
 function takesRow(item: unknown, path: (string | number)[], part: ScenarioPart): boolean {
+  // A step typing a secret: its target never has a row (§3 A2), whatever else the item says (a
+  // refinement doesn't run while another field is wrong).
+  const r = item as { action?: unknown; value?: unknown }
+  if (
+    r.action === "type" &&
+    typeof r.value === "string" &&
+    secretRefName(r.value) !== undefined &&
+    path[0] === "target"
+  ) {
+    return false
+  }
   const probe = { by: "role", role: "button", in: { role: "listitem", has: "x" } }
   const plain = { by: "role", role: "button" }
   const key = (p: PropertyKey[]) => p.map(String).join(".")

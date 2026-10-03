@@ -29,6 +29,8 @@ beforeEach(async () => {
     <table><tr><td>3</td><td>Pay rent</td><td>2 min ago</td><td><button>Drop</button></td></tr>
       <tr><td>4</td><td>Call mom</td><td>5 min ago</td><td><button>Drop</button></td></tr></table>
     <div class="pair"><button>Share</button><button>Share</button></div>
+    <ul class="tips"><li><span hidden>Tip one</span><span>Alpha</span> <button>Open</button></li>
+      <li><span hidden>Tip two</span><span>Beta</span> <button>Open</button></li></ul>
     <a href="#c" class="card-link"><h3>Card title</h3><p>Some description</p></a>
     <ol><li>Buy milk</li><li>Item 12</li><li>Say <span style="display:none">x</span>hi</li></ol>`)
   return () => page.close()
@@ -82,14 +84,21 @@ describe("a lasting locator for an element the agent pointed at", () => {
       locator: { by: "role", role: "button", name: "Drop", exact: true },
       in: { role: "row", has: "Call mom" },
     })
-    expect(["3", "#1042", "2 min ago", "10:42", "2026-10-03", "Pay rent"].map(namesARow)).toEqual([
-      false,
-      false,
-      false,
-      false,
-      false,
-      true,
-    ])
+    const never = ["3", "#1042", "2 min ago", "10:42", "2026-10-03", "in 5 min", "5 minutes"]
+    const alsoNever = ["Updated 3h", "Oct 3", "Mon", "12 items", "Order #1042", "just now"]
+    for (const text of [...never, ...alsoNever]) expect(namesARow(text), text).toBe(false)
+    for (const text of ["Pay rent", "Call mom", "Q4 Launch", "Water plants"]) {
+      expect(namesARow(text), text).toBe(true)
+    }
+  })
+
+  it("names a row only by text that's shown (a hidden tooltip isn't there at replay)", async () => {
+    expect(await lasting(".tips li:nth-child(2) button", { role: "button", name: "Open" })).toEqual(
+      {
+        locator: { by: "role", role: "button", name: "Open", exact: true },
+        in: { role: "listitem", has: "Beta" },
+      },
+    )
   })
 
   it("says when a look-alike sits in no row", async () => {

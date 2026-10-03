@@ -52,7 +52,7 @@ export type Locator = z.infer<typeof Locator>
  */
 export const Scope = z.strictObject({
   role: z.string().regex(/^[a-z]{2,40}$/, "an ARIA role name (listitem, row, article…)"),
-  has: z.string().min(1).max(200),
+  has: z.string().max(200).regex(/\S/, "a row's text (not blank)"),
 })
 export type Scope = z.infer<typeof Scope>
 
@@ -79,10 +79,11 @@ export const GroundedTarget = z
     PlaceholderLocator.extend(targetExtras),
     CssLocator.extend(targetExtras),
   ])
-  // A row says which look-alike: never a position on top of it.
-  .refine((t) => t.in === undefined || t.nth === undefined, {
-    message: "a target `in` a row takes no `nth`: the row says which one",
-    path: ["nth"],
+  // A row says which look-alike: never a position on top of it, nor a fallback looked for outside it
+  // (a missing row would let a fallback act in another row).
+  .refine((t) => t.in === undefined || (t.nth === undefined && t.fallbacks === undefined), {
+    message: "a target `in` a row takes no `nth` and no `fallbacks`: the row says which one",
+    path: ["in"],
   })
 export type GroundedTarget = z.infer<typeof GroundedTarget>
 

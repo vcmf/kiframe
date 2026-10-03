@@ -152,14 +152,33 @@ export async function lastingLocator(
   }
 }
 
+/** Words a count, an id or a time is said with ("12 items", "Order #1042", "5 minutes"). */
+const COUNTED = new Set(
+  "item items file files comment comments reply replies member members user users order orders invoice ticket issue task tasks second seconds minute minutes hour hours days week weeks month months year years updated created edited views likes votes".split(
+    " ",
+  ),
+)
+
 /**
  * Whether a text names a row (a title: "Pay rent"), never a position or a passing value: a row
  * number ("3"), an id ("#1042"), a time ("2 min ago", "10:42"), a date ("2026-10-03").
  */
 export function namesARow(text: string): boolean {
   if (!/\p{L}{2}/u.test(text)) return false // no word: a number, an id, a symbol
-  if (/\b(ago|just now|today|yesterday|tomorrow)\b/i.test(text)) return false
-  if (/\d{1,2}:\d{2}|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}/.test(text)) return false
+  // A number with only units or labels around it ("12 items", "Order #1042", "3h", "5 minutes"):
+  // a count, an id, a time; with a word of its own ("Q4 Launch") it's a name.
+  if (/\d/.test(text)) {
+    const words = text.toLowerCase().match(/\p{L}{4,}/gu) ?? []
+    if (!words.some((w) => !COUNTED.has(w))) return false
+  }
+  // Times and dates in words ("just now", "in 5 min", "Mon", "Oct 3", "Updated yesterday").
+  if (
+    /\b(ago|just now|now|today|yesterday|tomorrow|in \d+|mon|tue|wed|thu|fri|sat|sun|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(
+      text,
+    )
+  ) {
+    return false
+  }
   return true
 }
 
@@ -187,20 +206,35 @@ async function inItsRow(
           if (row === undefined) return undefined
           let depth = 0
           for (let e: Element | null = row; e !== null; e = e.parentElement) depth += 1
-          // Inside the row (a row's `has` is an element in it, never the row itself).
+          // Inside the row (a row's `has` is an element in it, never the row itself), rendered (a
+          // tooltip or a closed menu's text isn't there at replay), never a field's value.
+          const skip = [
+            "INPUT",
+            "TEXTAREA",
+            "SELECT",
+            "OPTION",
+            "SCRIPT",
+            "STYLE",
+            "NOSCRIPT",
+            "TEMPLATE",
+          ]
           const leaves = [...row.querySelectorAll("*")].filter(
             (e) =>
-              !["INPUT", "TEXTAREA", "SELECT", "OPTION", "SCRIPT", "STYLE"].includes(e.tagName) &&
+              !skip.includes(e.tagName) &&
               !e.contains(target) &&
               !target.contains(e) &&
+              e.checkVisibility({ visibilityProperty: true, opacityProperty: true }) &&
               [...e.childNodes].some(
                 (n) => n.nodeType === 3 && (n.textContent ?? "").trim() !== "",
               ),
           )
-          const title = (e: Element) =>
-            e.closest("h1,h2,h3,h4,h5,h6,a,strong,b,[role=heading],[role=link]") !== null
-          const texts = [...leaves.filter(title), ...leaves.filter((e) => !title(e))].map((e) =>
-            (e.textContent ?? "").replace(/\s+/g, " ").trim(),
+          // A title first (a heading, a link, bold text: inside the row, not a link around it).
+          const title = (e: Element) => {
+            const t = e.closest("h1,h2,h3,h4,h5,h6,a,strong,b,[role=heading],[role=link]")
+            return t !== null && row.contains(t) && t !== row
+          }
+          const texts = [...leaves.filter(title), ...leaves.filter((e) => !title(e))].map(
+            (e) => e.textContent ?? "",
           )
           return { depth, texts }
         }, element)
@@ -215,10 +249,14 @@ async function inItsRow(
     .filter((r): r is NonNullable<typeof r> => r !== undefined)
     .sort((a, b) => b.depth - a.depth)
   for (const { role, texts } of rows) {
-    for (const has of new Set(texts)) {
+    for (const has of new Set(texts.map(collapse))) {
       if (has === "" || has.length > TEXT_MAX || !allowed(has) || !namesARow(has)) continue
       const scope: Scope = { role, has }
       const found = await rowOf(page, scope)
+      // A navigation mid-check is the page changing, never "no row".
+      if ("count" in found && found.count === undefined) {
+        throw new Error("Execution context was destroyed: the page navigated")
+      }
       if (!("row" in found)) continue
       const row = found.row
       const holds = await row

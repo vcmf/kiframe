@@ -36,6 +36,20 @@ describe("Scenario", () => {
     expect(() =>
       parseScenarioYaml(minimal(`  - { id: del, action: click, target: ${withNth} }\n`)),
     ).toThrow(/takes no `nth`/)
+    // Nor a fallback looked for outside the row (a missing row would let it act in another one).
+    const withFallback = row.replace(
+      / }$/,
+      ", fallbacks: [{ by: role, role: button, name: Delete }] }",
+    )
+    expect(() =>
+      parseScenarioYaml(minimal(`  - { id: del, action: click, target: ${withFallback} }\n`)),
+    ).toThrow(/no `fallbacks`/)
+    // A blank row text says no row.
+    expect(() =>
+      parseScenarioYaml(
+        minimal(`  - { id: del, action: click, target: ${row.replace("Pay rent", '" "')} }\n`),
+      ),
+    ).toThrow(/not blank/)
     // The row is part of what a secret approval binds.
     const base = { by: "role", role: "textbox", name: "Key" } as const
     expect(canonicalTarget(GroundedTarget.parse(base))).not.toBe(
