@@ -13,6 +13,7 @@ import {
   visibleOnly,
   type ElementHint,
   documentOf,
+  isPageGone,
   type Lasting,
   lastingLocator,
 } from "@kiframe/runtime"
@@ -104,6 +105,8 @@ export class Studio {
         page: Page
         /** What it was of (the page's body, or the agent's region): a ref is checked there again. */
         root: ReturnType<Page["locator"]>
+        /** Whether it was of the agent's region (`within`), not the whole page. */
+        region: boolean
         doc: number
         refs: Map<string, SnapshotNode>
       }
@@ -273,7 +276,7 @@ export class Studio {
       } else if (refs === undefined) {
         unusable = "its refs couldn't be read"
       } else {
-        this.#snapshot = { page, root, doc, refs }
+        this.#snapshot = { page, root, region: within !== undefined, doc, refs }
       }
     } catch (e) {
       return failed(`snapshot failed: ${this.scrub(String(e))}`)
@@ -352,10 +355,15 @@ export class Studio {
       // The whole page (a ref keeps its number in the document, whatever the snapshot was of); the
       // agent's region if the page is too large for it.
       let text: string | undefined
-      for (const of of [page.locator("body"), root]) {
-        if (of === undefined || text !== undefined) continue
+      const body = page.locator("body")
+      for (const of of root !== undefined && this.#snapshot?.region === true
+        ? [body, root]
+        : [body]) {
+        if (text !== undefined) continue
         text = await of.ariaSnapshot({ timeout: 5000, mode: "ai" }).catch(() => undefined)
       }
+      // A navigation while it was taken is said as one (never "too large").
+      if (text === undefined && (await documentOf(page)) !== doc) continue
       if (text === undefined) {
         return {
           error:
@@ -444,11 +452,16 @@ export class Studio {
       const why = this.#refused(at.ref, fresh.nodes)
       if (why !== undefined) return { error: `ref ${at.ref}: ${why}` }
       const hint = fresh.nodes.get(at.ref)
-      if (hint === undefined) return { error: `ref ${at.ref}: not a ref of the last snapshot` }
-      // A page that moves while it's read (a redirect finishing): said, never a raw error.
-      const lasting = await lastingOfRef(page, at.ref, hint, allowed).catch((): Lasting => ({
-        error: "the page changed while it was read: take a new snapshot",
-      }))
+      if (hint === undefined) continue // never: #refused said it's there
+      // A page that moves while it's read (a redirect finishing): said as such; anything else with
+      // its own words.
+      const lasting = await lastingOfRef(page, at.ref, hint, allowed).catch(
+        (error: unknown): Lasting => ({
+          error: isPageGone(error)
+            ? "the page changed while it was read: take a new snapshot"
+            : `it couldn't be read: ${this.scrub(error instanceof Error ? error.message : String(error))}`,
+        }),
+      )
       if ("error" in lasting) return { error: `ref ${at.ref}: ${lasting.error}` }
       value = withAt(value, at.path, lasting.locator)
     }

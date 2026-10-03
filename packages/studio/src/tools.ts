@@ -102,7 +102,7 @@ const runSteps = defineTool({
     } catch (error) {
       // A stop ends the call; a page that closed or moved while the refs were checked is said.
       if (signal.aborted) throw error
-      refused = `the refs couldn't be checked: ${error instanceof Error ? error.message : String(error)}`
+      refused = `the refs couldn't be checked: ${studio.scrub(error instanceof Error ? error.message : String(error))}`
     }
     if (refused !== undefined) return { error: `nothing ran: ${refused}` }
     return runAll(items, scene, part, studio, signal)

@@ -55,6 +55,11 @@ export async function lastingLocator(
   if (facts?.connected !== true) {
     return { error: "it isn't on the page anymore (the page changed): take a new snapshot" }
   }
+  // Inside an iframe (one the snapshot gave no ref of its own): a step's locators reach the page's
+  // own elements only.
+  if (frame !== null && frame.page() === page && frame !== page.mainFrame()) {
+    return { error: "it's inside a frame (an iframe): steps reach the page's own elements only" }
+  }
   if (frame?.page() !== page) {
     return {
       error:
@@ -112,25 +117,16 @@ export async function lastingLocator(
   // The secrets' exact-names rule as the page has it now, and as a fresh replay may have it (off,
   // before any secret is typed): a candidate counts only if both find the same.
   const { exact } = await exactNamesFor(page, usable)
-  const counted = await Promise.all(
-    usable.map(async (locator) => {
-      const now = await indexAmong(page, locator, element, exact)
-      const fresh = exact ? await indexAmong(page, locator, element, false) : now
-      const agree =
-        now !== undefined &&
-        fresh !== undefined &&
-        now.index === fresh.index &&
-        now.count === fresh.count
-      return agree ? { locator, ...now } : undefined
-    }),
-  )
-  const found = counted.filter(
-    (c): c is { locator: SchemaLocator; index: number; count: number } =>
-      c !== undefined && c.index >= 0,
-  )
-  const alone = found.find((c) => c.count === 1)
-  if (alone !== undefined) return { locator: alone.locator }
-  if (found.length > 0) {
+  // In order, the first that finds it alone (and whether any found it among look-alikes).
+  let lookAlike = false
+  for (const locator of usable) {
+    const now = await indexAmong(page, locator, element, exact)
+    const fresh = exact ? await indexAmong(page, locator, element, false) : now
+    if (now === undefined || fresh === undefined || now.index < 0) continue
+    if (now.count === 1 && fresh.count === 1 && fresh.index === 0) return { locator }
+    lookAlike = true
+  }
+  if (lookAlike) {
     return {
       error:
         "several elements look just like it (no locator finds it alone): write its locator by hand from the snapshot",
@@ -182,7 +178,7 @@ async function indexAmong(
 }
 
 /** An error that says the page or its document went away (never a locator's own fault). */
-function isPageGone(error: unknown): boolean {
+export function isPageGone(error: unknown): boolean {
   return /Execution context was destroyed|Target page, context or browser has been closed|frame was detached/i.test(
     error instanceof Error ? error.message : String(error),
   )
