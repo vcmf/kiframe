@@ -11,6 +11,7 @@ import {
   StepError,
   type StepRef,
   visibleOnly,
+  type ElementHint,
 } from "@kiframe/runtime"
 import {
   ACTION_REFERENCE,
@@ -30,6 +31,7 @@ import {
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
+import { asWritten, Pins, refsIn, refsOf } from "./refs.ts"
 
 // The studio: what the agent's tools act on (the project, the live app, the take store), for one
 // open project. The host (the desktop app's main process) makes one per project and passes it to
@@ -83,6 +85,8 @@ export const SNAPSHOT_MAX = 14_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
+  /** The last snapshot's refs: each one's role and name (a new snapshot replaces them). */
+  #refs = new Map<string, ElementHint>()
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
   /** The live page being opened (one at a time: a second caller waits for it). */
@@ -218,7 +222,9 @@ export class Studio {
     }
     let text: string
     try {
-      text = await root.ariaSnapshot({ timeout: 5000 })
+      // With refs (`[ref=e12]`): the agent can point at an element, and run_step writes its locator.
+      text = await root.ariaSnapshot({ timeout: 5000, mode: "ai" })
+      this.#refs = refsOf(text)
     } catch (e) {
       return failed(`snapshot failed: ${this.scrub(String(e))}`)
     }
@@ -232,16 +238,49 @@ export class Studio {
   }
 
   /**
+   * The elements the refs in these items name, held before any of them runs (a step's own changes,
+   * or a snapshot, make Playwright forget refs); release them once done.
+   */
+  async pin(items: unknown): Promise<Pins | { error: string }> {
+    return Pins.of(await this.livePage(), refsIn(items), this.#refs)
+  }
+
+  /**
    * One item on the live page, through the real runner: an on-camera step (with its id), or a setup
-   * or teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`).
+   * or teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`). Its refs (pinned by
+   * the caller for a batch, or here) become lasting locators first, and the result says the item as
+   * it's written in the YAML.
    */
   async runStep(
     input: unknown,
     scene: string,
     signal: AbortSignal,
     part: ScenarioPart = "steps",
+    pins?: Pins,
   ): Promise<StepResult> {
     const raw = asObject(input)
+    if (refsIn(raw).size === 0) return this.#runItem(raw, scene, signal, part)
+    const own = pins ?? (await this.pin(raw))
+    if ("error" in own) return failed(own.error)
+    try {
+      const written = await own.written(await this.livePage(), raw)
+      if ("error" in written) return failed(written.error)
+      const result = await this.#runItem(written.value, scene, signal, part)
+      return {
+        ...result,
+        text: `${result.text}\nas written: ${this.scrub(asWritten(written.value))}`,
+      }
+    } finally {
+      if (pins === undefined) await own.release()
+    }
+  }
+
+  async #runItem(
+    raw: unknown,
+    scene: string,
+    signal: AbortSignal,
+    part: ScenarioPart,
+  ): Promise<StepResult> {
     if (typeof raw !== "object" || raw === null) {
       return failed(
         "invalid step: expected an object like {id: open-new, action: click, target: {...}}",
@@ -331,6 +370,13 @@ export class Studio {
   /** The scenario the agent wrote, checked: parsed, against the project, 5–15 on-camera steps. */
   check(yaml: string): { scenario: Scenario } | { error: string } {
     let scenario: Scenario
+    // A ref is the live page's (run_step's) only: the YAML holds the locator run_step gave back.
+    const refs = refsIn(asObject(yaml))
+    if (refs.size > 0) {
+      return {
+        error: `invalid scenario: a ref (${[...refs].join(", ")}) is only for run_step on the live page: write the locator its result gave ("as written: …")`,
+      }
+    }
     try {
       scenario = parseScenarioYaml(yaml)
     } catch (error) {

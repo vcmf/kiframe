@@ -528,6 +528,95 @@ presets:
     await studio.close()
   }, 30_000)
 
+  it("acts on an element pointed at by its snapshot ref, and says the step as written", async () => {
+    const { studio } = makeStudio()
+    const refOf = (snap: string, line: RegExp) => {
+      const ref = new RegExp(`${line.source}.*\\[ref=((?:f\\d+)?e\\d+)\\]`).exec(snap)?.[1]
+      if (ref === undefined) throw new Error(`no ${String(line)} in the snapshot:\n${snap}`)
+      return ref
+    }
+    const link = refOf((await tool("snapshot").run({}, studio, never)) as string, /link "Projects"/)
+    const opened = (await tool("run_step").run(
+      { scene: "tour", step: { id: "open", action: "click", target: { ref: link } } },
+      studio,
+      never,
+    )) as string
+    expect(opened.split("\n")).toEqual([
+      expect.stringMatching(/^ok\. url: \/projects/) as unknown,
+      "as written: { id: open, action: click, target: { by: role, role: link, name: Projects, exact: true } }",
+    ])
+    // The old page's ref: its element is gone.
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { id: "again", action: "click", target: { ref: link } } },
+        studio,
+        never,
+      ),
+    ).toEqual({
+      error: expect.stringMatching(/^ref (f\d+)?e\d+: it isn't on the page anymore/) as unknown,
+    })
+    // Look-alikes: its place among them. Several refs in one batch, held before any step runs.
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    const saves = [...snap.matchAll(/button "Save" \[ref=((?:f\d+)?e\d+)\]/g)].map((m) => m[1])
+    expect(saves).toHaveLength(2)
+    const batch = (await tool("run_steps").run(
+      {
+        scene: "tour",
+        steps: [
+          { id: "first", action: "hover", target: { ref: saves[0] } },
+          { id: "second", action: "hover", target: { ref: saves[1] } },
+        ],
+      },
+      studio,
+      never,
+    )) as string
+    expect(batch).toContain(
+      "as written: { id: second, action: hover, target: { by: role, role: button, name: Save, exact: true, nth: 1 } }",
+    )
+    // Not a ref of the last snapshot, or inside a frame: nothing runs, and why.
+    const run = (ref: string) =>
+      tool("run_steps").run(
+        {
+          scene: "tour",
+          steps: [
+            { id: "a", action: "pause", ms: 1 },
+            { id: "b", action: "click", target: { ref } },
+          ],
+        },
+        studio,
+        never,
+      )
+    expect(await run("e99999")).toEqual({
+      error: expect.stringMatching(
+        /^nothing ran: ref e99999: not a ref of the last snapshot/,
+      ) as unknown,
+    })
+    await tool("run_step").run(
+      { scene: "tour", step: { id: "framed", action: "goto", url: "/framed" } },
+      studio,
+      never,
+    )
+    const framed = (await tool("snapshot").run({}, studio, never)) as string
+    expect(await run(refOf(framed, /button "Inside"/))).toEqual({
+      error: expect.stringMatching(/^nothing ran: ref \S+: it's inside a frame/) as unknown,
+    })
+    expect(await run(refOf(framed, /button "Outside"/))).toMatch(/^2 steps ok/)
+    // A ref never reaches a scene's YAML.
+    const saved = await tool("save_scene").run(
+      {
+        id: "tour",
+        title: "Tour",
+        yaml: SCENE.replace("{ by: role, role: link, name: Projects }", `{ ref: ${link} }`),
+      },
+      studio,
+      never,
+    )
+    expect(saved).toEqual({
+      error: expect.stringMatching(/a ref \((f\d+)?e\d+\) is only for run_step/) as unknown,
+    })
+    await studio.close()
+  }, 60_000)
+
   it("runs several steps in one call, stopping at the first that fails", async () => {
     const { studio } = makeStudio()
     const result = (await tool("run_steps").run(

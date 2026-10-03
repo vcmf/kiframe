@@ -331,6 +331,9 @@ const pages: Record<string, string> = {
       c.addEventListener("click", (e) => log.push("click " + at(e)))
       window.drawLog = log
     </script>`,
+  // A button of the page and one inside an iframe (a snapshot names both).
+  "/framed": `<!doctype html><title>Framed</title><button>Outside</button>
+    <iframe srcdoc="<button>Inside</button>"></iframe>`,
   // A login whose password field is below the fold.
   "/login-below": `<!doctype html><title>Login (below)</title>
     <div style="height:2400px">A long page</div>

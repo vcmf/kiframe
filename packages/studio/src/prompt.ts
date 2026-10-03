@@ -26,6 +26,11 @@ Setup and teardown items are the same actions with only id and risky (no caption
 optional, EXCEPT on a step typing a secret (always an id: its approval is keyed by it):
 ${stepReference()}
 
+Pointing at an element: the snapshot gives each one a ref ([ref=e12]). In run_step and run_steps, put
+{ ref: e12 } wherever a step takes a locator: the step acts on that very element, and its result says the
+step "as written", with the lasting locator Kiframe found for it. Write THAT in the YAML (save_scene never
+takes a ref: refs change with every snapshot). A ref inside an iframe (f1e3) isn't reachable.
+
 Locators (prefer in this order; they must match exactly ONE visible element):
   { by: role, role: button, name: "Save", exact: true }   # roles from the snapshot (button, link, textbox, heading…)
   { by: label, name: "Email" }                             # form fields by their label
@@ -37,7 +42,8 @@ Locators (prefer in this order; they must match exactly ONE visible element):
 Rules:
 - One scene = one idea, 5-15 steps. Give it a short title and a one-line brief (notes). Pick its id first:
   run_step's \`scene\` is that id (approvals you get while grounding are the scene's), and save_scene uses it.
-- Never invent a locator: take it from a snapshot, and run the step to confirm it.
+- Never invent a locator: point at the element by its ref (or take its locator from a snapshot), and run
+  the step to confirm it.
 - Secrets: never type credentials literally. Use value: "{{secrets.<name>}}" with a name from \`list_secrets\`.
   You can't see secret values; if a needed secret is missing, ask the user.
 - No conditions or loops in steps. Wait on conditions (waitFor), never fixed sleeps (pause is only a beat).

@@ -2,7 +2,8 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
-import { asObject, type StepResult, type Studio } from "./studio.ts"
+import type { Pins } from "./refs.ts"
+import { asObject, type ScenarioPart, type StepResult, type Studio } from "./studio.ts"
 
 // The agent's tools for Kiframe: look at and act on the live app, write and check scenes, record
 // them. Each heeds the run's signal (a stop ends a step, a replay or a recording at its next step,
@@ -39,7 +40,8 @@ const listScenes = defineTool({
 
 const snapshot = defineTool({
   name: "snapshot",
-  description: "Accessibility snapshot of the live page (or of one region) and its URL.",
+  description:
+    "Accessibility snapshot of the live page (or of one region) and its URL; each element has a ref ([ref=e12]) to point at it in run_step.",
   parameters: z.object({
     within: z
       .unknown()
@@ -55,7 +57,11 @@ const runStep = defineTool({
     "Run ONE step on the live page (a steps item, or a setup/teardown action). Returns ok or why it failed.",
   parameters: z.object({
     scene: SceneId.describe("the id you'll save this scene under (its approvals are that scene's)"),
-    step: z.unknown().describe("The step, same fields as in the YAML"),
+    step: z
+      .unknown()
+      .describe(
+        "The step, same fields as in the YAML; where it takes a locator, { ref: e12 } from the last snapshot works too",
+      ),
     part: z
       .enum(["setup", "steps", "teardown"])
       .default("steps")
@@ -73,7 +79,9 @@ const runSteps = defineTool({
     scene: SceneId.describe("the id you'll save this scene under"),
     steps: z
       .union([z.array(z.unknown()).min(1).max(20), z.string().max(50_000)])
-      .describe("The steps, same fields as in the YAML (a list)"),
+      .describe(
+        "The steps, same fields as in the YAML (a list); refs of the last snapshot work too",
+      ),
     part: z.enum(["setup", "steps", "teardown"]).default("steps").describe("the part they're for"),
   }),
   run: async ({ scene, steps, part }, studio: Studio, signal) => {
@@ -82,35 +90,53 @@ const runSteps = defineTool({
     if (!Array.isArray(list) || list.length === 0 || list.length > 20) {
       return { error: "steps: a list of 1 to 20 steps" }
     }
-    const out: string[] = []
-    for (const [i, step] of list.entries()) {
-      let result: StepResult
-      try {
-        result = await studio.runStep(step, scene, signal, part)
-      } catch (error) {
-        // A stop ends the call; anything else is this step's failure, the ones before it kept.
-        if (signal.aborted) throw error
-        result = {
-          ok: false,
-          text: `failed: ${error instanceof Error ? error.message : String(error)}`,
-        }
-      }
-      out.push(`${i + 1}. ${result.text}`)
-      const left = list.length - i - 1
-      const stopped = left > 0 ? [`stopped there: the ${left} after it didn't run`] : []
-      // The first line says the outcome (the line the chat shows), then every step's.
-      // A failed step: the call fails, that step's reason first.
-      if (!result.ok) {
-        return { error: [`step ${i + 1} ${result.text}`, ...out, ...stopped].join("\n") }
-      }
-      // On another site: what follows would run there (not a failure: said, and stopped).
-      if (result.site === "other") {
-        return [`step ${i + 1} left the app's site`, ...out, ...stopped].join("\n")
-      }
+    // Every ref of the batch held now: once a step runs, Playwright may forget the snapshot's refs.
+    const pins = await studio.pin(list)
+    if ("error" in pins) return { error: `nothing ran: ${pins.error}` }
+    try {
+      return await runAll(list, scene, part, studio, signal, pins)
+    } finally {
+      await pins.release()
     }
-    return [`${list.length} ${list.length === 1 ? "step" : "steps"} ok`, ...out].join("\n")
   },
 })
+
+async function runAll(
+  list: unknown[],
+  scene: string,
+  part: ScenarioPart,
+  studio: Studio,
+  signal: AbortSignal,
+  pins: Pins,
+): Promise<string | { error: string }> {
+  const out: string[] = []
+  for (const [i, step] of list.entries()) {
+    let result: StepResult
+    try {
+      result = await studio.runStep(step, scene, signal, part, pins)
+    } catch (error) {
+      // A stop ends the call; anything else is this step's failure, the ones before it kept.
+      if (signal.aborted) throw error
+      result = {
+        ok: false,
+        text: `failed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+    out.push(`${i + 1}. ${result.text}`)
+    const left = list.length - i - 1
+    const stopped = left > 0 ? [`stopped there: the ${left} after it didn't run`] : []
+    // The first line says the outcome (the line the chat shows), then every step's.
+    // A failed step: the call fails, that step's reason first.
+    if (!result.ok) {
+      return { error: [`step ${i + 1} ${result.text}`, ...out, ...stopped].join("\n") }
+    }
+    // On another site: what follows would run there (not a failure: said, and stopped).
+    if (result.site === "other") {
+      return [`step ${i + 1} left the app's site`, ...out, ...stopped].join("\n")
+    }
+  }
+  return [`${list.length} ${list.length === 1 ? "step" : "steps"} ok`, ...out].join("\n")
+}
 
 const listSecrets = defineTool({
   name: "list_secrets",
