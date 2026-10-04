@@ -171,6 +171,12 @@ Why outside the folder: takes are **heavy**, and they're **sensitive**, since ra
 | user assets (uploaded images, imported media, logos) | previews, posters |
 | `exports/*.json` (version + take keys used) | the exported files themselves (can be re-rendered from pinned takes) |
 
+**The take store, as built (M1-8, 2026-10-04).**
+- **Pins.** A take's `pin.json` lists what holds it: `{ project, scene, by: "composition" }` (later `export` and `version` too). Saving a scene's composition pins its take and unpins the take it named before (which becomes scratch). Several projects may hold one take (a copy, a branch).
+- **Scratch eviction.** Each take has a `used` time (its recording, then every preview or export). After each recording and at the app's start, scratch takes beyond **5 GB** are deleted, least recently used first. Pinned takes never are; a failed take is only its meta.json.
+- **Removed projects.** The app keeps, in app data, the folders it has opened for each project id. A project whose every known folder is gone (its parent folder present: never an unplugged drive) for **7 days** has its takes deleted, pinned ones too, at the next start; reopening it before (moved: from its new place) keeps them. Decided by the user, 2026-10-04: a removed project's takes go.
+- **Encryption at rest.** One key for the store (32 random bytes) in the OS keychain (the vault's keyring backend, its own entry), made on first use. `frames.webm`, `events.jsonl`, `cursor.jsonl` and `shots/` are AES-256-GCM (a fresh IV per file: `magic | iv | ciphertext | tag`); `meta.json` and `pin.json` stay plain (listing and eviction need no key). The recorder writes into its private staging folder; the take is encrypted as it settles, before it counts. Readers decrypt in memory; a take from before (plain) still reads (no magic). No key, or another one: "its take didn't read: record it again". Stated gaps: plaintext exists in staging while a scene records (user-only folder; a crash's leftovers swept at start); deleting isn't a secure wipe on SSDs; a take store moved to another machine needs its key (later).
+
 **Later track (option C): the take as an object (DOM capture).** Record the DOM and its changes (rrweb-style) instead of pixels, and render frames at export: any resolution, blur by selector, lightweight. Risky with canvas, WebGL, embedded video and cross-origin iframes. A spike after v0. The model allows it (`capture.mode: "dom"`), and the renderer reads the base through one interface.
 
 ---

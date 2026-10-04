@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { CursorSample, TakeEvent, TakeMeta } from "@kiframe/schema"
+import { readTakeFile } from "./take-crypt.ts"
 
 /** The newest take format this Kiframe reads (a newer one is refused, never skipped as not a take). */
 export const TAKE_VERSION = 1
@@ -28,14 +29,16 @@ export interface TakeRecords {
 /**
  * Reads a take folder's records (meta.json, events.jsonl, cursor.jsonl), each refusal in its own
  * words: a newer Kiframe's take, a field that doesn't validate (a take from before secret regions
- * had spans: re-record it).
+ * had spans: re-record it), an encrypted take without its key.
  */
-export function readTakeRecords(dir: string): TakeRecords {
+export function readTakeRecords(dir: string, key?: Uint8Array): TakeRecords {
   const raw = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as unknown
   const newer = newerTake(raw, dir)
   if (newer !== undefined) throw newer
+  // Decrypted when the store encrypted them (a key needed: else said so).
   const lines = (file: string) =>
-    readFileSync(join(dir, file), "utf8")
+    readTakeFile(join(dir, file), key)
+      .toString("utf8")
       .split("\n")
       .filter((l) => l.trim() !== "")
       .map((l) => JSON.parse(l) as unknown)

@@ -16,9 +16,10 @@ import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
 import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
-import { KeyStore } from "./settings.ts"
+import { KeyStore, takeStoreKey } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
+import { ProjectIndex, syncPins } from "./project-index.ts"
 import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
@@ -51,12 +52,16 @@ function start(): void {
   let window: BrowserWindow | null = null
   // Tests (unpackaged builds only) keep the key in memory: CI has no keychain.
   const memory = dev && process.env.KIFRAME_TEST_KEYCHAIN === "memory"
-  const keys = new KeyStore(
-    memory ? memoryBackend() : keychainBackend(`${app.getName()} app${dev ? " (dev)" : ""}`),
-  )
+  // The app's own keychain entries: the OpenRouter key, the take store's key.
+  const appKeychain = memory
+    ? memoryBackend()
+    : keychainBackend(`${app.getName()} app${dev ? " (dev)" : ""}`)
+  const keys = new KeyStore(appKeychain)
   let error: string | null = null
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
+  /** The projects opened, by id (a removed one's takes go): app data, once ready. */
+  let projects: ProjectIndex | undefined
   let registry: Registry | undefined
   /** The app's secrets (the vault in app data, values in the keychain), once ready. */
   let secrets: Secrets | undefined
@@ -145,6 +150,13 @@ function start(): void {
   const workspace: Workspace<AgentHost> = new Workspace(
     (opened: OpenedProject) => {
       const { registry, takes } = ready()
+      // Known where it's opened from (its takes kept while it's there), its pins as it is now.
+      try {
+        projects?.seen(opened.project.id, opened.dir)
+        syncPins(opened, takes)
+      } catch {
+        // pins and the index are kept again at the next opening
+      }
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
@@ -226,7 +238,9 @@ function start(): void {
 
   void app.whenReady().then(() => {
     const data = app.getPath("userData")
-    takes = new TakeStore(join(data, "data"))
+    // Takes encrypted at rest with the app's own key (made on first use).
+    takes = new TakeStore(join(data, "data"), { key: () => takeStoreKey(appKeychain) })
+    projects = new ProjectIndex(join(data, "data"))
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -332,6 +346,11 @@ function start(): void {
       setImmediate(() => {
         try {
           takes?.sweep()
+          // Removed projects' takes, then scratch takes beyond the budget.
+          if (takes !== undefined) {
+            projects?.sweepRemoved(takes)
+            takes.evict()
+          }
         } catch (e) {
           // After the window's first read: pushed to it (not an action's result).
           error = `couldn't clean up old recordings: ${message(e)}`

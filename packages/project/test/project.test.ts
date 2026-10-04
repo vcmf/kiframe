@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import {
   existsSync,
   mkdirSync,
@@ -20,7 +21,10 @@ import {
   ProjectChangedError,
   removeScene,
   reorderScenes,
+  isEncrypted,
+  readTakeRecords,
   saveScene,
+  type StoredTake,
   TakeStore,
 } from "../src/index.ts"
 
@@ -206,7 +210,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       (e: unknown) => e,
     )
     await page.close()
-    return { dir, error, take: store.settle(dir) }
+    return { dir, error, take: await store.settle(dir) }
   }
   const newStore = () => new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")))
 
@@ -241,7 +245,9 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(left).toContain("meta.json")
     expect(statSync(store.root).mode & 0o777).toBe(0o700)
     // Only a folder the store named is settled.
-    expect(() => store.settle(join(store.root, "..", "elsewhere"))).toThrow(/not a take folder/)
+    await expect(store.settle(join(store.root, "..", "elsewhere"))).rejects.toThrow(
+      /not a take folder/,
+    )
   })
 
   it("keeps a set-aside take while it's the only copy, and refuses a newer Kiframe's take", async () => {
@@ -277,5 +283,70 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       [basename(kept.dir), `${name}.failed`, "notes.txt"].sort(),
     )
     expect(readdirSync(join(scene, `${name}.failed`))).toEqual(["meta.json"])
+  })
+
+  it("encrypts a take as it settles: opened with the store's key, never readable without", async () => {
+    const key = randomBytes(32)
+    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.resolve(key),
+    })
+    const { take } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    for (const file of ["frames.webm", "events.jsonl", "cursor.jsonl"]) {
+      expect(isEncrypted(readFileSync(join(take.dir, file))), file).toBe(true)
+    }
+    // Listing needs no key (meta.json stays plain).
+    expect(store.latest("p1", "login")?.meta.takeKey).toBe(take.meta.takeKey)
+    const opened = await store.open(take)
+    expect(opened.records.events.length).toBeGreaterThan(0)
+    expect(opened.video.subarray(0, 4).toString("hex")).toBe("1a45dfa3") // a WebM (EBML) header
+    // Without the key, or with another one: said, never wrong bytes.
+    expect(() => readTakeRecords(take.dir)).toThrow(/encrypted: no take key/)
+    const other = new TakeStore(store.root, { key: () => Promise.resolve(randomBytes(32)) })
+    await expect(other.open(take)).rejects.toThrow(/don't open with this computer's take key/)
+    // A take from before (plain) opens with a store that has a key.
+    const plainStore = newStore()
+    const old = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (old.take === undefined) throw new Error("no take")
+    const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(key) })
+    expect((await keyed.open(old.take)).video.length).toBeGreaterThan(0)
+  })
+
+  it("keeps the takes compositions hold, and evicts scratch ones beyond the budget, least used first", async () => {
+    const store = newStore()
+    const takes = []
+    for (const id of ["a", "b", "c"]) {
+      const { take } = await record(store, "login", `  - { id: ${id}, action: pause, ms: 50 }\n`)
+      if (take === undefined) throw new Error("no take")
+      takes.push(take)
+    }
+    const [a, b, c] = takes as [StoredTake, StoredTake, StoredTake]
+    // The scene's composition holds c; the one before (b) is let go when it moves to c.
+    store.holdOnly("p1", "login", b.meta.takeKey)
+    store.holdOnly("p1", "login", c.meta.takeKey)
+    expect(existsSync(join(b.dir, "pin.json"))).toBe(false)
+    expect(JSON.parse(readFileSync(join(c.dir, "pin.json"), "utf8"))).toEqual({
+      holders: [{ project: "p1", scene: "login", by: "composition" }],
+    })
+    // a played more recently than b: b goes first.
+    writeFileSync(join(a.dir, "used"), String(Date.now()))
+    writeFileSync(join(b.dir, "used"), String(Date.now() - 60_000))
+    // A folder's size as the store counts it (its files, shots/ included).
+    const size = (dir: string): number =>
+      readdirSync(dir, { withFileTypes: true }).reduce(
+        (sum, e) =>
+          sum + (e.isDirectory() ? size(join(dir, e.name)) : statSync(join(dir, e.name)).size),
+        0,
+      )
+    const budgeted = new TakeStore(store.root, { scratchBudget: size(a.dir) + 1 })
+    expect(budgeted.evict()).toEqual([b.dir])
+    expect(existsSync(a.dir) && existsSync(c.dir)).toBe(true)
+    // Nothing left to go within budget; the pinned take never goes, even past it.
+    const none = new TakeStore(store.root, { scratchBudget: 0 })
+    expect(none.evict()).toEqual([a.dir])
+    expect(existsSync(c.dir)).toBe(true)
+    // A project removed: every take of it, pinned too.
+    store.removeProject("p1")
+    expect(existsSync(join(store.root, "takes", "p1"))).toBe(false)
   })
 })

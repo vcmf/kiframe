@@ -642,9 +642,9 @@ export class Studio {
     } finally {
       await context.close().catch(() => undefined)
     }
-    let take: ReturnType<TakeStore["settle"]>
+    let take: Awaited<ReturnType<TakeStore["settle"]>>
     try {
-      take = takes.settle(dir)
+      take = await takes.settle(dir)
     } catch (error) {
       if (stopped !== undefined) throw stopped
       return failed(`recording failed: ${why ?? failure(error)}`)
@@ -664,6 +664,13 @@ export class Studio {
       return failed(
         `recorded, but its composition wasn't saved (the take was kept): ${String(error)}`,
       )
+    }
+    // The new take is the scene's (pinned); the one before is scratch, evicted beyond the budget.
+    try {
+      takes.holdOnly(this.project.project.id, sceneId, take.meta.takeKey)
+      takes.evict()
+    } catch {
+      // The pins are synced again when the project opens; the budget at the next recording.
     }
     const { warnings } = made
     const notes = [...recorded.warnings, ...warnings]

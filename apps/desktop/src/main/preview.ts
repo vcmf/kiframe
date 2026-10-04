@@ -1,9 +1,7 @@
 // A scene's preview: its composition, its scenario and the take the composition was made from,
 // for the window's player. Only a take of the scene as it is now plays (a scenario changed since
 // filming is said so, never played as the new one). Electron-free.
-import { readFile } from "node:fs/promises"
-import { join } from "node:path"
-import { type OpenedProject, readTakeRecords, type TakeStore } from "@kiframe/project"
+import type { OpenedProject, TakeStore } from "@kiframe/project"
 import { scenarioHashOf } from "@kiframe/runtime"
 import { resolveFormat, resolveStyle, scenesOf } from "@kiframe/schema"
 import type { Preview } from "../shared/ipc.ts"
@@ -44,12 +42,10 @@ export async function previewOf(
   const output = opened.project.outputs.find(
     (o) => o.kind === "video" && scenesOf(opened.project, o).includes(sceneId),
   )
-  let records: ReturnType<typeof readTakeRecords>
-  let video: Uint8Array
+  let loaded: Awaited<ReturnType<TakeStore["open"]>>
   try {
-    records = readTakeRecords(take.dir)
-    // Read without holding main's thread (a take is tens of MB).
-    video = await readFile(join(take.dir, "frames.webm"))
+    // Decrypted in memory (the store's key), and marked played (the last to be evicted).
+    loaded = await takes.open(take)
   } catch (error) {
     return { ok: false, why: `Its take didn’t read: ${message(error)}` }
   }
@@ -59,8 +55,8 @@ export async function previewOf(
     title: stored.scene.title,
     composition,
     scenario,
-    take: records,
-    video,
+    take: loaded.records,
+    video: loaded.video,
     // As the export resolves it: project (no org settings in the app yet), scene, the output.
     style: resolveStyle(undefined, opened.project, composition.style, output),
     // No output plays it (a draft, or none yet): the size an output is by default.

@@ -96,6 +96,14 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
 
+## Take store (M1-8)
+- **Plaintext while recording:** the recorder writes frames, events and cursor plain into its staging folder (in the user-only store); the take is encrypted as it settles. A crash leaves them plain until the next start's sweep. Encrypting as the recorder writes would close it (the recorder taking a writer from the store).
+- **Deleting isn't wiping:** an evicted or removed take's bytes may stay on an SSD (encrypted, apart from the gap above). With the key per store, forgetting the key forgets every take at once (a "delete all recordings" later).
+- **Another machine:** takes don't move without their key (in this machine's keychain). An export of the key, or a store moved with it, later.
+- **Pins after a branch switch:** pins are synced with a project's compositions when it opens; a branch switched while the app was closed can leave the new branch's take unpinned until then, and the start's eviction (only beyond the budget) could take it ("its take is gone: record the scene again", the honest contract).
+- **Exporter CLI:** reads plain takes only; an encrypted one is refused ("no take key here"). Exporting from the app (M3-3) decrypts in main.
+- **Not yet:** the storage view (pinned and scratch sizes, "Free up space", deleting a pinned take with a warning: M4-6), export and version pins (M3-3, M1-10).
+
 ## Preview (S4)
 - **The take over IPC:** a preview reads frames.webm (async) and sends it to the window whole (tens of MB, cloned once). Stream it from the app's protocol instead (a range-capable URL for Mediabunny's `UrlSource`), with the project and take checked per request.
 - **A slow machine:** Mediabunny asks for frame times ahead (up to the next keyframe) and inter-frame video decodes every frame between keyframes, so a machine that can't decode in real time skips late frames (one drawn at least every 100 ms: never frozen) and can fall behind the clock. A lower-resolution proxy of the take, or a decode in a worker, would fix it.

@@ -2,22 +2,28 @@ import { randomBytes } from "node:crypto"
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
+  writeFileSync,
 } from "node:fs"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
-import { newerTake } from "./take-records.ts"
+import { encryptFile, readTakeFile } from "./take-crypt.ts"
+import { newerTake, readTakeRecords, type TakeRecords } from "./take-records.ts"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
 // project folder (they're heavy, and raw frames aren't blurred). The whole store is the user's only
-// (its root 0700: nothing inside is reachable by others, whatever a folder's own mode). Encryption
-// at rest, pinning, retention and staleness come with M1-8.
+// (its root 0700: nothing inside is reachable by others, whatever a folder's own mode). With a key
+// (M1-8), a take's files are encrypted as it settles; pinned takes (a composition names them) are
+// kept, scratch ones evicted beyond a budget, least recently used first.
 //   <root>/takes/<projectId>/<sceneId>/take-<time>-<id>/  frames.webm events.jsonl meta.json …
+//     pin.json (what holds it), used (when it was last played)
 // The store only names the folders: the runtime's recorder writes each take into its folder
 // atomically (staged next to it, swapped in when complete; a failed one kept as `<folder>.failed`,
 // whose frames the store deletes, keeping its meta.json: the reason it failed). Takes are never
@@ -30,6 +36,32 @@ export interface StoredTake {
   meta: TakeMeta
 }
 
+/** A take's records and its frames, decrypted. */
+export interface OpenedTake {
+  records: TakeRecords
+  video: Buffer
+}
+
+/** What holds a take (a pin): a scene's composition; later an export, a named version. */
+export interface Holder {
+  project: string
+  scene: string
+  by: "composition"
+}
+
+export interface TakeStoreOptions {
+  /** The store's key (32 bytes), asked for once when first needed; none: takes stay plain. */
+  key?: () => Promise<Uint8Array>
+  /** Bytes scratch takes may use before the least recently used go (default 5 GB). */
+  scratchBudget?: number
+}
+
+/** Scratch takes' default budget (decided by the user, 2026-10-04). */
+export const SCRATCH_BUDGET = 5 * 1024 ** 3
+
+/** A take's files the store encrypts (meta.json and pin.json stay plain: listing needs no key). */
+const SEALED = ["frames.webm", "events.jsonl", "cursor.jsonl"]
+
 /** A take folder's name (and, unanchored, the take a leftover's name was made for). */
 const TAKE_NAME = "take-\\d{13}-[0-9a-f]{12}"
 const TAKE_DIR = new RegExp(`^${TAKE_NAME}$`)
@@ -37,9 +69,23 @@ const LEFTOVER_OF = new RegExp(`^\\.?(${TAKE_NAME})`)
 
 export class TakeStore {
   readonly root: string
+  readonly #options: TakeStoreOptions
+  #key: Promise<Uint8Array> | undefined
 
-  constructor(root: string) {
+  constructor(root: string, options: TakeStoreOptions = {}) {
     this.root = root
+    this.#options = options
+  }
+
+  /** The key, asked for once (a failed ask is asked again next time); none: plain takes. */
+  async #theKey(): Promise<Uint8Array | undefined> {
+    const ask = this.#options.key
+    if (ask === undefined) return undefined
+    this.#key ??= ask().catch((error: unknown) => {
+      this.#key = undefined
+      throw error
+    })
+    return this.#key
   }
 
   #sceneDir(projectId: string, sceneId: string): string {
@@ -64,7 +110,7 @@ export class TakeStore {
    * was in place, then shown as a warning). A failed take's frames are deleted (best effort: the
    * start's sweep catches a leftover); its meta.json stays, with the reason.
    */
-  settle(dir: string): StoredTake | undefined {
+  async settle(dir: string): Promise<StoredTake | undefined> {
     // Real paths on both sides (the recorder follows links: a store behind one, macOS's /var).
     const real = (p: string) =>
       existsSync(p) ? realpathSync(p) : join(realpathSync(dirname(p)), basename(p))
@@ -76,7 +122,76 @@ export class TakeStore {
     dropFrames(`${dir}.failed`)
     const take = readTake(dir)
     if (take instanceof Error) throw take
+    if (take === undefined) return undefined
+    // Encrypted before it counts (a crash first: its files read either way, one at a time).
+    const key = await this.#theKey()
+    if (key !== undefined) {
+      for (const file of sealed(dir)) encryptFile(file, key)
+    }
+    markUsed(dir)
     return take
+  }
+
+  /** A take's records and frames, decrypted (a key needed for an encrypted one). Marks it used. */
+  async open(take: StoredTake): Promise<OpenedTake> {
+    const key = await this.#theKey()
+    const records = readTakeRecords(take.dir, key)
+    const video = readTakeFile(join(take.dir, "frames.webm"), key)
+    markUsed(take.dir)
+    return { records, video }
+  }
+
+  /**
+   * The scene's composition holds this take (or none): the scene's other takes are let go by it
+   * (scratch, unless something else holds them).
+   */
+  holdOnly(projectId: string, sceneId: string, takeKey: string | undefined): void {
+    const holder: Holder = { project: projectId, scene: sceneId, by: "composition" }
+    const same = (h: Holder) =>
+      h.project === holder.project && h.scene === holder.scene && h.by === holder.by
+    for (const take of this.#takes(projectId, sceneId, false)) {
+      const holders = pinsOf(take.dir).filter((h) => !same(h))
+      if (take.meta.takeKey === takeKey) holders.push(holder)
+      writePins(take.dir, holders)
+    }
+  }
+
+  /**
+   * Deletes scratch takes (held by nothing) beyond the budget, least recently used first; pinned
+   * takes never. The folders deleted.
+   */
+  evict(): string[] {
+    const budget = this.#options.scratchBudget ?? SCRATCH_BUDGET
+    const scratch: { dir: string; used: number; size: number }[] = []
+    const takes = join(this.root, "takes")
+    for (const project of list(takes)) {
+      for (const scene of list(join(takes, project))) {
+        for (const name of list(join(takes, project, scene))) {
+          if (!TAKE_DIR.test(name)) continue
+          const dir = join(takes, project, scene, name)
+          if (pinsOf(dir).length > 0) continue
+          scratch.push({ dir, used: usedAt(dir), size: sizeOf(dir) })
+        }
+      }
+    }
+    let total = scratch.reduce((sum, t) => sum + t.size, 0)
+    const gone: string[] = []
+    for (const take of scratch.sort((a, b) => a.used - b.used)) {
+      if (total <= budget) break
+      try {
+        rmSync(take.dir, { recursive: true, force: true })
+        total -= take.size
+        gone.push(take.dir)
+      } catch {
+        // held: evicted next time
+      }
+    }
+    return gone
+  }
+
+  /** Deletes every take of a project (removed: decided by the host), pinned ones too. */
+  removeProject(projectId: string): void {
+    rmSync(join(this.root, "takes", ProjectId.parse(projectId)), { recursive: true, force: true })
   }
 
   /** The scene's complete takes, newest first (by when they were recorded; unreadable ones skipped). */
@@ -150,6 +265,74 @@ export class TakeStore {
       }
     }
   }
+}
+
+/** A take's files the store seals: its frames, events, cursor, and shots (those that are there). */
+function sealed(dir: string): string[] {
+  const files = SEALED.map((f) => join(dir, f)).filter((f) => existsSync(f))
+  const shots = join(dir, "shots")
+  return [...files, ...list(shots).map((f) => join(shots, f))]
+}
+
+/** What holds a take (none: scratch). A pin.json that doesn't read holds it (never evicted by doubt). */
+function pinsOf(dir: string): Holder[] {
+  const file = join(dir, "pin.json")
+  if (!existsSync(file)) return []
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { holders?: Holder[] }
+    return Array.isArray(parsed.holders) ? parsed.holders : []
+  } catch {
+    return [{ project: "?", scene: "?", by: "composition" }]
+  }
+}
+
+function writePins(dir: string, holders: Holder[]): void {
+  const file = join(dir, "pin.json")
+  if (holders.length === 0) {
+    rmSync(file, { force: true })
+    return
+  }
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, `${JSON.stringify({ holders }, null, 2)}\n`, { mode: 0o600 })
+  renameSync(tmp, file)
+}
+
+/** When a take was last played (or recorded): its `used` file, else its folder's time. */
+function usedAt(dir: string): number {
+  try {
+    const at = Number(readFileSync(join(dir, "used"), "utf8"))
+    if (Number.isFinite(at) && at > 0) return at
+  } catch {
+    // none yet
+  }
+  try {
+    return lstatSync(dir).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+function markUsed(dir: string): void {
+  try {
+    writeFileSync(join(dir, "used"), String(Date.now()), { mode: 0o600 })
+  } catch {
+    // best effort: an older time only makes it go sooner
+  }
+}
+
+/** A folder's size in bytes (its files, links not followed). */
+function sizeOf(dir: string): number {
+  let size = 0
+  for (const name of list(dir)) {
+    const path = join(dir, name)
+    try {
+      const st = lstatSync(path)
+      size += st.isDirectory() ? sizeOf(path) : st.size
+    } catch {
+      // gone meanwhile
+    }
+  }
+  return size
 }
 
 /** A failed take's raw material (frames, shots), keeping its meta.json and warnings. */

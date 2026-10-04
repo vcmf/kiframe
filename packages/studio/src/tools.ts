@@ -209,8 +209,14 @@ const saveSceneTool = defineTool({
       title,
       ...(notes !== undefined && { notes }),
     }
-    // A new scenario: its old composition (of another take) goes; record the scene again.
+    // A new scenario: its old composition (of another take) goes; record the scene again. Its take
+    // is the scene's no longer (scratch).
     saveScene(studio.project, scene, { scenario: checked.scenario, composition: null })
+    try {
+      studio.options.takes.holdOnly(studio.project.project.id, id, undefined)
+    } catch {
+      // synced again when the project opens
+    }
     return "saved: the replay passed. Record it with record_scene."
   },
 })

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
@@ -144,7 +144,25 @@ describe("studio tools", () => {
     expect(reopened.scenes.get("tour")?.composition?.take?.key).toBe(
       studio.options.takes.latest("p1", "tour")?.meta.takeKey,
     )
-  }, 60_000)
+    // Its take is pinned (the composition holds it); recorded again, the pin moves to the new one.
+    const pinned = (take: { dir: string } | undefined) =>
+      take !== undefined && existsSync(join(take.dir, "pin.json"))
+    const first = studio.options.takes.latest("p1", "tour")
+    expect(pinned(first)).toBe(true)
+    expect(await tool("record_scene").run({ id: "tour" }, studio, never)).toMatch(/^recorded/)
+    const second = studio.options.takes.latest("p1", "tour")
+    expect(second?.dir).not.toBe(first?.dir)
+    expect([pinned(first), pinned(second)]).toEqual([false, true])
+    // A new scenario saved: the scene's take is let go (scratch) until it's filmed again.
+    expect(
+      await tool("save_scene").run(
+        { id: "tour", title: "Tour", yaml: SCENE.replace("Open your projects", "Your projects") },
+        studio,
+        never,
+      ),
+    ).toMatch(/^saved/)
+    expect(pinned(second)).toBe(false)
+  }, 90_000)
 
   it("asks the user, and a question the stop closes ends the call aborted", async () => {
     const { studio, asked } = makeStudio(
