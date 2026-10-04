@@ -90,6 +90,11 @@ export interface StudioOptions {
    * them from everything the agent reads, and recordings blur them on screen.
    */
   knownValues?: () => ReadonlySet<string>
+  /**
+   * After a scene is recorded (its composition saved): the host's take bookkeeping (eviction).
+   * None: nothing is ever evicted (tests, a CLI that knows one project only).
+   */
+  afterRecord?: () => void
 }
 
 /** How long a step may take on a real app (Cal.com's login hydrates in more than 6 s). */
@@ -668,6 +673,7 @@ export class Studio {
         `recorded, but its composition wasn't saved (the take was kept): ${String(error)}`,
       )
     }
+    this.options.afterRecord?.()
     const { warnings } = made
     const notes = [
       ...recorded.warnings,

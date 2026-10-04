@@ -128,14 +128,19 @@ export function createProject(dir: string, init: NewProject): OpenedProject {
  * that doesn't read, a folder the sequence names but that's missing, or one outside the sequence
  * is reported in `problems`; the rest still opens (a scene's other parts included).
  */
-export function openProject(dir: string): OpenedProject {
+/**
+ * `tidy: false`: read only (a folder the app reads for its own bookkeeping, never opened by the
+ * user: no stray temporary file of another process removed).
+ */
+export function openProject(dir: string, options: { tidy?: boolean } = {}): OpenedProject {
+  const tidy = options.tidy ?? true
   const disk = new Map<string, string>()
   // A project first: a folder that isn't one (picked by mistake) is never touched.
   const text = readKnown(dir, disk, PROJECT_FILE)
   if (text === undefined)
     throw new Error(`${dir} isn't a Kiframe project (it has no ${PROJECT_FILE})`)
   const project = parseProjectJson(text)
-  removeStrayTemps(dir)
+  if (tidy) removeStrayTemps(dir)
   const scenes = new Map<string, StoredScene>()
   const problems: SceneProblem[] = []
   const root = join(dir, "scenes")
@@ -145,7 +150,7 @@ export function openProject(dir: string): OpenedProject {
         .map((e) => e.name)
     : []
   for (const id of ids) {
-    removeStrayTemps(join(root, id))
+    if (tidy) removeStrayTemps(join(root, id))
     const stored = readScene(dir, disk, id, problems)
     if (stored !== undefined) scenes.set(id, stored)
     if (!project.sequence.includes(id)) {

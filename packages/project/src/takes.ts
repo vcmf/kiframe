@@ -5,7 +5,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  lstatSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs"
@@ -47,7 +49,24 @@ export interface OpenedTake {
 export interface TakeStoreOptions {
   /** The store's key (32 bytes), asked for once when first needed; none: takes stay plain. */
   key?: () => Promise<Uint8Array>
+  /** Bytes scratch takes may use before the least recently used go (default 5 GB). */
+  scratchBudget?: number
 }
+
+/** Scratch takes' default budget (decided by the user, 2026-10-04). */
+export const SCRATCH_BUDGET = 5 * 1024 ** 3
+
+/** A take recorded or played this recently is never evicted (its scene may not name it yet). */
+export const EVICTION_GRACE_MS = 24 * 60 * 60 * 1000
+
+/**
+ * What a project's folders name now, for eviction: per scene, the take keys its compositions name
+ * (every known folder of the project, read), and the scenes that didn't read (their takes kept).
+ * "keep": the project can't be read whole now (a folder missing, unplugged, unknown): every take
+ * of it kept.
+ */
+export type NamedTakes =
+  { scenes: ReadonlyMap<string, ReadonlySet<string>>; unread: ReadonlySet<string> } | "keep"
 
 /** Written once every file of a take is encrypted: then a file without the magic was changed. */
 const SEALED_MARK = ".sealed"
@@ -66,6 +85,8 @@ export class TakeStore {
   #key: Promise<Uint8Array> | undefined
   /** The store's writes one at a time (a take settling, a take sealed at start: never both). */
   #lock: Promise<unknown> = Promise.resolve()
+  /** Take folders' sizes, once measured (a take doesn't grow: its `used` and marks are bytes). */
+  readonly #sizes = new Map<string, number>()
 
   constructor(root: string, options: TakeStoreOptions = {}) {
     this.root = root
@@ -218,7 +239,112 @@ export class TakeStore {
         bound: `${take.meta.takeKey}/frames.webm`,
       }),
     ])
+    // Played: the last to be evicted (least recently used first).
+    markUsed(take.dir)
     return { records, video }
+  }
+
+  /**
+   * Deletes scratch takes beyond the budget, least recently used first. Scratch: a complete take
+   * no composition names, by what `namedBy` reads of its project's folders now (asked outside the
+   * store's lock); never one of a project to keep, of a scene that didn't read, whose meta doesn't
+   * read, the newest of its scene, or recorded or played within the grace. Nothing is read while
+   * the whole store is under the budget. Under the lock, each is checked again (still there, not
+   * played since) and moved aside before it's deleted (a deletion cut short never leaves what
+   * looks like a take). The folders deleted.
+   */
+  async evict(
+    namedBy: (projectId: string) => Promise<NamedTakes>,
+    now = Date.now(),
+  ): Promise<string[]> {
+    const budget = this.#options.scratchBudget ?? SCRATCH_BUDGET
+    const takes = join(this.root, "takes")
+    const all: {
+      project: string
+      scene: string
+      take: StoredTake | undefined
+      dir: string
+      used: number
+    }[] = []
+    for (const project of list(takes).filter((p) => !p.startsWith("."))) {
+      for (const scene of list(join(takes, project)).filter((s) => !s.startsWith("."))) {
+        for (const name of list(join(takes, project, scene))) {
+          if (!TAKE_DIR.test(name)) continue
+          const dir = join(takes, project, scene, name)
+          const read = readTake(dir)
+          const take = read instanceof Error ? undefined : read
+          // When it was last played, as the eviction starts (a play after it keeps the take).
+          all.push({ project, scene, dir, take, used: take === undefined ? 0 : usedAt(dir, take) })
+        }
+      }
+    }
+    const sizeOfTake = (dir: string) => {
+      let size = this.#sizes.get(dir)
+      if (size === undefined) {
+        size = sizeOf(dir)
+        this.#sizes.set(dir, size)
+      }
+      return size
+    }
+    // Under the budget as a whole: no scratch beyond it, nothing to read.
+    if (all.reduce((sum, t) => sum + sizeOfTake(t.dir), 0) <= budget) return []
+    const decisions = new Map<string, NamedTakes>()
+    for (const project of new Set(all.map((t) => t.project))) {
+      decisions.set(project, await namedBy(project).catch((): NamedTakes => "keep"))
+    }
+    const newest = new Map<string, number>()
+    for (const t of all) {
+      if (t.take === undefined) continue
+      const key = `${t.project}/${t.scene}`
+      newest.set(key, Math.max(newest.get(key) ?? 0, Date.parse(t.take.meta.recordedAt)))
+    }
+    let scratch = 0
+    const candidates: { dir: string; used: number; size: number }[] = []
+    for (const t of all) {
+      const named = decisions.get(t.project) ?? "keep"
+      // Kept on any doubt: the project, the scene, the take's own meta.
+      if (named === "keep" || t.take === undefined || named.unread.has(t.scene)) continue
+      if (named.scenes.get(t.scene)?.has(t.take.meta.takeKey) === true) continue
+      const size = sizeOfTake(t.dir)
+      scratch += size
+      const { used } = t
+      const recorded = Date.parse(t.take.meta.recordedAt)
+      if (now - used < EVICTION_GRACE_MS) continue
+      if (newest.get(`${t.project}/${t.scene}`) === recorded) continue
+      candidates.push({ dir: t.dir, used, size })
+    }
+    const gone: string[] = []
+    if (scratch <= budget) return gone
+    await this.#exclusive(() => {
+      for (const c of candidates.sort((a, b) => a.used - b.used)) {
+        if (scratch <= budget) break
+        // As it was read: still there, and not played since (a preview meanwhile keeps it).
+        const take = readTake(c.dir)
+        if (take === undefined || take instanceof Error || usedAt(c.dir, take) !== c.used) continue
+        if (removeAside(c.dir, `.evict-${basename(c.dir)}`)) {
+          this.#sizes.delete(c.dir)
+          scratch -= c.size
+          gone.push(c.dir)
+        }
+      }
+      return Promise.resolve()
+    })
+    return gone
+  }
+
+  /**
+   * Deletes every take of a project (removed: the host decided), pinned or not, under the store's
+   * lock; `stillRemoved` asked there first (a copy of it opened meanwhile keeps them). Moved aside
+   * before it's deleted. Whether it was.
+   */
+  async removeProject(projectId: string, stillRemoved: () => boolean): Promise<boolean> {
+    const dir = join(this.root, "takes", ProjectId.parse(projectId))
+    return this.#exclusive(() => {
+      if (!stillRemoved()) return Promise.resolve(false)
+      // No take of it: nothing to delete, removed all the same.
+      if (!existsSync(dir)) return Promise.resolve(true)
+      return Promise.resolve(removeAside(dir, `.removed-${basename(dir)}-${Date.now()}`))
+    })
   }
 
   /** The scene's complete takes, newest first (by when they were recorded; unreadable ones skipped). */
@@ -268,9 +394,14 @@ export class TakeStore {
   sweep(): void {
     const takes = join(this.root, "takes")
     if (!existsSync(takes)) return
-    for (const project of list(takes)) {
+    // What an eviction or a removal cut short left aside: deleted now.
+    for (const name of list(takes).filter((n) => /^\.removed-/.test(n))) {
+      rmQuietly(join(takes, name))
+    }
+    for (const project of list(takes).filter((p) => !p.startsWith("."))) {
       for (const scene of list(join(takes, project))) {
         const at = join(takes, project, scene)
+        for (const name of list(at).filter((n) => /^\.evict-/.test(n))) rmQuietly(join(at, name))
         // What the recorder left next to a take folder of ours (the name it was made for).
         const names = list(at)
         const leftovers = names.filter((n) => {
@@ -376,4 +507,61 @@ async function sealTake(
   }
   writeFileSync(join(dir, SEALED_MARK), "", { mode: 0o600 })
   return changed
+}
+
+/** When a take was last played, else when it was recorded (never a folder's time). */
+function usedAt(dir: string, take: StoredTake): number {
+  try {
+    const at = Number(readFileSync(join(dir, "used"), "utf8"))
+    if (Number.isFinite(at) && at > 0) return at
+  } catch {
+    // never played
+  }
+  return Date.parse(take.meta.recordedAt)
+}
+
+function markUsed(dir: string): void {
+  try {
+    writeFileSync(join(dir, "used"), String(Date.now()), { mode: 0o600 })
+  } catch {
+    // best effort: an older time only makes it go sooner
+  }
+}
+
+/** A folder's size in bytes (its files, links not followed). */
+function sizeOf(dir: string): number {
+  let size = 0
+  for (const name of list(dir)) {
+    const path = join(dir, name)
+    try {
+      const st = lstatSync(path)
+      size += st.isDirectory() ? sizeOf(path) : st.size
+    } catch {
+      // gone meanwhile
+    }
+  }
+  return size
+}
+
+/**
+ * Moves a folder aside (a name `sweep` knows), then deletes it: a deletion cut short leaves the
+ * aside name, never what looks like a take. Whether it went aside.
+ */
+function removeAside(dir: string, aside: string): boolean {
+  const to = join(dirname(dir), aside)
+  try {
+    renameSync(dir, to)
+  } catch {
+    return false
+  }
+  rmQuietly(to)
+  return true
+}
+
+function rmQuietly(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true })
+  } catch {
+    // held: deleted at the next start's sweep
+  }
 }

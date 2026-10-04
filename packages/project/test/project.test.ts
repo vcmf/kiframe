@@ -26,6 +26,7 @@ import {
   isEncrypted,
   readTakeRecords,
   saveScene,
+  type StoredTake,
   TakeStore,
 } from "../src/index.ts"
 
@@ -431,5 +432,90 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(isEncrypted(readFileSync(join(dir, "frames.webm")))).toBe(false)
     expect(await store.seal()).toEqual({ sealed: 1, failed: [] })
     expect(isEncrypted(readFileSync(join(dir, "frames.webm")))).toBe(true)
+  })
+
+  describe("eviction", () => {
+    const DAY = 24 * 60 * 60 * 1000
+    const later = Date.now() + 10 * DAY // past every take's grace
+    const named = (scenes: Record<string, string[]>, unread: string[] = []) => ({
+      scenes: new Map(Object.entries(scenes).map(([k, v]) => [k, new Set(v)])),
+      unread: new Set(unread),
+    })
+    const recordThree = async (store: TakeStore) => {
+      const out: StoredTake[] = []
+      for (const id of ["a", "b", "c"]) {
+        const { take } = await record(store, "login", `  - { id: ${id}, action: pause, ms: 50 }\n`)
+        if (take === undefined) throw new Error("no take")
+        out.push(take)
+      }
+      return out as [StoredTake, StoredTake, StoredTake]
+    }
+
+    it("reads nothing while the whole store is under the budget", async () => {
+      const store = newStore()
+      await recordThree(store)
+      let asked = 0
+      const roomy = new TakeStore(store.root, { scratchBudget: 10 ** 12 })
+      expect(await roomy.evict(() => (asked++, Promise.resolve("keep" as const)), later)).toEqual(
+        [],
+      )
+      expect(asked).toBe(0)
+    })
+
+    it("evicts scratch least recently played first; never the named, the newest, the recent, an unread scene's or a kept project's", async () => {
+      const store = newStore()
+      const [a, b, c] = await recordThree(store)
+      writeFileSync(join(a.dir, "used"), String(later - 3 * DAY))
+      writeFileSync(join(b.dir, "used"), String(later - 5 * DAY))
+      const tight = new TakeStore(store.root, { scratchBudget: 0 })
+      // A kept project (a folder that can't be read now): nothing goes.
+      expect(await tight.evict(() => Promise.resolve("keep"), later)).toEqual([])
+      // Its scene didn't read: nothing of it goes.
+      expect(await tight.evict(() => Promise.resolve(named({}, ["login"])), later)).toEqual([])
+      // Within the grace (recorded or played a moment ago): kept.
+      expect(await tight.evict(() => Promise.resolve(named({})), Date.now())).toEqual([])
+      // a named; c the newest of its scene: only b goes.
+      expect(
+        await tight.evict(() => Promise.resolve(named({ login: [a.meta.takeKey] })), later),
+      ).toEqual([b.dir])
+      expect(existsSync(a.dir) && existsSync(c.dir)).toBe(true)
+      // Unnamed, a goes next (least recently played among what's left); c, the newest, never.
+      expect(await tight.evict(() => Promise.resolve(named({})), later)).toEqual([a.dir])
+      expect(existsSync(c.dir)).toBe(true)
+    })
+
+    it("keeps a take played while the eviction decided, and finishes a deletion cut short", async () => {
+      const store = newStore()
+      const [a] = await recordThree(store)
+      const tight = new TakeStore(store.root, { scratchBudget: 0 })
+      // Played between the read and the deletion (a preview meanwhile): kept.
+      const gone = await tight.evict(() => {
+        writeFileSync(join(a.dir, "used"), String(Date.now()))
+        return Promise.resolve(named({}))
+      }, later)
+      expect(gone).not.toContain(a.dir)
+      expect(existsSync(a.dir)).toBe(true)
+      // A deletion cut short leaves the aside name, never a take: the next sweep deletes it.
+      const scene = join(store.root, "takes", "p1", "login")
+      mkdirSync(join(scene, ".evict-take-1790000000000-0123456789ab"))
+      writeFileSync(join(scene, ".evict-take-1790000000000-0123456789ab", "meta.json"), "{}")
+      store.sweep()
+      expect(existsSync(join(scene, ".evict-take-1790000000000-0123456789ab"))).toBe(false)
+    })
+
+    it("removes a project's takes only while it's still removed, moved aside first", async () => {
+      const store = newStore()
+      await recordThree(store)
+      const dir = join(store.root, "takes", "p1")
+      expect(await store.removeProject("p1", () => false)).toBe(false)
+      expect(existsSync(dir)).toBe(true)
+      expect(await store.removeProject("p1", () => true)).toBe(true)
+      expect(existsSync(dir)).toBe(false)
+      expect(
+        readdirSync(join(store.root, "takes")).filter((n) => n.startsWith(".removed-")),
+      ).toEqual([])
+      // No take of it: removed all the same.
+      expect(await store.removeProject("p1", () => true)).toBe(true)
+    })
   })
 })
