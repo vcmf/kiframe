@@ -80,7 +80,7 @@ export class Workspace<A extends Agent> {
       try {
         await old?.close()
       } finally {
-        if (agent === undefined) closed?.()
+        closed?.()
       }
     })
     // The chain goes on after a failure (the next switch isn't blocked by this one's error).

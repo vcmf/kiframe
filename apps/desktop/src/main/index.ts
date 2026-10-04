@@ -276,9 +276,11 @@ function start(): void {
     if (cleanup === "running") return
     cleanup = "running"
     const work = (async () => {
-      await workspace.close().catch(() => undefined)
-      folders.close()
+      // The browser let go within the close, as for project:close (an open in flight never comes
+      // between); a close refused still lets it go: the app is quitting.
+      await workspace.close(dropBrowser).catch(() => undefined)
       dropBrowser()
+      folders.close()
       await Promise.all(closing)
     })()
     void Promise.race([work, new Promise((r) => setTimeout(r, QUIT_WAIT_MS))]).then(() => {

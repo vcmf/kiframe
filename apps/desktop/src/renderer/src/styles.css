@@ -34,8 +34,10 @@ body,
   margin: 0;
 }
 
-/* Nothing but a scroller scrolls: clipped, the window's root can't be moved by code
-   (scrollIntoView, a focus) and push the title bar out of view. */
+/* Nothing but a scroller scrolls. Body and .app are clipped (not scroll containers), and nothing
+   overflows the window, so code (scrollIntoView, a focus) has nothing to scroll the root by and
+   can't push the title bar out of view. (On html, clip reaches the viewport as hidden: what keeps
+   the root still is that nothing overflows it.) */
 html,
 body {
   overflow: clip;
