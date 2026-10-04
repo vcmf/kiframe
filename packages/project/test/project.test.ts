@@ -302,7 +302,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(opened.records.events.length).toBeGreaterThan(0)
     expect(opened.video.subarray(0, 4).toString("hex")).toBe("1a45dfa3") // a WebM (EBML) header
     // Without the key, or with another one: said, never wrong bytes.
-    expect(() => readTakeRecords(take.dir)).toThrow(/encrypted: no take key/)
+    expect(() => readTakeRecords(take.dir)).toThrow(/the take is encrypted: export it from the app/)
     const other = new TakeStore(store.root, { key: () => Promise.resolve(randomBytes(32)) })
     await expect(other.open(take)).rejects.toThrow(/don't open with this computer's take key/)
     // A take from before (plain) opens with a store that has a key.

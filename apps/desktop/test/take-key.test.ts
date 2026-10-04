@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { memoryBackend } from "@kiframe/vault"
@@ -25,5 +25,22 @@ describe("the take store's key", () => {
     backend.values.delete("take-store-key")
     await expect(takeStoreKey(backend, made)).rejects.toThrow(/missing from the keychain/)
     expect(backend.values.has("take-store-key")).toBe(false)
+  })
+
+  it("marks a key made before the marker, makes none without a marker it can write, and keeps no marker for a keychain in memory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-key-"))
+    // A key with no marker (made before it): marked on its first read.
+    const backend = memoryBackend()
+    backend.values.set("take-store-key", "ab".repeat(32))
+    await takeStoreKey(backend, join(dir, "take-key-made"))
+    expect(existsSync(join(dir, "take-key-made"))).toBe(true)
+    // A marker that can't be written (its folder is a file): no key is made.
+    writeFileSync(join(dir, "blocked"), "")
+    const fresh = memoryBackend()
+    await expect(takeStoreKey(fresh, join(dir, "blocked", "take-key-made"))).rejects.toThrow()
+    expect(fresh.values.has("take-store-key")).toBe(false)
+    // A keychain in memory (tests): no marker, so a new launch makes its key again.
+    expect((await takeStoreKey(memoryBackend(), undefined)).length).toBe(32)
+    expect((await takeStoreKey(memoryBackend(), undefined)).length).toBe(32)
   })
 })

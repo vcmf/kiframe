@@ -2,7 +2,6 @@
 // `magic | iv | ciphertext | tag`. A file without the magic is a take from before (plain). Apart
 // from the store: readers that only need to tell an encrypted file (the exporter) load no runtime.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto"
-import { readFileSync } from "node:fs"
 import { open, readFile } from "node:fs/promises"
 import { writeAtomicAsync } from "./files.ts"
 
@@ -21,22 +20,27 @@ export function isEncrypted(bytes: Uint8Array): boolean {
   return bytes.length >= MAGIC.length && MAGIC.equals(Buffer.from(bytes.subarray(0, MAGIC.length)))
 }
 
-export function encrypt(plain: Uint8Array, key: Uint8Array): Buffer {
-  return Buffer.concat(encryptParts(plain, key))
+/**
+ * `bound`: what the bytes are (`<takeKey>/<file>`), authenticated with them: a file moved to
+ * another take, or put in another's place, doesn't open.
+ */
+export function encrypt(plain: Uint8Array, key: Uint8Array, bound = ""): Buffer {
+  return Buffer.concat(encryptParts(plain, key, bound))
 }
 
 /** An encrypted file's parts in order (written in turn: the body never copied into one buffer). */
-function encryptParts(plain: Uint8Array, key: Uint8Array): Buffer[] {
+function encryptParts(plain: Uint8Array, key: Uint8Array, bound: string): Buffer[] {
   checkKey(key)
   const iv = randomBytes(IV_BYTES)
   const cipher = createCipheriv("aes-256-gcm", key, iv)
+  cipher.setAAD(Buffer.from(bound, "utf8"))
   const body = cipher.update(plain)
   const end = cipher.final()
   return [MAGIC, iv, body, end, cipher.getAuthTag()]
 }
 
 /** The plain bytes; throws on another key or a file changed since (its tag doesn't match). */
-export function decrypt(bytes: Uint8Array, key: Uint8Array): Buffer {
+export function decrypt(bytes: Uint8Array, key: Uint8Array, bound = ""): Buffer {
   checkKey(key)
   if (!isEncrypted(bytes) || bytes.length < MAGIC.length + IV_BYTES + TAG_BYTES) {
     throw new Error("not an encrypted take file")
@@ -49,6 +53,7 @@ export function decrypt(bytes: Uint8Array, key: Uint8Array): Buffer {
   const tag = buf.subarray(buf.length - TAG_BYTES)
   const body = buf.subarray(MAGIC.length + IV_BYTES, buf.length - TAG_BYTES)
   const decipher = createDecipheriv("aes-256-gcm", key, iv)
+  decipher.setAAD(Buffer.from(bound, "utf8"))
   decipher.setAuthTag(tag)
   try {
     const out = decipher.update(body)
@@ -76,52 +81,45 @@ export async function isEncryptedFile(path: string): Promise<boolean> {
  * swapped in (a crash leaves the plain file or the encrypted one, never a torn one); one already
  * encrypted is known from its first bytes and kept. Whether it encrypted it.
  */
-export async function encryptFile(path: string, key: Uint8Array): Promise<boolean> {
+export async function encryptFile(path: string, key: Uint8Array, bound = ""): Promise<boolean> {
   if (await isEncryptedFile(path)) return false
-  await encryptPlainFile(path, key)
+  await encryptPlainFile(path, key, bound)
   return true
 }
 
 /** Encrypts a file known to be plain (its header just read): as `encryptFile`, without the check. */
-export async function encryptPlainFile(path: string, key: Uint8Array): Promise<void> {
+export async function encryptPlainFile(path: string, key: Uint8Array, bound = ""): Promise<void> {
   const plain = await readFile(path)
-  await writeAtomicAsync(path, encryptParts(plain, key))
+  await writeAtomicAsync(path, encryptParts(plain, key, bound))
 }
 
 /** A key, or how to get it (asked only when a file read turns out encrypted). */
 export type KeySource = Uint8Array | undefined | (() => Promise<Uint8Array | undefined>)
 
+/** How a take's file is read: its key (or how to get it), its sealed take, what it is. */
+export interface TakeFileReading {
+  key: KeySource
+  /** Its take was sealed: a file without the magic was changed, never plain. */
+  sealed?: boolean
+  /** What it is (`<takeKey>/<file>`): authenticated with it. */
+  bound?: string
+}
+
 /**
- * A file's plain bytes: decrypted when encrypted (a key needed), as they are when plain (a take
- * from before); in a sealed take (`sealed`), a file without the magic was changed: refused.
+ * A take file's plain bytes, read once without holding the thread (a take's frames are tens of
+ * MB): decrypted when what was read is encrypted (the key asked then: a file sealed meanwhile is
+ * read as it was, plain, or as it is, never judged then read changed); as it is when plain (a take
+ * from before), unless its take was sealed (then it was changed: refused).
  */
-function plainOf(bytes: Buffer, key: Uint8Array | undefined, sealed: boolean): Buffer {
+export async function readTakeFileAsync(path: string, reading: TakeFileReading): Promise<Buffer> {
+  const bytes = await readFile(path)
   if (!isEncrypted(bytes)) {
-    if (sealed) throw new Error(CHANGED)
+    if (reading.sealed === true) throw new Error(CHANGED)
     return bytes
   }
+  const key = typeof reading.key === "function" ? await reading.key() : reading.key
   if (key === undefined) throw new Error("the take is encrypted: no take key here")
-  return decrypt(bytes, key)
-}
-
-/**
- * A take file's plain bytes, read without holding the thread (a take's frames are tens of MB):
- * read once, the key asked only if what was read is encrypted (a file sealed meanwhile is read
- * as it was, plain, or as it is, with the key: never one judged and the other read).
- */
-export async function readTakeFileAsync(
-  path: string,
-  key: KeySource,
-  sealed = false,
-): Promise<Buffer> {
-  const bytes = await readFile(path)
-  const resolved = typeof key === "function" && isEncrypted(bytes) ? await key() : key
-  return plainOf(bytes, typeof resolved === "function" ? undefined : resolved, sealed)
-}
-
-/** A take file's plain bytes (a small one: events, cursor). */
-export function readTakeFile(path: string, key: Uint8Array | undefined, sealed = false): Buffer {
-  return plainOf(readFileSync(path), key, sealed)
+  return decrypt(bytes, key, reading.bound ?? "")
 }
 
 function checkKey(key: Uint8Array): void {

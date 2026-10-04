@@ -14,7 +14,7 @@ import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
 import { removeStrayTemps } from "./files.ts"
 import { encryptPlainFile, isEncryptedFile, readTakeFileAsync } from "./take-crypt.ts"
-import { newerTake, readTakeRecordsAsync, type TakeRecords } from "./take-records.ts"
+import { newerTake, readTakeMeta, readTakeRecordsAsync, type TakeRecords } from "./take-records.ts"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
 // project folder (they're heavy, and raw frames aren't blurred). The whole store is the user's only
@@ -134,9 +134,15 @@ export class TakeStore {
         try {
           key = await this.#theKey()
         } catch (error) {
-          rmSync(dir, { recursive: true, force: true })
+          // Never kept plain: deleted (said if it couldn't be: sealed at the next start then).
+          let gone = "deleted"
+          try {
+            rmSync(dir, { recursive: true, force: true })
+          } catch (rm) {
+            gone = `not deleted (${message(rm)}): it's encrypted at the next start`
+          }
           throw new Error(
-            `the take couldn't be encrypted (the take key: ${message(error)}): deleted, record the scene again`,
+            `the take couldn't be encrypted (the take key: ${message(error)}): ${gone}, record the scene again`,
             { cause: error },
           )
         }
@@ -201,10 +207,17 @@ export class TakeStore {
    * read is encrypted (a take sealed meanwhile reads either way: never judged, then read changed).
    */
   async open(take: StoredTake): Promise<OpenedTake> {
-    const sealedTake = existsSync(join(take.dir, SEALED_MARK))
+    const sealed = existsSync(join(take.dir, SEALED_MARK))
     const key = () => this.#theKey()
-    const records = await readTakeRecordsAsync(take.dir, key, sealedTake)
-    const video = await readTakeFileAsync(join(take.dir, "frames.webm"), key, sealedTake)
+    // Its meta as the caller checked it (never read again), the files at once.
+    const [records, video] = await Promise.all([
+      readTakeRecordsAsync(take.dir, take.meta, { key, sealed }),
+      readTakeFileAsync(join(take.dir, "frames.webm"), {
+        key,
+        sealed,
+        bound: `${take.meta.takeKey}/frames.webm`,
+      }),
+    ])
     return { records, video }
   }
 
@@ -352,11 +365,13 @@ async function sealTake(
 ): Promise<boolean> {
   let changed = false
   let theKey = typeof key === "function" ? undefined : key
+  // Each file bound to its take and its name (moved elsewhere, it doesn't open).
+  const { takeKey } = readTakeMeta(dir)
   for (const file of sealed(dir)) {
     if (await isEncryptedFile(file)) continue
     theKey ??= typeof key === "function" ? await key() : key
     if (theKey === undefined) return changed
-    await encryptPlainFile(file, theKey)
+    await encryptPlainFile(file, theKey, `${takeKey}/${relative(dir, file).split(sep).join("/")}`)
     changed = true
   }
   writeFileSync(join(dir, SEALED_MARK), "", { mode: 0o600 })

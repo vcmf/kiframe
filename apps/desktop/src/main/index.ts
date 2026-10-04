@@ -132,17 +132,20 @@ function start(): void {
    * At start, after the sweep: takes a crash left plain (or from before encryption) encrypted.
    * What can't be is said; the app goes on.
    */
+  /** A start's problem, added to what's already said (never replacing it). */
+  const say = (problem: string): void => {
+    error = error === null ? problem : `${error}; ${problem}`
+    void status().then((now) => emit(window, "status", now))
+  }
   const sealTakes = async (): Promise<void> => {
     if (takes === undefined) return
     try {
       const { failed } = await takes.seal()
       if (failed.length > 0) {
-        error = `couldn't encrypt ${failed.length} old recording(s): ${failed[0] ?? ""}`
-        void status().then((now) => emit(window, "status", now))
+        say(`couldn't encrypt ${failed.length} old recording(s): ${failed[0] ?? ""}`)
       }
     } catch (e) {
-      error = `couldn't encrypt old recordings: ${message(e)}`
-      void status().then((now) => emit(window, "status", now))
+      say(`couldn't encrypt old recordings: ${message(e)}`)
     }
   }
 
@@ -248,7 +251,9 @@ function start(): void {
     const data = app.getPath("userData")
     // Takes encrypted at rest with the app's own key (made on first use).
     takes = new TakeStore(join(data, "data"), {
-      key: () => takeStoreKey(appKeychain, join(data, "data", "take-key-made")),
+      // The marker only with the OS keychain (a memory one starts empty every launch).
+      key: () =>
+        takeStoreKey(appKeychain, memory ? undefined : join(data, "data", "take-key-made")),
     })
     setAppMenu(dev)
     hardenSessions(devServer)
@@ -357,8 +362,7 @@ function start(): void {
           takes?.sweep()
         } catch (e) {
           // After the window's first read: pushed to it (not an action's result).
-          error = `couldn't clean up old recordings: ${message(e)}`
-          void status().then((now) => emit(window, "status", now))
+          say(`couldn't clean up old recordings: ${message(e)}`)
         }
         void sealTakes()
       })

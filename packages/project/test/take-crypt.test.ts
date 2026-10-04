@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomBytes } from "node:crypto"
 import { describe, expect, it } from "vitest"
-import { decrypt, encrypt, encryptFile, isEncrypted, readTakeFile } from "../src/index.ts"
+import { decrypt, encrypt, encryptFile, isEncrypted, readTakeFileAsync } from "../src/index.ts"
 
 describe("a take's files at rest", () => {
   const key = randomBytes(32)
@@ -31,12 +31,20 @@ describe("a take's files at rest", () => {
     const dir = mkdtempSync(join(tmpdir(), "kiframe-crypt-"))
     const file = join(dir, "events.jsonl")
     writeFileSync(file, plain)
-    expect(readTakeFile(file, undefined).equals(plain)).toBe(true)
-    await encryptFile(file, key)
+    expect((await readTakeFileAsync(file, { key: undefined })).equals(plain)).toBe(true)
+    await encryptFile(file, key, "k1/events.jsonl")
     const once = readFileSync(file)
-    await encryptFile(file, key)
+    await encryptFile(file, key, "k1/events.jsonl")
     expect(readFileSync(file).equals(once)).toBe(true)
-    expect(readTakeFile(file, key).equals(plain)).toBe(true)
-    expect(() => readTakeFile(file, undefined)).toThrow(/encrypted: no take key/)
+    const read = await readTakeFileAsync(file, { key, bound: "k1/events.jsonl" })
+    expect(read.equals(plain)).toBe(true)
+    await expect(readTakeFileAsync(file, { key: undefined })).rejects.toThrow(/no take key/)
+    // Bound to its take and its name: as another take's, or another file, it doesn't open.
+    await expect(readTakeFileAsync(file, { key, bound: "k2/events.jsonl" })).rejects.toThrow(
+      /another key, or changed/,
+    )
+    await expect(readTakeFileAsync(file, { key, bound: "k1/cursor.jsonl" })).rejects.toThrow(
+      /another key, or changed/,
+    )
   })
 })
