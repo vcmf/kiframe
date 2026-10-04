@@ -209,6 +209,26 @@ steps:
     // A failed take is kept next to where the take would be, never in its place.
     expect(existsSync(join(`${outDir}.failed`, "meta.json"))).toBe(true)
     expect(existsSync(join(`${outDir}.failed`, "frames"))).toBe(false)
+    expect(existsSync(join(`${outDir}.failed`, "frames.webm"))).toBe(true)
+  })
+
+  it("never encodes a failed take's video when asked not to (the app drops it)", async () => {
+    const context = await browser.newContext({ viewport: { width: 800, height: 600 } })
+    const page = await context.newPage()
+    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
+    await expect(
+      recordScenario(
+        page,
+        parseScenarioYaml(
+          `version: 1\nsetup: [{ action: goto, url: /projects }]\nsteps:\n  - { id: boom, action: click, target: { by: role, role: button, name: Missing } }\n`,
+        ),
+        project(),
+        { outDir, timeoutMs: 500, encodeFailed: false },
+      ),
+    ).rejects.toThrow(/boom/)
+    await context.close()
+    expect(existsSync(join(`${outDir}.failed`, "meta.json"))).toBe(true)
+    expect(existsSync(join(`${outDir}.failed`, "frames.webm"))).toBe(false)
   })
 
   it("scrubs WHATWG-encoded secrets from GET form URLs", async () => {
