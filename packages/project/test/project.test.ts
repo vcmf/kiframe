@@ -533,6 +533,11 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
           .filter((e) => e.isFile())
           .reduce((sum, e) => sum + statSync(join(e.parentPath, e.name)).size, 0)
       const answer = () => Promise.resolve(named({}))
+      // Room for p1's old take alone, played first; p2 changed under the lock: counted no more
+      // before anything goes (never p1's take deleted for p2's).
+      writeFileSync(join(old.dir, "used"), "1")
+      const forP1 = new TakeStore(store.root, { scratchBudget: total(old.dir) })
+      expect(await forP1.evict(answer, later, (id) => id !== "p2")).toEqual([])
       // Room for p2's old take alone: p1 changed under the lock, its scratch counts no more.
       const roomy = new TakeStore(store.root, { scratchBudget: total(other.dir) })
       expect(await roomy.evict(answer, later, (id) => id !== "p1")).toEqual([])
@@ -540,6 +545,14 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       const both = new TakeStore(store.root, { scratchBudget: total(old.dir) + total(other.dir) })
       expect(await both.evict(answer, later)).toEqual([])
       expect(existsSync(old.dir) && existsSync(other.dir)).toBe(true)
+    })
+
+    it("notes a play before reading the take (an eviction deciding meanwhile keeps it)", async () => {
+      const store = newStore()
+      const [a] = await recordThree(store)
+      rmSync(join(a.dir, "frames.webm"))
+      await expect(store.open(a)).rejects.toThrow()
+      expect(existsSync(join(a.dir, "used"))).toBe(true)
     })
 
     it("reads a play time again when it couldn't be noted (never stuck on one not written)", async () => {

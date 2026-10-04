@@ -114,6 +114,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Fewer passes:** once named takes alone pass the budget, every recording runs a pass that frees nothing (worker reads off the main thread). Remember the last pass's slack and skip while the store grew less; measure first.
 - **A deleted scene's newest take** is kept (it may be named soon) and not counted: one take per deleted scene stays until the storage view frees it.
 - **A failed recording that keeps its take** (the composition didn't save) doesn't run eviction: the next recording or start does.
+- **A worker stuck on a dead network mount:** `terminate()` can't end a thread blocked in the kernel, and quitting may wait on it. Reading folders in a child process (Electron's `utilityProcess`, killed at quit) would close it; rare (a project on a share that stopped answering).
 - **One realpath rule:** the index and the workspace each resolve a folder (realpath, else the path); share one helper.
 - **Sizing on the main thread:** over the budget check, each take folder is measured once per launch (a recursive stat walk, kept in memory). Hundreds of takes with many shots can stall the window briefly at start; measure in the folder worker or keep sizes on disk.
 - **A deleted project inside a git repo** is never gone (a branch may bring it back): its takes stay until the storage view (M4-6) frees them.

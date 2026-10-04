@@ -45,12 +45,14 @@ export class ProjectIndex {
   #change(apply: (all: Index) => void): void {
     let all = this.#read()
     if (all === undefined) {
-      // Neither it nor its backup reads: both kept aside and the index started again (a project
-      // not in it keeps every take: nothing lost, never stuck unwritten for good).
-      const at = Date.now()
-      for (const file of [this.#file, `${this.#file}.bak`]) {
+      // Neither reads: a read error (a moment's I/O trouble) writes nothing; both broken (or one
+      // broken, one missing) are kept aside, the last broken copy only, and the index started
+      // again (a project not in it keeps every take: nothing lost, never stuck for good).
+      const files = [this.#file, `${this.#file}.bak`]
+      if (files.some((f) => readState(f) === "unreadable")) return
+      for (const file of files) {
         try {
-          renameSync(file, `${file}.broken-${at}`)
+          renameSync(file, `${file}.broken`)
         } catch {
           // not there
         }
@@ -74,6 +76,16 @@ export class ProjectIndex {
       if (parsed !== undefined) return parsed
     }
     return undefined
+  }
+}
+
+/** Whether a file can't be read at all (an I/O error), as opposed to missing or not an index. */
+function readState(file: string): "unreadable" | "other" {
+  try {
+    readFileSync(file)
+    return "other"
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "other" : "unreadable"
   }
 }
 

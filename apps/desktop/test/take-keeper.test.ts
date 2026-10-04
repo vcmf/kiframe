@@ -67,6 +67,8 @@ describe("a project folder, read for the take store", () => {
     // On a device that isn't the one around it now (unplugged): unknown, never gone.
     expect(inspectFolder({ path: dir, dev: -1 }, "p1").state).toBe("unknown")
     expect(inspectFolder({ path: dir }, "p1").state).toBe("unknown")
+    // Its device not recorded, but there and read: here (the device only tells gone).
+    expect(inspectFolder({ path: setup().dir }, "p1").state).toBe("here")
   })
 
   it("is unknown when it can't be read (a permission): never gone", () => {
@@ -180,6 +182,27 @@ describe("a project folder, read for the take store", () => {
     await reader.inspect({ path: "/y", dev: 1 }, "p1")
     expect(made).toBe(2)
   })
+
+  it("drops a worker that ends while idle (the next folder gets a new one, never a wait)", async () => {
+    let made = 0
+    const workers: EventEmitter[] = []
+    const answering = () => {
+      made += 1
+      const w = new EventEmitter()
+      workers.push(w)
+      Object.assign(w, {
+        postMessage: (m: { id: number }) =>
+          setImmediate(() => w.emit("message", { id: m.id, state: { state: "gone" } })),
+        terminate: () => Promise.resolve(0),
+      })
+      return w as unknown as Worker
+    }
+    const reader = workerInspector(answering, 60_000)
+    expect((await reader.inspect({ path: "/x", dev: 1 }, "p1")).state).toBe("gone")
+    workers[0]?.emit("exit", 1)
+    expect((await reader.inspect({ path: "/y", dev: 1 }, "p1")).state).toBe("gone")
+    expect(made).toBe(2)
+  })
 })
 
 describe("the project index", () => {
@@ -199,7 +222,16 @@ describe("the project index", () => {
     writeFileSync(join(data, "projects.json.bak"), "{ half")
     index.seen("p2", dir)
     expect(Object.keys(index.all())).toEqual(["p2"])
-    expect(readdirSync(data).filter((n) => n.includes(".broken-"))).toHaveLength(2)
+    expect(readdirSync(data).filter((n) => n.endsWith(".broken"))).toHaveLength(2)
+    // A read error (a moment's I/O trouble): nothing written, nothing set aside.
+    const both = [join(data, "projects.json"), join(data, "projects.json.bak")]
+    for (const f of both) chmodSync(f, 0o000)
+    try {
+      index.seen("p3", dir)
+    } finally {
+      for (const f of both) chmodSync(f, 0o600)
+    }
+    expect(Object.keys(index.all())).toEqual(["p2"])
   })
 })
 
@@ -264,6 +296,11 @@ describe("the take keeper", () => {
     const reopened = asking(() => index.seen("p1", join(root, "moved.kiframe")))
     await new TakeKeeper(reopened.store, index, gone).evict()
     expect(reopened.seen.unchanged).toBe(false)
+    // Opened again from a folder it already had (moved last in the index): not a change.
+    index.seen("p1", `${dir}-copy`)
+    const again = asking(() => index.seen("p1", dir))
+    await new TakeKeeper(again.store, index, () => here({})).evict()
+    expect(again.seen.unchanged).toBe(true)
     // Opened during the pass with its index write failed (decided vanished): nothing goes.
     let open: string | undefined
     const opening = asking(() => (open = "p1"))

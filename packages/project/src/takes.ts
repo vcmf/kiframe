@@ -241,6 +241,11 @@ export class TakeStore {
   async open(take: StoredTake): Promise<OpenedTake> {
     const sealed = existsSync(join(take.dir, SEALED_MARK))
     const key = () => this.#theKey()
+    // Played, noted before it's read: the last to be evicted (least recently played first), and an
+    // eviction deciding meanwhile sees it changed and keeps it (never moved aside mid-read).
+    const played = markUsed(take.dir)
+    if (played === undefined) this.#used.delete(take.dir)
+    else this.#used.set(take.dir, played)
     // Its meta as the caller checked it (never read again), the files at once.
     const [records, video] = await Promise.all([
       readTakeRecordsAsync(take.dir, take.meta, { key, sealed }),
@@ -250,10 +255,6 @@ export class TakeStore {
         bound: `${take.meta.takeKey}/frames.webm`,
       }),
     ])
-    // Played: the last to be evicted (least recently used first).
-    const played = markUsed(take.dir)
-    if (played === undefined) this.#used.delete(take.dir)
-    else this.#used.set(take.dir, played)
     return { records, video }
   }
 
@@ -357,15 +358,14 @@ export class TakeStore {
       // Asked once per project, under the lock (an opening meanwhile is in or after it). One that
       // changed keeps its takes, and they stop counting (never paid for by another project's).
       const still = new Map<string, boolean>()
+      for (const [project, size] of scratchOf) {
+        const ok = unchanged(project)
+        still.set(project, ok)
+        if (!ok) scratch -= size
+      }
       for (const c of candidates) {
-        let ok = still.get(c.project)
-        if (ok === undefined) {
-          ok = unchanged(c.project)
-          still.set(c.project, ok)
-          if (!ok) scratch -= scratchOf.get(c.project) ?? 0
-        }
         if (scratch <= budget) break
-        if (!ok) continue
+        if (still.get(c.project) !== true) continue
         // As it was read: still there, and not played since (a preview meanwhile keeps it).
         const take = readTake(c.dir)
         if (take === undefined || take instanceof Error || usedAt(c.dir, take) !== c.used) continue
@@ -505,11 +505,7 @@ function dropFrames(failed: string): void {
   for (const name of list(failed)) {
     // Its reason, and the recorder's marker (it's still a take to the recorder).
     if (name === "meta.json" || name === "warnings.json" || name === ".kiframe-take") continue
-    try {
-      rmSync(join(failed, name), { recursive: true, force: true })
-    } catch {
-      // swept at the next start
-    }
+    rmQuietly(join(failed, name))
   }
 }
 
@@ -587,7 +583,6 @@ function usedAt(dir: string, take: StoredTake): number {
   return Date.parse(take.meta.recordedAt)
 }
 
-/** Notes a take played now; when that was. */
 /** Notes a take played now: when, or undefined when it couldn't be noted (read again from disk). */
 function markUsed(dir: string): number | undefined {
   const now = Date.now()

@@ -28,6 +28,17 @@ export function workerInspector(
     void worker?.terminate()
     worker = undefined
   }
+  // Made with listeners for its life: one that ends or fails while idle is dropped (the next
+  // folder gets a new one), never asked and waited on.
+  const started = (): Worker => {
+    const w = make()
+    const drop = () => {
+      if (worker === w) worker = undefined
+    }
+    w.on("exit", drop)
+    w.on("error", drop)
+    return w
+  }
   const ask = (folder: Folder, projectId: string): Promise<FolderState> =>
     new Promise((resolve) => {
       if (closed) {
@@ -40,7 +51,7 @@ export function workerInspector(
       }
       // A worker just made starts within its first folder's time (a cold launch: a longer limit).
       const fresh = worker === undefined
-      worker ??= make()
+      worker ??= started()
       const w = worker
       const id = ++next
       const done = (state: FolderState) => {

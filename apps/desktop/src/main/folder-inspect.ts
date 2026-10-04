@@ -23,7 +23,6 @@ export type FolderState =
   | { state: "unknown"; why: string }
 
 export function inspectFolder(folder: Folder, projectId: string): FolderState {
-  if (folder.dev === undefined) return { state: "unknown", why: "its device wasn't recorded" }
   // Gone only when the folder itself isn't there: one still there in any form (its project file
   // missing, another project, a git branch without it, an evicted cloud file) is unknown.
   const folderThere = presence(folder.path)
@@ -64,6 +63,7 @@ export function inspectFolder(folder: Folder, projectId: string): FolderState {
  * device is unknown: never walked further up.
  */
 function goneOrUnknown(folder: Folder): FolderState {
+  if (folder.dev === undefined) return { state: "unknown", why: "its device wasn't recorded" }
   const parent = dirname(folder.path)
   let dev: number
   try {

@@ -116,5 +116,6 @@ export class TakeKeeper {
 
 /** A project's folders as known (a change: opened from another place, or the index unread). */
 function fingerprint(folders: Folder[]): string {
-  return JSON.stringify(folders.map((f) => [f.path, f.dev]))
+  // In any order (opened again from one of them moves it last: not a change).
+  return JSON.stringify(folders.map((f) => [f.path, f.dev ?? null]).sort())
 }
