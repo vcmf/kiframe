@@ -23,7 +23,7 @@ import { KeyStore, takeStoreKey } from "./settings.ts"
 import { TakeKeeper } from "./take-keeper.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
-import { Workspace } from "./workspace.ts"
+import { closeProject, Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
 const here = fileURLToPath(new URL(".", import.meta.url))
@@ -343,15 +343,9 @@ function start(): void {
           }),
         // No project, no agent: its browser closed too (launched again by the next project).
         "project:close": () =>
-          act(async () => {
-            try {
-              await workspace.close()
-            } finally {
-              // Only once the project's agent is gone (a close refused keeps it, and its browser).
-              // Not waited for here (a browser that hangs never holds the window); a quit waits.
-              if (workspace.agent === undefined) dropBrowser()
-            }
-          }),
+          // The browser's close isn't waited for (one that hangs never holds the window); a quit
+          // waits for it.
+          act(() => closeProject(workspace, dropBrowser)),
         "external:open": async (url) => {
           if (isSafeExternal(url)) await shell.openExternal(url)
         },

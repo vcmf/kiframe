@@ -81,6 +81,21 @@ export class Workspace<A extends Agent> {
   }
 }
 
+/**
+ * Closes the project, then lets the agent's browser go only once its agent is gone (a close
+ * refused before anything changed keeps the project, its agent and their browser).
+ */
+export async function closeProject(
+  workspace: { close(): Promise<void>; readonly agent: unknown },
+  letBrowserGo: () => void,
+): Promise<void> {
+  try {
+    await workspace.close()
+  } finally {
+    if (workspace.agent === undefined) letBrowserGo()
+  }
+}
+
 /** Whether two paths are the same folder (through symlinks; a path that's gone is just itself). */
 function sameFolder(a: string, b: string): boolean {
   const real = (p: string) => {

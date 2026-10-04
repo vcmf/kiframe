@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createProject, type OpenedProject } from "@kiframe/project"
 import { describe, expect, it } from "vitest"
-import { Workspace } from "../src/main/workspace.ts"
+import { closeProject, Workspace } from "../src/main/workspace.ts"
 
 const folder = () => join(mkdtempSync(join(tmpdir(), "kiframe-ws-")), "demo.kiframe")
 
@@ -66,6 +66,33 @@ describe("the open project and its agent", () => {
     ready = false
     await expect(refusing.close()).rejects.toThrow(/not ready/)
     expect(refusing.agent).toBe(made[0])
+  })
+
+  it("lets the browser go when the project closes, never while a refused close keeps its agent", async () => {
+    let gone = 0
+    const letGo = () => {
+      gone += 1
+    }
+    const { make } = agents()
+    let ready = true
+    const ws = new Workspace(make, () => {
+      if (!ready) throw new Error("not ready")
+    })
+    await ws.create(folder(), { name: "A", url: "https://a.test" })
+    ready = false
+    await expect(closeProject(ws, letGo)).rejects.toThrow(/not ready/)
+    expect(gone).toBe(0)
+    ready = true
+    await closeProject(ws, letGo)
+    expect(gone).toBe(1)
+    // The agent's own close fails: the project is closed, its browser let go all the same.
+    const failing = new Workspace((project: OpenedProject) => ({
+      project,
+      close: () => Promise.reject(new Error("stuck")),
+    }))
+    await failing.create(folder(), { name: "B", url: "https://b.test" })
+    await expect(closeProject(failing, letGo)).rejects.toThrow(/stuck/)
+    expect(gone).toBe(2)
   })
 
   it("keeps the open project and its agent when another doesn't open, or its agent can't be made", async () => {

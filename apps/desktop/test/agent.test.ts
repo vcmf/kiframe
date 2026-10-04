@@ -212,6 +212,31 @@ describe("the agent in the app", () => {
     await current.close()
   }, 60_000)
 
+  it("launches no browser for a project closed while its dead one's studio was closing", async () => {
+    let current = await chromium.launch()
+    let launches = 0
+    const { llm } = script([
+      call("snapshot", {}),
+      { kind: "text", text: "one" },
+      call("snapshot", {}),
+    ])
+    const made = host(llm, () => {
+      launches += 1
+      return Promise.resolve(current)
+    })
+    made.agent.send("look")
+    await made.until(() => made.running.at(-1) === false)
+    // The browser dies: the next run makes its studio again, after closing the old one.
+    await current.close()
+    current = await chromium.launch()
+    made.agent.send("look again")
+    const before = launches
+    await made.agent.close()
+    await new Promise((r) => setTimeout(r, 500))
+    expect(launches).toBe(before)
+    await current.close()
+  }, 60_000)
+
   it("keeps a run's turns in the history even when showing an event fails", async () => {
     const { llm, seen } = script([call("list_scenes", {}), { kind: "text", text: "None." }])
     const made = host(llm, undefined, () => {
