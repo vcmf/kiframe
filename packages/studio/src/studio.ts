@@ -33,6 +33,7 @@ import {
   typesSecret,
   SetupItem,
   Step,
+  sameApp,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
@@ -755,12 +756,11 @@ function shapeOf(raw: object): string {
 }
 
 /**
- * Where a page is, against the app's address (read from the URLs, never from text): the app's
- * origin; the app's own host under `www.` or upgraded from http to https (a redirect: the app, but
- * a secret is typed on the exact origin only); another site; or Chromium's error page (the load
- * failed). A blob: URL is its creator's origin; data: and file: pages are another site.
+ * Where a page is, against the app's address (read from the URLs, never from text): the app (its
+ * origin, or its address redirected to www. or https: `sameApp`); another site; or Chromium's
+ * error page (the load failed). A blob: URL is its creator's origin; data: and file: pages are another site.
  */
-export type Site = "app" | "app-redirect" | "other" | "unloaded"
+export type Site = "app" | "other" | "unloaded"
 
 export function siteOf(url: string, appUrl: string): Site {
   let page: URL
@@ -771,14 +771,8 @@ export function siteOf(url: string, appUrl: string): Site {
   }
   if (page.protocol === "chrome-error:") return "unloaded"
   if (page.protocol === "about:") return "app"
-  const app = new URL(appUrl)
-  if (page.origin === app.origin) return "app"
-  if (page.origin === "null") return "other"
-  const host = (u: URL) => new URL(u.origin).host.replace(/^www\./, "")
-  const protocol = (u: URL) => new URL(u.origin).protocol
-  const upgraded =
-    protocol(page) === protocol(app) || (protocol(app) === "http:" && protocol(page) === "https:")
-  return host(page) === host(app) && upgraded ? "app-redirect" : "other"
+  // The app's own origin, or its address redirected to www. or https (`sameApp`).
+  return sameApp(page, appUrl) ? "app" : "other"
 }
 
 /** A step's outcome: ok or not, what the agent reads, and where the page is (when it was read). */
@@ -802,13 +796,18 @@ export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl))
   }
   // A blank page (a popup not loaded yet, the first page before a goto): the app's, but empty.
   if (page.protocol === "about:") return "(a blank page)"
-  if (site === "app") return page.pathname
+  if (site === "app") {
+    // The app's site under another address (redirected to www. or https): its steps work, its
+    // secrets don't (typed on their exact origin only): said, so a refused secret step has a why.
+    const app = new URL(appUrl)
+    return page.origin === app.origin
+      ? page.pathname
+      : `${page.pathname} (on ${page.origin}, the app's site: secrets are typed on ${app.origin} only)`
+  }
   const app = new URL(appUrl)
   if (page.origin === "null") return `(a ${page.protocol.replace(":", "")} page: not the app)`
   const shown = new URL(page.origin)
-  return site === "app-redirect"
-    ? `${page.pathname} (on ${shown.origin}: the app's address redirects here; the user should set the project's address to ${shown.origin}, or secrets can't be typed on this page)`
-    : `${page.pathname} (on ${shown.host}: NOT the app's site, ${app.host})`
+  return `${page.pathname} (on ${shown.host}: NOT the app's site, ${app.host})`
 }
 
 /** Where in a scenario an item runs. */

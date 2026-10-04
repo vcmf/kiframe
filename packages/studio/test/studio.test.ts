@@ -555,8 +555,10 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 150
     expect(snap).not.toContain("token")
     await page.goto(`${server.url}/projects`)
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/projects\n/)
-    expect(whereOf("https://www.app.example/x", "https://app.example")).toMatch(
-      /^\/x \(on https:\/\/www\.app\.example: the app's address redirects here; .* https:\/\/www\.app\.example/,
+    // The app's address redirected to www.: the app's own page (decided by the user), its
+    // secrets typed on the app's exact origin only (said).
+    expect(whereOf("https://www.app.example/x", "https://app.example")).toBe(
+      "/x (on https://www.app.example, the app's site: secrets are typed on https://app.example only)",
     )
     expect(whereOf("https://app.example/x", "https://app.example")).toBe("/x")
     expect(whereOf("https://github.com/x", "https://app.example")).toMatch(/NOT the app's site/)
@@ -855,11 +857,11 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 150
     ])
     const app = "https://app.example"
     expect(siteOf("https://app.example/x", app)).toBe("app")
-    // The app's address redirecting (www., either way; http to https) is still the app: a batch
-    // goes on there.
-    expect(siteOf("https://www.app.example/x", app)).toBe("app-redirect")
-    expect(siteOf("https://app.example/x", "https://www.app.example")).toBe("app-redirect")
-    expect(siteOf("https://app.example/x", "http://app.example")).toBe("app-redirect")
+    // The app's address redirecting (www., either way; http to https) is the app.
+    expect(siteOf("https://www.app.example/x", app)).toBe("app")
+    expect(siteOf("https://app.example/x", "https://www.app.example")).toBe("app")
+    expect(siteOf("https://app.example/x", "http://app.example")).toBe("app")
+    expect(siteOf("https://login.app.example/x", app)).toBe("other")
     expect(siteOf("http://app.example/x", app)).toBe("other")
     expect(siteOf("blob:https://app.example/1234", app)).toBe("app")
     expect(siteOf("about:blank", app)).toBe("app")

@@ -306,7 +306,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **The approvals, listed:** the panel lists secrets, not their grants; removing a secret (or taking it off an app) drops its approvals. A per-step list with revoke (the vault has `grants` / `revoke`) when users ask what they approved.
 - **The approval's screenshot is the page as it is** (APPROACHES §0, 2026-10-02): the user's own values typed earlier show in it (their own screen, to them only, never the agent or a take). Masking them proved fragile; revisit if screen sharing during approvals becomes a real case.
 - **One secret for several apps:** the panel refuses a name another app already uses (its value there would be replaced unseen). Sharing one secret across apps (staging and prod logins alike) needs its own choice in the panel.
-- **A secret on the app's other origins:** a secret is added for the project URL's origin only; a login that redirects to `www.` or an SSO host is refused there ("isn't allowed on …", not an approval). The panel adding origins to a secret (the vault keeps several) when a real app does this.
+- **A secret on the app's other origins:** a secret is added for the project URL's origin, and typed there only (exact: its approval names that host). A login on the app's `www.` address (minmux.dev → www.minmux.dev) or an SSO host is refused ("off-origin", not an approval). Fixed with named apps (OBJECT-MODEL §0.9): an app's address is resolved once when it's added (its redirect followed, the landed origin stored), so the secret is added for the origin the login is really on.
 - **The approval's step from its key:** the dialog's "Step" line is parsed from the runtime's step key; an `ApprovalRequest` carrying the step's parts (phase, id, preset, rule, scene key) would make it structural.
 - **A grant stored before the chat says "Allowed":** the request is settled when the user answers, then the grant is stored; if storing fails (the secret removed meanwhile) the chat is revised to declined and the step fails as "unavailable". Storing first, then settling, would say it right the first time.
 - **A studio made again once the vault reads:** it closes the live page (the agent's next step starts on a fresh one though its history says where it was). Rare (the vault unreadable at a project's first run); keep the live context when only the secrets change.
@@ -316,5 +316,5 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 ## Real-app fixes (PR #9)
 
 - **A point below the fold:** a step with `at` whose point is off screen is refused ("scroll it into view first"); scrolling the point itself into view (a tall canvas) when a real app needs it.
-- **A project's address that redirects:** step results say when the app's address redirects to another origin (`www.`), and the user sets the project to it; resolving it when the project is created would spare the step.
+- **A project's address that redirects** (2026-10-05): the app's address redirected to `www.` or https is the app for its steps and URL checks (`sameApp`): scenes save and record there. Not for secrets (above).
 

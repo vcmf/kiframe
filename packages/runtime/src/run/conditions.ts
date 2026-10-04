@@ -1,4 +1,4 @@
-import type { Condition } from "@kiframe/schema"
+import { type Condition, sameApp } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
 import { EXACT_NAMES_HINT, ProbeRefusal } from "../secret-state.ts"
 import type { Locator as SchemaLocator } from "@kiframe/schema"
@@ -87,13 +87,15 @@ function describeCondition(condition: Condition): string {
 }
 
 /**
- * URL condition: same origin, the path equals the expected path or continues it at a segment
+ * URL condition: on the app's site (its origin, or its address redirected to www. or https:
+ * `sameApp`; never an origin check for secrets), the path equals the expected path or continues it at a segment
  * boundary (`/projects/1` matches `/projects/1` and `/projects/1/edit`, not `/projects/12`); the root
  * `/` only matches the root itself. Every expected query parameter must be present with its value,
  * and an expected `#hash` (hash-routed apps) is matched the same way as a path.
  */
 export function urlMatches(actual: URL, expected: URL): boolean {
-  if (actual.origin !== expected.origin) return false
+  // The app's site (its address may redirect to www., or http to https).
+  if (!sameApp(actual, expected)) return false
   if (!pathMatches(actual.pathname, expected.pathname)) return false
   for (const [key, value] of expected.searchParams) {
     if (!actual.searchParams.getAll(key).includes(value)) return false
