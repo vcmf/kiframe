@@ -1,6 +1,7 @@
 // The OpenRouter key, in the OS keychain under the app's own service: never one of a project's
 // secrets (the agent lists those by name), never written to a file, never sent to the window.
 import { randomBytes } from "node:crypto"
+import { TAKE_KEY_BYTES } from "@kiframe/project/take-crypt"
 import type { SecretBackend } from "@kiframe/vault"
 
 const ACCOUNT = "openrouter-api-key"
@@ -14,12 +15,12 @@ const TAKE_KEY_ACCOUNT = "take-store-key"
 export async function takeStoreKey(backend: SecretBackend): Promise<Uint8Array> {
   const stored = await backend.get(TAKE_KEY_ACCOUNT)
   if (stored !== undefined && stored !== "") {
-    if (!/^[0-9a-f]{64}$/.test(stored)) {
+    if (!new RegExp(`^[0-9a-f]{${TAKE_KEY_BYTES * 2}}$`).test(stored)) {
       throw new Error("the take key in the keychain isn't one: takes can't be read or written")
     }
     return Buffer.from(stored, "hex")
   }
-  const key = randomBytes(32)
+  const key = randomBytes(TAKE_KEY_BYTES)
   await backend.set(TAKE_KEY_ACCOUNT, key.toString("hex"))
   return key
 }

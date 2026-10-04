@@ -335,7 +335,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     await recordScenario(page, s, config(), { outDir: dir, timeoutMs: 1500 })
     await page.close()
     await expect(refused.settle(dir)).rejects.toThrow(
-      /couldn't be encrypted \(the keychain said no\): deleted/,
+      /couldn't be encrypted \(the take key: the keychain said no\): deleted/,
     )
     expect(existsSync(dir)).toBe(false)
   })
@@ -357,10 +357,36 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(result.failed[0]).toContain(b.take.dir)
     expect(isEncrypted(readFileSync(join(a.take.dir, "frames.webm")))).toBe(true)
     expect(existsSync(join(a.take.dir, "shots", ".0123456789ab.tmp"))).toBe(false)
-    // The keychain refusing at start: said, nothing touched (the app goes on).
+    // Nothing left to seal: the key is never asked (an empty or sealed store never prompts).
     const refusing = new TakeStore(plainStore.root, {
       key: () => Promise.reject(new Error("locked")),
     })
-    expect(await refusing.seal()).toEqual({ sealed: 0, failed: ["the take key: locked"] })
+    rmSync(b.take.dir, { recursive: true })
+    expect(await refusing.seal()).toEqual({ sealed: 0, failed: [] })
+  })
+
+  it("refuses a sealed take's file without the magic (changed), and opens a plain take without the key", async () => {
+    const key = randomBytes(32)
+    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.resolve(key),
+    })
+    const { take } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    expect(existsSync(join(take.dir, ".sealed"))).toBe(true)
+    // Its frames' header damaged: refused as changed, never handed on as plain bytes.
+    const frames = readFileSync(join(take.dir, "frames.webm"))
+    writeFileSync(
+      join(take.dir, "frames.webm"),
+      Buffer.concat([Buffer.from("XXXX"), frames.subarray(4)]),
+    )
+    await expect(store.open(take)).rejects.toThrow(/another key, or changed/)
+    // A plain take from before: opened with the keychain locked (no key needed).
+    const plainStore = newStore()
+    const old = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (old.take === undefined) throw new Error("no take")
+    const locked = new TakeStore(plainStore.root, {
+      key: () => Promise.reject(new Error("locked")),
+    })
+    expect((await locked.open(old.take)).video.length).toBeGreaterThan(0)
   })
 })

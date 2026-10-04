@@ -31,13 +31,13 @@ export interface TakeRecords {
  * words: a newer Kiframe's take, a field that doesn't validate (a take from before secret regions
  * had spans: re-record it), an encrypted take without its key.
  */
-export function readTakeRecords(dir: string, key?: Uint8Array): TakeRecords {
+export function readTakeRecords(dir: string, key?: Uint8Array, sealed = false): TakeRecords {
   const raw = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as unknown
   const newer = newerTake(raw, dir)
   if (newer !== undefined) throw newer
   // Decrypted when the store encrypted them (a key needed: else said so).
   const lines = (file: string) =>
-    readTakeFile(join(dir, file), key)
+    readTakeFile(join(dir, file), key, sealed)
       .toString("utf8")
       .split("\n")
       .filter((l) => l.trim() !== "")

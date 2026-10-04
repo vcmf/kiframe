@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./take-records": "./src/take-records.ts"
+    "./take-records": "./src/take-records.ts",
+    "./take-crypt": "./src/take-crypt.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"

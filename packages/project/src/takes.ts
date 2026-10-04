@@ -7,12 +7,13 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from "node:fs"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
 import { removeStrayTemps } from "./files.ts"
-import { encryptFile, readTakeFileAsync } from "./take-crypt.ts"
+import { encryptFile, isEncryptedFile, readTakeFileAsync } from "./take-crypt.ts"
 import { newerTake, readTakeRecords, type TakeRecords } from "./take-records.ts"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
@@ -43,6 +44,9 @@ export interface TakeStoreOptions {
   key?: () => Promise<Uint8Array>
 }
 
+/** Written once every file of a take is encrypted: then a file without the magic was changed. */
+const SEALED_MARK = ".sealed"
+
 /** A take's files the store encrypts (meta.json stays plain: listing needs no key). */
 const SEALED = ["frames.webm", "events.jsonl", "cursor.jsonl"]
 
@@ -63,7 +67,6 @@ export class TakeStore {
     this.#options = options
   }
 
-  /** The key, asked for once (a failed ask is asked again next time); none: plain takes. */
   /** Runs `work` alone among the store's writes (the next waits for it, whatever it gives). */
   #exclusive<T>(work: () => Promise<T>): Promise<T> {
     const run = this.#lock.then(work)
@@ -71,6 +74,7 @@ export class TakeStore {
     return run
   }
 
+  /** The key, asked for once (a failed ask is asked again next time); none: plain takes. */
   async #theKey(): Promise<Uint8Array | undefined> {
     const ask = this.#options.key
     if (ask === undefined) return undefined
@@ -117,19 +121,20 @@ export class TakeStore {
     if (take instanceof Error) throw take
     if (take === undefined) return undefined
     // Encrypted before it counts. No key (the keychain refused): never kept plain, deleted. A
-    // crash partway: the start's `seal` encrypts what's left plain.
+    // file that can't be written now (a full disk): the take kept, sealed at the next start.
     if (this.#options.key !== undefined) {
       await this.#exclusive(async () => {
+        let key: Uint8Array | undefined
         try {
-          const key = await this.#theKey()
-          if (key !== undefined) for (const file of sealed(dir)) await encryptFile(file, key)
+          key = await this.#theKey()
         } catch (error) {
           rmSync(dir, { recursive: true, force: true })
           throw new Error(
-            `the take couldn't be encrypted (${error instanceof Error ? error.message : String(error)}): deleted, record the scene again`,
+            `the take couldn't be encrypted (the take key: ${message(error)}): deleted, record the scene again`,
             { cause: error },
           )
         }
+        if (key !== undefined) await sealTake(dir, key).catch(() => undefined)
       })
     }
     return take
@@ -142,13 +147,6 @@ export class TakeStore {
    * and the others go on.
    */
   async seal(): Promise<{ sealed: number; failed: string[] }> {
-    let key: Uint8Array | undefined
-    try {
-      key = this.#options.key === undefined ? undefined : await this.#theKey()
-    } catch (error) {
-      // The keychain refusing: nothing sealed now (said), takes left as they are.
-      return { sealed: 0, failed: [`the take key: ${message(error)}`] }
-    }
     let count = 0
     const failed: string[] = []
     const takes = join(this.root, "takes")
@@ -157,15 +155,15 @@ export class TakeStore {
         for (const name of list(join(takes, project, scene))) {
           if (!TAKE_DIR.test(name)) continue
           const dir = join(takes, project, scene, name)
-          // One take at a time under the lock (a recording settling meanwhile waits for one take,
-          // never for the whole store; never two writers in a take's folder).
+          // A sealed take is done (later starts cost a folder listing). One take at a time under
+          // the lock (a recording settling meanwhile waits for one take, never the whole store).
+          if (existsSync(join(dir, SEALED_MARK))) continue
           await this.#exclusive(async () => {
             try {
               removeStrayTemps(dir, true)
-              if (key === undefined) return
-              let changed = false
-              for (const file of sealed(dir)) changed = (await encryptFile(file, key)) || changed
-              if (changed) count += 1
+              if (this.#options.key === undefined) return
+              // The key asked only for a take that needs it (an empty store never asks).
+              if (await sealTake(dir, () => this.#theKey())) count += 1
             } catch (error) {
               failed.push(`${dir}: ${message(error)}`)
             }
@@ -176,12 +174,16 @@ export class TakeStore {
     return { sealed: count, failed }
   }
 
-  /** A take's records and frames, decrypted (a key needed for an encrypted one). */
+  /** A take's records and frames, decrypted (the key asked only when a file is encrypted). */
   async open(take: StoredTake): Promise<OpenedTake> {
-    const key = await this.#theKey()
-    const records = readTakeRecords(take.dir, key)
+    const sealedTake = existsSync(join(take.dir, SEALED_MARK))
+    const files = [...SEALED.map((f) => join(take.dir, f)).filter((f) => existsSync(f))]
+    let needsKey = sealedTake
+    for (const file of files) needsKey ||= await isEncryptedFile(file)
+    const key = needsKey ? await this.#theKey() : undefined
+    const records = readTakeRecords(take.dir, key, sealedTake)
     // The frames read without holding the thread (tens of MB).
-    const video = await readTakeFileAsync(join(take.dir, "frames.webm"), key)
+    const video = await readTakeFileAsync(join(take.dir, "frames.webm"), key, sealedTake)
     return { records, video }
   }
 
@@ -316,4 +318,25 @@ function list(dir: string): string[] {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * Encrypts a take's plain files (each written whole and synced), then marks it sealed (a mark lost
+ * to a crash: the next start checks the files again). `key` asked only when a file is plain.
+ * Whether it encrypted any.
+ */
+async function sealTake(
+  dir: string,
+  key: Uint8Array | (() => Promise<Uint8Array | undefined>),
+): Promise<boolean> {
+  let changed = false
+  let theKey = typeof key === "function" ? undefined : key
+  for (const file of sealed(dir)) {
+    if (await isEncryptedFile(file)) continue
+    theKey ??= typeof key === "function" ? await key() : key
+    if (theKey === undefined) return changed
+    changed = (await encryptFile(file, theKey)) || changed
+  }
+  writeFileSync(join(dir, SEALED_MARK), "", { mode: 0o600 })
+  return changed
 }
