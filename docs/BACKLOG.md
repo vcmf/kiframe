@@ -104,6 +104,14 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
 
+## Performance and resources (audit 2026-10-04, PERFORMANCE.md)
+- **Playwright in the main process:** the agent's browser is driven from Electron's main process, so a recording's screencast (about 60 frames a second, JPEG decoded from base64) and the recorder's synchronous writes run on the main thread: 93% CPU at peak on minmux.dev. The window stayed responsive in the scripted measure (p95 2.9 ms), but a heavy page could stall the app's requests. Move the studio and runtime into a `utilityProcess`.
+- **Live frames nobody sees:** the live view sends base64 JPEG frames (up to 8 a second) while the window shows the Preview tab or is closed (macOS); each becomes a new `data:` image. Pause them when the Live tab isn't shown, and send binary with blob URLs.
+- **Opening a preview:** main reads the whole `frames.webm`, decrypts it synchronously and copies it to the window; a click through several scenes decrypts each (stale loads aren't cancelled). Measure on a long take (Cal.com's 72 s) and stream or cancel.
+- **Tabs the app opens:** a popup the runner follows leaves its opener open, and a tab never followed stays, until the project closes (a headless renderer each). Close the live context's other pages after a step.
+- **The model's history:** every turn is resent each request (bulky tool results elided by recency): token cost grows over a long session. Compaction or a turn cap later.
+- **Small:** `exportVideo` doesn't dispose its Mediabunny input or cancel its output on an error (fine in the exporter process; a leak if export moves into the app); a stop while the studio is still being set up builds one that's never used (harmless: lazy).
+
 ## Take store: eviction and vanished projects
 - **Kept for good by design:** takes of a project only on a drive never plugged back, of a project never opened since the index existed (from before it, a CLI), whose meta doesn't read: listed in the storage view (M4-6) so the user can free them.
 - **A take only another git branch names:** scratch (evicted past the grace and the budget): "its take is gone: record the scene again" when that branch is checked out (the honest contract).
