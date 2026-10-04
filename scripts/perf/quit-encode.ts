@@ -1,28 +1,25 @@
 // Quits the built desktop app (as Cmd-Q does) while ffmpeg encodes a recording, the model
 // scripted, then says whether the encoder or anything else of the app is still running.
 // Usage: node scripts/perf/quit-encode.ts   (build the app first)
-import { createServer } from "node:http"
 import {
   call,
   launchScripted,
   newProject,
   openProject,
-  processes,
   quit,
+  removeTemp,
   role,
+  sampleTree,
   send,
+  serve,
   sleep,
   stillAlive,
-  treeOf,
 } from "./lib.ts"
 
 const log = (line: string) => console.log(`[quit-encode] ${line}`)
-const server = createServer((_q, res) => {
-  res.writeHead(200, { "content-type": "text/html" })
-  res.end(`<!doctype html><title>Home</title><h1>Home</h1><button>Go</button>`)
-})
-await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
-const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+const { url, close } = await serve(
+  () => `<!doctype html><title>Home</title><h1>Home</h1><button>Go</button>`,
+)
 // A long scene: a long encode to quit during.
 const steps = Array.from({ length: 8 }, (_, i) => `  - { id: p${i}, action: pause, ms: 2500 }`)
 const yaml = `version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n${steps.join("\n")}\n`
@@ -41,8 +38,7 @@ try {
   const started = Date.now()
   while (ffmpeg === undefined) {
     if (Date.now() - started > 120_000) throw new Error("no ffmpeg seen in 2 min")
-    for (const p of treeOf(processes(), l.mainPid)) {
-      seen.set(p.pid, p.command.slice(0, 120))
+    for (const p of (await sampleTree(l.mainPid, seen)).procs) {
       if (role(p, l.mainPid) === "ffmpeg") ffmpeg = p.pid
     }
     if (ffmpeg === undefined) await sleep(50)
@@ -50,13 +46,14 @@ try {
   log(`ffmpeg ${ffmpeg} encoding; quitting`)
 } finally {
   log(`quit in ${await quit(l)} ms`)
-  server.close()
+  close()
 }
 let waited = 0
 for (const at of [500, 5000, 15000]) {
   await sleep(at - waited)
   waited = at
-  const left = stillAlive(seen)
+  const left = await stillAlive(seen)
   log(`after ${at} ms: ${left.length === 0 ? "nothing left" : left.join("; ")}`)
   if (at === 15000 && left.length > 0) process.exitCode = 1
 }
+removeTemp()

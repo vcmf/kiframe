@@ -53,14 +53,16 @@ runs in it: see the backlog); nothing left after quitting. ffmpeg's encode peaks
 ## Fixed by this audit
 
 - The chat pushed the whole window up as it grew (`scrollIntoView` scrolled the window's root,
-  its overflow hidden: the title bar out of view, a blank strip under the composer). Only the log
-  scrolls now. It follows the newest item while it's at its end (a message filled in, the log
-  resized when the composer comes back after a run), and stays where the user scrolled to read
-  until they send a message: only the user's own scrolling (a wheel, a key, a scrollbar drag)
-  takes it away from the end.
+  its overflow hidden: the title bar out of view, a blank strip under the composer). The root is
+  clipped now (`overflow: clip`: nothing but a scroller scrolls), and the log is reversed
+  (`flex-direction: column-reverse`): its end is its scroll origin, so layout itself keeps it at
+  the end as the chat grows or the log resizes (the composer swapped for the status bar), and
+  Chromium's scroll anchoring holds a reader who scrolled up (wheel, keys: the log is focusable,
+  a scrollbar drag). Code moves it only for the user's own message and a request the run waits on.
 - A stopped or failed recording was encoded (ffmpeg, seconds of CPU) and its video dropped at once
   by the take store: not encoded now (`encodeFailed: false`).
-- The agent's browser outlived its project (about 190 MB, 3 processes): closed with the project,
-  and a quit waits for a close under way.
+- The agent's browser outlived its project (about 190 MB, 3 processes): let go once the project's
+  agent is gone (never while a refused close keeps it), never waited for by the window, and
+  waited for by a quit.
 
 The rest is in BACKLOG ("Performance and resources").

@@ -6,7 +6,6 @@
 //
 // Usage: node scripts/perf/soak.ts [--cycles 20] [--switch-every 5]
 // Build the app first (pnpm --filter @kiframe/desktop build).
-import { createServer } from "node:http"
 import { mkdirSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -16,14 +15,14 @@ import {
   launchScripted,
   newProject,
   openProject,
-  processes,
   quit,
-  role,
+  removeTemp,
   root,
+  sampleTree,
   send,
+  serve,
   sleep,
   stillAlive,
-  treeOf,
 } from "./lib.ts"
 
 const { values } = parseArgs({
@@ -46,13 +45,7 @@ const pages: Record<string, string> = {
     <a href="/about">About</a><ul>${items}</ul>`,
   "/about": `<!doctype html><title>About</title><h1>About Acme</h1><p>We bill.</p>`,
 }
-const server = createServer((req, res) => {
-  const body = pages[req.url ?? "/"]
-  res.writeHead(body === undefined ? 404 : 200, { "content-type": "text/html" })
-  res.end(body ?? "not found")
-})
-await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
-const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+const { url, close } = await serve((path) => pages[path])
 
 const SCENE = `version: 1
 setup: [{ action: goto, url: / }]
@@ -87,21 +80,15 @@ const launchedMs = Date.now() - started
 const seen = new Map<number, string>()
 let phase = "start"
 const samples: string[] = ["t_s,phase,role,count,rss_mb,cpu"]
-const sample = () => {
+const sample = async () => {
   const t = ((Date.now() - started) / 1000).toFixed(1)
-  const by = new Map<string, { count: number; rss: number; cpu: number }>()
-  for (const p of treeOf(processes(), mainPid)) {
-    const r = role(p, mainPid)
-    seen.set(p.pid, `${r} ${p.command.slice(0, 120)}`)
-    const s = by.get(r) ?? { count: 0, rss: 0, cpu: 0 }
-    by.set(r, { count: s.count + 1, rss: s.rss + p.rssKb / 1024, cpu: s.cpu + p.cpu })
-  }
-  for (const [r, s] of by) {
+  const { byRole } = await sampleTree(mainPid, seen)
+  for (const [r, s] of byRole) {
     samples.push(`${t},${phase},${r},${s.count},${s.rss.toFixed(1)},${s.cpu.toFixed(1)}`)
   }
-  return by
+  return byRole
 }
-const sampler = setInterval(sample, 500)
+const sampler = setInterval(() => void sample(), 500)
 
 /** Main and window heaps after a forced GC (MB). */
 async function heaps() {
@@ -178,7 +165,7 @@ try {
     phase = "idle"
     await sleep(1500)
     const h = await heaps()
-    const by = sample()
+    const by = await sample()
     const procs = [...by.values()].reduce((s, v) => s + v.count, 0)
     const agent = [...by.entries()]
       .filter(([r]) => r.startsWith("agent"))
@@ -219,9 +206,10 @@ const quitMs = await quit(l).catch((e: unknown) => {
   return -1
 })
 await sleep(3000)
-const leftover = stillAlive(seen)
+const leftover = await stillAlive(seen)
 const tempLeft = tempEntries().filter((n) => !tempBefore.has(n))
-server.close()
+close()
+removeTemp()
 
 writeFileSync(join(out, "samples.csv"), samples.join("\n") + "\n")
 writeFileSync(join(out, "cycles.csv"), cycles.join("\n") + "\n")

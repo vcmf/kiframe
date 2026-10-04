@@ -1,17 +1,24 @@
 // How the built desktop app answers its window while it records (the model scripted): a cheap
 // request round trip (chat:state) every 100 ms and the window's frame gaps, idle and then during a
 // save, replay and recording. Build the app first. Usage: node scripts/perf/latency.ts
-import { createServer } from "node:http"
-import { call, launchScripted, newProject, openProject, quit, send, sleep, stats } from "./lib.ts"
+import {
+  call,
+  launchScripted,
+  newProject,
+  openProject,
+  quit,
+  removeTemp,
+  send,
+  serve,
+  sleep,
+  stats,
+} from "./lib.ts"
 
 const log = (line: string) => console.log(`[latency] ${line}`)
 const items = Array.from({ length: 80 }, (_, i) => `<li>Row ${i}</li>`).join("")
-const server = createServer((_q, res) => {
-  res.writeHead(200, { "content-type": "text/html" })
-  res.end(`<!doctype html><title>Home</title><h1>Home</h1><button>Go</button><ul>${items}</ul>`)
-})
-await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
-const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+const { url, close } = await serve(
+  () => `<!doctype html><title>Home</title><h1>Home</h1><button>Go</button><ul>${items}</ul>`,
+)
 const yaml = `version: 1
 setup: [{ action: goto, url: / }]
 steps:
@@ -80,5 +87,6 @@ try {
   }
 } finally {
   await quit(l).catch(() => undefined)
-  server.close()
+  close()
+  removeTemp()
 }

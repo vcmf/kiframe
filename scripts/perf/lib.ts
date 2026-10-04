@@ -1,9 +1,11 @@
 // What the perf scripts share: the process table and an app's process tree by role, and the built
 // desktop app launched with a scripted model on a throwaway profile, a project open.
-import { execFileSync } from "node:child_process"
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { execFile } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 import { createProject } from "@kiframe/project"
 import { _electron as electron, type ElectronApplication, type Page } from "playwright"
 
@@ -19,12 +21,15 @@ export interface Proc {
   command: string
 }
 
-/** Every process on the machine. */
-export function processes(): Proc[] {
-  return execFileSync("ps", ["-axo", "pid=,ppid=,rss=,pcpu=,command="], {
+const run = promisify(execFile)
+
+/** Every process on the machine (read without blocking the script: its timings stay its own). */
+export async function processes(): Promise<Proc[]> {
+  const { stdout } = await run("ps", ["-axo", "pid=,ppid=,rss=,pcpu=,command="], {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
   })
+  return stdout
     .split("\n")
     .map((l) => /^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(.*)$/.exec(l))
     .filter((m): m is RegExpExecArray => m !== null)
@@ -64,6 +69,54 @@ export function role(p: Proc, mainPid: number): string {
   return "other"
 }
 
+export interface RoleTotals {
+  count: number
+  rss: number
+  cpu: number
+}
+
+/** The app's processes now, by role (each seen noted, for what's left after quitting). */
+export async function sampleTree(
+  mainPid: number,
+  seen: Map<number, string>,
+): Promise<{ procs: Proc[]; byRole: Map<string, RoleTotals> }> {
+  const procs = treeOf(await processes(), mainPid)
+  const byRole = new Map<string, RoleTotals>()
+  for (const p of procs) {
+    const r = role(p, mainPid)
+    seen.set(p.pid, `${r} ${p.command.slice(0, 120)}`)
+    const t = byRole.get(r) ?? { count: 0, rss: 0, cpu: 0 }
+    byRole.set(r, { count: t.count + 1, rss: t.rss + p.rssKb / 1024, cpu: t.cpu + p.cpu })
+  }
+  return { procs, byRole }
+}
+
+/** A local site: each path's page (undefined: 404). */
+export async function serve(
+  page: (path: string) => string | undefined,
+): Promise<{ url: string; close: () => void }> {
+  const server = createServer((req, res) => {
+    const body = page(req.url ?? "/")
+    res.writeHead(body === undefined ? 404 : 200, { "content-type": "text/html" })
+    res.end(body ?? "not found")
+  })
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
+  const port = (server.address() as { port: number }).port
+  return { url: `http://127.0.0.1:${port}`, close: () => server.close() }
+}
+
+/** The temp folders a script made (profiles, projects): removed by `removeTemp`. */
+const temps: string[] = []
+const tempDir = (prefix: string) => {
+  const dir = mkdtempSync(join(tmpdir(), prefix))
+  temps.push(dir)
+  return dir
+}
+/** Removes every temp folder the script made (the app quit first: its takes are in its profile). */
+export function removeTemp(): void {
+  for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true })
+}
+
 /** A scripted model turn calling one tool. */
 export const call = (id: string, name: string, args: object) => ({
   kind: "tool_calls",
@@ -85,7 +138,7 @@ export async function launchScripted(options: {
   turns: object[]
   jsFlags?: string
 }): Promise<Launched> {
-  const profile = mkdtempSync(join(tmpdir(), "kiframe-perf-"))
+  const profile = tempDir("kiframe-perf-")
   writeFileSync(join(profile, "model.json"), JSON.stringify(options.turns))
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
@@ -109,7 +162,7 @@ export async function launchScripted(options: {
 
 /** A new project folder for the app at `url`. */
 export function newProject(id: string, name: string, url: string): string {
-  const dir = join(mkdtempSync(join(tmpdir(), "kiframe-perf-project-")), `${id}.kiframe`)
+  const dir = join(tempDir("kiframe-perf-project-"), `${id}.kiframe`)
   createProject(dir, { id, name, url })
   return dir
 }
@@ -150,7 +203,7 @@ export async function quit(l: Launched, ms = 30_000): Promise<number> {
       setTimeout(() => app.quit(), 0)
     })
     .catch(() => undefined)
-  while (processes().some((p) => p.pid === l.mainPid)) {
+  while ((await processes()).some((p) => p.pid === l.mainPid)) {
     if (Date.now() - at > ms) throw new Error(`the app didn't quit in ${ms} ms`)
     await sleep(50)
   }
@@ -158,8 +211,8 @@ export async function quit(l: Launched, ms = 30_000): Promise<number> {
 }
 
 /** The app's processes still alive among those seen. */
-export function stillAlive(seen: Map<number, string>): string[] {
-  const alive = new Set(processes().map((p) => p.pid))
+export async function stillAlive(seen: Map<number, string>): Promise<string[]> {
+  const alive = new Set((await processes()).map((p) => p.pid))
   return [...seen].filter(([pid]) => alive.has(pid)).map(([pid, what]) => `${pid} ${what}`)
 }
 

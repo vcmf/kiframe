@@ -4,7 +4,6 @@
 // and what was left running. Writes stress.json.
 //
 // Usage: node scripts/perf/stress.ts   (build the app first)
-import { createServer } from "node:http"
 import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import {
@@ -12,14 +11,15 @@ import {
   launchScripted,
   newProject,
   openProject,
-  processes,
   quit,
+  removeTemp,
   role,
   root,
+  sampleTree,
   send,
+  serve,
   sleep,
   stillAlive,
-  treeOf,
 } from "./lib.ts"
 
 const out = join(root, ".kiframe-local", "perf", `stress-${Date.now()}`)
@@ -28,18 +28,14 @@ const log = (line: string) => console.log(`[stress] ${line}`)
 
 // /flaky has its button on the replay (odd visits) and not on the recording (even ones).
 let flaky = 0
-const server = createServer((req, res) => {
-  res.writeHead(200, { "content-type": "text/html" })
-  if (req.url === "/flaky") {
-    flaky += 1
-    const button = flaky % 2 === 1 ? "<button>Go</button>" : ""
-    res.end(`<!doctype html><title>Flaky</title><h1>Flaky</h1>${button}`)
-    return
+const { url, close } = await serve((path) => {
+  if (path !== "/flaky") {
+    return `<!doctype html><title>Home</title><h1>Home</h1><button>Go</button><p>Text</p>`
   }
-  res.end(`<!doctype html><title>Home</title><h1>Home</h1><button>Go</button><p>Text</p>`)
+  flaky += 1
+  const button = flaky % 2 === 1 ? "<button>Go</button>" : ""
+  return `<!doctype html><title>Flaky</title><h1>Flaky</h1>${button}`
 })
-await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
-const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
 
 const long = (path: string) => `version: 1
 setup: [{ action: goto, url: ${path} }]
@@ -71,15 +67,16 @@ const seen = new Map<number, string>()
 let phase = "start"
 const ffmpegBy = new Map<string, Set<number>>()
 const sampler = setInterval(() => {
-  for (const p of treeOf(processes(), mainPid)) {
-    seen.set(p.pid, p.command.slice(0, 140))
-    if (role(p, mainPid) === "ffmpeg") {
-      ffmpegBy.set(phase, (ffmpegBy.get(phase) ?? new Set()).add(p.pid))
+  const at = phase
+  void sampleTree(mainPid, seen).then(({ procs }) => {
+    for (const p of procs) {
+      if (role(p, mainPid) === "ffmpeg")
+        ffmpegBy.set(at, (ffmpegBy.get(at) ?? new Set()).add(p.pid))
     }
-  }
+  })
 }, 100)
-const count = (prefix: string) =>
-  treeOf(processes(), mainPid).filter((p) => role(p, mainPid).startsWith(prefix)).length
+const count = async (prefix: string) =>
+  (await sampleTree(mainPid, seen)).procs.filter((p) => role(p, mainPid).startsWith(prefix)).length
 /** Until record_scene is running (the last tool group says 2 steps, running). */
 const untilRecording = () =>
   page.waitForFunction(
@@ -106,7 +103,7 @@ try {
   report.stop = {
     stopToStoppedMs: Date.now() - stopAt,
     ffmpegRuns: ffmpegBy.get("stop")?.size ?? 0,
-    ffmpegAfter: count("ffmpeg"),
+    ffmpegAfter: await count("ffmpeg"),
   }
   log(`stop: ${JSON.stringify(report.stop)}`)
 
@@ -118,18 +115,18 @@ try {
   report.fail = {
     turnMs: Date.now() - failAt,
     ffmpegRuns: ffmpegBy.get("fail")?.size ?? 0,
-    ffmpegAfter: count("ffmpeg"),
+    ffmpegAfter: await count("ffmpeg"),
   }
   log(`fail: ${JSON.stringify(report.fail)}`)
 
   // 3. The project closed: what of the agent's browser stays.
   phase = "close"
-  const agentOpen = count("agent")
+  const agentOpen = await count("agent")
   await page.getByRole("button", { name: /Stress/ }).click()
   await page.getByRole("menuitem", { name: "Close project" }).click()
   await page.getByRole("heading", { name: "Start a demo" }).waitFor()
   await sleep(3000)
-  report.close = { agentProcessesOpen: agentOpen, agentProcessesAfterClose: count("agent") }
+  report.close = { agentProcessesOpen: agentOpen, agentProcessesAfterClose: await count("agent") }
   log(`close: ${JSON.stringify(report.close)}`)
 
   // 4. Quit while recording.
@@ -150,7 +147,7 @@ let waited = 0
 for (const at of [500, 5000, 15000]) {
   await sleep(at - waited)
   waited = at
-  lingering[`${at}ms`] = stillAlive(seen)
+  lingering[`${at}ms`] = await stillAlive(seen)
 }
 report.quit = { quitMs, lingering }
 log(
@@ -158,7 +155,8 @@ log(
     .map((x) => x.length)
     .join("/")}`,
 )
-server.close()
+close()
+removeTemp()
 writeFileSync(join(out, "stress.json"), JSON.stringify(report, null, 2))
 log(`written to ${out}`)
 if (report.error !== undefined) process.exitCode = 1
