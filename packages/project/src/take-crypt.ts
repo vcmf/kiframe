@@ -22,13 +22,17 @@ export function isEncrypted(bytes: Uint8Array): boolean {
 }
 
 export function encrypt(plain: Uint8Array, key: Uint8Array): Buffer {
+  return Buffer.concat(encryptParts(plain, key))
+}
+
+/** An encrypted file's parts in order (written in turn: the body never copied into one buffer). */
+function encryptParts(plain: Uint8Array, key: Uint8Array): Buffer[] {
   checkKey(key)
   const iv = randomBytes(IV_BYTES)
   const cipher = createCipheriv("aes-256-gcm", key, iv)
-  // One concatenation (GCM's final adds no bytes; the body isn't copied twice).
   const body = cipher.update(plain)
   const end = cipher.final()
-  return Buffer.concat([MAGIC, iv, body, end, cipher.getAuthTag()])
+  return [MAGIC, iv, body, end, cipher.getAuthTag()]
 }
 
 /** The plain bytes; throws on another key or a file changed since (its tag doesn't match). */
@@ -74,10 +78,18 @@ export async function isEncryptedFile(path: string): Promise<boolean> {
  */
 export async function encryptFile(path: string, key: Uint8Array): Promise<boolean> {
   if (await isEncryptedFile(path)) return false
-  const plain = await readFile(path)
-  await writeAtomicAsync(path, encrypt(plain, key))
+  await encryptPlainFile(path, key)
   return true
 }
+
+/** Encrypts a file known to be plain (its header just read): as `encryptFile`, without the check. */
+export async function encryptPlainFile(path: string, key: Uint8Array): Promise<void> {
+  const plain = await readFile(path)
+  await writeAtomicAsync(path, encryptParts(plain, key))
+}
+
+/** A key, or how to get it (asked only when a file read turns out encrypted). */
+export type KeySource = Uint8Array | undefined | (() => Promise<Uint8Array | undefined>)
 
 /**
  * A file's plain bytes: decrypted when encrypted (a key needed), as they are when plain (a take
@@ -92,13 +104,19 @@ function plainOf(bytes: Buffer, key: Uint8Array | undefined, sealed: boolean): B
   return decrypt(bytes, key)
 }
 
-/** A take file's plain bytes, read without holding the thread (a take's frames are tens of MB). */
+/**
+ * A take file's plain bytes, read without holding the thread (a take's frames are tens of MB):
+ * read once, the key asked only if what was read is encrypted (a file sealed meanwhile is read
+ * as it was, plain, or as it is, with the key: never one judged and the other read).
+ */
 export async function readTakeFileAsync(
   path: string,
-  key: Uint8Array | undefined,
+  key: KeySource,
   sealed = false,
 ): Promise<Buffer> {
-  return plainOf(await readFile(path), key, sealed)
+  const bytes = await readFile(path)
+  const resolved = typeof key === "function" && isEncrypted(bytes) ? await key() : key
+  return plainOf(bytes, typeof resolved === "function" ? undefined : resolved, sealed)
 }
 
 /** A take file's plain bytes (a small one: events, cursor). */

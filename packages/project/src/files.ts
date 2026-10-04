@@ -48,7 +48,7 @@ export function writeAtomic(path: string, content: string): void {
 /** As `writeAtomic`, without holding the thread (a take's frames: tens of MB). */
 export async function writeAtomicAsync(
   path: string,
-  content: Uint8Array,
+  content: Uint8Array | readonly Uint8Array[],
   mode = 0o600,
 ): Promise<void> {
   const folder = dirname(path)
@@ -56,7 +56,10 @@ export async function writeAtomicAsync(
   try {
     const file = await open(tmp, "w", mode)
     try {
-      await file.writeFile(content)
+      // Parts written in turn (an encrypted file's header, body and tag: never joined first).
+      for (const part of Array.isArray(content) ? content : [content as Uint8Array]) {
+        await file.write(part)
+      }
       await file.sync()
     } finally {
       await file.close()

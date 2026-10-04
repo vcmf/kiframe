@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -388,5 +389,47 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       key: () => Promise.reject(new Error("locked")),
     })
     expect((await locked.open(old.take)).video.length).toBeGreaterThan(0)
+  })
+
+  it("asks a refusing keychain once at start, however many takes wait to be sealed", async () => {
+    const plainStore = newStore()
+    await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    await record(plainStore, "other", "  - { id: b, action: pause, ms: 50 }\n")
+    let asked = 0
+    const refusing = new TakeStore(plainStore.root, {
+      key: () => {
+        asked += 1
+        return Promise.reject(new Error("locked"))
+      },
+    })
+    expect(await refusing.seal()).toEqual({ sealed: 0, failed: ["the take key: locked"] })
+    expect(asked).toBe(1)
+  })
+
+  it("keeps a take a disk error stopped from being encrypted, says so, and seals it next start", async () => {
+    const key = randomBytes(32)
+    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.resolve(key),
+    })
+    const dir = store.newTakeDir("p1", "login")
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const s = parseScenarioYaml(
+      `version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n  - { id: a, action: pause, ms: 50 }\n`,
+    )
+    await recordScenario(page, s, config(), { outDir: dir, timeoutMs: 1500 })
+    await page.close()
+    // Nothing can be written in the take's folder (as on a full disk).
+    chmodSync(dir, 0o500)
+    let settled
+    try {
+      settled = await store.settle(dir)
+    } finally {
+      chmodSync(dir, 0o700)
+    }
+    expect(settled?.warning).toMatch(/stays unencrypted until Kiframe starts again/)
+    expect(existsSync(join(dir, ".sealed"))).toBe(false)
+    expect(isEncrypted(readFileSync(join(dir, "frames.webm")))).toBe(false)
+    expect(await store.seal()).toEqual({ sealed: 1, failed: [] })
+    expect(isEncrypted(readFileSync(join(dir, "frames.webm")))).toBe(true)
   })
 })

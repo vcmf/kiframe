@@ -647,8 +647,10 @@ export class Studio {
       take = await takes.settle(dir)
     } catch (error) {
       if (stopped !== undefined) throw stopped
-      // The take's own failure first (encryption refused: it was deleted), then the recorder's.
-      return failed(`recording failed: ${failure(error)}${why !== undefined ? ` (${why})` : ""}`)
+      // The recorder's own reason first; then why the take went (encryption refused: deleted).
+      return failed(
+        `recording failed: ${why !== undefined ? `${why}; then ${failure(error)}` : failure(error)}`,
+      )
     }
     if (stopped !== undefined) throw stopped
     if (take === undefined || recorded === undefined) {
@@ -667,7 +669,11 @@ export class Studio {
       )
     }
     const { warnings } = made
-    const notes = [...recorded.warnings, ...warnings]
+    const notes = [
+      ...recorded.warnings,
+      ...warnings,
+      ...(take.warning !== undefined ? [take.warning] : []),
+    ]
     return {
       ok: true,
       text:

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { CursorSample, TakeEvent, TakeMeta } from "@kiframe/schema"
-import { readTakeFile } from "./take-crypt.ts"
+import { type KeySource, readTakeFile, readTakeFileAsync } from "./take-crypt.ts"
 
 /** The newest take format this Kiframe reads (a newer one is refused, never skipped as not a take). */
 export const TAKE_VERSION = 1
@@ -46,5 +46,27 @@ export function readTakeRecords(dir: string, key?: Uint8Array, sealed = false): 
     meta: TakeMeta.parse(raw),
     events: lines("events.jsonl").map((e) => TakeEvent.parse(e)),
     cursor: lines("cursor.jsonl").map((c) => CursorSample.parse(c)),
+  }
+}
+
+/** As `readTakeRecords`, read without holding the thread, the key asked only if a file is encrypted. */
+export async function readTakeRecordsAsync(
+  dir: string,
+  key: KeySource,
+  sealed = false,
+): Promise<TakeRecords> {
+  const raw = JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as unknown
+  const newer = newerTake(raw, dir)
+  if (newer !== undefined) throw newer
+  const lines = async (file: string) =>
+    (await readTakeFileAsync(join(dir, file), key, sealed))
+      .toString("utf8")
+      .split("\n")
+      .filter((l) => l.trim() !== "")
+      .map((l) => JSON.parse(l) as unknown)
+  return {
+    meta: TakeMeta.parse(raw),
+    events: (await lines("events.jsonl")).map((e) => TakeEvent.parse(e)),
+    cursor: (await lines("cursor.jsonl")).map((c) => CursorSample.parse(c)),
   }
 }

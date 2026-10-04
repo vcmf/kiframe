@@ -1,6 +1,8 @@
 // The OpenRouter key, in the OS keychain under the app's own service: never one of a project's
 // secrets (the agent lists those by name), never written to a file, never sent to the window.
 import { randomBytes } from "node:crypto"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { TAKE_KEY_BYTES } from "@kiframe/project/take-crypt"
 import type { SecretBackend } from "@kiframe/vault"
 
@@ -9,10 +11,12 @@ const ACCOUNT = "openrouter-api-key"
 const TAKE_KEY_ACCOUNT = "take-store-key"
 
 /**
- * The take store's key: the one in the keychain, else a new one, stored before it's used. One that
- * doesn't read as a key is never replaced (every take encrypted with it would be lost): said.
+ * The take store's key: the one in the keychain, else a new one, stored before it's used. A key is
+ * made once per store: `made` (a file in app data) says one was, and then a keychain that has
+ * none (locked, a backend saying "no entry" wrongly) is refused, never answered with a new key
+ * over the old (every take encrypted with it would be lost). One that doesn't read as a key: said.
  */
-export async function takeStoreKey(backend: SecretBackend): Promise<Uint8Array> {
+export async function takeStoreKey(backend: SecretBackend, made: string): Promise<Uint8Array> {
   const stored = await backend.get(TAKE_KEY_ACCOUNT)
   if (stored !== undefined && stored !== "") {
     if (!new RegExp(`^[0-9a-f]{${TAKE_KEY_BYTES * 2}}$`).test(stored)) {
@@ -20,8 +24,15 @@ export async function takeStoreKey(backend: SecretBackend): Promise<Uint8Array> 
     }
     return Buffer.from(stored, "hex")
   }
+  if (existsSync(made)) {
+    throw new Error(
+      "the take key is missing from the keychain (locked, or removed): recordings can't be read or made until it's back",
+    )
+  }
   const key = randomBytes(TAKE_KEY_BYTES)
   await backend.set(TAKE_KEY_ACCOUNT, key.toString("hex"))
+  mkdirSync(dirname(made), { recursive: true, mode: 0o700 })
+  writeFileSync(made, `${new Date().toISOString()}\n`, { mode: 0o600 })
   return key
 }
 

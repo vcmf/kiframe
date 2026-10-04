@@ -247,7 +247,9 @@ function start(): void {
   void app.whenReady().then(() => {
     const data = app.getPath("userData")
     // Takes encrypted at rest with the app's own key (made on first use).
-    takes = new TakeStore(join(data, "data"), { key: () => takeStoreKey(appKeychain) })
+    takes = new TakeStore(join(data, "data"), {
+      key: () => takeStoreKey(appKeychain, join(data, "data", "take-key-made")),
+    })
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
