@@ -56,6 +56,22 @@ describe("removed projects' takes", () => {
   })
 })
 
+describe("removed projects, read with care", () => {
+  it("never counts an unmounted share's empty mount folder, nor an entry that doesn't read", () => {
+    const { root, takes, data, index } = setup()
+    const mount = join(root, "mnt", "share")
+    mkdirSync(mount, { recursive: true })
+    index.seen("p1", join(mount, "demo.kiframe"))
+    const t0 = Date.now()
+    index.sweepRemoved(takes, t0)
+    expect(index.sweepRemoved(takes, t0 + 2 * REMOVED_AFTER_MS)).toEqual([])
+    // A hand-edited or future index: entries without folders are left alone, never removed.
+    writeFileSync(join(data, "projects.json"), JSON.stringify({ p1: {}, p2: { dirs: [] }, p3: 7 }))
+    expect(() => index.sweepRemoved(takes, t0)).not.toThrow()
+    expect(index.sweepRemoved(takes, t0 + 2 * REMOVED_AFTER_MS)).toEqual([])
+  })
+})
+
 describe("the take store's key", () => {
   it("is made once and kept in the keychain; one that doesn't read is never replaced", async () => {
     const backend = memoryBackend()

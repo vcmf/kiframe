@@ -1,5 +1,5 @@
 import { generate } from "@kiframe/generators"
-import { type OpenedProject, saveScene, type TakeStore } from "@kiframe/project"
+import { type OpenedProject, saveScene, syncPins, type TakeStore } from "@kiframe/project"
 import {
   locatorFor,
   recordScenario,
@@ -667,7 +667,7 @@ export class Studio {
     }
     // The new take is the scene's (pinned); the one before is scratch, evicted beyond the budget.
     try {
-      takes.holdOnly(this.project.project.id, sceneId, take.meta.takeKey)
+      syncPins(this.project, takes)
       takes.evict()
     } catch {
       // The pins are synced again when the project opens; the budget at the next recording.

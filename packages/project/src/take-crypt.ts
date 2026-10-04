@@ -2,7 +2,9 @@
 // `magic | iv | ciphertext | tag`. A file without the magic is a take from before (plain). Apart
 // from the store: readers that only need to tell an encrypted file (the exporter) load no runtime.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto"
-import { readFileSync, renameSync, writeFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
+import { readFile } from "node:fs/promises"
+import { writeAtomic } from "./files.ts"
 
 const MAGIC = Buffer.from("KFT\u0001", "latin1")
 const IV_BYTES = 12
@@ -30,7 +32,10 @@ export function decrypt(bytes: Uint8Array, key: Uint8Array): Buffer {
   if (!isEncrypted(bytes) || bytes.length < MAGIC.length + IV_BYTES + TAG_BYTES) {
     throw new Error("not an encrypted take file")
   }
-  const buf = Buffer.from(bytes)
+  // The bytes as they are (a copy of a take's frames would double what decrypting holds).
+  const buf = Buffer.isBuffer(bytes)
+    ? bytes
+    : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const iv = buf.subarray(MAGIC.length, MAGIC.length + IV_BYTES)
   const tag = buf.subarray(buf.length - TAG_BYTES)
   const body = buf.subarray(MAGIC.length + IV_BYTES, buf.length - TAG_BYTES)
@@ -45,13 +50,25 @@ export function decrypt(bytes: Uint8Array, key: Uint8Array): Buffer {
   }
 }
 
-/** Encrypts a file in place (written whole next to it, then swapped in; already encrypted: kept). */
+/**
+ * Encrypts a file in place: written whole and synced next to it, then swapped in (a crash leaves
+ * the plain file or the encrypted one, never a torn one); already encrypted: kept.
+ */
 export function encryptFile(path: string, key: Uint8Array): void {
   const plain = readFileSync(path)
   if (isEncrypted(plain)) return
-  const tmp = `${path}.enc-tmp`
-  writeFileSync(tmp, encrypt(plain, key), { mode: 0o600 })
-  renameSync(tmp, path)
+  writeAtomic(path, encrypt(plain, key), 0o600)
+}
+
+/** As `readTakeFile`, read without holding the thread (a take's frames are tens of MB). */
+export async function readTakeFileAsync(
+  path: string,
+  key: Uint8Array | undefined,
+): Promise<Buffer> {
+  const bytes = await readFile(path)
+  if (!isEncrypted(bytes)) return bytes
+  if (key === undefined) throw new Error("the take is encrypted: no take key here")
+  return decrypt(bytes, key)
 }
 
 /** A file's plain bytes: decrypted when encrypted (a key needed), as they are when plain. */

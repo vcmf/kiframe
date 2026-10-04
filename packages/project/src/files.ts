@@ -19,12 +19,12 @@ const TMP = /^\.[0-9a-f]{12}\.tmp$/
  * target, then the folder synced (a crash or a power loss never leaves a half-written or empty
  * project file).
  */
-export function writeAtomic(path: string, content: string): void {
+export function writeAtomic(path: string, content: string | Uint8Array, mode?: number): void {
   const folder = dirname(path)
   const created = mkdirSync(folder, { recursive: true })
   const tmp = join(folder, `.${randomBytes(6).toString("hex")}.tmp`)
   try {
-    const fd = openSync(tmp, "w")
+    const fd = openSync(tmp, "w", mode)
     try {
       // (writeFileSync on a descriptor loops until every byte is written: no short write.)
       writeFileSync(fd, content)

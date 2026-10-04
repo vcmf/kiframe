@@ -1,5 +1,5 @@
 import { defineTool, type Tool } from "@kiframe/agent"
-import { saveScene } from "@kiframe/project"
+import { saveScene, syncPins } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
 import { isCyclic } from "./refs.ts"
@@ -213,7 +213,7 @@ const saveSceneTool = defineTool({
     // is the scene's no longer (scratch).
     saveScene(studio.project, scene, { scenario: checked.scenario, composition: null })
     try {
-      studio.options.takes.holdOnly(studio.project.project.id, id, undefined)
+      syncPins(studio.project, studio.options.takes)
     } catch {
       // synced again when the project opens
     }

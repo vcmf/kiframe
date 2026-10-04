@@ -97,10 +97,11 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
 
 ## Take store (M1-8)
-- **Plaintext while recording:** the recorder writes frames, events and cursor plain into its staging folder (in the user-only store); the take is encrypted as it settles. A crash leaves them plain until the next start's sweep. Encrypting as the recorder writes would close it (the recorder taking a writer from the store).
+- **Plaintext while recording:** the recorder writes frames, events and cursor plain into its staging folder (in the user-only store); the take is encrypted as it settles. A crash leaves them plain until the next start (its sweep deletes staging, its seal encrypts a placed take). Encrypting as the recorder writes would close it (the recorder taking a writer from the store).
 - **Deleting isn't wiping:** an evicted or removed take's bytes may stay on an SSD (encrypted, apart from the gap above). With the key per store, forgetting the key forgets every take at once (a "delete all recordings" later).
 - **Another machine:** takes don't move without their key (in this machine's keychain). An export of the key, or a store moved with it, later.
-- **Pins after a branch switch:** pins are synced with a project's compositions when it opens; a branch switched while the app was closed can leave the new branch's take unpinned until then, and the start's eviction (only beyond the budget) could take it ("its take is gone: record the scene again", the honest contract).
+- **Pins of a project not found at start:** pins are synced at start for every project folder the app knows, and eviction only touches synced projects; a project on a drive not there keeps every take until it's back. A take only another git branch's composition names (not checked out) is scratch: evicted beyond the budget ("its take is gone: record the scene again", the honest contract).
+- **Removed vs unplugged:** a project counts as removed when its folder is gone and the folder around it is present and not empty (an unmounted share's mount folder is empty). A share mounted inside a non-empty folder, unmounted for 7 days, would read as removed.
 - **Exporter CLI:** reads plain takes only; an encrypted one is refused ("no take key here"). Exporting from the app (M3-3) decrypts in main.
 - **Not yet:** the storage view (pinned and scratch sizes, "Free up space", deleting a pinned take with a warning: M4-6), export and version pins (M3-3, M1-10).
 

@@ -321,13 +321,22 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       takes.push(take)
     }
     const [a, b, c] = takes as [StoredTake, StoredTake, StoredTake]
+    const named = (key: string | undefined) => new Map([["login", key]])
+    // Never synced in this process: nothing of the project is evicted (its pins aren't known).
+    expect(new TakeStore(store.root, { scratchBudget: 0 }).evict()).toEqual([])
     // The scene's composition holds c; the one before (b) is let go when it moves to c.
-    store.holdOnly("p1", "login", b.meta.takeKey)
-    store.holdOnly("p1", "login", c.meta.takeKey)
+    store.syncProject("p1", "/copy-a", named(b.meta.takeKey))
+    store.syncProject("p1", "/copy-a", named(c.meta.takeKey))
     expect(existsSync(join(b.dir, "pin.json"))).toBe(false)
     expect(JSON.parse(readFileSync(join(c.dir, "pin.json"), "utf8"))).toEqual({
-      holders: [{ project: "p1", scene: "login", by: "composition" }],
+      holders: [{ project: "p1", dir: "/copy-a", scene: "login", by: "composition" }],
     })
+    // Another copy of the project (its own folder) holds its own take: neither lets go of the other's.
+    store.syncProject("p1", "/copy-b", named(a.meta.takeKey))
+    store.syncProject("p1", "/copy-a", named(c.meta.takeKey))
+    expect(existsSync(join(a.dir, "pin.json"))).toBe(true)
+    store.syncProject("p1", "/copy-b", named(undefined))
+    expect(existsSync(join(a.dir, "pin.json"))).toBe(false)
     // a played more recently than b: b goes first.
     writeFileSync(join(a.dir, "used"), String(Date.now()))
     writeFileSync(join(b.dir, "used"), String(Date.now() - 60_000))
@@ -339,14 +348,44 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
         0,
       )
     const budgeted = new TakeStore(store.root, { scratchBudget: size(a.dir) + 1 })
+    budgeted.syncProject("p1", "/copy-a", named(c.meta.takeKey))
     expect(budgeted.evict()).toEqual([b.dir])
     expect(existsSync(a.dir) && existsSync(c.dir)).toBe(true)
     // Nothing left to go within budget; the pinned take never goes, even past it.
     const none = new TakeStore(store.root, { scratchBudget: 0 })
+    none.syncProject("p1", "/copy-a", named(c.meta.takeKey))
     expect(none.evict()).toEqual([a.dir])
     expect(existsSync(c.dir)).toBe(true)
     // A project removed: every take of it, pinned too.
     store.removeProject("p1")
     expect(existsSync(join(store.root, "takes", "p1"))).toBe(false)
+  })
+
+  it("seals at start what a crash left plain, and never keeps a take it can't encrypt", async () => {
+    const key = randomBytes(32)
+    const plainStore = newStore()
+    const { take } = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    writeFileSync(join(take.dir, ".0123456789ab.tmp"), "half written")
+    const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(key) })
+    expect(await keyed.seal()).toBe(1)
+    expect(isEncrypted(readFileSync(join(take.dir, "frames.webm")))).toBe(true)
+    expect(existsSync(join(take.dir, ".0123456789ab.tmp"))).toBe(false)
+    expect((await keyed.open(take)).records.events.length).toBeGreaterThan(0)
+    // The keychain refusing: the take is deleted, never kept plain.
+    const refused = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.reject(new Error("the keychain said no")),
+    })
+    const dir = refused.newTakeDir("p1", "login")
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const s = parseScenarioYaml(
+      `version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n  - { id: a, action: pause, ms: 50 }\n`,
+    )
+    await recordScenario(page, s, config(), { outDir: dir, timeoutMs: 1500 })
+    await page.close()
+    await expect(refused.settle(dir)).rejects.toThrow(
+      /couldn't be encrypted \(the keychain said no\): deleted/,
+    )
+    expect(existsSync(dir)).toBe(false)
   })
 })

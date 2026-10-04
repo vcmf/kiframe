@@ -2,7 +2,7 @@
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { type LlmClient, OpenAiCompatibleClient } from "@kiframe/agent"
-import { type OpenedProject, TakeStore } from "@kiframe/project"
+import { type OpenedProject, openProject, syncPins, TakeStore } from "@kiframe/project"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import { type Browser, chromium } from "playwright"
@@ -19,7 +19,7 @@ import { readStatus } from "./status.ts"
 import { KeyStore, takeStoreKey } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
-import { ProjectIndex, syncPins } from "./project-index.ts"
+import { ProjectIndex } from "./project-index.ts"
 import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
@@ -128,6 +128,32 @@ function start(): void {
       return vault()
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * At start, after the sweep: plain takes encrypted (a crash, takes from before), removed
+   * projects' takes deleted, every known project's pins synced (from its folder as it is now),
+   * then scratch takes beyond the budget evicted. Said if it fails.
+   */
+  const tidyTakes = async (): Promise<void> => {
+    if (takes === undefined || projects === undefined) return
+    try {
+      await takes.seal()
+      projects.sweepRemoved(takes)
+      for (const { dirs } of projects.known()) {
+        for (const dir of dirs) {
+          try {
+            syncPins(openProject(dir), takes)
+          } catch {
+            // Not there now (moved, unplugged): its takes are kept (never evicted unsynced).
+          }
+        }
+      }
+      takes.evict()
+    } catch (e) {
+      error = `couldn't tidy old recordings: ${message(e)}`
+      void status().then((now) => emit(window, "status", now))
     }
   }
 
@@ -346,16 +372,12 @@ function start(): void {
       setImmediate(() => {
         try {
           takes?.sweep()
-          // Removed projects' takes, then scratch takes beyond the budget.
-          if (takes !== undefined) {
-            projects?.sweepRemoved(takes)
-            takes.evict()
-          }
         } catch (e) {
           // After the window's first read: pushed to it (not an action's result).
           error = `couldn't clean up old recordings: ${message(e)}`
           void status().then((now) => emit(window, "status", now))
         }
+        void tidyTakes()
       })
     })
   })

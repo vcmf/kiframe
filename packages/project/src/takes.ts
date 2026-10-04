@@ -14,7 +14,8 @@ import {
 import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
-import { encryptFile, readTakeFile } from "./take-crypt.ts"
+import type { OpenedProject } from "./project.ts"
+import { encryptFile, readTakeFileAsync } from "./take-crypt.ts"
 import { newerTake, readTakeRecords, type TakeRecords } from "./take-records.ts"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
@@ -42,9 +43,13 @@ export interface OpenedTake {
   video: Buffer
 }
 
-/** What holds a take (a pin): a scene's composition; later an export, a named version. */
+/**
+ * What holds a take (a pin): a scene's composition in one copy of a project (its folder: two
+ * copies of a project, a worktree, hold their own takes); later an export, a named version.
+ */
 export interface Holder {
   project: string
+  dir: string
   scene: string
   by: "composition"
 }
@@ -71,6 +76,10 @@ export class TakeStore {
   readonly root: string
   readonly #options: TakeStoreOptions
   #key: Promise<Uint8Array> | undefined
+  /** Projects whose pins were synced in this process: only their scratch takes are evicted. */
+  readonly #synced = new Set<string>()
+  /** Take folders' sizes, once measured (a take never grows: its pin and used files are bytes). */
+  readonly #sizes = new Map<string, number>()
 
   constructor(root: string, options: TakeStoreOptions = {}) {
     this.root = root
@@ -123,37 +132,81 @@ export class TakeStore {
     const take = readTake(dir)
     if (take instanceof Error) throw take
     if (take === undefined) return undefined
-    // Encrypted before it counts (a crash first: its files read either way, one at a time).
-    const key = await this.#theKey()
-    if (key !== undefined) {
-      for (const file of sealed(dir)) encryptFile(file, key)
+    // Encrypted before it counts. No key (the keychain refused): never kept plain, deleted. A
+    // crash partway: the start's `seal` encrypts what's left plain.
+    if (this.#options.key !== undefined) {
+      try {
+        const key = await this.#theKey()
+        if (key !== undefined) for (const file of sealed(dir)) encryptFile(file, key)
+      } catch (error) {
+        rmSync(dir, { recursive: true, force: true })
+        throw new Error(
+          `the take couldn't be encrypted (${error instanceof Error ? error.message : String(error)}): deleted, record the scene again`,
+          { cause: error },
+        )
+      }
     }
     markUsed(dir)
     return take
+  }
+
+  /**
+   * At the app's start, after `sweep`: every placed take's files encrypted (a crash between the
+   * recorder placing a take and its encryption, a take from before), and a crash's half-written
+   * files removed. The takes sealed.
+   */
+  async seal(): Promise<number> {
+    const key = this.#options.key === undefined ? undefined : await this.#theKey()
+    let count = 0
+    const takes = join(this.root, "takes")
+    for (const project of list(takes)) {
+      for (const scene of list(join(takes, project))) {
+        for (const name of list(join(takes, project, scene))) {
+          if (!TAKE_DIR.test(name)) continue
+          const dir = join(takes, project, scene, name)
+          for (const leftover of list(dir).filter((n) => /^\.[0-9a-f]{12}\.tmp$/.test(n))) {
+            rmSync(join(dir, leftover), { force: true })
+          }
+          if (key === undefined) continue
+          const files = sealed(dir)
+          for (const file of files) encryptFile(file, key)
+          if (files.length > 0) count += 1
+        }
+      }
+    }
+    return count
   }
 
   /** A take's records and frames, decrypted (a key needed for an encrypted one). Marks it used. */
   async open(take: StoredTake): Promise<OpenedTake> {
     const key = await this.#theKey()
     const records = readTakeRecords(take.dir, key)
-    const video = readTakeFile(join(take.dir, "frames.webm"), key)
+    // The frames read without holding the thread (tens of MB).
+    const video = await readTakeFileAsync(join(take.dir, "frames.webm"), key)
     markUsed(take.dir)
     return { records, video }
   }
 
   /**
-   * The scene's composition holds this take (or none): the scene's other takes are let go by it
-   * (scratch, unless something else holds them).
+   * One copy of a project (its folder) holds the takes its compositions name now, and no others
+   * (a scene recorded again, given new steps, or removed lets its old take go). Its scratch takes
+   * may then be evicted (a project never synced in this process keeps every take).
    */
-  holdOnly(projectId: string, sceneId: string, takeKey: string | undefined): void {
-    const holder: Holder = { project: projectId, scene: sceneId, by: "composition" }
-    const same = (h: Holder) =>
-      h.project === holder.project && h.scene === holder.scene && h.by === holder.by
-    for (const take of this.#takes(projectId, sceneId, false)) {
-      const holders = pinsOf(take.dir).filter((h) => !same(h))
-      if (take.meta.takeKey === takeKey) holders.push(holder)
-      writePins(take.dir, holders)
+  syncProject(projectId: string, dir: string, named: Map<string, string | undefined>): void {
+    const of = join(this.root, "takes", ProjectId.parse(projectId))
+    for (const scene of list(of)) {
+      for (const name of list(join(of, scene))) {
+        if (!TAKE_DIR.test(name)) continue
+        const take = readTake(join(of, scene, name))
+        if (take === undefined || take instanceof Error) continue
+        const holders = pinsOf(take.dir).filter((h) => !(h.project === projectId && h.dir === dir))
+        if (named.get(scene) === take.meta.takeKey) {
+          holders.push({ project: projectId, dir, scene, by: "composition" })
+        }
+        writePins(take.dir, holders)
+      }
     }
+    this.#synced.add(projectId)
   }
 
   /**
@@ -164,13 +217,19 @@ export class TakeStore {
     const budget = this.#options.scratchBudget ?? SCRATCH_BUDGET
     const scratch: { dir: string; used: number; size: number }[] = []
     const takes = join(this.root, "takes")
-    for (const project of list(takes)) {
+    // Only projects whose pins are known now (an older take may have no pin.json yet).
+    for (const project of list(takes).filter((p) => this.#synced.has(p))) {
       for (const scene of list(join(takes, project))) {
         for (const name of list(join(takes, project, scene))) {
           if (!TAKE_DIR.test(name)) continue
           const dir = join(takes, project, scene, name)
           if (pinsOf(dir).length > 0) continue
-          scratch.push({ dir, used: usedAt(dir), size: sizeOf(dir) })
+          let size = this.#sizes.get(dir)
+          if (size === undefined) {
+            size = sizeOf(dir)
+            this.#sizes.set(dir, size)
+          }
+          scratch.push({ dir, used: usedAt(dir), size })
         }
       }
     }
@@ -180,6 +239,7 @@ export class TakeStore {
       if (total <= budget) break
       try {
         rmSync(take.dir, { recursive: true, force: true })
+        this.#sizes.delete(take.dir)
         total -= take.size
         gone.push(take.dir)
       } catch {
@@ -282,7 +342,7 @@ function pinsOf(dir: string): Holder[] {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as { holders?: Holder[] }
     return Array.isArray(parsed.holders) ? parsed.holders : []
   } catch {
-    return [{ project: "?", scene: "?", by: "composition" }]
+    return [{ project: "?", dir: "?", scene: "?", by: "composition" }]
   }
 }
 
@@ -382,4 +442,10 @@ function list(dir: string): string[] {
   } catch {
     return []
   }
+}
+
+/** A project's pins synced with its compositions as they are (on open, after a save or a recording). */
+export function syncPins(opened: OpenedProject, takes: TakeStore): void {
+  const named = new Map([...opened.scenes].map(([id, s]) => [id, s.composition?.take?.key]))
+  takes.syncProject(opened.project.id, opened.dir, named)
 }
