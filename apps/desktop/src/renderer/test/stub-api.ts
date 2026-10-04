@@ -9,6 +9,13 @@ import type {
   KiframeApi,
 } from "../../shared/ipc.ts"
 
+// jsdom has no ResizeObserver (the app's window has one): a stand-in that never reports.
+globalThis.ResizeObserver ??= class {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
 export const status = (over: Partial<AppStatus> = {}): AppStatus => ({
   hasKey: false,
   project: null,

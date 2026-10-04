@@ -68,6 +68,8 @@ beforeAll(async () => {
         value: "{{secrets.acme.password}}",
       }),
       { kind: "text", text: "Signed in." },
+      // A long chat (more than the window holds).
+      ...Array.from({ length: 14 }, (_, i) => ({ kind: "text", text: `Noted ${i}.` })),
     ]),
   )
   env.KIFRAME_TEST_MODEL = model
@@ -215,6 +217,43 @@ describe("the desktop app", () => {
       .poll(() => page.getByText("Signed in.").isVisible(), { timeout: 30_000 })
       .toBe(true)
     expect(await page.content()).not.toContain("hunter2-e2e-secret")
+  })
+
+  it("keeps the window still as the chat grows: only the log scrolls, to its newest item", async () => {
+    const box = page.getByLabel("Message the agent")
+    for (let i = 0; i < 14; i++) {
+      await box.fill(`Note ${i}`)
+      await box.press("Enter")
+      await expect.poll(() => page.getByText(`Noted ${i}.`).isVisible()).toBe(true)
+    }
+    // As of the next frame (the composer back after the run resizes the log; followed then).
+    const layout = () =>
+      page.evaluate(() => {
+        const log = document.querySelector(".chat-body")
+        return {
+          root: document.scrollingElement?.scrollTop ?? -1,
+          app: document.querySelector(".app")?.scrollTop ?? -1,
+          titleTop: document.querySelector(".titlebar")?.getBoundingClientRect().top ?? -1,
+          overflowing: log !== null && log.scrollHeight > log.clientHeight,
+          atEnd: log !== null && log.scrollHeight - log.scrollTop - log.clientHeight < 2,
+        }
+      })
+    await expect
+      .poll(layout)
+      .toEqual({ root: 0, app: 0, titleTop: 0, overflowing: true, atEnd: true })
+    // Scrolled back to read: the window resized (the log too) leaves it where the user put it.
+    const log = page.getByRole("log", { name: "Messages" })
+    await log.hover()
+    await page.mouse.wheel(0, -600)
+    await expect.poll(async () => (await layout()).atEnd).toBe(false)
+    const scrolled = await log.evaluate((l) => l.scrollTop)
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0]
+      const [width = 0, height = 0] = w?.getSize() ?? []
+      w?.setSize(width, height - 60)
+    })
+    await page.waitForTimeout(300)
+    expect(await log.evaluate((l) => l.scrollTop)).toBe(scrolled)
   })
 
   it("is served from the app's own origin, sandboxed, with a strict CSP", async () => {
