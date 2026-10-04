@@ -120,7 +120,9 @@ Built on minmux's shell (`~/workspace/term`: electron-vite, React 19, zustand, p
 
 **Deferred** (BACKLOG): **chat persistence needs its own rework, not a patch** (BACKLOG "Data persistence": S3 keeps a project's chat in memory only, by the user's choice), several chats per project, packaging and signing (electron-builder), the live view taking the user's own clicks, a dark theme.
 
-Then the visual rebuild V2–V4 (SECRETS-DESIGN §5), then M1-8, M1-10 and the rest of M2–M4.
+The slice merged into `main` on 2026-10-03 (S1–S4, plus the real-app pass, acting by ref and row-scoped targets).
+
+**The visual rebuild V2–V4 (SECRETS-DESIGN §5) is deferred** (2026-10-04, APPROACHES "Visual rebuild V2–V4"): the scanner and the rest of §5's visual rules wait, possibly redesigned as a post-processing step over the finished take, and **v0 records on throwaway demo accounts only** until then (secrets typed into a field are blurred; a value the page shows elsewhere is not). It must land, or the throwaway-only rule ship as a stated limit with an in-app warning, **before v0's release**. Next: M1-8, M1-10 and the rest of M2–M4.
 
 ### M1: Core engine (spike → production)
 | PR | Objective | Scope | Cx | LOC |

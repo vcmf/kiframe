@@ -59,6 +59,8 @@ Why a redesign: M1-5 and M1-6 each needed three severe review rounds. Secret han
 
 ## 5. Visual rules (I4)
 
+> **Status (2026-10-04):** V1 is built (T1–T8, secret regions with their spans, R1 fields). **R2–R10 (the scanner, blind stretches, screenshots, keystrokes) and the §7 scanner and rendering tests are deferred** (APPROACHES "Visual rebuild V2–V4", BACKLOG's first item), possibly redesigned as a post-processing step over the finished take. Until then v0 records on throwaway demo accounts only: I4 holds for the fields secrets are typed into, not for values the page shows elsewhere.
+
 All times are **source time** (the take's clock); a freeze, a hold or a guide screenshot uses the source time of the frame it shows. "The last complete scan" is global across page switches and popups.
 
 **Regions in the take.** A region is one take event, `sensitive { id, t (from), until, boxes: [{ from, until, rect }] }`, written by the runtime with its whole time span and each box's own: the compositor draws it exactly over `[from, until]`. `why`: `secret-field`, `secret-text`, `blind`. Takes recorded before this format (no `from` / `until`) are refused at render time: re-record them.
