@@ -44,7 +44,7 @@ export async function previewOf(
   )
   let loaded: Awaited<ReturnType<TakeStore["open"]>>
   try {
-    // Decrypted in memory (the store's key), and marked played (the last to be evicted).
+    // Decrypted in memory (the store's key).
     loaded = await takes.open(take)
   } catch (error) {
     return { ok: false, why: `Its take didn’t read: ${message(error)}` }

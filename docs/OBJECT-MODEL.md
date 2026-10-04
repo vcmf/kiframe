@@ -139,7 +139,7 @@ q4-release.kiframe/
 **Takes are not in the project folder.** They live in the app's **take store**, in the protected app-data directory, encrypted at rest (§0.7, §3):
 ```
 <app-data>/Kiframe/takes/<projectId>/<sceneId>/take-<time>-<id>/   (looked up by meta.takeKey)
-  frames.webm  events.jsonl  cursor.jsonl  shots/<stepId>.jpg  meta.json  pin.json?
+  frames.webm  events.jsonl  cursor.jsonl  shots/<stepId>.jpg  meta.json
 ```
 Why outside the folder: takes are **heavy**, and they're **sensitive**, since raw frames aren't blurred (APPROACHES §7.4). They must never end up in git or in a folder shared by mistake.
 
@@ -171,11 +171,9 @@ Why outside the folder: takes are **heavy**, and they're **sensitive**, since ra
 | user assets (uploaded images, imported media, logos) | previews, posters |
 | `exports/*.json` (version + take keys used) | the exported files themselves (can be re-rendered from pinned takes) |
 
-**The take store, as built (M1-8, 2026-10-04).**
-- **Pins.** A take's `pin.json` lists what holds it: `{ project, dir, scene, by: "composition" }` (later `export` and `version` too): one copy of a project (its folder: a copy, a worktree hold their own). A copy's pins are synced with its compositions as they are on disk (`syncPins`): when it opens, after a recording or a save, and at the app's start for every project the app knows. A scene recorded again, given new steps or removed lets its old take go (scratch).
-- **Scratch eviction.** Each take has a `used` time (its recording, then every preview or export). After each recording and at the app's start, scratch takes beyond **5 GB** are deleted, least recently used first, **only of projects whose pins were synced in this process** (a project not found at start keeps every take). Pinned takes never are; a failed take is only its meta.json.
-- **Removed projects.** The app keeps, in app data, the folders it has opened for each project id, with the device each was on. A folder is gone only when it isn't there while the filesystem it was on is still mounted where it was (the nearest folder above it on that device): an unplugged drive or share, its root included, never is. Gone for **7 days**: that copy's pins go (the project lives elsewhere), or, every folder gone, the project's takes are deleted, pinned ones too, at the next start; reopening it before (moved: from its new place) keeps them. Decided by the user, 2026-10-04: a removed project's takes go. A scene that didn't read keeps its pins as they are, and a pin.json that doesn't read holds its take (never evicted on doubt).
-- **Encryption at rest.** One key for the store (32 random bytes) in the OS keychain (the vault's keyring backend, its own entry), made on first use. `frames.webm`, `events.jsonl`, `cursor.jsonl` and `shots/` are AES-256-GCM (a fresh IV per file: `magic | iv | ciphertext | tag`); `meta.json` and `pin.json` stay plain (listing and eviction need no key). The recorder writes into its private staging folder; the take is encrypted as it settles (each file written whole and synced, then swapped in), before it counts; the keychain refusing the key: the take is deleted, never kept plain. At the app's start, any placed take with a plain file (a crash partway, a take from before) is sealed. Readers decrypt in memory (the frames read off the main thread); another key, or a changed file: "its take didn't read: record it again". Stated gaps: plaintext exists in staging while a scene records (user-only folder; a crash's leftovers swept at start); deleting isn't a secure wipe on SSDs; a take store moved to another machine needs its key (later).
+**The take store, as built (M1-8, 2026-10-04): encryption at rest.** One key for the store (32 random bytes) in the OS keychain (the vault's keyring backend, the app's own entry), made on first use; one that doesn't read is never replaced. `frames.webm`, `events.jsonl`, `cursor.jsonl` and `shots/` are AES-256-GCM (a fresh IV per file: `magic | iv | ciphertext | tag`); `meta.json` stays plain (listing needs no key). The recorder writes into its private staging folder; the take is encrypted as it settles (each file written whole and synced, then swapped in), before it counts; the keychain refusing the key: the take is deleted, never kept plain. At the app's start, any placed take with a plain file (a crash partway, a take from before) is sealed, take by take (one that fails is said; a keychain refusal is said and nothing is touched). The store's writes run one at a time (a take settling, a take sealed). Readers decrypt in memory (the frames read off the main thread); another key, or a changed file: "its take didn't read: record it again". Stated gaps: plaintext exists in staging while a scene records; deleting isn't a secure wipe on SSDs; a take store moved to another machine needs its key.
+
+**Pins, eviction and removed projects: the next PR** (decided 2026-10-04: 5 GB of scratch takes, least recently played first; a removed project's takes go after 7 days). Its design, reviewed after three rounds of stored pins drifting: pins are **derived, never stored** (the take keys the compositions of every known folder of a project name; a folder that can't be read keeps its project's takes); see BACKLOG "Take store: eviction and removed projects" for the must-haves.
 
 **Later track (option C): the take as an object (DOM capture).** Record the DOM and its changes (rrweb-style) instead of pixels, and render frames at export: any resolution, blur by selector, lightweight. Risky with canvas, WebGL, embedded video and cross-origin iframes. A spike after v0. The model allows it (`capture.mode: "dom"`), and the renderer reads the base through one interface.
 
@@ -430,7 +428,7 @@ One replay of a scene produces a **take** in the take store (§0.6):
   cursor.jsonl         cursor samples (real mouse positions, so hover states happened in the app)
   shots/<stepId>.jpg   frame at each step_start (storyboard + guide screenshots)
   meta.json            viewport, DPR, fps, scenario hash, environment, app URL, recordedAt, Kiframe version
-  pin.json             present if pinned: which exports / versions / compositions reference it
+  (pinned or scratch is derived from the compositions, exports and versions that name it: never stored in the take)
 ```
 
 ```ts

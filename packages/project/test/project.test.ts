@@ -25,7 +25,6 @@ import {
   isEncrypted,
   readTakeRecords,
   saveScene,
-  type StoredTake,
   TakeStore,
 } from "../src/index.ts"
 
@@ -313,55 +312,6 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect((await keyed.open(old.take)).video.length).toBeGreaterThan(0)
   })
 
-  it("keeps the takes compositions hold, and evicts scratch ones beyond the budget, least used first", async () => {
-    const store = newStore()
-    const takes = []
-    for (const id of ["a", "b", "c"]) {
-      const { take } = await record(store, "login", `  - { id: ${id}, action: pause, ms: 50 }\n`)
-      if (take === undefined) throw new Error("no take")
-      takes.push(take)
-    }
-    const [a, b, c] = takes as [StoredTake, StoredTake, StoredTake]
-    const named = (key: string | undefined) => new Map([["login", key]])
-    // Never synced in this process: nothing of the project is evicted (its pins aren't known).
-    expect(new TakeStore(store.root, { scratchBudget: 0 }).evict()).toEqual([])
-    // The scene's composition holds c; the one before (b) is let go when it moves to c.
-    store.syncProject("p1", "/copy-a", named(b.meta.takeKey))
-    store.syncProject("p1", "/copy-a", named(c.meta.takeKey))
-    expect(existsSync(join(b.dir, "pin.json"))).toBe(false)
-    expect(JSON.parse(readFileSync(join(c.dir, "pin.json"), "utf8"))).toEqual({
-      holders: [{ project: "p1", dir: "/copy-a", scene: "login", by: "composition" }],
-    })
-    // Another copy of the project (its own folder) holds its own take: neither lets go of the other's.
-    store.syncProject("p1", "/copy-b", named(a.meta.takeKey))
-    store.syncProject("p1", "/copy-a", named(c.meta.takeKey))
-    expect(existsSync(join(a.dir, "pin.json"))).toBe(true)
-    store.syncProject("p1", "/copy-b", named(undefined))
-    expect(existsSync(join(a.dir, "pin.json"))).toBe(false)
-    // a played more recently than b: b goes first.
-    writeFileSync(join(a.dir, "used"), String(Date.now()))
-    writeFileSync(join(b.dir, "used"), String(Date.now() - 60_000))
-    // A folder's size as the store counts it (its files, shots/ included).
-    const size = (dir: string): number =>
-      readdirSync(dir, { withFileTypes: true }).reduce(
-        (sum, e) =>
-          sum + (e.isDirectory() ? size(join(dir, e.name)) : statSync(join(dir, e.name)).size),
-        0,
-      )
-    const budgeted = new TakeStore(store.root, { scratchBudget: size(a.dir) + 1 })
-    budgeted.syncProject("p1", "/copy-a", named(c.meta.takeKey))
-    expect(budgeted.evict()).toEqual([b.dir])
-    expect(existsSync(a.dir) && existsSync(c.dir)).toBe(true)
-    // Nothing left to go within budget; the pinned take never goes, even past it.
-    const none = new TakeStore(store.root, { scratchBudget: 0 })
-    none.syncProject("p1", "/copy-a", named(c.meta.takeKey))
-    expect(none.evict()).toEqual([a.dir])
-    expect(existsSync(c.dir)).toBe(true)
-    // A project removed: every take of it, pinned too.
-    store.removeProject("p1")
-    expect(existsSync(join(store.root, "takes", "p1"))).toBe(false)
-  })
-
   it("seals at start what a crash left plain, and never keeps a take it can't encrypt", async () => {
     const key = randomBytes(32)
     const plainStore = newStore()
@@ -390,24 +340,6 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(existsSync(dir)).toBe(false)
   })
 
-  it("never lets a take go on doubt: a scene that didn't read, a pin.json that doesn't", async () => {
-    const store = newStore()
-    const { take } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
-    if (take === undefined) throw new Error("no take")
-    store.syncProject("p1", "/copy", new Map([["login", take.meta.takeKey]]))
-    // The scene's composition didn't read (a merge conflict): its pin as it is.
-    store.syncProject("p1", "/copy", new Map(), new Set(["login"]))
-    expect(existsSync(join(take.dir, "pin.json"))).toBe(true)
-    // A pin.json that doesn't read: left untouched, and the take held (never evicted).
-    writeFileSync(join(take.dir, "pin.json"), "{ half")
-    store.syncProject("p1", "/copy", new Map())
-    expect(readFileSync(join(take.dir, "pin.json"), "utf8")).toBe("{ half")
-    expect(new TakeStore(store.root, { scratchBudget: 0 }).evict()).toEqual([])
-    const zero = new TakeStore(store.root, { scratchBudget: 0 })
-    zero.syncProject("p1", "/copy", new Map())
-    expect(zero.evict()).toEqual([])
-  })
-
   it("seals every take it can at start: one that fails is said, the others sealed, leftovers gone", async () => {
     const plainStore = newStore()
     const a = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
@@ -425,5 +357,10 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(result.failed[0]).toContain(b.take.dir)
     expect(isEncrypted(readFileSync(join(a.take.dir, "frames.webm")))).toBe(true)
     expect(existsSync(join(a.take.dir, "shots", ".0123456789ab.tmp"))).toBe(false)
+    // The keychain refusing at start: said, nothing touched (the app goes on).
+    const refusing = new TakeStore(plainStore.root, {
+      key: () => Promise.reject(new Error("locked")),
+    })
+    expect(await refusing.seal()).toEqual({ sealed: 0, failed: ["the take key: locked"] })
   })
 })

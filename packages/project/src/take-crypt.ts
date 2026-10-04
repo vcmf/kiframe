@@ -65,12 +65,13 @@ export async function isEncryptedFile(path: string): Promise<boolean> {
 /**
  * Encrypts a file in place, without holding the thread: written whole and synced next to it, then
  * swapped in (a crash leaves the plain file or the encrypted one, never a torn one); one already
- * encrypted is known from its first bytes and kept.
+ * encrypted is known from its first bytes and kept. Whether it encrypted it.
  */
-export async function encryptFile(path: string, key: Uint8Array): Promise<void> {
-  if (await isEncryptedFile(path)) return
+export async function encryptFile(path: string, key: Uint8Array): Promise<boolean> {
+  if (await isEncryptedFile(path)) return false
   const plain = await readFile(path)
   await writeAtomicAsync(path, encrypt(plain, key))
+  return true
 }
 
 /** As `readTakeFile`, read without holding the thread (a take's frames are tens of MB). */

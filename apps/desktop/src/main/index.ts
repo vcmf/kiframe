@@ -2,7 +2,7 @@
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { type LlmClient, OpenAiCompatibleClient } from "@kiframe/agent"
-import { type OpenedProject, openProject, syncPins, TakeStore } from "@kiframe/project"
+import { type OpenedProject, TakeStore } from "@kiframe/project"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import { type Browser, chromium } from "playwright"
@@ -19,7 +19,6 @@ import { readStatus } from "./status.ts"
 import { KeyStore, takeStoreKey } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
-import { ProjectIndex } from "./project-index.ts"
 import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
@@ -60,8 +59,6 @@ function start(): void {
   let error: string | null = null
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
-  /** The projects opened, by id (a removed one's takes go): app data, once ready. */
-  let projects: ProjectIndex | undefined
   let registry: Registry | undefined
   /** The app's secrets (the vault in app data, values in the keychain), once ready. */
   let secrets: Secrets | undefined
@@ -132,32 +129,19 @@ function start(): void {
   }
 
   /**
-   * At start, after the sweep: plain takes encrypted (a crash, takes from before), removed
-   * projects' takes deleted, every known project's pins synced (from its folder as it is now),
-   * then scratch takes beyond the budget evicted. Said if it fails.
+   * At start, after the sweep: takes a crash left plain (or from before encryption) encrypted.
+   * What can't be is said; the app goes on.
    */
-  const tidyTakes = async (): Promise<void> => {
-    if (takes === undefined || projects === undefined) return
+  const sealTakes = async (): Promise<void> => {
+    if (takes === undefined) return
     try {
-      // One take that can't be sealed is said; the others, and the rest of the tidy, go on.
       const { failed } = await takes.seal()
       if (failed.length > 0) {
         error = `couldn't encrypt ${failed.length} old recording(s): ${failed[0] ?? ""}`
         void status().then((now) => emit(window, "status", now))
       }
-      projects.sweepRemoved(takes)
-      for (const { dirs } of projects.known()) {
-        for (const dir of dirs) {
-          try {
-            syncPins(openProject(dir), takes)
-          } catch {
-            // Not there now (moved, unplugged): its takes are kept (never evicted unsynced).
-          }
-        }
-      }
-      takes.evict()
     } catch (e) {
-      error = `couldn't tidy old recordings: ${message(e)}`
+      error = `couldn't encrypt old recordings: ${message(e)}`
       void status().then((now) => emit(window, "status", now))
     }
   }
@@ -181,13 +165,6 @@ function start(): void {
   const workspace: Workspace<AgentHost> = new Workspace(
     (opened: OpenedProject) => {
       const { registry, takes } = ready()
-      // Known where it's opened from (its takes kept while it's there), its pins as it is now.
-      try {
-        projects?.seen(opened.project.id, opened.dir)
-        syncPins(opened, takes)
-      } catch {
-        // pins and the index are kept again at the next opening
-      }
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
@@ -271,7 +248,6 @@ function start(): void {
     const data = app.getPath("userData")
     // Takes encrypted at rest with the app's own key (made on first use).
     takes = new TakeStore(join(data, "data"), { key: () => takeStoreKey(appKeychain) })
-    projects = new ProjectIndex(join(data, "data"))
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -382,7 +358,7 @@ function start(): void {
           error = `couldn't clean up old recordings: ${message(e)}`
           void status().then((now) => emit(window, "status", now))
         }
-        void tidyTakes()
+        void sealTakes()
       })
     })
   })

@@ -1,5 +1,5 @@
 import { generate } from "@kiframe/generators"
-import { type OpenedProject, saveScene, syncPins, type TakeStore } from "@kiframe/project"
+import { type OpenedProject, saveScene, type TakeStore } from "@kiframe/project"
 import {
   locatorFor,
   recordScenario,
@@ -647,7 +647,8 @@ export class Studio {
       take = await takes.settle(dir)
     } catch (error) {
       if (stopped !== undefined) throw stopped
-      return failed(`recording failed: ${why ?? failure(error)}`)
+      // The take's own failure first (encryption refused: it was deleted), then the recorder's.
+      return failed(`recording failed: ${failure(error)}${why !== undefined ? ` (${why})` : ""}`)
     }
     if (stopped !== undefined) throw stopped
     if (take === undefined || recorded === undefined) {
@@ -664,13 +665,6 @@ export class Studio {
       return failed(
         `recorded, but its composition wasn't saved (the take was kept): ${String(error)}`,
       )
-    }
-    // The new take is the scene's (pinned); the one before is scratch, evicted beyond the budget.
-    try {
-      syncPins(this.project, takes)
-      takes.evict()
-    } catch {
-      // The pins are synced again when the project opens; the budget at the next recording.
     }
     const { warnings } = made
     const notes = [...recorded.warnings, ...warnings]

@@ -1,5 +1,5 @@
 import { defineTool, type Tool } from "@kiframe/agent"
-import { saveScene, syncPins } from "@kiframe/project"
+import { saveScene } from "@kiframe/project"
 import { SceneId } from "@kiframe/schema"
 import { z } from "zod"
 import { isCyclic } from "./refs.ts"
@@ -209,14 +209,8 @@ const saveSceneTool = defineTool({
       title,
       ...(notes !== undefined && { notes }),
     }
-    // A new scenario: its old composition (of another take) goes; record the scene again. Its take
-    // is the scene's no longer (scratch).
+    // A new scenario: its old composition (of another take) goes; record the scene again.
     saveScene(studio.project, scene, { scenario: checked.scenario, composition: null })
-    try {
-      syncPins(studio.project, studio.options.takes)
-    } catch {
-      // synced again when the project opens
-    }
     return "saved: the replay passed. Record it with record_scene."
   },
 })
