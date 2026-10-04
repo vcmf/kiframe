@@ -116,6 +116,26 @@ const tempDir = (prefix: string) => {
 export function removeTemp(): void {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true })
 }
+// However the script ends (a launch or a step that throws too): its temp folders go.
+process.on("exit", removeTemp)
+
+/**
+ * Runs `work` every `ms`, one at a time (a tick while the last still runs is skipped), its failure
+ * noted in `failed` (never an unhandled rejection that ends the script). Stops when called back.
+ */
+export function every(ms: number, work: () => Promise<unknown>, failed: string[]): () => void {
+  let busy = false
+  const timer = setInterval(() => {
+    if (busy) return
+    busy = true
+    work()
+      .catch((e: unknown) => failed.push(`sample: ${e instanceof Error ? e.message : String(e)}`))
+      .finally(() => {
+        busy = false
+      })
+  }, ms)
+  return () => clearInterval(timer)
+}
 
 /** A scripted model turn calling one tool. */
 export const call = (id: string, name: string, args: object) => ({

@@ -12,6 +12,7 @@ import { join } from "node:path"
 import { parseArgs } from "node:util"
 import {
   call,
+  every,
   launchScripted,
   newProject,
   openProject,
@@ -88,7 +89,8 @@ const sample = async () => {
   }
   return byRole
 }
-const sampler = setInterval(() => void sample(), 500)
+const sampleErrors: string[] = []
+const stopSampling = every(500, sample, sampleErrors)
 
 /** Main and window heaps after a forced GC (MB). */
 async function heaps() {
@@ -196,7 +198,8 @@ try {
 } catch (e) {
   failures.push(`stopped: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}`)
 } finally {
-  clearInterval(sampler)
+  stopSampling()
+  failures.push(...sampleErrors)
 }
 
 // Quit as a user would, then look for anything left.

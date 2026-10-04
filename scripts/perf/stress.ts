@@ -8,6 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   call,
+  every,
   launchScripted,
   newProject,
   openProject,
@@ -66,15 +67,18 @@ const { page, mainPid } = l
 const seen = new Map<number, string>()
 let phase = "start"
 const ffmpegBy = new Map<string, Set<number>>()
-const sampler = setInterval(() => {
-  const at = phase
-  void sampleTree(mainPid, seen).then(({ procs }) => {
-    for (const p of procs) {
+const sampleErrors: string[] = []
+const stopSampling = every(
+  100,
+  async () => {
+    const at = phase
+    for (const p of (await sampleTree(mainPid, seen)).procs) {
       if (role(p, mainPid) === "ffmpeg")
         ffmpegBy.set(at, (ffmpegBy.get(at) ?? new Set()).add(p.pid))
     }
-  })
-}, 100)
+  },
+  sampleErrors,
+)
 const count = async (prefix: string) =>
   (await sampleTree(mainPid, seen)).procs.filter((p) => role(p, mainPid).startsWith(prefix)).length
 /** Until record_scene is running (the last tool group says 2 steps, running). */
@@ -139,7 +143,8 @@ try {
   report.error = e instanceof Error ? e.message.split("\n")[0] : String(e)
   log(`stopped early: ${String(report.error)}`)
 } finally {
-  clearInterval(sampler)
+  stopSampling()
+  if (sampleErrors.length > 0) report.sampleErrors = sampleErrors
 }
 const quitMs = await quit(l).catch(() => -1)
 const lingering: Record<string, string[]> = {}

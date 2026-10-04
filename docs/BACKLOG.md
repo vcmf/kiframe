@@ -109,6 +109,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Live frames nobody sees:** the live view sends base64 JPEG frames (up to 8 a second) while the window shows the Preview tab or is closed (macOS); each becomes a new `data:` image. Pause them when the Live tab isn't shown, and send binary with blob URLs.
 - **Opening a preview:** main reads the whole `frames.webm`, decrypts it synchronously and copies it to the window; a click through several scenes decrypts each (stale loads aren't cancelled). Measure on a long take (Cal.com's 72 s) and stream or cancel.
 - **Tabs the app opens:** a popup the runner follows leaves its opener open, and a tab never followed stays, until the project closes (a headless renderer each). Close the live context's other pages after a step.
+- **A failed take's records:** with `encodeFailed: false` the recorder still finishes its secret regions and writes events and cursor, which the store deletes as it settles: skip them too (only meta.json and warnings.json are kept).
 - **The model's history:** every turn is resent each request (bulky tool results elided by recency): token cost grows over a long session. Compaction or a turn cap later.
 - **Small:** `exportVideo` doesn't dispose its Mediabunny input or cancel its output on an error (fine in the exporter process; a leak if export moves into the app); a stop while the studio is still being set up builds one that's never used (harmless: lazy).
 
