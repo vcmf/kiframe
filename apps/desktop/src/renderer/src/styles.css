@@ -34,6 +34,13 @@ body,
   margin: 0;
 }
 
+/* Nothing but a scroller scrolls: clipped, the window's root can't be moved by code
+   (scrollIntoView, a focus) and push the title bar out of view. */
+html,
+body {
+  overflow: clip;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -41,7 +48,6 @@ body {
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
-  overflow: hidden;
 }
 
 button,
@@ -150,6 +156,7 @@ button:disabled {
   height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: clip;
 }
 
 .titlebar {
@@ -272,9 +279,24 @@ button:disabled {
   color: var(--dim);
 }
 
+/* The log, reversed: its end is its scroll origin (scrollTop 0), so layout keeps it there as the
+   chat grows or the log resizes, and scroll anchoring holds a reader who scrolled up. */
 .chat-body {
   flex-grow: 1;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column-reverse;
+}
+
+.chat-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* The items in their own order (tab order, selection, reading order as written). */
+.chat-items {
+  flex-grow: 1;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;

@@ -22,7 +22,14 @@ import {
   Wrench,
   XCircle,
 } from "@phosphor-icons/react"
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 import type { ChatItem } from "../../../shared/ipc.ts"
 import { useChat } from "../chat-store.ts"
 import { AgentText } from "./markdown.tsx"
@@ -59,95 +66,45 @@ export function ChatColumn() {
   const connect = useChat((s) => s.connect)
   const body = useRef<HTMLDivElement>(null)
   useEffect(() => connect(), [connect])
-  // The newest item in view: the log scrolled, only it (scrollIntoView would scroll the window's
-  // root too, its overflow hidden, and push the title bar out of view). While the log is at its
-  // end it follows: a new item, a message's text filled in, the log shorter when the composer comes
-  // back after a run. Scrolled back to read, it stays put, until the user sends a message.
-  const atEnd = useRef(true)
-  const toEnd = (log: HTMLElement) => {
-    log.scrollTop = log.scrollHeight
-    atEnd.current = true
-  }
-  useEffect(() => {
+  // The log is reversed (CSS): its end is scrollTop 0, so layout keeps it there as the chat grows
+  // or the log resizes, and anchoring holds a reader who scrolled up. Code moves it only for a new
+  // item that needs the user: their own message, or a request the run waits on.
+  const newest = useRef<string | undefined>(undefined)
+  useLayoutEffect(() => {
     const log = body.current
-    if (log !== null && (atEnd.current || items.at(-1)?.kind === "user")) toEnd(log)
+    const last = items.at(-1)
+    if (log === null || last === undefined || last.id === newest.current) return
+    newest.current = last.id
+    if (last.kind === "user" || (last.kind === "request" && last.state === "open"))
+      log.scrollTop = 0
   }, [items])
-  useEffect(() => {
-    const log = body.current
-    if (log === null) return
-    // Only the user takes the log away from its end, or back to it: a wheel, a touch, a key, or a
-    // drag of its scrollbar (for as long as the pointer is down). A scroll the layout or this code
-    // causes (the composer swapped for the status bar and back, within a frame) never counts.
-    let pointerDown = false
-    let inputAt = -Infinity
-    const onInput = () => {
-      inputAt = performance.now()
-    }
-    const onDown = () => {
-      pointerDown = true
-    }
-    const onUp = () => {
-      pointerDown = false
-    }
-    const onScroll = () => {
-      if (!pointerDown && performance.now() - inputAt > 300) return
-      atEnd.current = log.scrollHeight - log.scrollTop - log.clientHeight < 40
-    }
-    // Now, and again once the frame's layout is final (the composer swapped for the status bar and
-    // back within one frame resizes the log twice, and the observer reports neither).
-    let frame = 0
-    const follow = () => {
-      if (atEnd.current) toEnd(log)
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(() => {
-        if (atEnd.current) toEnd(log)
-      })
-    }
-    const changed = new MutationObserver(follow)
-    changed.observe(log, { childList: true, subtree: true, characterData: true })
-    const resized = new ResizeObserver(follow)
-    resized.observe(log)
-    const inputs = ["wheel", "touchmove", "keydown"] as const
-    for (const name of inputs) log.addEventListener(name, onInput, { passive: true })
-    log.addEventListener("pointerdown", onDown)
-    window.addEventListener("pointerup", onUp)
-    window.addEventListener("pointercancel", onUp)
-    log.addEventListener("scroll", onScroll)
-    return () => {
-      cancelAnimationFrame(frame)
-      changed.disconnect()
-      resized.disconnect()
-      for (const name of inputs) log.removeEventListener(name, onInput)
-      log.removeEventListener("pointerdown", onDown)
-      window.removeEventListener("pointerup", onUp)
-      window.removeEventListener("pointercancel", onUp)
-      log.removeEventListener("scroll", onScroll)
-    }
-  }, [])
   return (
     <aside className="chat" aria-label="Chat">
       <div className="pane-head">
         <span className="pane-title">Chat</span>
       </div>
-      <div className="chat-body" role="log" aria-label="Messages" ref={body}>
-        {items.length === 0 ? (
-          <div className="chat-empty">
-            <ChatCircleDots size={28} />
-            <h2>Describe your demo</h2>
-            <p>
-              Say what the video should show, and the agent splits it into scenes, tries each step
-              on your app and films it.
-            </p>
-          </div>
-        ) : (
-          blocks(items).map((block) =>
-            block.kind === "tools" ? (
-              <ToolGroup key={block.id} tools={block.tools} />
-            ) : (
-              <Item key={block.item.id} item={block.item} />
-            ),
-          )
-        )}
+      {/* Focusable: scrolled by keys too (a scrollable region reachable by keyboard). */}
+      <div className="chat-body" role="log" aria-label="Messages" tabIndex={0} ref={body}>
+        <div className="chat-items">
+          {items.length === 0 ? (
+            <div className="chat-empty">
+              <ChatCircleDots size={28} />
+              <h2>Describe your demo</h2>
+              <p>
+                Say what the video should show, and the agent splits it into scenes, tries each step
+                on your app and films it.
+              </p>
+            </div>
+          ) : (
+            blocks(items).map((block) =>
+              block.kind === "tools" ? (
+                <ToolGroup key={block.id} tools={block.tools} />
+              ) : (
+                <Item key={block.item.id} item={block.item} />
+              ),
+            )
+          )}
+        </div>
       </div>
       <Composer />
     </aside>
