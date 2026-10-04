@@ -50,6 +50,32 @@ const TOOL_ICONS: Record<string, ReactNode> = {
 /** Items in order, consecutive tool steps as one group. */
 type Block = { kind: "item"; item: ChatItem } | { kind: "tools"; id: string; tools: ToolItem[] }
 
+/**
+ * The chat as the user sees it: each message of theirs, and between them one agent turn holding
+ * all it did (its text, tool steps, a request, how the run ended) under one mark.
+ */
+export type Turn =
+  | { kind: "user"; item: Extract<ChatItem, { kind: "user" }> }
+  | { kind: "agent"; id: string; blocks: Block[] }
+
+export function turns(items: ChatItem[]): Turn[] {
+  const out: Turn[] = []
+  let agent: ChatItem[] = []
+  const close = () => {
+    const first = agent[0]
+    if (first !== undefined) out.push({ kind: "agent", id: first.id, blocks: blocks(agent) })
+    agent = []
+  }
+  for (const item of items) {
+    if (item.kind === "user") {
+      close()
+      out.push({ kind: "user", item })
+    } else agent.push(item)
+  }
+  close()
+  return out
+}
+
 export function blocks(items: ChatItem[]): Block[] {
   const out: Block[] = []
   for (const item of items) {
@@ -107,11 +133,11 @@ export function ChatColumn() {
               </p>
             </div>
           ) : (
-            blocks(items).map((block) =>
-              block.kind === "tools" ? (
-                <ToolGroup key={block.id} tools={block.tools} />
+            turns(items).map((turn) =>
+              turn.kind === "user" ? (
+                <Item key={turn.item.id} item={turn.item} />
               ) : (
-                <Item key={block.item.id} item={block.item} />
+                <AgentTurn key={turn.id} blocks={turn.blocks} />
               ),
             )
           )}
@@ -122,19 +148,32 @@ export function ChatColumn() {
   )
 }
 
+/** One agent turn: its mark above, then all it did at the column's full width. */
+function AgentTurn({ blocks: parts }: { blocks: Block[] }) {
+  return (
+    <div className="agent-turn">
+      <span className="agent-mark" aria-hidden="true">
+        <Sparkle size={20} weight="fill" />
+      </span>
+      {parts.map((block) =>
+        block.kind === "tools" ? (
+          <ToolGroup key={block.id} tools={block.tools} />
+        ) : (
+          <Item key={block.item.id} item={block.item} />
+        ),
+      )}
+    </div>
+  )
+}
+
 function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case "user":
       return <div className="msg-user">{item.text}</div>
     case "assistant":
       return (
-        <div className="msg-agent">
-          <span className="agent-mark" aria-hidden="true">
-            <Sparkle size={14} weight="fill" />
-          </span>
-          <div className="msg-agent-text">
-            <AgentText text={item.text} />
-          </div>
+        <div className="msg-agent-text">
+          <AgentText text={item.text} />
         </div>
       )
     case "request":

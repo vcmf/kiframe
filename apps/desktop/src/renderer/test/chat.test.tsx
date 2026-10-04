@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it } from "vitest"
 import type { ChatItem, ProjectView } from "../../shared/ipc.ts"
 import { App } from "../src/app.tsx"
-import { newNeedUser } from "../src/components/chat-column.tsx"
+import { newNeedUser, turns } from "../src/components/chat-column.tsx"
 import { useChat } from "../src/chat-store.ts"
 import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
@@ -50,6 +50,18 @@ describe("the chat", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }))
     expect((await screen.findByRole("alert")).textContent).toMatch(/still working/)
     expect((box as HTMLTextAreaElement).value).toBe("again")
+  })
+
+  it("shows no agent turn for a run that ended quietly (no lone mark)", async () => {
+    const { push } = open()
+    await screen.findByLabelText("Message the agent")
+    act(() => {
+      push("chat:item", { kind: "user", id: "u1", text: "hello" })
+      push("chat:item", { kind: "end", id: "e1", outcome: "done" })
+    })
+    const log = screen.getByRole("log", { name: "Messages" })
+    expect(within(log).getByText("hello")).toBeTruthy()
+    expect(log.querySelectorAll(".agent-turn")).toHaveLength(0)
   })
 
   it("shows what main folds: messages, steps (grouped), the run's end", async () => {
@@ -207,5 +219,26 @@ describe("bringing the chat's log to its end", () => {
     expect(seen.has("q")).toBe(true)
     // The user's own message.
     expect(newNeedUser([{ kind: "user", id: "u", text: "hi" }], new Set())).toBe(true)
+  })
+})
+
+describe("the chat's turns", () => {
+  it("puts everything the agent did between two user messages under one mark", () => {
+    const items: ChatItem[] = [
+      { kind: "user", id: "u1", text: "Make it" },
+      { kind: "assistant", id: "a1", text: "Looking." },
+      { kind: "tool", id: "t1", name: "snapshot", detail: "", status: "ok" },
+      { kind: "tool", id: "t2", name: "run_step", detail: "", status: "ok" },
+      { kind: "end", id: "e1", outcome: "error", message: "401 User not found." },
+      { kind: "user", id: "u2", text: "Again" },
+      { kind: "end", id: "e2", outcome: "error", message: "401 User not found." },
+    ]
+    const shape = turns(items).map((t) =>
+      t.kind === "user"
+        ? t.item.id
+        : t.blocks.map((b) => (b.kind === "tools" ? b.tools.length : b.item.id)),
+    )
+    // An error alone is a turn too (its mark shown).
+    expect(shape).toEqual(["u1", ["a1", 2, "e1"], "u2", ["e2"]])
   })
 })

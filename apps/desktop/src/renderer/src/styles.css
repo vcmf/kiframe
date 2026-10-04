@@ -326,15 +326,15 @@ button:disabled {
 }
 
 .composer-wrap {
-  padding: 14px 16px 16px;
+  padding: 16px;
   border-top: 1px solid var(--line);
 }
 
 .composer {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 12px 10px 14px;
+  gap: 10px;
+  padding: 14px;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -780,27 +780,20 @@ ul.strip-cards {
   overflow-wrap: anywhere;
 }
 
-.msg-agent {
+/* An agent turn: its mark on top, then everything it did at the column's full width. */
+.agent-turn {
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  align-items: flex-start;
+  min-width: 0;
 }
 
 .agent-mark {
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--panel);
   color: var(--accent);
 }
 
 .msg-agent-text {
-  padding-top: 2px;
   line-height: 1.55;
   overflow-wrap: anywhere;
   min-width: 0;
@@ -855,7 +848,6 @@ ul.strip-cards {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-left: 34px;
 }
 
 .tool-group-head {
@@ -948,7 +940,6 @@ ul.strip-cards {
 }
 
 .request-card {
-  margin-left: 34px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1019,7 +1010,6 @@ ul.strip-cards {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 34px;
   font-size: 12.5px;
   color: var(--muted);
 }
