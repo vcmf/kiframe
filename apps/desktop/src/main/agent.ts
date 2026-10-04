@@ -46,6 +46,8 @@ const PROJECT_TOOLS = new Set(["save_scene", "record_scene"])
 
 export interface AgentHostOptions {
   project: OpenedProject
+  /** After a scene is recorded: the take store's bookkeeping (eviction). */
+  afterRecord?: () => void
   /** The host's approval scope for the folder, and its key for a scene (the registry). */
   scope: string
   sceneKey: (sceneId: string) => string
@@ -267,6 +269,7 @@ export class AgentHost {
       config,
       takes,
       browser,
+      ...(this.#options.afterRecord !== undefined && { afterRecord: this.#options.afterRecord }),
       requestUser: (request, signal) => this.#ask(request, signal),
       // Secrets (when the app has its vault): names for the agent, values for granted uses only,
       // every value known to the scrubber and the blur; an ungranted use asks the user.

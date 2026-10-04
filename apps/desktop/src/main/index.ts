@@ -16,7 +16,11 @@ import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
 import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
+import { workerInspector } from "./folder-reader.ts"
+import makeFolderWorker from "./folder-worker.ts?nodeWorker"
+import { ProjectIndex } from "./project-index.ts"
 import { KeyStore, takeStoreKey } from "./settings.ts"
+import { TakeKeeper } from "./take-keeper.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
 import { Workspace } from "./workspace.ts"
@@ -59,6 +63,11 @@ function start(): void {
   let error: string | null = null
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
+  /** The projects opened (their folders), and the take store's bookkeeping: once ready. */
+  let projects: ProjectIndex | undefined
+  let keeper: TakeKeeper | undefined
+  // Folders are read in a worker (a stuck network mount never freezes the app).
+  const folders = workerInspector(() => makeFolderWorker({}))
   let registry: Registry | undefined
   /** The app's secrets (the vault in app data, values in the keychain), once ready. */
   let secrets: Secrets | undefined
@@ -168,9 +177,19 @@ function start(): void {
   const workspace: Workspace<AgentHost> = new Workspace(
     (opened: OpenedProject) => {
       const { registry, takes } = ready()
+      // Known where it's opened from: its takes are read from there (kept while it's there).
+      try {
+        projects?.seen(opened.project.id, opened.dir)
+      } catch {
+        // known again at the next opening
+      }
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
+        afterRecord: () =>
+          void keeper
+            ?.evict()
+            .catch((e: unknown) => say(`couldn't tidy old recordings: ${message(e)}`)),
         scope: registry.scope(opened.dir),
         sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
         takes,
@@ -239,6 +258,7 @@ function start(): void {
     cleanup = "running"
     const work = (async () => {
       await workspace.close().catch(() => undefined)
+      folders.close()
       await (await browser?.catch(() => undefined))?.close().catch(() => undefined)
     })()
     void Promise.race([work, new Promise((r) => setTimeout(r, QUIT_WAIT_MS))]).then(() => {
@@ -255,6 +275,8 @@ function start(): void {
       key: () =>
         takeStoreKey(appKeychain, memory ? undefined : join(data, "data", "take-key-made")),
     })
+    projects = new ProjectIndex(join(data, "data"))
+    keeper = new TakeKeeper(takes, projects, folders.inspect, () => workspace.opened?.project.id)
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -364,7 +386,10 @@ function start(): void {
           // After the window's first read: pushed to it (not an action's result).
           say(`couldn't clean up old recordings: ${message(e)}`)
         }
-        void sealTakes()
+        // Sealed, then scratch beyond the budget (said if it fails).
+        void sealTakes().then(() =>
+          keeper?.evict().catch((e: unknown) => say(`couldn't tidy old recordings: ${message(e)}`)),
+        )
       })
     })
   })
