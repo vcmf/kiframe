@@ -61,6 +61,17 @@ export function blocks(items: ChatItem[]): Block[] {
   return out
 }
 
+/**
+ * Whether the items new since `seen` (however many came in one render) include one that needs the
+ * user: their own message, or a request the run waits on. Items are only appended (an update
+ * replaces one in place); fewer than seen is a new chat.
+ */
+export function newNeedUser(items: readonly ChatItem[], seen: number): boolean {
+  return items
+    .slice(items.length < seen ? 0 : seen)
+    .some((i) => i.kind === "user" || (i.kind === "request" && i.state === "open"))
+}
+
 export function ChatColumn() {
   const items = useChat((s) => s.items)
   const connect = useChat((s) => s.connect)
@@ -69,14 +80,12 @@ export function ChatColumn() {
   // The log is reversed (CSS): its end is scrollTop 0, so layout keeps it there as the chat grows
   // or the log resizes, and anchoring holds a reader who scrolled up. Code moves it only for a new
   // item that needs the user: their own message, or a request the run waits on.
-  const newest = useRef<string | undefined>(undefined)
+  const seen = useRef(0)
   useLayoutEffect(() => {
     const log = body.current
-    const last = items.at(-1)
-    if (log === null || last === undefined || last.id === newest.current) return
-    newest.current = last.id
-    if (last.kind === "user" || (last.kind === "request" && last.state === "open"))
-      log.scrollTop = 0
+    const needsUser = newNeedUser(items, seen.current)
+    seen.current = items.length
+    if (log !== null && needsUser) log.scrollTop = 0
   }, [items])
   return (
     <aside className="chat" aria-label="Chat">
@@ -148,6 +157,18 @@ function Item({ item }: { item: ChatItem }) {
 
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(true)
+  // Opened or closed by the user: its head stays where it was clicked (the log is anchored at its
+  // end, so what grows near the end would otherwise push the head up from under the pointer).
+  const head = useRef<HTMLButtonElement>(null)
+  const clickedAt = useRef<number | undefined>(undefined)
+  useLayoutEffect(() => {
+    const at = clickedAt.current
+    const el = head.current
+    clickedAt.current = undefined
+    const log = el?.closest(".chat-body")
+    if (at === undefined || el === null || log === null || log === undefined) return
+    log.scrollTop += el.getBoundingClientRect().top - at
+  }, [open])
   const running = tools.some((t) => t.status === "running")
   const failed = tools.filter((t) => t.status === "failed").length
   const summary = `${tools.length} ${tools.length === 1 ? "step" : "steps"}${running ? " · running" : ""}${failed > 0 ? ` · ${failed} failed` : ""}`
@@ -157,7 +178,11 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
         type="button"
         className="tool-group-head"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        ref={head}
+        onClick={() => {
+          clickedAt.current = head.current?.getBoundingClientRect().top
+          setOpen((v) => !v)
+        }}
       >
         {open ? <CaretDown size={12} /> : <CaretRight size={12} />}
         {summary}

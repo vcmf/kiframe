@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it } from "vitest"
 import type { ChatItem, ProjectView } from "../../shared/ipc.ts"
 import { App } from "../src/app.tsx"
+import { newNeedUser } from "../src/components/chat-column.tsx"
 import { useChat } from "../src/chat-store.ts"
 import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
@@ -182,5 +183,26 @@ describe("the chat", () => {
     await screen.findByLabelText("Message the agent")
     expect(screen.queryByText("project A's message")).toBeNull()
     expect(useChat.getState().frame).toBeNull()
+  })
+})
+
+describe("bringing the chat's log to its end", () => {
+  const text = (id: string): ChatItem => ({ kind: "assistant", id, text: id })
+  const ask = (id: string, state: "open" | "answered"): ChatItem => ({
+    kind: "request",
+    id,
+    request: { kind: "question", question: "Which?" },
+    state,
+  })
+  it("sees every item new since the last render, not only the last", () => {
+    // A request the run waits on, then a text, in one render: still brought into view.
+    expect(newNeedUser([text("a"), ask("q", "open"), text("b")], 1)).toBe(true)
+    expect(newNeedUser([text("a"), ask("q", "open"), text("b")], 2)).toBe(false)
+    // An answered request, or a request updated in place (no new item): not again.
+    expect(newNeedUser([text("a"), ask("q", "answered")], 1)).toBe(false)
+    expect(newNeedUser([text("a"), ask("q", "open")], 2)).toBe(false)
+    // The user's own message; a new chat (fewer items than seen) read from its start.
+    expect(newNeedUser([text("a"), { kind: "user", id: "u", text: "hi" }], 1)).toBe(true)
+    expect(newNeedUser([{ kind: "user", id: "u", text: "hi" }], 5)).toBe(true)
   })
 })

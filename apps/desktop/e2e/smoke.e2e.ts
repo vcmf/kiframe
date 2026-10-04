@@ -1,6 +1,5 @@
 // The built app, launched as a user would get it (a throwaway profile, the key in memory): the
 // first run asks for the key, then for a project; the window is hardened.
-import { execFileSync } from "node:child_process"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -9,6 +8,7 @@ import { parseScenarioYaml } from "@kiframe/schema"
 import { _electron as electron, type ElectronApplication, type Page } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../../packages/runtime/test/fixture-server.ts"
+import { processes, role, treeOf } from "../../../scripts/perf/lib.ts"
 
 const appDir = join(import.meta.dirname, "..")
 const shots = process.env.KIFRAME_E2E_SHOTS
@@ -346,8 +346,12 @@ describe("the desktop app", () => {
           })
           .toBe(true)
       }
-      await log.press("PageUp")
-      await log.press("PageUp")
+      // Pressed until it has left the end (a smooth scroll a new row lands on may stop short: a
+      // reader presses again).
+      for (let i = 0; i < 5 && (await fromEnd()) <= 40; i++) {
+        await log.press("PageUp")
+        await page.waitForTimeout(300)
+      }
       await expect.poll(fromEnd).toBeGreaterThan(40)
       await settled()
       const top = await markSeen()
@@ -381,6 +385,15 @@ describe("the desktop app", () => {
         .toBe(true)
       await expect.poll(async () => Math.round(await fromEnd())).toBe(0)
       expect(await inView(".msg-user")).toBe(true)
+      // A tool group near the end opened: its head stays under the pointer, the steps open below
+      // it (closing it there moves it down: nothing below to scroll into, as in any log).
+      const group = page.locator(".tool-group-head").last()
+      await group.click()
+      await frames()
+      const at = (await group.boundingBox())?.y ?? -1
+      await group.click()
+      await frames()
+      expect(Math.abs(((await group.boundingBox())?.y ?? -1) - at)).toBeLessThanOrEqual(1)
     } finally {
       await app.evaluate(({ BrowserWindow }, size) => {
         const [width = 0, height = 0] = size ?? []
@@ -394,15 +407,11 @@ describe("the desktop app", () => {
 
   it("closes the agent's browser with the project, and launches it again for the next", async () => {
     const pid = app.process().pid
-    const browsers = () => {
-      const all = execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
-        .split("\n")
-        .map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l))
-        .filter((m): m is RegExpExecArray => m !== null)
-      return all.filter((m) => Number(m[2]) === pid && /ms-playwright|headless/.test(m[3] ?? ""))
+    // The agent's browser: its main process, anywhere under the app's.
+    const browsers = async () =>
+      treeOf(await processes(), pid ?? -1).filter((p) => role(p, pid ?? -1) === "agent-browser")
         .length
-    }
-    expect(browsers()).toBe(1)
+    expect(await browsers()).toBe(1)
     await page.getByRole("button", { name: /Fixture app/ }).click()
     await page.getByRole("menuitem", { name: "Close project" }).click()
     await expect
@@ -421,7 +430,7 @@ describe("the desktop app", () => {
       .poll(() => page.getByText("Back home.").isVisible(), { timeout: 30_000 })
       .toBe(true)
     expect(await page.getByText(/didn.t start/).count()).toBe(0)
-    expect(browsers()).toBe(1)
+    expect(await browsers()).toBe(1)
   })
 
   it("is served from the app's own origin, sandboxed, with a strict CSP", async () => {
