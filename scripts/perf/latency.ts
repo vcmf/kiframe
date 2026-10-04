@@ -38,7 +38,12 @@ const l = await launchScripted({
   ],
 })
 const { page } = l
-type Probe = { phase: string; rtt: [string, number][]; gaps: [string, number][] }
+type Probe = {
+  phase: string
+  rtt: [string, number][]
+  gaps: [string, number][]
+  failed: string[]
+}
 try {
   await openProject(l, project, "Latency")
   // In the window: a round trip every 100 ms, and every frame gap, tagged by phase.
@@ -47,11 +52,16 @@ try {
       probe: Probe
       kiframe: { invoke: (c: string) => Promise<unknown> }
     }
-    w.probe = { phase: "idle", rtt: [], gaps: [] }
+    w.probe = { phase: "idle", rtt: [], gaps: [], failed: [] }
+    // A failed round trip is counted, never the end of the probe (no samples would read as fast).
     const tick = async () => {
       const t = performance.now()
-      await w.kiframe.invoke("chat:state")
-      w.probe.rtt.push([w.probe.phase, performance.now() - t])
+      try {
+        await w.kiframe.invoke("chat:state")
+        w.probe.rtt.push([w.probe.phase, performance.now() - t])
+      } catch {
+        w.probe.failed.push(w.probe.phase)
+      }
       setTimeout(() => void tick(), 100)
     }
     void tick()
@@ -83,7 +93,9 @@ try {
         ? "no frames (window hidden?)"
         : `frames ${gaps.length}, gaps >50 ms ${gaps.filter((g) => g > 50).length}, ` +
           `>100 ms ${gaps.filter((g) => g > 100).length}, worst ${Math.max(...gaps).toFixed(0)} ms`
-    log(`${phase}: ipc ms ${JSON.stringify(stats(rtt))}; ${frames}`)
+    const failed = probe.failed.filter((p) => p === phase).length
+    const ipc = rtt.length === 0 ? "no round trips" : `ipc ms ${JSON.stringify(stats(rtt))}`
+    log(`${phase}: ${ipc}${failed > 0 ? ` (${failed} failed)` : ""}; ${frames}`)
   }
 } finally {
   await quit(l).catch(() => undefined)

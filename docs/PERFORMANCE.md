@@ -44,7 +44,7 @@ quit: 0.2 s.
 | Quit while recording | 0.4 s, nothing left after 0.5 s, 5 s, 15 s |
 | Quit while ffmpeg encodes | ffmpeg gone within 0.5 s (not orphaned) |
 
-**Responsiveness while recording** (scripted, local page, two runs): the window's request round trip p95 1.9–2.9 ms, worst 17–24 ms (idle under 2 ms); no frame gap over 11 ms.
+**Responsiveness while recording** (scripted, local page, three runs): the window's request round trip p95 1.9–5.1 ms, worst 9.7–24 ms (idle under 4 ms); no frame gap over 11 ms.
 
 **A real app** (minmux.dev, the real model, 7 minutes, $0.02): the process tree's median 1.06 GB,
 peak 1.28 GB, at most 9 processes; the main process peaks at 93% CPU while recording (Playwright
