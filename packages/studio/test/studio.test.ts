@@ -117,7 +117,8 @@ describe("studio tools", () => {
   }, 30_000)
 
   it("saves a scene only once its replay passes, then records it with its composition", async () => {
-    const { studio, dir } = makeStudio()
+    let tidied = 0
+    const { studio, dir } = makeStudio(undefined, { afterRecord: () => (tidied += 1) })
     expect(
       await tool("save_scene").run(
         {
@@ -139,7 +140,10 @@ describe("studio tools", () => {
     expect(await tool("list_scenes").run({}, studio, never)).toEqual([
       { id: "tour", title: "Tour", grounded: true, recorded: false },
     ])
+    expect(tidied).toBe(0)
     expect(await tool("record_scene").run({ id: "tour" }, studio, never)).toMatch(/^recorded/)
+    // The host's take bookkeeping, once the composition naming the take is saved.
+    expect(tidied).toBe(1)
     const reopened = openProject(dir)
     expect(reopened.scenes.get("tour")?.composition?.take?.key).toBe(
       studio.options.takes.latest("p1", "tour")?.meta.takeKey,
@@ -416,7 +420,8 @@ presets:
   }, 30_000)
 
   it("records only a recording scene", async () => {
-    const { studio } = makeStudio()
+    let tidied = 0
+    const { studio } = makeStudio(undefined, { afterRecord: () => (tidied += 1) })
     const { saveScene } = await import("@kiframe/project")
     const { parseScenarioYaml } = await import("@kiframe/schema")
     saveScene(
@@ -433,6 +438,7 @@ presets:
     expect(await tool("record_scene").run({ id: "intro" }, studio, never)).toEqual({
       error: expect.stringMatching(/card scene: only recordings/) as unknown,
     })
+    expect(tidied).toBe(0)
     await studio.close()
   }, 30_000)
 

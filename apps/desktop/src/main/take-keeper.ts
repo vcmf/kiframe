@@ -27,14 +27,17 @@ export class TakeKeeper {
     this.#now = now
   }
 
-  /** At start: removed projects' takes, then eviction. */
+  /**
+   * At start: removed projects' takes, then eviction, each folder read once (what the removal
+   * read is what the eviction is decided from).
+   */
   async tidy(): Promise<void> {
-    await this.#removeRemoved()
-    await this.evict()
+    const states = await this.#removeRemoved()
+    await this.evict(states)
   }
 
   /** Evicts (a pass under way: one more after it, never two at once). */
-  evict(): Promise<void> {
+  evict(read?: ReadonlyMap<string, ReadonlyMap<string, FolderState>>): Promise<void> {
     if (this.#running !== undefined) {
       this.#again = true
       return this.#running
@@ -42,8 +45,11 @@ export class TakeKeeper {
     this.#running = (async () => {
       try {
         do {
+          // What was read for this pass only (a pass asked again meanwhile reads the folders again).
+          const known = this.#again ? undefined : read
           this.#again = false
-          await this.#takes.evict((projectId) => this.#namedBy(projectId), this.#now())
+          await this.#takes.evict((projectId) => this.#namedBy(projectId, known), this.#now())
+          read = undefined
         } while (this.#again)
       } finally {
         this.#running = undefined
@@ -53,13 +59,17 @@ export class TakeKeeper {
   }
 
   /** What a project's folders name now; "keep" unless every one of them is there and read. */
-  async #namedBy(projectId: string): Promise<NamedTakes> {
+  async #namedBy(
+    projectId: string,
+    read: ReadonlyMap<string, ReadonlyMap<string, FolderState>> | undefined,
+  ): Promise<NamedTakes> {
     const folders = this.#index.folders(projectId)
     if (folders.length === 0) return "keep"
     const scenes = new Map<string, Set<string>>()
     const unread = new Set<string>()
     for (const folder of folders) {
-      const state = await this.#inspect(folder, projectId)
+      const state =
+        read?.get(projectId)?.get(folder.path) ?? (await this.#inspect(folder, projectId))
       if (state.state !== "here") return "keep"
       for (const [scene, key] of Object.entries(state.scenes)) {
         scenes.set(scene, (scenes.get(scene) ?? new Set()).add(key))
@@ -72,9 +82,9 @@ export class TakeKeeper {
   /**
    * Each known folder looked at: gone ones dated (back or unknown: undated); a folder gone 7 days
    * forgotten while its project is elsewhere; a project whose every folder is, its takes deleted,
-   * checked again under the store's lock (a copy opened meanwhile keeps them).
+   * checked again under the store's lock (a copy opened meanwhile keeps them). What it read.
    */
-  async #removeRemoved(): Promise<void> {
+  async #removeRemoved(): Promise<Map<string, Map<string, FolderState>>> {
     const now = this.#now()
     // Each folder's state, by its path (a folder added meanwhile is left as it is).
     const states = new Map<string, Map<string, FolderState>>()
@@ -111,9 +121,11 @@ export class TakeKeeper {
         }
         continue
       }
-      const removed = await this.#takes.removeProject(id, () =>
-        this.#index.folders(id).every((f) => due(f.missingSince)),
-      )
+      // Still known and every folder still due (an index that doesn't read now: none, kept).
+      const removed = await this.#takes.removeProject(id, () => {
+        const now = this.#index.folders(id)
+        return now.length > 0 && now.every((f) => due(f.missingSince))
+      })
       // Forgotten once its takes are gone (a removal that didn't happen is tried next start).
       if (removed) {
         this.#index.change((all) => {
@@ -121,5 +133,6 @@ export class TakeKeeper {
         })
       }
     }
+    return states
   }
 }

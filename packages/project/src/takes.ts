@@ -9,6 +9,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs"
 import { basename, dirname, join, relative, sep } from "node:path"
@@ -87,6 +88,10 @@ export class TakeStore {
   #lock: Promise<unknown> = Promise.resolve()
   /** Take folders' sizes, once measured (a take doesn't grow: its `used` and marks are bytes). */
   readonly #sizes = new Map<string, number>()
+  /** Placed takes as read, by their meta file's identity (read again only when it's replaced). */
+  readonly #read = new Map<string, { stamp: string; take: StoredTake | undefined }>()
+  /** When each take was last played, once read (a play here updates it). */
+  readonly #used = new Map<string, number>()
 
   constructor(root: string, options: TakeStoreOptions = {}) {
     this.root = root
@@ -198,8 +203,9 @@ export class TakeStore {
       }
     }
     const takes = join(this.root, "takes")
-    for (const project of list(takes)) {
-      for (const scene of list(join(takes, project))) {
+    // What's set aside (`.removed-*`, `.evict-*`) is never sealed: it's being deleted.
+    for (const project of list(takes).filter((p) => !p.startsWith("."))) {
+      for (const scene of list(join(takes, project)).filter((n) => !n.startsWith("."))) {
         for (const name of list(join(takes, project, scene))) {
           if (!TAKE_DIR.test(name)) continue
           const dir = join(takes, project, scene, name)
@@ -240,7 +246,7 @@ export class TakeStore {
       }),
     ])
     // Played: the last to be evicted (least recently used first).
-    markUsed(take.dir)
+    this.#used.set(take.dir, markUsed(take.dir))
     return { records, video }
   }
 
@@ -249,7 +255,8 @@ export class TakeStore {
    * no composition names, by what `namedBy` reads of its project's folders now (asked outside the
    * store's lock); never one of a project to keep, of a scene that didn't read, whose meta doesn't
    * read, the newest of its scene, or recorded or played within the grace. Nothing is read while
-   * the whole store is under the budget. Under the lock, each is checked again (still there, not
+   * the whole store is under the budget, and only projects with a take that could go are asked
+   * (another project's takes aren't counted as scratch: less evicted, never more). Under the lock, each is checked again (still there, not
    * played since) and moved aside before it's deleted (a deletion cut short never leaves what
    * looks like a take). The folders deleted.
    */
@@ -271,10 +278,9 @@ export class TakeStore {
         for (const name of list(join(takes, project, scene))) {
           if (!TAKE_DIR.test(name)) continue
           const dir = join(takes, project, scene, name)
-          const read = readTake(dir)
-          const take = read instanceof Error ? undefined : read
+          const take = this.#readOnce(dir)
           // When it was last played, as the eviction starts (a play after it keeps the take).
-          all.push({ project, scene, dir, take, used: take === undefined ? 0 : usedAt(dir, take) })
+          all.push({ project, scene, dir, take, used: take === undefined ? 0 : this.#usedAt(take) })
         }
       }
     }
@@ -288,15 +294,20 @@ export class TakeStore {
     }
     // Under the budget as a whole: no scratch beyond it, nothing to read.
     if (all.reduce((sum, t) => sum + sizeOfTake(t.dir), 0) <= budget) return []
-    const decisions = new Map<string, NamedTakes>()
-    for (const project of new Set(all.map((t) => t.project))) {
-      decisions.set(project, await namedBy(project).catch((): NamedTakes => "keep"))
-    }
     const newest = new Map<string, number>()
     for (const t of all) {
       if (t.take === undefined) continue
       const key = `${t.project}/${t.scene}`
       newest.set(key, Math.max(newest.get(key) ?? 0, Date.parse(t.take.meta.recordedAt)))
+    }
+    // Could go if not named: its meta read, out of the grace, not the newest of its scene.
+    const free = (t: (typeof all)[number]) =>
+      t.take !== undefined &&
+      now - t.used >= EVICTION_GRACE_MS &&
+      newest.get(`${t.project}/${t.scene}`) !== Date.parse(t.take.meta.recordedAt)
+    const decisions = new Map<string, NamedTakes>()
+    for (const project of new Set(all.filter(free).map((t) => t.project))) {
+      decisions.set(project, await namedBy(project).catch((): NamedTakes => "keep"))
     }
     let scratch = 0
     const candidates: { dir: string; used: number; size: number }[] = []
@@ -307,11 +318,7 @@ export class TakeStore {
       if (named.scenes.get(t.scene)?.has(t.take.meta.takeKey) === true) continue
       const size = sizeOfTake(t.dir)
       scratch += size
-      const { used } = t
-      const recorded = Date.parse(t.take.meta.recordedAt)
-      if (now - used < EVICTION_GRACE_MS) continue
-      if (newest.get(`${t.project}/${t.scene}`) === recorded) continue
-      candidates.push({ dir: t.dir, used, size })
+      if (free(t)) candidates.push({ dir: t.dir, used: t.used, size })
     }
     const gone: string[] = []
     if (scratch <= budget) return gone
@@ -323,6 +330,8 @@ export class TakeStore {
         if (take === undefined || take instanceof Error || usedAt(c.dir, take) !== c.used) continue
         if (removeAside(c.dir, `.evict-${basename(c.dir)}`)) {
           this.#sizes.delete(c.dir)
+          this.#read.delete(c.dir)
+          this.#used.delete(c.dir)
           scratch -= c.size
           gone.push(c.dir)
         }
@@ -343,8 +352,45 @@ export class TakeStore {
       if (!stillRemoved()) return Promise.resolve(false)
       // No take of it: nothing to delete, removed all the same.
       if (!existsSync(dir)) return Promise.resolve(true)
-      return Promise.resolve(removeAside(dir, `.removed-${basename(dir)}-${Date.now()}`))
+      const removed = removeAside(dir, `.removed-${basename(dir)}-${Date.now()}`)
+      if (removed) {
+        for (const cache of [this.#sizes, this.#read, this.#used]) {
+          for (const at of cache.keys()) if (at.startsWith(dir + sep)) cache.delete(at)
+        }
+      }
+      return Promise.resolve(removed)
     })
+  }
+
+  /**
+   * A placed take as read: its meta read again only when the file is another (a take replaced in
+   * place: its inode, size or time changed). An error isn't kept (read again next time).
+   */
+  #readOnce(dir: string): StoredTake | undefined {
+    let stamp: string
+    try {
+      const st = statSync(join(dir, "meta.json"))
+      stamp = `${st.ino}:${st.size}:${st.mtimeMs}`
+    } catch {
+      return undefined
+    }
+    const known = this.#read.get(dir)
+    if (known?.stamp === stamp) return known.take
+    const read = readTake(dir)
+    if (read instanceof Error) return undefined
+    this.#read.set(dir, { stamp, take: read })
+    if (known !== undefined) this.#used.delete(dir)
+    return read
+  }
+
+  /** When a take was last played, read once (then kept as this app plays it). */
+  #usedAt(take: StoredTake): number {
+    let at = this.#used.get(take.dir)
+    if (at === undefined) {
+      at = usedAt(take.dir, take)
+      this.#used.set(take.dir, at)
+    }
+    return at
   }
 
   /** The scene's complete takes, newest first (by when they were recorded; unreadable ones skipped). */
@@ -412,13 +458,7 @@ export class TakeStore {
         })
         for (const name of leftovers) {
           if (name.endsWith(".failed")) dropFrames(join(at, name))
-          else {
-            try {
-              rmSync(join(at, name), { recursive: true, force: true })
-            } catch {
-              // held: swept at the next start
-            }
-          }
+          else rmQuietly(join(at, name))
         }
       }
     }
@@ -520,12 +560,15 @@ function usedAt(dir: string, take: StoredTake): number {
   return Date.parse(take.meta.recordedAt)
 }
 
-function markUsed(dir: string): void {
+/** Notes a take played now; when that was. */
+function markUsed(dir: string): number {
+  const now = Date.now()
   try {
-    writeFileSync(join(dir, "used"), String(Date.now()), { mode: 0o600 })
+    writeFileSync(join(dir, "used"), String(now), { mode: 0o600 })
   } catch {
-    // best effort: an older time only makes it go sooner
+    // best effort: an older time only makes it go sooner (this run keeps the time it played)
   }
+  return now
 }
 
 /** A folder's size in bytes (its files, links not followed). */

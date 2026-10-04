@@ -503,6 +503,33 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       expect(existsSync(join(scene, ".evict-take-1790000000000-0123456789ab"))).toBe(false)
     })
 
+    it("asks only the projects with a take that could go (the newest of a scene never does)", async () => {
+      const store = newStore()
+      await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+      const asked: string[] = []
+      const tight = new TakeStore(store.root, { scratchBudget: 0 })
+      const ask = (id: string) => (asked.push(id), Promise.resolve(named({})))
+      expect(await tight.evict(ask, later)).toEqual([])
+      expect(asked).toEqual([])
+      await record(store, "login", "  - { id: b, action: pause, ms: 50 }\n")
+      expect(await tight.evict(ask, later)).toHaveLength(1)
+      expect(asked).toEqual(["p1"])
+    })
+
+    it("notes a take played when it's opened: within the grace again", async () => {
+      const store = newStore()
+      const [a] = await recordThree(store)
+      // Last played long ago: out of the grace (b and c, recorded a moment ago, are in it).
+      writeFileSync(join(a.dir, "used"), "1")
+      const tight = new TakeStore(store.root, { scratchBudget: 0 })
+      const before = Date.now()
+      await tight.open(a)
+      expect(Number(readFileSync(join(a.dir, "used"), "utf8"))).toBeGreaterThanOrEqual(before)
+      // Played now: kept the day after.
+      expect(await tight.evict(() => Promise.resolve(named({})), before + DAY / 2)).toEqual([])
+      expect(existsSync(a.dir)).toBe(true)
+    })
+
     it("removes a project's takes only while it's still removed, moved aside first", async () => {
       const store = newStore()
       await recordThree(store)

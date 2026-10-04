@@ -1,6 +1,7 @@
 // Folders inspected off the main thread, each within a time limit: a folder that doesn't answer in
 // time (a stuck network mount) is "unknown" (its project's takes kept, never counted gone), and
-// the worker it hung is ended (the next folder gets a new one). Electron-free (the worker's maker
+// the worker it hung is ended. Then every folder is "unknown" for a while, with no new worker (a
+// thread stuck in the kernel may never end: at most one left behind per while, never one a folder). Electron-free (the worker's maker
 // is given: electron-vite's `?nodeWorker` in the app, the folder read in process in tests).
 import type { Worker } from "node:worker_threads"
 import type { Folder, FolderState } from "./folder-inspect.ts"
@@ -10,11 +11,16 @@ export type Inspect = (folder: Folder, projectId: string) => Promise<FolderState
 /** How long a folder may take to read. */
 export const FOLDER_TIMEOUT_MS = 5000
 
+/** After a folder didn't answer: how long no folder is read. */
+export const STUCK_FOR_MS = 10 * 60 * 1000
+
 export function workerInspector(
   make: () => Worker,
   timeoutMs = FOLDER_TIMEOUT_MS,
+  now = () => Date.now(),
 ): { inspect: Inspect; close: () => void } {
   let worker: Worker | undefined
+  let stuckUntil = 0
   let next = 0
   let queue: Promise<unknown> = Promise.resolve()
   const end = () => {
@@ -23,6 +29,10 @@ export function workerInspector(
   }
   const ask = (folder: Folder, projectId: string): Promise<FolderState> =>
     new Promise((resolve) => {
+      if (now() < stuckUntil) {
+        resolve({ state: "unknown", why: "a folder didn't answer in time a moment ago" })
+        return
+      }
       worker ??= make()
       const w = worker
       const id = ++next
@@ -40,6 +50,7 @@ export function workerInspector(
         done({ state: "unknown", why: error.message })
       }
       const timer = setTimeout(() => {
+        stuckUntil = now() + STUCK_FOR_MS
         end()
         done({ state: "unknown", why: "it didn't answer in time" })
       }, timeoutMs)

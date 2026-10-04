@@ -1,12 +1,21 @@
 import { EventEmitter } from "node:events"
-import { mkdirSync, mkdtempSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Worker } from "node:worker_threads"
 import { createProject, saveScene, TakeStore } from "@kiframe/project"
 import { describe, expect, it } from "vitest"
 import { inspectFolder } from "../src/main/folder-inspect.ts"
-import { workerInspector } from "../src/main/folder-reader.ts"
+import { STUCK_FOR_MS, workerInspector } from "../src/main/folder-reader.ts"
 import { ProjectIndex } from "../src/main/project-index.ts"
 import { REMOVED_AFTER_MS, TakeKeeper } from "../src/main/take-keeper.ts"
 
@@ -52,6 +61,40 @@ describe("a project folder, read for the take store", () => {
     expect(inspectFolder({ path: dir }, "p1").state).toBe("unknown")
   })
 
+  it("is unknown when it can't be read (a permission): never gone", () => {
+    const { root, dir } = setup()
+    const dev = statSync(dir).dev
+    chmodSync(dir, 0o000)
+    try {
+      expect(inspectFolder({ path: dir, dev }, "p1").state).toBe("unknown")
+    } finally {
+      chmodSync(dir, 0o755)
+    }
+    // Moved out of a folder that can't be read: unknown too (its surroundings can't tell).
+    const shut = join(root, "shut")
+    mkdirSync(shut)
+    const inside = join(shut, "demo.kiframe")
+    renameSync(dir, inside)
+    rmSync(join(inside, "project.json"))
+    chmodSync(shut, 0o000)
+    try {
+      expect(inspectFolder({ path: inside, dev }, "p1").state).toBe("unknown")
+    } finally {
+      chmodSync(shut, 0o755)
+    }
+  })
+
+  it("is never gone in a git working tree (a branch without the project brings it back)", () => {
+    const { root, dir } = setup()
+    const dev = statSync(dir).dev
+    rmSync(join(dir, "project.json"))
+    expect(inspectFolder({ path: dir, dev }, "p1")).toEqual({ state: "gone" })
+    mkdirSync(join(root, ".git"))
+    expect(inspectFolder({ path: dir, dev }, "p1").state).toBe("unknown")
+    rmSync(dir, { recursive: true })
+    expect(inspectFolder({ path: dir, dev }, "p1").state).toBe("unknown")
+  })
+
   it("is unknown when the worker doesn't answer in time (a stuck mount), its worker ended", async () => {
     let ended = 0
     const hung = () => {
@@ -65,12 +108,24 @@ describe("a project folder, read for the take store", () => {
       })
       return w
     }
-    const reader = workerInspector(hung, 50)
+    let made = 0
+    let now = 0
+    const reader = workerInspector(
+      () => (made++, hung()),
+      50,
+      () => now,
+    )
     expect(await reader.inspect({ path: "/x", dev: 1 }, "p1")).toEqual({
       state: "unknown",
       why: "it didn't answer in time",
     })
     expect(ended).toBe(1)
+    // A while after, every folder unknown with no new worker (never one stuck thread a folder).
+    expect((await reader.inspect({ path: "/y", dev: 1 }, "p1")).state).toBe("unknown")
+    expect(made).toBe(1)
+    now += STUCK_FOR_MS
+    await reader.inspect({ path: "/y", dev: 1 }, "p1")
+    expect(made).toBe(2)
   })
 })
 
@@ -83,6 +138,10 @@ describe("the project index", () => {
     writeFileSync(join(data, "projects.json"), "{ half")
     // The backup (the index before the last write) is read.
     expect(index.folders("p1")).toHaveLength(1)
+    // A write from the backup never copies the broken file over it.
+    index.seen("p2", dir)
+    expect(JSON.parse(readFileSync(join(data, "projects.json.bak"), "utf8"))).toHaveProperty("p1")
+    writeFileSync(join(data, "projects.json"), "{ half")
     writeFileSync(join(data, "projects.json.bak"), "{ half")
     index.seen("p2", dir)
     expect(readFileSync(join(data, "projects.json"), "utf8")).toBe("{ half")
@@ -123,6 +182,40 @@ describe("the take keeper", () => {
     expect(statSync(join(data, "takes", "p1")).isDirectory()).toBe(true)
     expect(index.folders("p1").map((f) => f.path)).toEqual([index.folders("p1")[0]?.path])
     expect(index.folders("p1")[0]?.path).toContain("moved.kiframe")
+  })
+
+  it("keeps a removed project's takes when the index doesn't read at the last check", async () => {
+    const { root, dir, index, data } = setup()
+    index.seen("p1", dir)
+    let now = Date.now()
+    let answer: boolean | undefined
+    const store = {
+      evict: () => Promise.resolve([]),
+      removeProject: (_id: string, stillRemoved: () => boolean) => {
+        writeFileSync(join(data, "projects.json"), "{ half")
+        writeFileSync(join(data, "projects.json.bak"), "{ half")
+        answer = stillRemoved()
+        return Promise.resolve(answer)
+      },
+    } as unknown as TakeStore
+    const keeper = new TakeKeeper(store, index, inProcess, () => now)
+    renameSync(dir, join(root, "deleted"))
+    await keeper.tidy()
+    now += REMOVED_AFTER_MS
+    await keeper.tidy()
+    expect(answer).toBe(false)
+  })
+
+  it("reads each folder once at start (removal and eviction alike)", async () => {
+    const { dir, index } = setup()
+    index.seen("p1", dir)
+    let reads = 0
+    const store = {
+      evict: async (namedBy: (id: string) => Promise<unknown>) => (await namedBy("p1"), []),
+      removeProject: () => Promise.resolve(false),
+    } as unknown as TakeStore
+    await new TakeKeeper(store, index, (f, id) => (reads++, inProcess(f, id))).tidy()
+    expect(reads).toBe(1)
   })
 
   it("tells eviction a project's named takes only when every folder is read; else keep", async () => {

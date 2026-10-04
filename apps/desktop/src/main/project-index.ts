@@ -5,7 +5,7 @@
 // is written: no project forgotten). Synchronous (one change at a time). Electron-free.
 import { copyFileSync, existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { join } from "node:path"
-import { writeAtomic } from "@kiframe/project"
+import { jsonText, writeAtomic } from "@kiframe/project"
 import type { Folder } from "./folder-inspect.ts"
 
 export interface KnownFolder extends Folder {
@@ -56,8 +56,9 @@ export class ProjectIndex {
     const all = this.#read()
     if (all === undefined) return
     apply(all)
-    if (existsSync(this.#file)) copyFileSync(this.#file, `${this.#file}.bak`)
-    writeAtomic(this.#file, `${JSON.stringify(all, null, 2)}\n`)
+    // The backup refreshed only from a file that reads (a broken one never replaces a good copy).
+    if (parse(this.#file) !== undefined) copyFileSync(this.#file, `${this.#file}.bak`)
+    writeAtomic(this.#file, jsonText(all))
   }
 
   /** The index; undefined when it exists and neither it nor its backup reads (never acted on). */
