@@ -1,5 +1,6 @@
 // The built app, launched as a user would get it (a throwaway profile, the key in memory): the
 // first run asks for the key, then for a project; the window is hardened.
+import { execFileSync } from "node:child_process"
 import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -70,6 +71,9 @@ beforeAll(async () => {
       { kind: "text", text: "Signed in." },
       // A long chat (more than the window holds).
       ...Array.from({ length: 14 }, (_, i) => ({ kind: "text", text: `Noted ${i}.` })),
+      // After the project is closed and opened again: a step in a new browser.
+      step("c9", { id: "home", action: "goto", url: "/" }),
+      { kind: "text", text: "Back home." },
     ]),
   )
   env.KIFRAME_TEST_MODEL = model
@@ -254,6 +258,38 @@ describe("the desktop app", () => {
     })
     await page.waitForTimeout(300)
     expect(await log.evaluate((l) => l.scrollTop)).toBe(scrolled)
+  })
+
+  it("closes the agent's browser with the project, and launches it again for the next", async () => {
+    const pid = app.process().pid
+    const browsers = () => {
+      const all = execFileSync("ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" })
+        .split("\n")
+        .map((l) => /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(l))
+        .filter((m): m is RegExpExecArray => m !== null)
+      return all.filter((m) => Number(m[2]) === pid && /ms-playwright|headless/.test(m[3] ?? ""))
+        .length
+    }
+    expect(browsers()).toBe(1)
+    await page.getByRole("button", { name: /Fixture app/ }).click()
+    await page.getByRole("menuitem", { name: "Close project" }).click()
+    await expect
+      .poll(() => page.getByRole("heading", { name: "Start a demo" }).isVisible())
+      .toBe(true)
+    await expect.poll(browsers).toBe(0)
+    // The same project again (the picker still answers with it): its agent works, in a new browser.
+    await page.getByRole("button", { name: "Open a project…" }).click()
+    await expect
+      .poll(() => page.getByRole("button", { name: /Fixture app/ }).isVisible())
+      .toBe(true)
+    const box = page.getByLabel("Message the agent")
+    await box.fill("Go home")
+    await box.press("Enter")
+    await expect
+      .poll(() => page.getByText("Back home.").isVisible(), { timeout: 30_000 })
+      .toBe(true)
+    expect(await page.getByText(/didn.t start/).count()).toBe(0)
+    expect(browsers()).toBe(1)
   })
 
   it("is served from the app's own origin, sandboxed, with a strict CSP", async () => {
