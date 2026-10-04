@@ -23,7 +23,7 @@ import { KeyStore, takeStoreKey } from "./settings.ts"
 import { TakeKeeper } from "./take-keeper.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
-import { closeProject, Workspace } from "./workspace.ts"
+import { Workspace } from "./workspace.ts"
 import { createWindow, hardenSessions, registerAppScheme, serveApp } from "./window.ts"
 
 const here = fileURLToPath(new URL(".", import.meta.url))
@@ -345,7 +345,7 @@ function start(): void {
         "project:close": () =>
           // The browser's close isn't waited for (one that hangs never holds the window); a quit
           // waits for it.
-          act(() => closeProject(workspace, dropBrowser)),
+          act(() => workspace.close(dropBrowser)),
         "external:open": async (url) => {
           if (isSafeExternal(url)) await shell.openExternal(url)
         },

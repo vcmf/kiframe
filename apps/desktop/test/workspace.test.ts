@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createProject, type OpenedProject } from "@kiframe/project"
 import { describe, expect, it } from "vitest"
-import { closeProject, Workspace } from "../src/main/workspace.ts"
+import { Workspace } from "../src/main/workspace.ts"
 
 const folder = () => join(mkdtempSync(join(tmpdir(), "kiframe-ws-")), "demo.kiframe")
 
@@ -80,10 +80,10 @@ describe("the open project and its agent", () => {
     })
     await ws.create(folder(), { name: "A", url: "https://a.test" })
     ready = false
-    await expect(closeProject(ws, letGo)).rejects.toThrow(/not ready/)
+    await expect(ws.close(letGo)).rejects.toThrow(/not ready/)
     expect(gone).toBe(0)
     ready = true
-    await closeProject(ws, letGo)
+    await ws.close(letGo)
     expect(gone).toBe(1)
     // The agent's own close fails: the project is closed, its browser let go all the same.
     const failing = new Workspace((project: OpenedProject) => ({
@@ -91,8 +91,21 @@ describe("the open project and its agent", () => {
       close: () => Promise.reject(new Error("stuck")),
     }))
     await failing.create(folder(), { name: "B", url: "https://b.test" })
-    await expect(closeProject(failing, letGo)).rejects.toThrow(/stuck/)
+    await expect(failing.close(letGo)).rejects.toThrow(/stuck/)
     expect(gone).toBe(2)
+    // An open queued right behind the close: the browser let go before it (the new project's
+    // agent launches its own), never after it took the browser.
+    const order: string[] = []
+    const { make: make2 } = agents()
+    const ws2 = new Workspace(make2)
+    await ws2.create(folder(), { name: "C", url: "https://c.test" })
+    const closing = ws2.close(() =>
+      order.push(`gone, agent ${ws2.agent === undefined ? "none" : "set"}`),
+    )
+    const opening = ws2.create(folder(), { name: "D", url: "https://d.test" })
+    await Promise.all([closing, opening])
+    expect(order).toEqual(["gone, agent none"])
+    expect(ws2.agent).toBeDefined()
   })
 
   it("keeps the open project and its agent when another doesn't open, or its agent can't be made", async () => {

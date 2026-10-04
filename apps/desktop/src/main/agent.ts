@@ -263,6 +263,9 @@ export class AgentHost {
     this.#withSecrets = secrets !== undefined
     // Every value known before anything runs (R6); the browser launches meanwhile.
     const [browser] = await Promise.all([this.#options.browser(), secrets?.ready()])
+    // Closed while the browser launched or the keychain answered: no studio for a project that's
+    // gone (the browser is the app's: let go by the project's close).
+    if (this.#closed) throw new Error("the project is closed")
     const origin = new URL(config.target.url).origin
     this.#browser = browser
     this.#studio = new Studio({

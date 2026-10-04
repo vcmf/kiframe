@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
@@ -418,6 +418,35 @@ presets:
     expect(asked[0]).toMatchObject({ kind: "approve-risky", step: "teardown[0]" })
     await studio.close()
   }, 30_000)
+
+  it("never encodes a recording that stops (the take store drops its video)", async () => {
+    // What the store is given to settle: a failed take with or without its video.
+    let encoded: boolean | undefined
+    class Watching extends TakeStore {
+      override settle(dir: string) {
+        encoded = existsSync(join(`${dir}.failed`, "frames.webm"))
+        return super.settle(dir)
+      }
+    }
+    const { studio } = makeStudio(undefined, {
+      takes: new Watching(mkdtempSync(join(tmpdir(), "kiframe-data-"))),
+    })
+    const long = `version: 1
+setup: [{ action: goto, url: / }]
+steps:
+${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 1500 }`).join("\n")}
+`
+    expect(
+      await tool("save_scene").run({ id: "long", title: "Long", yaml: long }, studio, never),
+    ).toMatch(/^saved/)
+    const stop = new AbortController()
+    const recording = tool("record_scene").run({ id: "long" }, studio, stop.signal)
+    await new Promise((r) => setTimeout(r, 2500))
+    stop.abort()
+    await recording.catch(() => undefined)
+    expect(encoded).toBe(false)
+    await studio.close()
+  }, 60_000)
 
   it("records only a recording scene", async () => {
     let tidied = 0
