@@ -167,7 +167,8 @@ try {
     phase = "idle"
     await sleep(1500)
     const h = await heaps()
-    const by = await sample()
+    // Read, not a sample of its own (the sampler writes the rows: none twice).
+    const { byRole: by } = await sampleTree(mainPid, seen)
     const procs = [...by.values()].reduce((s, v) => s + v.count, 0)
     const agent = [...by.entries()]
       .filter(([r]) => r.startsWith("agent"))

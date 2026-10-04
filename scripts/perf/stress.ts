@@ -164,4 +164,17 @@ close()
 removeTemp()
 writeFileSync(join(out, "stress.json"), JSON.stringify(report, null, 2))
 log(`written to ${out}`)
-if (report.error !== undefined) process.exitCode = 1
+// A regression of what this measures fails the run: an encode of a stopped or failed take, the
+// browser kept after the project closed, anything alive after quitting.
+const ran = (k: string) => (report[k] as { ffmpegRuns?: number } | undefined)?.ffmpegRuns ?? 0
+const kept = (report.close as { agentProcessesAfterClose?: number } | undefined)
+  ?.agentProcessesAfterClose
+if (
+  report.error !== undefined ||
+  ran("stop") > 0 ||
+  ran("fail") > 0 ||
+  (kept ?? 0) > 0 ||
+  (lingering["15000ms"]?.length ?? 0) > 0
+) {
+  process.exitCode = 1
+}

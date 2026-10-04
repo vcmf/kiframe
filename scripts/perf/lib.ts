@@ -29,7 +29,7 @@ export async function sampleTree(
   const byRole = new Map<string, RoleTotals>()
   for (const p of procs) {
     const r = role(p, mainPid)
-    seen.set(p.pid, `${r} ${p.command.slice(0, 120)}`)
+    seen.set(p.pid, p.command.slice(0, 120))
     const t = byRole.get(r) ?? { count: 0, rss: 0, cpu: 0 }
     byRole.set(r, { count: t.count + 1, rss: t.rss + p.rssKb / 1024, cpu: t.cpu + p.cpu })
   }
@@ -116,13 +116,19 @@ export async function launchScripted(options: {
   const args = [appDir, `--user-data-dir=${profile}`]
   if (options.jsFlags !== undefined) args.unshift(`--js-flags=${options.jsFlags}`)
   const app = await electron.launch({ args, cwd: appDir, env })
-  const mainPid = app.process().pid
-  if (mainPid === undefined) throw new Error("no app pid")
-  const page = await app.firstWindow()
-  await page.getByLabel("OpenRouter API key").fill("sk-or-test-not-a-real-key")
-  await page.getByRole("button", { name: "Save key" }).click()
-  await page.getByRole("heading", { name: "Start a demo" }).waitFor()
-  return { app, page, mainPid, profile }
+  // Launched: closed if anything after fails (never left running on a profile removed at exit).
+  try {
+    const mainPid = app.process().pid
+    if (mainPid === undefined) throw new Error("no app pid")
+    const page = await app.firstWindow()
+    await page.getByLabel("OpenRouter API key").fill("sk-or-test-not-a-real-key")
+    await page.getByRole("button", { name: "Save key" }).click()
+    await page.getByRole("heading", { name: "Start a demo" }).waitFor()
+    return { app, page, mainPid, profile }
+  } catch (error) {
+    await app.close().catch(() => undefined)
+    throw error
+  }
 }
 
 /** A new project folder for the app at `url`. */
@@ -175,10 +181,15 @@ export async function quit(l: Launched, ms = 30_000): Promise<number> {
   return Date.now() - at
 }
 
-/** The app's processes still alive among those seen. */
+/**
+ * The app's processes still alive among those seen: the same pid running the same command (a pid
+ * the system gave another process since is not one of them).
+ */
 export async function stillAlive(seen: Map<number, string>): Promise<string[]> {
-  const alive = new Set((await processes()).map((p) => p.pid))
-  return [...seen].filter(([pid]) => alive.has(pid)).map(([pid, what]) => `${pid} ${what}`)
+  const now = new Map((await processes()).map((p) => [p.pid, p.command.slice(0, 120)]))
+  return [...seen]
+    .filter(([pid, command]) => now.get(pid) === command)
+    .map(([pid, command]) => `${pid} ${command}`)
 }
 
 /** Percentiles of a list (empty: zeros). */
