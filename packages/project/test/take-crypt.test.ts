@@ -27,14 +27,14 @@ describe("a take's files at rest", () => {
     expect(() => decrypt(changed, key)).toThrow(/don't open/)
   })
 
-  it("encrypts a file in place once, and reads plain files (takes from before) as they are", () => {
+  it("encrypts a file in place once, and reads plain files (takes from before) as they are", async () => {
     const dir = mkdtempSync(join(tmpdir(), "kiframe-crypt-"))
     const file = join(dir, "events.jsonl")
     writeFileSync(file, plain)
     expect(readTakeFile(file, undefined).equals(plain)).toBe(true)
-    encryptFile(file, key)
+    await encryptFile(file, key)
     const once = readFileSync(file)
-    encryptFile(file, key)
+    await encryptFile(file, key)
     expect(readFileSync(file).equals(once)).toBe(true)
     expect(readTakeFile(file, key).equals(plain)).toBe(true)
     expect(() => readTakeFile(file, undefined)).toThrow(/encrypted: no take key/)

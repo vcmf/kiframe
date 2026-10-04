@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs"
@@ -368,7 +369,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     if (take === undefined) throw new Error("no take")
     writeFileSync(join(take.dir, ".0123456789ab.tmp"), "half written")
     const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(key) })
-    expect(await keyed.seal()).toBe(1)
+    expect(await keyed.seal()).toEqual({ sealed: 1, failed: [] })
     expect(isEncrypted(readFileSync(join(take.dir, "frames.webm")))).toBe(true)
     expect(existsSync(join(take.dir, ".0123456789ab.tmp"))).toBe(false)
     expect((await keyed.open(take)).records.events.length).toBeGreaterThan(0)
@@ -387,5 +388,42 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       /couldn't be encrypted \(the keychain said no\): deleted/,
     )
     expect(existsSync(dir)).toBe(false)
+  })
+
+  it("never lets a take go on doubt: a scene that didn't read, a pin.json that doesn't", async () => {
+    const store = newStore()
+    const { take } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    store.syncProject("p1", "/copy", new Map([["login", take.meta.takeKey]]))
+    // The scene's composition didn't read (a merge conflict): its pin as it is.
+    store.syncProject("p1", "/copy", new Map(), new Set(["login"]))
+    expect(existsSync(join(take.dir, "pin.json"))).toBe(true)
+    // A pin.json that doesn't read: left untouched, and the take held (never evicted).
+    writeFileSync(join(take.dir, "pin.json"), "{ half")
+    store.syncProject("p1", "/copy", new Map())
+    expect(readFileSync(join(take.dir, "pin.json"), "utf8")).toBe("{ half")
+    expect(new TakeStore(store.root, { scratchBudget: 0 }).evict()).toEqual([])
+    const zero = new TakeStore(store.root, { scratchBudget: 0 })
+    zero.syncProject("p1", "/copy", new Map())
+    expect(zero.evict()).toEqual([])
+  })
+
+  it("seals every take it can at start: one that fails is said, the others sealed, leftovers gone", async () => {
+    const plainStore = newStore()
+    const a = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    const b = await record(plainStore, "other", "  - { id: b, action: pause, ms: 50 }\n")
+    if (a.take === undefined || b.take === undefined) throw new Error("no take")
+    mkdirSync(join(a.take.dir, "shots"), { recursive: true })
+    writeFileSync(join(a.take.dir, "shots", ".0123456789ab.tmp"), "half a shot")
+    // b's frames can't be read: b fails, a is sealed all the same.
+    rmSync(join(b.take.dir, "frames.webm"))
+    mkdirSync(join(b.take.dir, "frames.webm"))
+    const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(randomBytes(32)) })
+    const result = await keyed.seal()
+    expect(result.sealed).toBe(1)
+    expect(result.failed).toHaveLength(1)
+    expect(result.failed[0]).toContain(b.take.dir)
+    expect(isEncrypted(readFileSync(join(a.take.dir, "frames.webm")))).toBe(true)
+    expect(existsSync(join(a.take.dir, "shots", ".0123456789ab.tmp"))).toBe(false)
   })
 })

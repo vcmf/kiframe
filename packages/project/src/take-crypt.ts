@@ -3,8 +3,8 @@
 // from the store: readers that only need to tell an encrypted file (the exporter) load no runtime.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { readFile } from "node:fs/promises"
-import { writeAtomic } from "./files.ts"
+import { open, readFile } from "node:fs/promises"
+import { writeAtomicAsync } from "./files.ts"
 
 const MAGIC = Buffer.from("KFT\u0001", "latin1")
 const IV_BYTES = 12
@@ -50,14 +50,27 @@ export function decrypt(bytes: Uint8Array, key: Uint8Array): Buffer {
   }
 }
 
+/** Whether a file is encrypted, from its first bytes only (never the whole file). */
+export async function isEncryptedFile(path: string): Promise<boolean> {
+  const file = await open(path, "r")
+  try {
+    const head = Buffer.alloc(MAGIC.length)
+    const { bytesRead } = await file.read(head, 0, head.length, 0)
+    return bytesRead === head.length && isEncrypted(head)
+  } finally {
+    await file.close()
+  }
+}
+
 /**
- * Encrypts a file in place: written whole and synced next to it, then swapped in (a crash leaves
- * the plain file or the encrypted one, never a torn one); already encrypted: kept.
+ * Encrypts a file in place, without holding the thread: written whole and synced next to it, then
+ * swapped in (a crash leaves the plain file or the encrypted one, never a torn one); one already
+ * encrypted is known from its first bytes and kept.
  */
-export function encryptFile(path: string, key: Uint8Array): void {
-  const plain = readFileSync(path)
-  if (isEncrypted(plain)) return
-  writeAtomic(path, encrypt(plain, key), 0o600)
+export async function encryptFile(path: string, key: Uint8Array): Promise<void> {
+  if (await isEncryptedFile(path)) return
+  const plain = await readFile(path)
+  await writeAtomicAsync(path, encrypt(plain, key))
 }
 
 /** As `readTakeFile`, read without holding the thread (a take's frames are tens of MB). */

@@ -139,7 +139,12 @@ function start(): void {
   const tidyTakes = async (): Promise<void> => {
     if (takes === undefined || projects === undefined) return
     try {
-      await takes.seal()
+      // One take that can't be sealed is said; the others, and the rest of the tidy, go on.
+      const { failed } = await takes.seal()
+      if (failed.length > 0) {
+        error = `couldn't encrypt ${failed.length} old recording(s): ${failed[0] ?? ""}`
+        void status().then((now) => emit(window, "status", now))
+      }
       projects.sweepRemoved(takes)
       for (const { dirs } of projects.known()) {
         for (const dir of dirs) {

@@ -7,7 +7,6 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs"
@@ -15,7 +14,8 @@ import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
 import type { OpenedProject } from "./project.ts"
-import { encryptFile, readTakeFileAsync } from "./take-crypt.ts"
+import { jsonText, removeStrayTemps, writeAtomic } from "./files.ts"
+import { encryptFile, isEncryptedFile, readTakeFileAsync } from "./take-crypt.ts"
 import { newerTake, readTakeRecords, type TakeRecords } from "./take-records.ts"
 
 // The take store (docs/OBJECT-MODEL.md §0.7): takes live in the app's data directory, never in the
@@ -137,7 +137,7 @@ export class TakeStore {
     if (this.#options.key !== undefined) {
       try {
         const key = await this.#theKey()
-        if (key !== undefined) for (const file of sealed(dir)) encryptFile(file, key)
+        if (key !== undefined) for (const file of sealed(dir)) await encryptFile(file, key)
       } catch (error) {
         rmSync(dir, { recursive: true, force: true })
         throw new Error(
@@ -151,30 +151,38 @@ export class TakeStore {
   }
 
   /**
-   * At the app's start, after `sweep`: every placed take's files encrypted (a crash between the
-   * recorder placing a take and its encryption, a take from before), and a crash's half-written
-   * files removed. The takes sealed.
+   * At the app's start, after `sweep`: every placed take's plain files encrypted (a crash between
+   * the recorder placing a take and its encryption, a take from before; an encrypted file is known
+   * from its first bytes), and a crash's half-written files removed. One take that fails is said
+   * and the others go on.
    */
-  async seal(): Promise<number> {
+  async seal(): Promise<{ sealed: number; failed: string[] }> {
     const key = this.#options.key === undefined ? undefined : await this.#theKey()
     let count = 0
+    const failed: string[] = []
     const takes = join(this.root, "takes")
     for (const project of list(takes)) {
       for (const scene of list(join(takes, project))) {
         for (const name of list(join(takes, project, scene))) {
           if (!TAKE_DIR.test(name)) continue
           const dir = join(takes, project, scene, name)
-          for (const leftover of list(dir).filter((n) => /^\.[0-9a-f]{12}\.tmp$/.test(n))) {
-            rmSync(join(dir, leftover), { force: true })
+          try {
+            removeStrayTemps(dir, true)
+            if (key === undefined) continue
+            let changed = false
+            for (const file of sealed(dir)) {
+              const before = await isEncryptedFile(file)
+              await encryptFile(file, key)
+              changed ||= !before
+            }
+            if (changed) count += 1
+          } catch (error) {
+            failed.push(`${dir}: ${error instanceof Error ? error.message : String(error)}`)
           }
-          if (key === undefined) continue
-          const files = sealed(dir)
-          for (const file of files) encryptFile(file, key)
-          if (files.length > 0) count += 1
         }
       }
     }
-    return count
+    return { sealed: count, failed }
   }
 
   /** A take's records and frames, decrypted (a key needed for an encrypted one). Marks it used. */
@@ -192,21 +200,47 @@ export class TakeStore {
    * (a scene recorded again, given new steps, or removed lets its old take go). Its scratch takes
    * may then be evicted (a project never synced in this process keeps every take).
    */
-  syncProject(projectId: string, dir: string, named: Map<string, string | undefined>): void {
+  syncProject(
+    projectId: string,
+    dir: string,
+    named: Map<string, string | undefined>,
+    /** Scenes that didn't read (a merge conflict, a hand edit): their pins left as they are. */
+    unread: ReadonlySet<string> = new Set(),
+  ): void {
+    const copy = realDir(dir)
     const of = join(this.root, "takes", ProjectId.parse(projectId))
     for (const scene of list(of)) {
+      if (unread.has(scene)) continue
       for (const name of list(join(of, scene))) {
         if (!TAKE_DIR.test(name)) continue
         const take = readTake(join(of, scene, name))
         if (take === undefined || take instanceof Error) continue
-        const holders = pinsOf(take.dir).filter((h) => !(h.project === projectId && h.dir === dir))
+        // Pins that don't read are left as they are (held: never evicted, never rewritten).
+        const pins = pinsOf(take.dir)
+        if (pins === undefined) continue
+        const holders = pins.filter((h) => !(h.project === projectId && h.dir === copy))
         if (named.get(scene) === take.meta.takeKey) {
-          holders.push({ project: projectId, dir, scene, by: "composition" })
+          holders.push({ project: projectId, dir: copy, scene, by: "composition" })
         }
         writePins(take.dir, holders)
       }
     }
     this.#synced.add(projectId)
+  }
+
+  /** A copy of a project gone for good (its folder, the project elsewhere): its pins go. */
+  forgetCopy(projectId: string, dir: string): void {
+    const copy = realDir(dir)
+    const of = join(this.root, "takes", ProjectId.parse(projectId))
+    for (const scene of list(of)) {
+      for (const name of list(join(of, scene))) {
+        if (!TAKE_DIR.test(name)) continue
+        const pins = pinsOf(join(of, scene, name))
+        if (pins === undefined) continue
+        const kept = pins.filter((h) => !(h.project === projectId && h.dir === copy))
+        if (kept.length !== pins.length) writePins(join(of, scene, name), kept)
+      }
+    }
   }
 
   /**
@@ -223,7 +257,7 @@ export class TakeStore {
         for (const name of list(join(takes, project, scene))) {
           if (!TAKE_DIR.test(name)) continue
           const dir = join(takes, project, scene, name)
-          if (pinsOf(dir).length > 0) continue
+          if ((pinsOf(dir) ?? ["unreadable: held"]).length > 0) continue
           let size = this.#sizes.get(dir)
           if (size === undefined) {
             size = sizeOf(dir)
@@ -334,15 +368,21 @@ function sealed(dir: string): string[] {
   return [...files, ...list(shots).map((f) => join(shots, f))]
 }
 
-/** What holds a take (none: scratch). A pin.json that doesn't read holds it (never evicted by doubt). */
-function pinsOf(dir: string): Holder[] {
+/**
+ * What holds a take (none: scratch); undefined when its pin.json doesn't read (held by doubt:
+ * never evicted, never rewritten). A holder that isn't one (a future format) is kept as it is.
+ */
+function pinsOf(dir: string): Holder[] | undefined {
   const file = join(dir, "pin.json")
   if (!existsSync(file)) return []
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as { holders?: Holder[] }
-    return Array.isArray(parsed.holders) ? parsed.holders : []
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { holders?: unknown }
+    if (!Array.isArray(parsed.holders)) return undefined
+    return (parsed.holders as unknown[]).map((h) =>
+      typeof h === "object" && h !== null ? (h as Holder) : ({ held: h } as unknown as Holder),
+    )
   } catch {
-    return [{ project: "?", dir: "?", scene: "?", by: "composition" }]
+    return undefined
   }
 }
 
@@ -352,9 +392,16 @@ function writePins(dir: string, holders: Holder[]): void {
     rmSync(file, { force: true })
     return
   }
-  const tmp = `${file}.tmp`
-  writeFileSync(tmp, `${JSON.stringify({ holders }, null, 2)}\n`, { mode: 0o600 })
-  renameSync(tmp, file)
+  writeAtomic(file, jsonText({ holders }), 0o600)
+}
+
+/** A folder as one path (links resolved: two spellings of a folder are one copy). */
+function realDir(dir: string): string {
+  try {
+    return realpathSync(dir)
+  } catch {
+    return dir
+  }
 }
 
 /** When a take was last played (or recorded): its `used` file, else its folder's time. */
@@ -447,5 +494,7 @@ function list(dir: string): string[] {
 /** A project's pins synced with its compositions as they are (on open, after a save or a recording). */
 export function syncPins(opened: OpenedProject, takes: TakeStore): void {
   const named = new Map([...opened.scenes].map(([id, s]) => [id, s.composition?.take?.key]))
-  takes.syncProject(opened.project.id, opened.dir, named)
+  // A scene a part of which didn't read, or whose folder is missing: its pins as they are.
+  const unread = new Set(opened.problems.map((p) => p.sceneId).filter((id) => id !== undefined))
+  takes.syncProject(opened.project.id, opened.dir, named, unread)
 }
