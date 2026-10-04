@@ -58,11 +58,15 @@ export class Workspace<A extends Agent> {
     return this.#switch(() => createProject(dir, { id, ...init }))
   }
 
-  close(): Promise<void> {
-    return this.#switch(() => null)
+  /**
+   * Closes the project. `closed` runs once its agent is gone, within the switch (no open queued
+   * behind can come between): never when the close is refused before anything changed.
+   */
+  close(closed?: () => void): Promise<void> {
+    return this.#switch(() => null, undefined, closed)
   }
 
-  #switch(next: () => OpenedProject | null, dir?: string): Promise<void> {
+  #switch(next: () => OpenedProject | null, dir?: string, closed?: () => void): Promise<void> {
     const run = this.#switching.then(async () => {
       // Both made before anything changes: a project or agent that can't be made keeps the old.
       this.#ready()
@@ -73,7 +77,11 @@ export class Workspace<A extends Agent> {
       this.#opened = opened
       this.#agent = agent
       this.#session = randomBytes(6).toString("hex")
-      await old?.close()
+      try {
+        await old?.close()
+      } finally {
+        closed?.()
+      }
     })
     // The chain goes on after a failure (the next switch isn't blocked by this one's error).
     this.#switching = run.catch(() => undefined)

@@ -43,6 +43,11 @@ export interface RecordOptions extends RunOptions {
   quality?: number
   /** Keep the individual JPEG frames next to frames.webm (debugging). Default false. */
   keepFrames?: boolean
+  /**
+   * Encode a failed take's video (debugging: the CLI). Default true. The app's take store drops a
+   * failed take's video at once: it passes false (seconds of encoding, and a stop, saved).
+   */
+  encodeFailed?: boolean
   /** Version string written into meta.json. */
   kiframeVersion?: string
 }
@@ -443,7 +448,9 @@ export async function recordScenario(
       writeFileSync(join(outDir, "events.jsonl"), jsonl(events))
       writeFileSync(join(outDir, "cursor.jsonl"), jsonl(cursor))
       if (frames.length === 0) throw new Error("no frames were captured (the page never painted?)")
-      await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
+      if (failure === undefined || options.encodeFailed !== false) {
+        await encodeFrames(framesDir, frames, durationMs, join(outDir, "frames.webm"))
+      }
       if (frameSize === undefined)
         warnings.push("couldn't read the frame size: assuming the CSS viewport")
       const size = frameSize ?? viewport

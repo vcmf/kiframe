@@ -248,6 +248,9 @@ export class AgentHost {
     await this.#studio?.close().catch(() => undefined)
     this.#studio = undefined
     this.#live = undefined
+    // Closed meanwhile (the project closed while the old studio closed): no browser launched for
+    // a project that's gone, no studio left behind.
+    if (this.#closed) throw new Error("the project is closed")
     const { project, scope, takes } = this.#options
     // Every key handed out, to name its scene in a prompt (the approval's step key holds the key).
     const sceneKey = (sceneId: string) => {

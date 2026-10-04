@@ -640,6 +640,8 @@ export class Studio {
       recorded = await recordScenario(await context.newPage(), scenario, config, {
         ...this.#run(sceneId, signal),
         outDir: dir,
+        // A failed take's video is dropped as it settles: never encoded.
+        encodeFailed: false,
       })
     } catch (error) {
       if (isStopped(error)) stopped = error as StepError

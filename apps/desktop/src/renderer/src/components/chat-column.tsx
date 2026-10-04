@@ -22,7 +22,14 @@ import {
   Wrench,
   XCircle,
 } from "@phosphor-icons/react"
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react"
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 import type { ChatItem } from "../../../shared/ipc.ts"
 import { useChat } from "../chat-store.ts"
 import { AgentText } from "./markdown.tsx"
@@ -54,39 +61,61 @@ export function blocks(items: ChatItem[]): Block[] {
   return out
 }
 
+/**
+ * Whether the items not seen before (by id: appended one by one, or a whole list at once) include
+ * one that needs the user: their own message, or a request the run waits on. Each new id is noted
+ * in `seen`.
+ */
+export function newNeedUser(items: readonly ChatItem[], seen: Set<string>): boolean {
+  let needs = false
+  for (const item of items) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    if (item.kind === "user" || (item.kind === "request" && item.state === "open")) needs = true
+  }
+  return needs
+}
+
 export function ChatColumn() {
   const items = useChat((s) => s.items)
   const connect = useChat((s) => s.connect)
-  const end = useRef<HTMLDivElement>(null)
+  const body = useRef<HTMLDivElement>(null)
   useEffect(() => connect(), [connect])
-  useEffect(() => {
-    end.current?.scrollIntoView?.({ block: "end" })
+  // The log is reversed (CSS): its end is scrollTop 0, so layout keeps it there as the chat grows
+  // or the log resizes, and anchoring holds a reader who scrolled up. Code moves it only for a new
+  // item that needs the user: their own message, or a request the run waits on.
+  const seen = useRef(new Set<string>())
+  useLayoutEffect(() => {
+    const log = body.current
+    if (newNeedUser(items, seen.current) && log !== null) log.scrollTop = 0
   }, [items])
   return (
     <aside className="chat" aria-label="Chat">
       <div className="pane-head">
         <span className="pane-title">Chat</span>
       </div>
-      <div className="chat-body" role="log" aria-label="Messages">
-        {items.length === 0 ? (
-          <div className="chat-empty">
-            <ChatCircleDots size={28} />
-            <h2>Describe your demo</h2>
-            <p>
-              Say what the video should show, and the agent splits it into scenes, tries each step
-              on your app and films it.
-            </p>
-          </div>
-        ) : (
-          blocks(items).map((block) =>
-            block.kind === "tools" ? (
-              <ToolGroup key={block.id} tools={block.tools} />
-            ) : (
-              <Item key={block.item.id} item={block.item} />
-            ),
-          )
-        )}
-        <div ref={end} />
+      {/* Focusable: scrolled by keys too (a scrollable region reachable by keyboard). */}
+      <div className="chat-body" role="log" aria-label="Messages" tabIndex={0} ref={body}>
+        <div className="chat-items">
+          {items.length === 0 ? (
+            <div className="chat-empty">
+              <ChatCircleDots size={28} />
+              <h2>Describe your demo</h2>
+              <p>
+                Say what the video should show, and the agent splits it into scenes, tries each step
+                on your app and films it.
+              </p>
+            </div>
+          ) : (
+            blocks(items).map((block) =>
+              block.kind === "tools" ? (
+                <ToolGroup key={block.id} tools={block.tools} />
+              ) : (
+                <Item key={block.item.id} item={block.item} />
+              ),
+            )
+          )}
+        </div>
       </div>
       <Composer />
     </aside>
@@ -130,6 +159,19 @@ function Item({ item }: { item: ChatItem }) {
 
 function ToolGroup({ tools }: { tools: ToolItem[] }) {
   const [open, setOpen] = useState(true)
+  // Opened or closed by the user: its head stays where it was clicked (the log is anchored at its
+  // end, so what grows near the end would otherwise push the head up from under the pointer).
+  const head = useRef<HTMLButtonElement>(null)
+  const clickedAt = useRef<number | undefined>(undefined)
+  useLayoutEffect(() => {
+    const at = clickedAt.current
+    const el = head.current
+    clickedAt.current = undefined
+    const log = el?.closest<HTMLElement>(".chat-body")
+    if (at === undefined || el === null || log === null || log === undefined) return
+    // Measured after layout, the browser's own anchoring already applied: the rest, corrected.
+    log.scrollTop += el.getBoundingClientRect().top - at
+  }, [open])
   const running = tools.some((t) => t.status === "running")
   const failed = tools.filter((t) => t.status === "failed").length
   const summary = `${tools.length} ${tools.length === 1 ? "step" : "steps"}${running ? " · running" : ""}${failed > 0 ? ` · ${failed} failed` : ""}`
@@ -139,7 +181,11 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
         type="button"
         className="tool-group-head"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        ref={head}
+        onClick={() => {
+          clickedAt.current = head.current?.getBoundingClientRect().top
+          setOpen((v) => !v)
+        }}
       >
         {open ? <CaretDown size={12} /> : <CaretRight size={12} />}
         {summary}
