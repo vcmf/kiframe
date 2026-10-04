@@ -126,11 +126,9 @@ export function createProject(dir: string, init: NewProject): OpenedProject {
 /**
  * Opens a project folder. The project file must be valid (a SchemaError otherwise). A scene part
  * that doesn't read, a folder the sequence names but that's missing, or one outside the sequence
- * is reported in `problems`; the rest still opens (a scene's other parts included).
- */
-/**
- * `tidy: false`: read only (a folder the app reads for its own bookkeeping, never opened by the
- * user: no stray temporary file of another process removed).
+ * is reported in `problems`; the rest still opens (a scene's other parts included). `tidy: false`:
+ * read only (a folder the app reads for its own bookkeeping: no other process's temporary file
+ * removed).
  */
 export function openProject(dir: string, options: { tidy?: boolean } = {}): OpenedProject {
   const tidy = options.tidy ?? true

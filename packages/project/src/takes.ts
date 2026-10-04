@@ -379,7 +379,10 @@ export class TakeStore {
     const read = readTake(dir)
     if (read instanceof Error) return undefined
     this.#read.set(dir, { stamp, take: read })
-    if (known !== undefined) this.#used.delete(dir)
+    if (known !== undefined) {
+      this.#used.delete(dir)
+      this.#sizes.delete(dir)
+    }
     return read
   }
 

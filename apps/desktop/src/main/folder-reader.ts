@@ -33,6 +33,8 @@ export function workerInspector(
         resolve({ state: "unknown", why: "a folder didn't answer in time a moment ago" })
         return
       }
+      // A worker just made starts within its first folder's time (a cold launch: a longer limit).
+      const fresh = worker === undefined
       worker ??= make()
       const w = worker
       const id = ++next
@@ -49,11 +51,14 @@ export function workerInspector(
         end()
         done({ state: "unknown", why: error.message })
       }
-      const timer = setTimeout(() => {
-        stuckUntil = now() + STUCK_FOR_MS
-        end()
-        done({ state: "unknown", why: "it didn't answer in time" })
-      }, timeoutMs)
+      const timer = setTimeout(
+        () => {
+          stuckUntil = now() + STUCK_FOR_MS
+          end()
+          done({ state: "unknown", why: "it didn't answer in time" })
+        },
+        timeoutMs * (fresh ? 3 : 1),
+      )
       w.on("message", onMessage)
       w.on("error", onError)
       w.postMessage({ id, folder, projectId })

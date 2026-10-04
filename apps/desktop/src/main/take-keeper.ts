@@ -7,7 +7,7 @@
 import type { NamedTakes, TakeStore } from "@kiframe/project"
 import type { Inspect } from "./folder-reader.ts"
 import type { FolderState } from "./folder-inspect.ts"
-import type { ProjectIndex } from "./project-index.ts"
+import type { KnownFolder, ProjectIndex } from "./project-index.ts"
 
 /** How long a folder stays gone before its copy is forgotten, or (all gone) the project's takes go. */
 export const REMOVED_AFTER_MS = 7 * 24 * 60 * 60 * 1000
@@ -100,8 +100,9 @@ export class TakeKeeper {
         if (folders === undefined) continue
         all[id] = folders.map((f) => {
           const state = looked.get(f.path)
-          if (state === undefined) return f
-          if (state.state !== "gone") {
+          // Unknown (unplugged, a stuck mount): its date as it was (never restarted, never set).
+          if (state === undefined || state.state === "unknown") return f
+          if (state.state === "here") {
             const { missingSince: _gone, ...rest } = f
             return rest
           }
@@ -109,22 +110,25 @@ export class TakeKeeper {
         })
       }
     })
-    const due = (since: number | undefined) =>
-      since !== undefined && now - since >= REMOVED_AFTER_MS
+    // Due: gone 7 days, and seen gone now (an unknown one with an old date is never due).
+    const due = (id: string, f: KnownFolder) =>
+      f.missingSince !== undefined &&
+      now - f.missingSince >= REMOVED_AFTER_MS &&
+      states.get(id)?.get(f.path)?.state === "gone"
     for (const [id, folders] of Object.entries(this.#index.all())) {
-      if (!folders.every((f) => due(f.missingSince))) {
+      if (!folders.every((f) => due(id, f))) {
         // A copy gone for good, the project elsewhere: forgotten.
-        if (folders.some((f) => due(f.missingSince))) {
+        if (folders.some((f) => due(id, f))) {
           this.#index.change((all) => {
-            all[id] = (all[id] ?? []).filter((f) => !due(f.missingSince))
+            all[id] = (all[id] ?? []).filter((f) => !due(id, f))
           })
         }
         continue
       }
       // Still known and every folder still due (an index that doesn't read now: none, kept).
       const removed = await this.#takes.removeProject(id, () => {
-        const now = this.#index.folders(id)
-        return now.length > 0 && now.every((f) => due(f.missingSince))
+        const known = this.#index.folders(id)
+        return known.length > 0 && known.every((f) => due(id, f))
       })
       // Forgotten once its takes are gone (a removal that didn't happen is tried next start).
       if (removed) {

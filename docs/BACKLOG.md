@@ -108,6 +108,8 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Kept for good by design:** takes of a project only on a drive never plugged back, of a project never opened since the index existed (from before it, a CLI), whose meta doesn't read: listed in the storage view (M4-6) so the user can free them.
 - **A take only another git branch names:** scratch (evicted past the grace and the budget): "its take is gone: record the scene again" when that branch is checked out (the honest contract).
 - **The device rule:** a removable or network volume's device number can be reused; another volume mounted at the same place with the same number would make a folder read as gone. Record the mount's own identity (its root's inode or birth time) too.
+- **Sizing on the main thread:** over the budget check, each take folder is measured once per launch (a recursive stat walk, kept in memory). Hundreds of takes with many shots can stall the window briefly at start; measure in the folder worker or keep sizes on disk.
+- **A deleted project inside a git repo** is never counted removed (a branch may bring it back): its takes stay until the storage view (M4-6) frees them.
 - **Named versions (M1-10):** their takes are named the same way only if a version's compositions are files in the project (or cached per commit); reading git refs at every eviction is too slow.
 - **Not yet:** the storage view (sizes, "Free up space", deleting a pinned take with a warning: M4-6); export pins (M3-3: `exports/*.json` read the same way).
 

@@ -186,7 +186,10 @@ function start(): void {
       const current = () => workspace.agent === host
       const host: AgentHost = new AgentHost({
         project: opened,
-        afterRecord: () => void keeper?.evict().catch(() => undefined),
+        afterRecord: () =>
+          void keeper
+            ?.evict()
+            .catch((e: unknown) => say(`couldn't tidy old recordings: ${message(e)}`)),
         scope: registry.scope(opened.dir),
         sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
         takes,
@@ -255,6 +258,7 @@ function start(): void {
     cleanup = "running"
     const work = (async () => {
       await workspace.close().catch(() => undefined)
+      folders.close()
       await (await browser?.catch(() => undefined))?.close().catch(() => undefined)
     })()
     void Promise.race([work, new Promise((r) => setTimeout(r, QUIT_WAIT_MS))]).then(() => {

@@ -52,8 +52,8 @@ describe("a project folder, read for the take store", () => {
       scenes: {},
       unread: [],
     })
-    // Another project in its place: gone for this one.
-    expect(inspectFolder({ path: dir, dev }, "p2")).toEqual({ state: "gone" })
+    // Another project in its place (a new one, a branch): unknown, never gone.
+    expect(inspectFolder({ path: dir, dev }, "p2").state).toBe("unknown")
     renameSync(dir, join(root, "elsewhere"))
     expect(inspectFolder({ path: dir, dev }, "p1")).toEqual({ state: "gone" })
     // On a device that isn't the one around it now (unplugged): unknown, never gone.
@@ -87,11 +87,14 @@ describe("a project folder, read for the take store", () => {
   it("is never gone in a git working tree (a branch without the project brings it back)", () => {
     const { root, dir } = setup()
     const dev = statSync(dir).dev
+    // The project folder its own repo, on a branch without the project: still there, unknown.
+    mkdirSync(join(dir, ".git"))
     rmSync(join(dir, "project.json"))
+    expect(inspectFolder({ path: dir, dev }, "p1").state).toBe("unknown")
+    // Deleted outside any repo: gone. Inside one (a branch without it): unknown.
+    rmSync(dir, { recursive: true })
     expect(inspectFolder({ path: dir, dev }, "p1")).toEqual({ state: "gone" })
     mkdirSync(join(root, ".git"))
-    expect(inspectFolder({ path: dir, dev }, "p1").state).toBe("unknown")
-    rmSync(dir, { recursive: true })
     expect(inspectFolder({ path: dir, dev }, "p1").state).toBe("unknown")
   })
 
@@ -138,7 +141,13 @@ describe("the project index", () => {
     writeFileSync(join(data, "projects.json"), "{ half")
     // The backup (the index before the last write) is read.
     expect(index.folders("p1")).toHaveLength(1)
+    // Lost (deleted, a sync tool): its backup read, and never written over from nothing.
+    rmSync(join(data, "projects.json"))
+    expect(index.folders("p1")).toHaveLength(1)
+    index.seen("p2", dir)
+    expect(index.folders("p1")).toHaveLength(1)
     // A write from the backup never copies the broken file over it.
+    writeFileSync(join(data, "projects.json"), "{ half")
     index.seen("p2", dir)
     expect(JSON.parse(readFileSync(join(data, "projects.json.bak"), "utf8"))).toHaveProperty("p1")
     writeFileSync(join(data, "projects.json"), "{ half")
@@ -204,6 +213,48 @@ describe("the take keeper", () => {
     now += REMOVED_AFTER_MS
     await keeper.tidy()
     expect(answer).toBe(false)
+  })
+
+  it("never restarts a gone folder's date on an unknown answer, nor removes on one", async () => {
+    const { root, dir, index, data, takes } = setup()
+    mkdirSync(join(data, "takes", "p1", "intro"), { recursive: true })
+    index.seen("p1", dir)
+    let now = Date.now()
+    const start = now
+    let stuck = false
+    const inspect = (f: Parameters<typeof inspectFolder>[0], id: string) =>
+      stuck ? Promise.resolve({ state: "unknown" as const, why: "stuck" }) : inProcess(f, id)
+    const keeper = new TakeKeeper(takes, index, inspect, () => now)
+    renameSync(dir, join(root, "deleted"))
+    await keeper.tidy()
+    stuck = true
+    now += REMOVED_AFTER_MS
+    await keeper.tidy()
+    expect(index.folders("p1")[0]?.missingSince).toBe(start)
+    expect(statSync(join(data, "takes", "p1")).isDirectory()).toBe(true)
+    stuck = false
+    await keeper.tidy()
+    expect(index.folders("p1")).toEqual([])
+  })
+
+  it("tells eviction only the scenes whose parts didn't read (one outside the sequence reads)", () => {
+    const { dir, opened } = setup()
+    saveScene(
+      opened,
+      {
+        version: 1,
+        id: "draft",
+        title: "Draft",
+        source: { kind: "recording" },
+        duration: { mode: "auto" },
+      },
+      {},
+    )
+    // Out of the sequence: reported, but it read.
+    const file = join(dir, "project.json")
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), sequence: [] }))
+    const state = inspectFolder({ path: dir, dev: statSync(dir).dev }, "p1")
+    expect(state.state === "here" && state.unread).toEqual([])
   })
 
   it("reads each folder once at start (removal and eviction alike)", async () => {

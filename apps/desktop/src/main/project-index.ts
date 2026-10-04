@@ -61,10 +61,12 @@ export class ProjectIndex {
     writeAtomic(this.#file, jsonText(all))
   }
 
-  /** The index; undefined when it exists and neither it nor its backup reads (never acted on). */
+  /** The index; undefined when neither it nor its backup reads (never acted on). */
   #read(): Index | undefined {
-    if (!existsSync(this.#file)) return {}
-    for (const file of [this.#file, `${this.#file}.bak`]) {
+    const backup = `${this.#file}.bak`
+    // Never made: empty. The file lost (deleted, a sync tool) or broken: its backup.
+    if (!existsSync(this.#file) && !existsSync(backup)) return {}
+    for (const file of [this.#file, backup]) {
       const parsed = parse(file)
       if (parsed !== undefined) return parsed
     }

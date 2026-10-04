@@ -24,28 +24,35 @@ export type FolderState =
 
 export function inspectFolder(folder: Folder, projectId: string): FolderState {
   if (folder.dev === undefined) return { state: "unknown", why: "its device wasn't recorded" }
+  // Gone only when the folder itself isn't there: one still there in any form (its project file
+  // missing, another project, a git branch without it, an evicted cloud file) is unknown.
+  const folderThere = presence(folder.path)
+  if (folderThere === "absent") return goneOrUnknown(folder)
+  if (folderThere === "unknown") return { state: "unknown", why: "it can't be read (a permission)" }
   const there = presence(join(folder.path, "project.json"))
-  if (there === "unknown") return { state: "unknown", why: "it can't be read (a permission)" }
-  if (there === "absent") return goneOrUnknown(folder)
+  if (there !== "there") return { state: "unknown", why: "its project file isn't there" }
   let opened: ReturnType<typeof openProject>
   try {
     opened = openProject(folder.path, { tidy: false })
   } catch (error) {
     return { state: "unknown", why: error instanceof Error ? error.message : String(error) }
   }
-  // Another project in its place (deleted, a new one made there): this one is gone from it.
-  if (opened.project.id !== projectId) return goneOrUnknown(folder)
+  // Another project in its place (a new one made there, a branch): unknown, never gone.
+  if (opened.project.id !== projectId) return { state: "unknown", why: "another project is there" }
   const scenes: Record<string, string> = {}
   for (const [id, stored] of opened.scenes) {
     const key = stored.composition?.take?.key
     if (key !== undefined) scenes[id] = key
   }
-  const unread = [...new Set(opened.problems.map((p) => p.sceneId))]
+  // Only a part that didn't read (a scene outside the sequence reads fine: its takes may go).
+  const unread = [
+    ...new Set(opened.problems.filter((p) => p.part !== undefined).map((p) => p.sceneId)),
+  ]
   return { state: "here", scenes, unread }
 }
 
 /**
- * Not there: gone only when the nearest folder above it is on the device the project was on (its
+ * The folder not there: gone only when the nearest folder above it is on the device the project was on (its
  * filesystem still mounted there) and no git working tree holds it (a branch without the project
  * brings it back on checkout: never counted as removed). Else unknown.
  */
