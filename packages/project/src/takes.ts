@@ -12,6 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs"
+import { rm } from "node:fs/promises"
 import { basename, dirname, join, relative, sep } from "node:path"
 import { isRecorderLeftover } from "@kiframe/runtime"
 import { ProjectId, SceneId, TakeMeta } from "@kiframe/schema"
@@ -250,7 +251,9 @@ export class TakeStore {
       }),
     ])
     // Played: the last to be evicted (least recently used first).
-    this.#used.set(take.dir, markUsed(take.dir))
+    const played = markUsed(take.dir)
+    if (played === undefined) this.#used.delete(take.dir)
+    else this.#used.set(take.dir, played)
     return { records, video }
   }
 
@@ -315,6 +318,7 @@ export class TakeStore {
       decisions.set(project, await namedBy(project).catch((): NamedTakes => "keep"))
     }
     let scratch = 0
+    const scratchOf = new Map<string, number>()
     const candidates: {
       project: string
       dir: string
@@ -331,36 +335,43 @@ export class TakeStore {
         if (named.unread.has(t.scene)) continue
         if (named.scenes.get(t.scene)?.has(t.take.meta.takeKey) === true) continue
       }
-      const size = sizeOfTake(t.dir)
-      scratch += size
-      if (!settled(t)) continue
-      // The newest of a scene may not be named yet (a vanished project's is named by nothing).
+      // The newest of a scene may not be named yet: kept, and not counted (a scene deleted keeps
+      // one take, never makes others pay). A vanished project's is named by nothing.
       if (
         !vanished &&
         newest.get(`${t.project}/${t.scene}`) === Date.parse(t.take.meta.recordedAt)
       ) {
         continue
       }
+      const size = sizeOfTake(t.dir)
+      scratch += size
+      scratchOf.set(t.project, (scratchOf.get(t.project) ?? 0) + size)
+      if (!settled(t)) continue
       candidates.push({ project: t.project, dir: t.dir, used: t.used, size, vanished })
     }
     const gone: string[] = []
     if (scratch <= budget) return gone
     candidates.sort((a, b) => Number(b.vanished) - Number(a.vanished) || a.used - b.used)
+    const aside: string[] = []
     await this.#exclusive(() => {
-      // Asked once per project, under the lock (an opening meanwhile is in or after it).
+      // Asked once per project, under the lock (an opening meanwhile is in or after it). One that
+      // changed keeps its takes, and they stop counting (never paid for by another project's).
       const still = new Map<string, boolean>()
       for (const c of candidates) {
-        if (scratch <= budget) break
         let ok = still.get(c.project)
         if (ok === undefined) {
           ok = unchanged(c.project)
           still.set(c.project, ok)
+          if (!ok) scratch -= scratchOf.get(c.project) ?? 0
         }
+        if (scratch <= budget) break
         if (!ok) continue
         // As it was read: still there, and not played since (a preview meanwhile keeps it).
         const take = readTake(c.dir)
         if (take === undefined || take instanceof Error || usedAt(c.dir, take) !== c.used) continue
-        if (removeAside(c.dir, `.evict-${basename(c.dir)}`)) {
+        const to = join(dirname(c.dir), `.evict-${basename(c.dir)}`)
+        if (moveAside(c.dir, to)) {
+          aside.push(to)
           this.#sizes.delete(c.dir)
           this.#read.delete(c.dir)
           this.#used.delete(c.dir)
@@ -370,6 +381,11 @@ export class TakeStore {
       }
       return Promise.resolve()
     })
+    // Deleted after the lock, off the main thread's way (a recording settling never waits on it;
+    // one cut short is swept at the next start).
+    await Promise.all(
+      aside.map((to) => rm(to, { recursive: true, force: true }).catch(() => undefined)),
+    )
     return gone
   }
 
@@ -572,14 +588,16 @@ function usedAt(dir: string, take: StoredTake): number {
 }
 
 /** Notes a take played now; when that was. */
-function markUsed(dir: string): number {
+/** Notes a take played now: when, or undefined when it couldn't be noted (read again from disk). */
+function markUsed(dir: string): number | undefined {
   const now = Date.now()
   try {
     writeFileSync(join(dir, "used"), String(now), { mode: 0o600 })
+    return now
   } catch {
-    // best effort: an older time only makes it go sooner (this run keeps the time it played)
+    // best effort: an older time only makes it go sooner
+    return undefined
   }
-  return now
 }
 
 /** A folder's size in bytes (its files, links not followed). */
@@ -598,18 +616,16 @@ function sizeOf(dir: string): number {
 }
 
 /**
- * Moves a folder aside (a name `sweep` knows), then deletes it: a deletion cut short leaves the
- * aside name, never what looks like a take. Whether it went aside.
+ * Moves a take folder aside (a name `sweep` knows) before it's deleted: a deletion cut short
+ * leaves the aside name, never what looks like a take. Whether it moved.
  */
-function removeAside(dir: string, aside: string): boolean {
-  const to = join(dirname(dir), aside)
+function moveAside(dir: string, to: string): boolean {
   try {
     renameSync(dir, to)
+    return true
   } catch {
     return false
   }
-  rmQuietly(to)
-  return true
 }
 
 function rmQuietly(path: string): void {

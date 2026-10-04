@@ -7,7 +7,8 @@
 // more). Electron-free.
 import type { NamedTakes, TakeStore } from "@kiframe/project"
 import type { Inspect } from "./folder-reader.ts"
-import type { KnownFolder, ProjectIndex } from "./project-index.ts"
+import type { Folder } from "./folder-inspect.ts"
+import type { ProjectIndex } from "./project-index.ts"
 
 export class TakeKeeper {
   readonly #takes: TakeStore
@@ -63,19 +64,24 @@ export class TakeKeeper {
   }
 
   async #pass(): Promise<void> {
-    // Each project's folders as the pass read them: one opened from a new place meanwhile loses
-    // nothing (checked under the store's lock, where an opening can't slip in).
-    const read = new Map<string, string>()
+    // The index read once for the pass. Under the store's lock (where an opening can't slip in),
+    // a project is asked again: one opened from a new place meanwhile loses nothing, nor one
+    // decided with a folder gone that's open now (its index write failed).
+    const index = this.#index.all()
+    const decided = new Map<string, { folders: string; withGone: boolean }>()
     await this.#takes.evict(
-      (projectId) => {
-        const folders = this.#index.folders(projectId)
-        read.set(projectId, fingerprint(folders))
-        return this.#namedBy(projectId, folders)
+      async (projectId) => {
+        const folders = index[projectId] ?? []
+        const { named, withGone } = await this.#namedBy(projectId, folders)
+        decided.set(projectId, { folders: fingerprint(folders), withGone })
+        return named
       },
       this.#now(),
-      (projectId) =>
-        projectId !== this.#open() &&
-        read.get(projectId) === fingerprint(this.#index.folders(projectId)),
+      (projectId) => {
+        const was = decided.get(projectId)
+        if (was === undefined || (was.withGone && projectId === this.#open())) return false
+        return was.folders === fingerprint(this.#index.folders(projectId))
+      },
     )
   }
 
@@ -84,14 +90,17 @@ export class TakeKeeper {
    * and the rest there, the ones there (a gone copy names nothing); all gone, vanished. Else (a
    * folder unknown, the project not known, or open now with a folder gone) keep.
    */
-  async #namedBy(projectId: string, folders: KnownFolder[]): Promise<NamedTakes> {
-    if (folders.length === 0) return "keep"
+  async #namedBy(
+    projectId: string,
+    folders: Folder[],
+  ): Promise<{ named: NamedTakes; withGone: boolean }> {
+    if (folders.length === 0) return { named: "keep", withGone: false }
     const scenes = new Map<string, Set<string>>()
     const unread = new Set<string>()
     let here = 0
     for (const folder of folders) {
       const state = await this.#inspect(folder, projectId)
-      if (state.state === "unknown") return "keep"
+      if (state.state === "unknown") return { named: "keep", withGone: false }
       if (state.state === "gone") continue
       here += 1
       for (const [scene, key] of Object.entries(state.scenes)) {
@@ -99,12 +108,13 @@ export class TakeKeeper {
       }
       for (const scene of state.unread) unread.add(scene)
     }
-    if (here < folders.length && projectId === this.#open()) return "keep"
-    return here === 0 ? "vanished" : { scenes, unread }
+    const withGone = here < folders.length
+    if (withGone && projectId === this.#open()) return { named: "keep", withGone }
+    return { named: here === 0 ? "vanished" : { scenes, unread }, withGone }
   }
 }
 
 /** A project's folders as known (a change: opened from another place, or the index unread). */
-function fingerprint(folders: KnownFolder[]): string {
+function fingerprint(folders: Folder[]): string {
   return JSON.stringify(folders.map((f) => [f.path, f.dev]))
 }

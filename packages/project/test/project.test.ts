@@ -516,6 +516,45 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       expect(asked).toEqual(["p1"])
     })
 
+    it("counts no scratch it can't delete: a scene's newest, a project changed under the lock", async () => {
+      const store = newStore()
+      const { take: old } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+      await record(store, "login", "  - { id: b, action: pause, ms: 50 }\n")
+      const { take: other } = await record(
+        store,
+        "intro",
+        "  - { id: x, action: pause, ms: 50 }\n",
+        "p2",
+      )
+      await record(store, "intro", "  - { id: y, action: pause, ms: 50 }\n", "p2")
+      if (old === undefined || other === undefined) throw new Error("no take")
+      const total = (dir: string) =>
+        readdirSync(dir, { recursive: true, withFileTypes: true })
+          .filter((e) => e.isFile())
+          .reduce((sum, e) => sum + statSync(join(e.parentPath, e.name)).size, 0)
+      const answer = () => Promise.resolve(named({}))
+      // Room for p2's old take alone: p1 changed under the lock, its scratch counts no more.
+      const roomy = new TakeStore(store.root, { scratchBudget: total(other.dir) })
+      expect(await roomy.evict(answer, later, (id) => id !== "p1")).toEqual([])
+      // Room for the old takes alone: the newest of each scene isn't counted.
+      const both = new TakeStore(store.root, { scratchBudget: total(old.dir) + total(other.dir) })
+      expect(await both.evict(answer, later)).toEqual([])
+      expect(existsSync(old.dir) && existsSync(other.dir)).toBe(true)
+    })
+
+    it("reads a play time again when it couldn't be noted (never stuck on one not written)", async () => {
+      const store = newStore()
+      const [a] = await recordThree(store)
+      const tight = new TakeStore(store.root, { scratchBudget: 0 })
+      chmodSync(a.dir, 0o500)
+      try {
+        await tight.open(a)
+      } finally {
+        chmodSync(a.dir, 0o700)
+      }
+      expect(await tight.evict(() => Promise.resolve(named({})), later)).toContain(a.dir)
+    })
+
     it("lets a vanished project's takes go first, its newest too, never within the grace", async () => {
       const store = newStore()
       const { take: old } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
@@ -543,8 +582,8 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
         readdirSync(dir, { recursive: true, withFileTypes: true })
           .filter((e) => e.isFile())
           .reduce((sum, e) => sum + statSync(join(e.parentPath, e.name)).size, 0)
-      const all = total(join(store.root, "takes"))
-      const roomy = new TakeStore(store.root, { scratchBudget: all - total(vanished.dir) })
+      // Counted: b and the vanished take (c, p1's newest, isn't); room for b alone.
+      const roomy = new TakeStore(store.root, { scratchBudget: total(b.dir) })
       expect(await roomy.evict(answer, later)).toEqual([vanished.dir])
       // Unchanged no more (opened from a new place meanwhile): nothing of it goes.
       const tight = new TakeStore(store.root, { scratchBudget: 0 })

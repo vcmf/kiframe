@@ -1,16 +1,14 @@
 // The projects this app has opened, by id: the folders each was opened from, and the device each
 // was on. What the take store's eviction reads a project's named takes from (and whether it
-// vanished). Written whole and synced, with a
-// backup; a file that doesn't read is never written over (the backup is read instead, or nothing
-// is written: no project forgotten). Synchronous (one change at a time). Electron-free.
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+// vanished). Written whole and synced, with a backup of the same content; a file that doesn't read
+// is never written over (its backup is read instead; neither reading, both kept aside and the
+// index started again). Synchronous (one change at a time). Electron-free.
+import { existsSync, readFileSync, realpathSync, renameSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { jsonText, writeAtomic } from "@kiframe/project"
 import type { Folder } from "./folder-inspect.ts"
 
-export type KnownFolder = Folder
-
-type Index = Record<string, KnownFolder[]>
+type Index = Record<string, Folder[]>
 
 export class ProjectIndex {
   readonly #file: string
@@ -40,18 +38,25 @@ export class ProjectIndex {
   }
 
   /** A project's folders (none: unknown). */
-  folders(projectId: string): KnownFolder[] {
+  folders(projectId: string): Folder[] {
     return this.all()[projectId] ?? []
   }
 
-  /** Changes the index as a whole (nothing when it can't be read: never written over). */
-  change(apply: (all: Index) => void): void {
-    this.#change(apply)
-  }
-
   #change(apply: (all: Index) => void): void {
-    const all = this.#read()
-    if (all === undefined) return
+    let all = this.#read()
+    if (all === undefined) {
+      // Neither it nor its backup reads: both kept aside and the index started again (a project
+      // not in it keeps every take: nothing lost, never stuck unwritten for good).
+      const at = Date.now()
+      for (const file of [this.#file, `${this.#file}.bak`]) {
+        try {
+          renameSync(file, `${file}.broken-${at}`)
+        } catch {
+          // not there
+        }
+      }
+      all = {}
+    }
     apply(all)
     // The backup the same (never a change behind: a lost file loses no folder).
     const text = jsonText(all)
@@ -84,8 +89,8 @@ function parse(file: string): Index | undefined {
   const out: Index = {}
   for (const [id, entry] of Object.entries(raw)) {
     if (!Array.isArray(entry)) continue
-    const folders = (entry as unknown[]).flatMap((f): KnownFolder[] => {
-      const e = f as Partial<KnownFolder> | null
+    const folders = (entry as unknown[]).flatMap((f): Folder[] => {
+      const e = f as Partial<Folder> | null
       if (e === null || typeof e !== "object" || typeof e.path !== "string") return []
       return [
         {

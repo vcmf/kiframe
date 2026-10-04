@@ -21,6 +21,7 @@ export function workerInspector(
 ): { inspect: Inspect; close: () => void } {
   let worker: Worker | undefined
   let stuckUntil = 0
+  let closed = false
   let next = 0
   let queue: Promise<unknown> = Promise.resolve()
   const end = () => {
@@ -29,6 +30,10 @@ export function workerInspector(
   }
   const ask = (folder: Folder, projectId: string): Promise<FolderState> =>
     new Promise((resolve) => {
+      if (closed) {
+        resolve({ state: "unknown", why: "the app is closing" })
+        return
+      }
       if (now() < stuckUntil) {
         resolve({ state: "unknown", why: "a folder didn't answer in time a moment ago" })
         return
@@ -42,6 +47,7 @@ export function workerInspector(
         clearTimeout(timer)
         w.off("message", onMessage)
         w.off("error", onError)
+        w.off("exit", onExit)
         resolve(state)
       }
       const onMessage = (m: { id: number; state: FolderState }) => {
@@ -50,6 +56,11 @@ export function workerInspector(
       const onError = (error: Error) => {
         end()
         done({ state: "unknown", why: error.message })
+      }
+      // Ended without an error (terminated at quit, a resource limit): answered now, not stuck.
+      const onExit = () => {
+        if (worker === w) worker = undefined
+        done({ state: "unknown", why: "its reader ended" })
       }
       const timer = setTimeout(
         () => {
@@ -61,6 +72,7 @@ export function workerInspector(
       )
       w.on("message", onMessage)
       w.on("error", onError)
+      w.on("exit", onExit)
       w.postMessage({ id, folder, projectId })
     })
   return {
@@ -70,6 +82,9 @@ export function workerInspector(
       queue = run.catch(() => undefined)
       return run
     },
-    close: end,
+    close: () => {
+      closed = true
+      end()
+    },
   }
 }

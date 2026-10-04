@@ -112,7 +112,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Old paths kept forever:** the index never forgets a folder. One that later reads unknown (another project made there, a git tree) keeps its project's takes for good: a leak, never a loss (the storage view frees them).
 - **A composition missing without an error** (mid-sync, `composition.json` absent): the scene reads as naming nothing, its named take scratch unless the newest. Treating a scene with a scenario but no composition as unread would close it.
 - **Fewer passes:** once named takes alone pass the budget, every recording runs a pass that frees nothing (worker reads off the main thread). Remember the last pass's slack and skip while the store grew less; measure first.
-- **The folder worker's exit:** a worker that ends without an error event is answered at its timeout (unknown, then 10 minutes of unknown); an `exit` listener would answer at once.
+- **A deleted scene's newest take** is kept (it may be named soon) and not counted: one take per deleted scene stays until the storage view frees it.
+- **A failed recording that keeps its take** (the composition didn't save) doesn't run eviction: the next recording or start does.
+- **One realpath rule:** the index and the workspace each resolve a folder (realpath, else the path); share one helper.
 - **Sizing on the main thread:** over the budget check, each take folder is measured once per launch (a recursive stat walk, kept in memory). Hundreds of takes with many shots can stall the window briefly at start; measure in the folder worker or keep sizes on disk.
 - **A deleted project inside a git repo** is never gone (a branch may bring it back): its takes stay until the storage view (M4-6) frees them.
 - **Named versions (M1-10):** their takes are named the same way only if a version's compositions are files in the project (or cached per commit); reading git refs at every eviction is too slow.

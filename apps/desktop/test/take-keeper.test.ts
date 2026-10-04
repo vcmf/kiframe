@@ -3,6 +3,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -153,6 +154,31 @@ describe("a project folder, read for the take store", () => {
     now += STUCK_FOR_MS
     await reader.inspect({ path: "/y", dev: 1 }, "p1")
     expect(made).toBe(2)
+    // Closed (the app quitting), past the stuck while: answered unknown, no worker made.
+    now += STUCK_FOR_MS
+    reader.close()
+    expect((await reader.inspect({ path: "/z", dev: 1 }, "p1")).state).toBe("unknown")
+    expect(made).toBe(2)
+  })
+
+  it("answers at once when its worker ends without an error, and isn't stuck after", async () => {
+    let made = 0
+    const exiting = () => {
+      made += 1
+      const w = new EventEmitter() as unknown as Worker
+      Object.assign(w, {
+        postMessage: () => setImmediate(() => w.emit("exit", 1)),
+        terminate: () => Promise.resolve(0),
+      })
+      return w
+    }
+    const reader = workerInspector(exiting, 60_000)
+    expect(await reader.inspect({ path: "/x", dev: 1 }, "p1")).toEqual({
+      state: "unknown",
+      why: "its reader ended",
+    })
+    await reader.inspect({ path: "/y", dev: 1 }, "p1")
+    expect(made).toBe(2)
   })
 })
 
@@ -168,11 +194,12 @@ describe("the project index", () => {
     expect(index.folders("p1")).toHaveLength(2)
     rmSync(join(data, "projects.json"))
     expect(index.folders("p1")).toHaveLength(2)
-    // Neither reads: nothing written (no project forgotten).
+    // Neither reads: both kept aside, the index started again (never stuck unwritten for good).
     writeFileSync(join(data, "projects.json"), "{ half")
     writeFileSync(join(data, "projects.json.bak"), "{ half")
     index.seen("p2", dir)
-    expect(readFileSync(join(data, "projects.json"), "utf8")).toBe("{ half")
+    expect(Object.keys(index.all())).toEqual(["p2"])
+    expect(readdirSync(data).filter((n) => n.includes(".broken-"))).toHaveLength(2)
   })
 })
 
@@ -228,7 +255,7 @@ describe("the take keeper", () => {
     expect(await answer(() => (++n % 2 === 1 ? here({}) : unknown()))).toBe("keep")
   })
 
-  it("lets nothing of a project go when it's opened from a new place during the pass, or is open", async () => {
+  it("lets nothing of a project go when it's opened from a new place during the pass, or opened with a folder gone", async () => {
     const { root, dir, index } = setup()
     index.seen("p1", dir)
     const steady = asking()
@@ -237,9 +264,21 @@ describe("the take keeper", () => {
     const reopened = asking(() => index.seen("p1", join(root, "moved.kiframe")))
     await new TakeKeeper(reopened.store, index, gone).evict()
     expect(reopened.seen.unchanged).toBe(false)
-    const open = asking()
-    await new TakeKeeper(open.store, index, gone, () => "p1").evict()
-    expect(open.seen.unchanged).toBe(false)
+    // Opened during the pass with its index write failed (decided vanished): nothing goes.
+    let open: string | undefined
+    const opening = asking(() => (open = "p1"))
+    await new TakeKeeper(opening.store, index, gone, () => open).evict()
+    expect(opening.seen.named).toBe("vanished")
+    expect(opening.seen.unchanged).toBe(false)
+    // Open with every folder there: its scratch may go (never paid for by other projects).
+    const working = asking()
+    await new TakeKeeper(
+      working.store,
+      index,
+      () => here({}),
+      () => "p1",
+    ).evict()
+    expect(working.seen.unchanged).toBe(true)
   })
 
   it("never deletes a vanished project's takes while the store is under the budget", async () => {
