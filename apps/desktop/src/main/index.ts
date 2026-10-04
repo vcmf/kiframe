@@ -111,18 +111,16 @@ function start(): void {
     browser = launched
     return launched
   }
-  /** Closes the browser (the next run launches another); done once every close under way is. */
-  const closeBrowser = async (): Promise<void> => {
+  /** Lets the browser go (the next run launches another); its close is tracked in `closing`. */
+  const dropBrowser = (): void => {
     const current = browser
     browser = undefined
-    if (current !== undefined) {
-      const done = current
-        .then((b) => b.close())
-        .catch(() => undefined)
-        .finally(() => closing.delete(done))
-      closing.add(done)
-    }
-    await Promise.all(closing)
+    if (current === undefined) return
+    const done: Promise<void> = current
+      .then((b) => b.close())
+      .catch(() => undefined)
+      .finally(() => closing.delete(done))
+    closing.add(done)
   }
   // Tests (unpackaged builds only) script the model: no network, no key spent.
   const testModel = dev ? process.env.KIFRAME_TEST_MODEL : undefined
@@ -280,7 +278,8 @@ function start(): void {
     const work = (async () => {
       await workspace.close().catch(() => undefined)
       folders.close()
-      await closeBrowser()
+      dropBrowser()
+      await Promise.all(closing)
     })()
     void Promise.race([work, new Promise((r) => setTimeout(r, QUIT_WAIT_MS))]).then(() => {
       cleanup = "done"
@@ -348,7 +347,9 @@ function start(): void {
             try {
               await workspace.close()
             } finally {
-              await closeBrowser()
+              // Only once the project's agent is gone (a close refused keeps it, and its browser).
+              // Not waited for here (a browser that hangs never holds the window); a quit waits.
+              if (workspace.agent === undefined) dropBrowser()
             }
           }),
         "external:open": async (url) => {

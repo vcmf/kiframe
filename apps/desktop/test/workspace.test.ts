@@ -47,6 +47,27 @@ describe("the open project and its agent", () => {
     expect(made[1]?.closed).toBe(true)
   })
 
+  it("has no agent once closed, even when the agent's close fails; keeps it when the close is refused first", async () => {
+    // The agent's own close fails: the project is closed all the same (its browser may go).
+    const failing = new Workspace((project: OpenedProject) => ({
+      project,
+      close: () => Promise.reject(new Error("stuck")),
+    }))
+    await failing.create(folder(), { name: "A", url: "https://a.test" })
+    await expect(failing.close()).rejects.toThrow(/stuck/)
+    expect(failing.agent).toBeUndefined()
+    // Refused before anything changes (the app not ready): the project and its agent stay.
+    let ready = true
+    const { made, make } = agents()
+    const refusing = new Workspace(make, () => {
+      if (!ready) throw new Error("not ready")
+    })
+    await refusing.create(folder(), { name: "B", url: "https://b.test" })
+    ready = false
+    await expect(refusing.close()).rejects.toThrow(/not ready/)
+    expect(refusing.agent).toBe(made[0])
+  })
+
   it("keeps the open project and its agent when another doesn't open, or its agent can't be made", async () => {
     let fail = false
     const { made, make } = agents()
