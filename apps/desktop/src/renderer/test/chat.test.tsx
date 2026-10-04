@@ -194,15 +194,18 @@ describe("bringing the chat's log to its end", () => {
     request: { kind: "question", question: "Which?" },
     state,
   })
-  it("sees every item new since the last render, not only the last", () => {
+  it("sees every item not seen before, appended or in a whole new list", () => {
     // A request the run waits on, then a text, in one render: still brought into view.
-    expect(newNeedUser([text("a"), ask("q", "open"), text("b")], 1)).toBe(true)
-    expect(newNeedUser([text("a"), ask("q", "open"), text("b")], 2)).toBe(false)
-    // An answered request, or a request updated in place (no new item): not again.
-    expect(newNeedUser([text("a"), ask("q", "answered")], 1)).toBe(false)
-    expect(newNeedUser([text("a"), ask("q", "open")], 2)).toBe(false)
-    // The user's own message; a new chat (fewer items than seen) read from its start.
-    expect(newNeedUser([text("a"), { kind: "user", id: "u", text: "hi" }], 1)).toBe(true)
-    expect(newNeedUser([{ kind: "user", id: "u", text: "hi" }], 5)).toBe(true)
+    expect(newNeedUser([text("a"), ask("q", "open"), text("b")], new Set(["a"]))).toBe(true)
+    expect(newNeedUser([text("a"), ask("q", "open"), text("b")], new Set(["a", "q"]))).toBe(false)
+    // An answered request, or a request updated in place (seen already): not again.
+    expect(newNeedUser([text("a"), ask("q", "answered")], new Set(["a"]))).toBe(false)
+    expect(newNeedUser([text("a"), ask("q", "open")], new Set(["a", "q"]))).toBe(false)
+    // A whole list at once (the chat's state after two upserts): its open request found.
+    const seen = new Set(["x", "y"])
+    expect(newNeedUser([text("a"), ask("q", "open"), text("x"), text("y")], seen)).toBe(true)
+    expect(seen.has("q")).toBe(true)
+    // The user's own message.
+    expect(newNeedUser([{ kind: "user", id: "u", text: "hi" }], new Set())).toBe(true)
   })
 })

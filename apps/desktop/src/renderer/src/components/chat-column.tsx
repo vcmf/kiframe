@@ -62,14 +62,18 @@ export function blocks(items: ChatItem[]): Block[] {
 }
 
 /**
- * Whether the items new since `seen` (however many came in one render) include one that needs the
- * user: their own message, or a request the run waits on. Items are only appended (an update
- * replaces one in place); fewer than seen is a new chat.
+ * Whether the items not seen before (by id: appended one by one, or a whole list at once) include
+ * one that needs the user: their own message, or a request the run waits on. Each new id is noted
+ * in `seen`.
  */
-export function newNeedUser(items: readonly ChatItem[], seen: number): boolean {
-  return items
-    .slice(items.length < seen ? 0 : seen)
-    .some((i) => i.kind === "user" || (i.kind === "request" && i.state === "open"))
+export function newNeedUser(items: readonly ChatItem[], seen: Set<string>): boolean {
+  let needs = false
+  for (const item of items) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    if (item.kind === "user" || (item.kind === "request" && item.state === "open")) needs = true
+  }
+  return needs
 }
 
 export function ChatColumn() {
@@ -80,12 +84,10 @@ export function ChatColumn() {
   // The log is reversed (CSS): its end is scrollTop 0, so layout keeps it there as the chat grows
   // or the log resizes, and anchoring holds a reader who scrolled up. Code moves it only for a new
   // item that needs the user: their own message, or a request the run waits on.
-  const seen = useRef(0)
+  const seen = useRef(new Set<string>())
   useLayoutEffect(() => {
     const log = body.current
-    const needsUser = newNeedUser(items, seen.current)
-    seen.current = items.length
-    if (log !== null && needsUser) log.scrollTop = 0
+    if (newNeedUser(items, seen.current) && log !== null) log.scrollTop = 0
   }, [items])
   return (
     <aside className="chat" aria-label="Chat">
@@ -165,8 +167,9 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
     const at = clickedAt.current
     const el = head.current
     clickedAt.current = undefined
-    const log = el?.closest(".chat-body")
+    const log = el?.closest<HTMLElement>(".chat-body")
     if (at === undefined || el === null || log === null || log === undefined) return
+    // Measured after layout, the browser's own anchoring already applied: the rest, corrected.
     log.scrollTop += el.getBoundingClientRect().top - at
   }, [open])
   const running = tools.some((t) => t.status === "running")

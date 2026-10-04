@@ -8,7 +8,7 @@ import { parseScenarioYaml } from "@kiframe/schema"
 import { _electron as electron, type ElectronApplication, type Page } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../../packages/runtime/test/fixture-server.ts"
-import { processes, role, treeOf } from "../../../scripts/perf/lib.ts"
+import { processes, role, treeOf } from "../../../scripts/perf/procs.ts"
 
 const appDir = join(import.meta.dirname, "..")
 const shots = process.env.KIFRAME_E2E_SHOTS
@@ -394,6 +394,28 @@ describe("the desktop app", () => {
       await group.click()
       await frames()
       expect(Math.abs(((await group.boundingBox())?.y ?? -1) - at)).toBeLessThanOrEqual(1)
+      // Scrolled up, a group in view opened and closed: its head stays (the browser's anchoring and
+      // the log's own correction never both move it).
+      const visible = await log.evaluate((l) => {
+        const heads = [...l.querySelectorAll(".tool-group-head")]
+        const index = heads.length - 2
+        const h = heads[index]
+        if (h === undefined) return -1
+        // That group a third of the way down the log: scrolled up, away from the end.
+        const box = l.getBoundingClientRect()
+        l.scrollTop += h.getBoundingClientRect().top - (box.top + box.height / 3)
+        return index
+      })
+      expect(visible).toBeGreaterThanOrEqual(0)
+      await frames()
+      expect(await fromEnd()).toBeGreaterThan(40)
+      const head = page.locator(".tool-group-head").nth(visible)
+      for (let i = 0; i < 2; i++) {
+        const y = (await head.boundingBox())?.y ?? -1
+        await head.click()
+        await frames()
+        expect(Math.abs(((await head.boundingBox())?.y ?? -1) - y)).toBeLessThanOrEqual(1)
+      }
     } finally {
       await app.evaluate(({ BrowserWindow }, size) => {
         const [width = 0, height = 0] = size ?? []
