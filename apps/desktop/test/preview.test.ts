@@ -54,7 +54,7 @@ steps:
         scope: "test",
         sceneId: "tour",
       })
-      const take = takes.settle(dir)
+      const take = await takes.settle(dir)
       expect(take).toBeDefined()
       saveScene(opened, scene, { composition: generate(config, scenario, recorded).composition })
 

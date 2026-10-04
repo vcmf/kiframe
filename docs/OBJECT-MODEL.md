@@ -139,7 +139,7 @@ q4-release.kiframe/
 **Takes are not in the project folder.** They live in the app's **take store**, in the protected app-data directory, encrypted at rest (§0.7, §3):
 ```
 <app-data>/Kiframe/takes/<projectId>/<sceneId>/take-<time>-<id>/   (looked up by meta.takeKey)
-  frames.webm  events.jsonl  cursor.jsonl  shots/<stepId>.jpg  meta.json  pin.json?
+  frames.webm  events.jsonl  cursor.jsonl  shots/<stepId>.jpg  meta.json
 ```
 Why outside the folder: takes are **heavy**, and they're **sensitive**, since raw frames aren't blurred (APPROACHES §7.4). They must never end up in git or in a folder shared by mistake.
 
@@ -170,6 +170,10 @@ Why outside the folder: takes are **heavy**, and they're **sensitive**, since ra
 | `project.json`, `scene.json`, `scenario.yaml`, `composition.json` | takes: frames, events, cursor, shots |
 | user assets (uploaded images, imported media, logos) | previews, posters |
 | `exports/*.json` (version + take keys used) | the exported files themselves (can be re-rendered from pinned takes) |
+
+**The take store, as built (M1-8, 2026-10-04): encryption at rest.** One key for the store (32 random bytes) in the OS keychain (the vault's keyring backend, the app's own entry), made on first use; one that doesn't read is never replaced. `frames.webm`, `events.jsonl`, `cursor.jsonl` and `shots/` are AES-256-GCM (a fresh IV per file: `magic | iv | ciphertext | tag`); `meta.json` stays plain (listing needs no key). The recorder writes into its private staging folder; the take is encrypted as it settles (each file written whole and synced, then swapped in), before it counts; the keychain refusing the key: the take is deleted, never kept plain. At the app's start, any placed take with a plain file (a crash partway, a take from before) is sealed, take by take (one that fails is said; a keychain refusal is said and nothing is touched). The store's writes run one at a time (a take settling, a take sealed). Readers decrypt in memory (the frames read off the main thread); another key, or a changed file: "its take didn't read: record it again". Stated gaps: plaintext exists in staging while a scene records; deleting isn't a secure wipe on SSDs; a take store moved to another machine needs its key.
+
+**Pins, eviction and removed projects: the next PR** (decided 2026-10-04: 5 GB of scratch takes, least recently played first; a removed project's takes go after 7 days). Its design, reviewed after three rounds of stored pins drifting: pins are **derived, never stored** (the take keys the compositions of every known folder of a project name; a folder that can't be read keeps its project's takes); see BACKLOG "Take store: eviction and removed projects" for the must-haves.
 
 **Later track (option C): the take as an object (DOM capture).** Record the DOM and its changes (rrweb-style) instead of pixels, and render frames at export: any resolution, blur by selector, lightweight. Risky with canvas, WebGL, embedded video and cross-origin iframes. A spike after v0. The model allows it (`capture.mode: "dom"`), and the renderer reads the base through one interface.
 
@@ -424,7 +428,7 @@ One replay of a scene produces a **take** in the take store (§0.6):
   cursor.jsonl         cursor samples (real mouse positions, so hover states happened in the app)
   shots/<stepId>.jpg   frame at each step_start (storyboard + guide screenshots)
   meta.json            viewport, DPR, fps, scenario hash, environment, app URL, recordedAt, Kiframe version
-  pin.json             present if pinned: which exports / versions / compositions reference it
+  (pinned or scratch is derived from the compositions, exports and versions that name it: never stored in the take)
 ```
 
 ```ts

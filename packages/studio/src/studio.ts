@@ -642,12 +642,15 @@ export class Studio {
     } finally {
       await context.close().catch(() => undefined)
     }
-    let take: ReturnType<TakeStore["settle"]>
+    let take: Awaited<ReturnType<TakeStore["settle"]>>
     try {
-      take = takes.settle(dir)
+      take = await takes.settle(dir)
     } catch (error) {
       if (stopped !== undefined) throw stopped
-      return failed(`recording failed: ${why ?? failure(error)}`)
+      // The recorder's own reason first; then why the take went (encryption refused: deleted).
+      return failed(
+        `recording failed: ${why !== undefined ? `${why}; then ${failure(error)}` : failure(error)}`,
+      )
     }
     if (stopped !== undefined) throw stopped
     if (take === undefined || recorded === undefined) {
@@ -666,7 +669,11 @@ export class Studio {
       )
     }
     const { warnings } = made
-    const notes = [...recorded.warnings, ...warnings]
+    const notes = [
+      ...recorded.warnings,
+      ...warnings,
+      ...(take.warning !== undefined ? [take.warning] : []),
+    ]
     return {
       ok: true,
       text:

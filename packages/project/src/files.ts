@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs"
+import { open, rename, rm } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 const TMP = /^\.[0-9a-f]{12}\.tmp$/
@@ -44,6 +45,33 @@ export function writeAtomic(path: string, content: string): void {
   }
 }
 
+/** As `writeAtomic`, without holding the thread (a take's frames: tens of MB). */
+export async function writeAtomicAsync(
+  path: string,
+  content: Uint8Array | readonly Uint8Array[],
+  mode = 0o600,
+): Promise<void> {
+  const folder = dirname(path)
+  const tmp = join(folder, `.${randomBytes(6).toString("hex")}.tmp`)
+  try {
+    const file = await open(tmp, "w", mode)
+    try {
+      // Parts written in turn (an encrypted file's header, body and tag: never joined first).
+      for (const part of Array.isArray(content) ? content : [content as Uint8Array]) {
+        await file.write(part)
+      }
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await rename(tmp, path)
+  } catch (error) {
+    await rm(tmp, { force: true })
+    throw error
+  }
+  syncFolder(folder)
+}
+
 function syncFolder(folder: string): void {
   try {
     const fd = openSync(folder, "r")
@@ -57,12 +85,13 @@ function syncFolder(folder: string): void {
   }
 }
 
-/** Removes the temporary files an interrupted write left in a folder. */
-export function removeStrayTemps(folder: string): void {
+/** Removes the temporary files an interrupted write left in a folder (its subfolders too, `deep`). */
+export function removeStrayTemps(folder: string, deep = false): void {
   if (!existsSync(folder)) return
   for (const entry of readdirSync(folder, { withFileTypes: true })) {
     // Only the files our own writes leave (never a folder that happens to match).
     if (entry.isFile() && TMP.test(entry.name)) rmSync(join(folder, entry.name), { force: true })
+    else if (deep && entry.isDirectory()) removeStrayTemps(join(folder, entry.name), true)
   }
 }
 

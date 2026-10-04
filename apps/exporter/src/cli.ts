@@ -17,6 +17,7 @@ import {
   type Composition,
 } from "@kiframe/schema"
 import { build } from "esbuild"
+import { isEncryptedFile } from "@kiframe/project/take-crypt"
 import { readTakeRecords } from "@kiframe/project/take-records"
 import type { ExportJob } from "./main.ts"
 
@@ -52,6 +53,11 @@ if (ext !== format) {
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const takeDir = resolve(values.take)
+// An encrypted take (the app's take store) is exported from the app, which has its key.
+if (await isEncryptedFile(join(takeDir, "frames.webm"))) {
+  console.error("the take is encrypted (the app's take store): export it from the app")
+  process.exit(2)
+}
 const take = readTakeRecords(takeDir)
 // An edited composition is rendered as is; otherwise the generators make one from the take.
 let composition: Composition

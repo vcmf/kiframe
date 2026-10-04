@@ -1,9 +1,12 @@
+import { randomBytes } from "node:crypto"
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs"
@@ -20,6 +23,8 @@ import {
   ProjectChangedError,
   removeScene,
   reorderScenes,
+  isEncrypted,
+  readTakeRecords,
   saveScene,
   TakeStore,
 } from "../src/index.ts"
@@ -206,7 +211,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       (e: unknown) => e,
     )
     await page.close()
-    return { dir, error, take: store.settle(dir) }
+    return { dir, error, take: await store.settle(dir) }
   }
   const newStore = () => new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")))
 
@@ -241,7 +246,9 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     expect(left).toContain("meta.json")
     expect(statSync(store.root).mode & 0o777).toBe(0o700)
     // Only a folder the store named is settled.
-    expect(() => store.settle(join(store.root, "..", "elsewhere"))).toThrow(/not a take folder/)
+    await expect(store.settle(join(store.root, "..", "elsewhere"))).rejects.toThrow(
+      /not a take folder/,
+    )
   })
 
   it("keeps a set-aside take while it's the only copy, and refuses a newer Kiframe's take", async () => {
@@ -277,5 +284,152 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       [basename(kept.dir), `${name}.failed`, "notes.txt"].sort(),
     )
     expect(readdirSync(join(scene, `${name}.failed`))).toEqual(["meta.json"])
+  })
+
+  it("encrypts a take as it settles: opened with the store's key, never readable without", async () => {
+    const key = randomBytes(32)
+    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.resolve(key),
+    })
+    const { take } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    for (const file of ["frames.webm", "events.jsonl", "cursor.jsonl"]) {
+      expect(isEncrypted(readFileSync(join(take.dir, file))), file).toBe(true)
+    }
+    // Listing needs no key (meta.json stays plain).
+    expect(store.latest("p1", "login")?.meta.takeKey).toBe(take.meta.takeKey)
+    const opened = await store.open(take)
+    expect(opened.records.events.length).toBeGreaterThan(0)
+    expect(opened.video.subarray(0, 4).toString("hex")).toBe("1a45dfa3") // a WebM (EBML) header
+    // Without the key, or with another one: said, never wrong bytes.
+    expect(() => readTakeRecords(take.dir)).toThrow(/the take is encrypted: export it from the app/)
+    const other = new TakeStore(store.root, { key: () => Promise.resolve(randomBytes(32)) })
+    await expect(other.open(take)).rejects.toThrow(/don't open with this computer's take key/)
+    // A take from before (plain) opens with a store that has a key.
+    const plainStore = newStore()
+    const old = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (old.take === undefined) throw new Error("no take")
+    const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(key) })
+    expect((await keyed.open(old.take)).video.length).toBeGreaterThan(0)
+  })
+
+  it("seals at start what a crash left plain, and never keeps a take it can't encrypt", async () => {
+    const key = randomBytes(32)
+    const plainStore = newStore()
+    const { take } = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    writeFileSync(join(take.dir, ".0123456789ab.tmp"), "half written")
+    const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(key) })
+    expect(await keyed.seal()).toEqual({ sealed: 1, failed: [] })
+    expect(isEncrypted(readFileSync(join(take.dir, "frames.webm")))).toBe(true)
+    expect(existsSync(join(take.dir, ".0123456789ab.tmp"))).toBe(false)
+    expect((await keyed.open(take)).records.events.length).toBeGreaterThan(0)
+    // The keychain refusing: the take is deleted, never kept plain.
+    const refused = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.reject(new Error("the keychain said no")),
+    })
+    const dir = refused.newTakeDir("p1", "login")
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const s = parseScenarioYaml(
+      `version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n  - { id: a, action: pause, ms: 50 }\n`,
+    )
+    await recordScenario(page, s, config(), { outDir: dir, timeoutMs: 1500 })
+    await page.close()
+    await expect(refused.settle(dir)).rejects.toThrow(
+      /couldn't be encrypted \(the take key: the keychain said no\): deleted/,
+    )
+    expect(existsSync(dir)).toBe(false)
+  })
+
+  it("seals every take it can at start: one that fails is said, the others sealed, leftovers gone", async () => {
+    const plainStore = newStore()
+    const a = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    const b = await record(plainStore, "other", "  - { id: b, action: pause, ms: 50 }\n")
+    if (a.take === undefined || b.take === undefined) throw new Error("no take")
+    mkdirSync(join(a.take.dir, "shots"), { recursive: true })
+    writeFileSync(join(a.take.dir, "shots", ".0123456789ab.tmp"), "half a shot")
+    // b's frames can't be read: b fails, a is sealed all the same.
+    rmSync(join(b.take.dir, "frames.webm"))
+    mkdirSync(join(b.take.dir, "frames.webm"))
+    const keyed = new TakeStore(plainStore.root, { key: () => Promise.resolve(randomBytes(32)) })
+    const result = await keyed.seal()
+    expect(result.sealed).toBe(1)
+    expect(result.failed).toHaveLength(1)
+    expect(result.failed[0]).toContain(b.take.dir)
+    expect(isEncrypted(readFileSync(join(a.take.dir, "frames.webm")))).toBe(true)
+    expect(existsSync(join(a.take.dir, "shots", ".0123456789ab.tmp"))).toBe(false)
+    // Nothing left to seal: the key is never asked (an empty or sealed store never prompts).
+    const refusing = new TakeStore(plainStore.root, {
+      key: () => Promise.reject(new Error("locked")),
+    })
+    rmSync(b.take.dir, { recursive: true })
+    expect(await refusing.seal()).toEqual({ sealed: 0, failed: [] })
+  })
+
+  it("refuses a sealed take's file without the magic (changed), and opens a plain take without the key", async () => {
+    const key = randomBytes(32)
+    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.resolve(key),
+    })
+    const { take } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (take === undefined) throw new Error("no take")
+    expect(existsSync(join(take.dir, ".sealed"))).toBe(true)
+    // Its frames' header damaged: refused as changed, never handed on as plain bytes.
+    const frames = readFileSync(join(take.dir, "frames.webm"))
+    writeFileSync(
+      join(take.dir, "frames.webm"),
+      Buffer.concat([Buffer.from("XXXX"), frames.subarray(4)]),
+    )
+    await expect(store.open(take)).rejects.toThrow(/another key, or changed/)
+    // A plain take from before: opened with the keychain locked (no key needed).
+    const plainStore = newStore()
+    const old = await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    if (old.take === undefined) throw new Error("no take")
+    const locked = new TakeStore(plainStore.root, {
+      key: () => Promise.reject(new Error("locked")),
+    })
+    expect((await locked.open(old.take)).video.length).toBeGreaterThan(0)
+  })
+
+  it("asks a refusing keychain once at start, however many takes wait to be sealed", async () => {
+    const plainStore = newStore()
+    await record(plainStore, "login", "  - { id: a, action: pause, ms: 50 }\n")
+    await record(plainStore, "other", "  - { id: b, action: pause, ms: 50 }\n")
+    let asked = 0
+    const refusing = new TakeStore(plainStore.root, {
+      key: () => {
+        asked += 1
+        return Promise.reject(new Error("locked"))
+      },
+    })
+    expect(await refusing.seal()).toEqual({ sealed: 0, failed: ["the take key: locked"] })
+    expect(asked).toBe(1)
+  })
+
+  it("keeps a take a disk error stopped from being encrypted, says so, and seals it next start", async () => {
+    const key = randomBytes(32)
+    const store = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")), {
+      key: () => Promise.resolve(key),
+    })
+    const dir = store.newTakeDir("p1", "login")
+    const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
+    const s = parseScenarioYaml(
+      `version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n  - { id: a, action: pause, ms: 50 }\n`,
+    )
+    await recordScenario(page, s, config(), { outDir: dir, timeoutMs: 1500 })
+    await page.close()
+    // Nothing can be written in the take's folder (as on a full disk).
+    chmodSync(dir, 0o500)
+    let settled
+    try {
+      settled = await store.settle(dir)
+    } finally {
+      chmodSync(dir, 0o700)
+    }
+    expect(settled?.warning).toMatch(/stays unencrypted until Kiframe starts again/)
+    expect(existsSync(join(dir, ".sealed"))).toBe(false)
+    expect(isEncrypted(readFileSync(join(dir, "frames.webm")))).toBe(false)
+    expect(await store.seal()).toEqual({ sealed: 1, failed: [] })
+    expect(isEncrypted(readFileSync(join(dir, "frames.webm")))).toBe(true)
   })
 })

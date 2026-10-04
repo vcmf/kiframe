@@ -16,7 +16,7 @@ import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
 import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
-import { KeyStore } from "./settings.ts"
+import { KeyStore, takeStoreKey } from "./settings.ts"
 import { scriptedModel } from "./test-model.ts"
 import { previewOf } from "./preview.ts"
 import { Workspace } from "./workspace.ts"
@@ -51,9 +51,11 @@ function start(): void {
   let window: BrowserWindow | null = null
   // Tests (unpackaged builds only) keep the key in memory: CI has no keychain.
   const memory = dev && process.env.KIFRAME_TEST_KEYCHAIN === "memory"
-  const keys = new KeyStore(
-    memory ? memoryBackend() : keychainBackend(`${app.getName()} app${dev ? " (dev)" : ""}`),
-  )
+  // The app's own keychain entries: the OpenRouter key, the take store's key.
+  const appKeychain = memory
+    ? memoryBackend()
+    : keychainBackend(`${app.getName()} app${dev ? " (dev)" : ""}`)
+  const keys = new KeyStore(appKeychain)
   let error: string | null = null
   // App data, once ready: the take store and the host's ids (approval scopes, scene keys).
   let takes: TakeStore | undefined
@@ -123,6 +125,27 @@ function start(): void {
       return vault()
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * At start, after the sweep: takes a crash left plain (or from before encryption) encrypted.
+   * What can't be is said; the app goes on.
+   */
+  /** A start's problem, added to what's already said (never replacing it). */
+  const say = (problem: string): void => {
+    error = error === null ? problem : `${error}; ${problem}`
+    void status().then((now) => emit(window, "status", now))
+  }
+  const sealTakes = async (): Promise<void> => {
+    if (takes === undefined) return
+    try {
+      const { failed } = await takes.seal()
+      if (failed.length > 0) {
+        say(`couldn't encrypt ${failed.length} old recording(s): ${failed[0] ?? ""}`)
+      }
+    } catch (e) {
+      say(`couldn't encrypt old recordings: ${message(e)}`)
     }
   }
 
@@ -226,7 +249,12 @@ function start(): void {
 
   void app.whenReady().then(() => {
     const data = app.getPath("userData")
-    takes = new TakeStore(join(data, "data"))
+    // Takes encrypted at rest with the app's own key (made on first use).
+    takes = new TakeStore(join(data, "data"), {
+      // The marker only with the OS keychain (a memory one starts empty every launch).
+      key: () =>
+        takeStoreKey(appKeychain, memory ? undefined : join(data, "data", "take-key-made")),
+    })
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -334,9 +362,9 @@ function start(): void {
           takes?.sweep()
         } catch (e) {
           // After the window's first read: pushed to it (not an action's result).
-          error = `couldn't clean up old recordings: ${message(e)}`
-          void status().then((now) => emit(window, "status", now))
+          say(`couldn't clean up old recordings: ${message(e)}`)
         }
+        void sealTakes()
       })
     })
   })
