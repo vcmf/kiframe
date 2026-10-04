@@ -1,17 +1,14 @@
-// The projects this app has opened, by id: the folders each was opened from, the device each was
-// on, and since when a folder has been seen gone. What the take store's eviction reads a project's
-// named takes from, and how a removed project's takes are found. Written whole and synced, with a
+// The projects this app has opened, by id: the folders each was opened from, and the device each
+// was on. What the take store's eviction reads a project's named takes from (and whether it
+// vanished). Written whole and synced, with a
 // backup; a file that doesn't read is never written over (the backup is read instead, or nothing
 // is written: no project forgotten). Synchronous (one change at a time). Electron-free.
-import { copyFileSync, existsSync, readFileSync, realpathSync, statSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { jsonText, writeAtomic } from "@kiframe/project"
 import type { Folder } from "./folder-inspect.ts"
 
-export interface KnownFolder extends Folder {
-  /** When it was first seen gone (cleared when it's there again). */
-  missingSince?: number
-}
+export type KnownFolder = Folder
 
 type Index = Record<string, KnownFolder[]>
 
@@ -56,9 +53,10 @@ export class ProjectIndex {
     const all = this.#read()
     if (all === undefined) return
     apply(all)
-    // The backup refreshed only from a file that reads (a broken one never replaces a good copy).
-    if (parse(this.#file) !== undefined) copyFileSync(this.#file, `${this.#file}.bak`)
-    writeAtomic(this.#file, jsonText(all))
+    // The backup the same (never a change behind: a lost file loses no folder).
+    const text = jsonText(all)
+    writeAtomic(this.#file, text)
+    writeAtomic(`${this.#file}.bak`, text)
   }
 
   /** The index; undefined when neither it nor its backup reads (never acted on). */
@@ -93,7 +91,6 @@ function parse(file: string): Index | undefined {
         {
           path: e.path,
           ...(typeof e.dev === "number" && { dev: e.dev }),
-          ...(typeof e.missingSince === "number" && { missingSince: e.missingSince }),
         },
       ]
     })

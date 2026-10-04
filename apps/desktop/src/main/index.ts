@@ -276,7 +276,7 @@ function start(): void {
         takeStoreKey(appKeychain, memory ? undefined : join(data, "data", "take-key-made")),
     })
     projects = new ProjectIndex(join(data, "data"))
-    keeper = new TakeKeeper(takes, projects, folders.inspect)
+    keeper = new TakeKeeper(takes, projects, folders.inspect, () => workspace.opened?.project.id)
     setAppMenu(dev)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
@@ -386,9 +386,9 @@ function start(): void {
           // After the window's first read: pushed to it (not an action's result).
           say(`couldn't clean up old recordings: ${message(e)}`)
         }
-        // Sealed, then removed projects' takes and scratch beyond the budget (said if it fails).
+        // Sealed, then scratch beyond the budget (said if it fails).
         void sealTakes().then(() =>
-          keeper?.tidy().catch((e: unknown) => say(`couldn't tidy old recordings: ${message(e)}`)),
+          keeper?.evict().catch((e: unknown) => say(`couldn't tidy old recordings: ${message(e)}`)),
         )
       })
     })

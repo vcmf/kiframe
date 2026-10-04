@@ -63,11 +63,15 @@ export const EVICTION_GRACE_MS = 24 * 60 * 60 * 1000
 /**
  * What a project's folders name now, for eviction: per scene, the take keys its compositions name
  * (every known folder of the project, read), and the scenes that didn't read (their takes kept).
- * "keep": the project can't be read whole now (a folder missing, unplugged, unknown): every take
- * of it kept.
+ * "keep": the project can't be read whole now (a folder unplugged, unknown): every take of it kept.
+ * "vanished": every folder of it gone (deleted, or moved and not opened since): nothing of it
+ * named, its takes the first to go (decided by the user, 2026-10-04: never deleted for being gone,
+ * only for space).
  */
 export type NamedTakes =
-  { scenes: ReadonlyMap<string, ReadonlySet<string>>; unread: ReadonlySet<string> } | "keep"
+  | { scenes: ReadonlyMap<string, ReadonlySet<string>>; unread: ReadonlySet<string> }
+  | "keep"
+  | "vanished"
 
 /** Written once every file of a take is encrypted: then a file without the magic was changed. */
 const SEALED_MARK = ".sealed"
@@ -203,7 +207,7 @@ export class TakeStore {
       }
     }
     const takes = join(this.root, "takes")
-    // What's set aside (`.removed-*`, `.evict-*`) is never sealed: it's being deleted.
+    // What's set aside (`.evict-*`) is never sealed: it's being deleted.
     for (const project of list(takes).filter((p) => !p.startsWith("."))) {
       for (const scene of list(join(takes, project)).filter((n) => !n.startsWith("."))) {
         for (const name of list(join(takes, project, scene))) {
@@ -251,18 +255,21 @@ export class TakeStore {
   }
 
   /**
-   * Deletes scratch takes beyond the budget, least recently used first. Scratch: a complete take
-   * no composition names, by what `namedBy` reads of its project's folders now (asked outside the
-   * store's lock); never one of a project to keep, of a scene that didn't read, whose meta doesn't
-   * read, the newest of its scene, or recorded or played within the grace. Nothing is read while
-   * the whole store is under the budget, and only projects with a take that could go are asked
-   * (another project's takes aren't counted as scratch: less evicted, never more). Under the lock, each is checked again (still there, not
-   * played since) and moved aside before it's deleted (a deletion cut short never leaves what
-   * looks like a take). The folders deleted.
+   * Deletes scratch takes beyond the budget: a vanished project's first, then least recently
+   * played. Scratch: a complete take no composition names, by what `namedBy` reads of its
+   * project's folders now (asked outside the store's lock); never one of a project to keep, of a
+   * scene that didn't read, whose meta doesn't read, or recorded or played within the grace, nor
+   * (its project not vanished) the newest of its scene. Nothing is read while the whole store is
+   * under the budget, and only projects with a take out of the grace are asked (another project's
+   * takes aren't counted as scratch: less evicted, never more). Under the lock, `unchanged` is
+   * asked per project first (opened meanwhile: none of its takes goes), and each take is checked
+   * again (still there, not played since), then moved aside before it's deleted (a deletion cut
+   * short never leaves what looks like a take). The folders deleted.
    */
   async evict(
     namedBy: (projectId: string) => Promise<NamedTakes>,
     now = Date.now(),
+    unchanged: (projectId: string) => boolean = () => true,
   ): Promise<string[]> {
     const budget = this.#options.scratchBudget ?? SCRATCH_BUDGET
     const takes = join(this.root, "takes")
@@ -300,31 +307,56 @@ export class TakeStore {
       const key = `${t.project}/${t.scene}`
       newest.set(key, Math.max(newest.get(key) ?? 0, Date.parse(t.take.meta.recordedAt)))
     }
-    // Could go if not named: its meta read, out of the grace, not the newest of its scene.
-    const free = (t: (typeof all)[number]) =>
-      t.take !== undefined &&
-      now - t.used >= EVICTION_GRACE_MS &&
-      newest.get(`${t.project}/${t.scene}`) !== Date.parse(t.take.meta.recordedAt)
+    // Out of the grace, its meta read: its project asked.
+    const settled = (t: (typeof all)[number]) =>
+      t.take !== undefined && now - t.used >= EVICTION_GRACE_MS
     const decisions = new Map<string, NamedTakes>()
-    for (const project of new Set(all.filter(free).map((t) => t.project))) {
+    for (const project of new Set(all.filter(settled).map((t) => t.project))) {
       decisions.set(project, await namedBy(project).catch((): NamedTakes => "keep"))
     }
     let scratch = 0
-    const candidates: { dir: string; used: number; size: number }[] = []
+    const candidates: {
+      project: string
+      dir: string
+      used: number
+      size: number
+      vanished: boolean
+    }[] = []
     for (const t of all) {
       const named = decisions.get(t.project) ?? "keep"
       // Kept on any doubt: the project, the scene, the take's own meta.
-      if (named === "keep" || t.take === undefined || named.unread.has(t.scene)) continue
-      if (named.scenes.get(t.scene)?.has(t.take.meta.takeKey) === true) continue
+      if (named === "keep" || t.take === undefined) continue
+      const vanished = named === "vanished"
+      if (!vanished) {
+        if (named.unread.has(t.scene)) continue
+        if (named.scenes.get(t.scene)?.has(t.take.meta.takeKey) === true) continue
+      }
       const size = sizeOfTake(t.dir)
       scratch += size
-      if (free(t)) candidates.push({ dir: t.dir, used: t.used, size })
+      if (!settled(t)) continue
+      // The newest of a scene may not be named yet (a vanished project's is named by nothing).
+      if (
+        !vanished &&
+        newest.get(`${t.project}/${t.scene}`) === Date.parse(t.take.meta.recordedAt)
+      ) {
+        continue
+      }
+      candidates.push({ project: t.project, dir: t.dir, used: t.used, size, vanished })
     }
     const gone: string[] = []
     if (scratch <= budget) return gone
+    candidates.sort((a, b) => Number(b.vanished) - Number(a.vanished) || a.used - b.used)
     await this.#exclusive(() => {
-      for (const c of candidates.sort((a, b) => a.used - b.used)) {
+      // Asked once per project, under the lock (an opening meanwhile is in or after it).
+      const still = new Map<string, boolean>()
+      for (const c of candidates) {
         if (scratch <= budget) break
+        let ok = still.get(c.project)
+        if (ok === undefined) {
+          ok = unchanged(c.project)
+          still.set(c.project, ok)
+        }
+        if (!ok) continue
         // As it was read: still there, and not played since (a preview meanwhile keeps it).
         const take = readTake(c.dir)
         if (take === undefined || take instanceof Error || usedAt(c.dir, take) !== c.used) continue
@@ -339,27 +371,6 @@ export class TakeStore {
       return Promise.resolve()
     })
     return gone
-  }
-
-  /**
-   * Deletes every take of a project (removed: the host decided), pinned or not, under the store's
-   * lock; `stillRemoved` asked there first (a copy of it opened meanwhile keeps them). Moved aside
-   * before it's deleted. Whether it was.
-   */
-  async removeProject(projectId: string, stillRemoved: () => boolean): Promise<boolean> {
-    const dir = join(this.root, "takes", ProjectId.parse(projectId))
-    return this.#exclusive(() => {
-      if (!stillRemoved()) return Promise.resolve(false)
-      // No take of it: nothing to delete, removed all the same.
-      if (!existsSync(dir)) return Promise.resolve(true)
-      const removed = removeAside(dir, `.removed-${basename(dir)}-${Date.now()}`)
-      if (removed) {
-        for (const cache of [this.#sizes, this.#read, this.#used]) {
-          for (const at of cache.keys()) if (at.startsWith(dir + sep)) cache.delete(at)
-        }
-      }
-      return Promise.resolve(removed)
-    })
   }
 
   /**
@@ -443,10 +454,7 @@ export class TakeStore {
   sweep(): void {
     const takes = join(this.root, "takes")
     if (!existsSync(takes)) return
-    // What an eviction or a removal cut short left aside: deleted now.
-    for (const name of list(takes).filter((n) => /^\.removed-/.test(n))) {
-      rmQuietly(join(takes, name))
-    }
+    // What an eviction cut short left aside: deleted now.
     for (const project of list(takes).filter((p) => !p.startsWith("."))) {
       for (const scene of list(join(takes, project))) {
         const at = join(takes, project, scene)

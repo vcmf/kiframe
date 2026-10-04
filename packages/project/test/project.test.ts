@@ -203,8 +203,8 @@ describe("take store (with the real recorder)", () => {
 target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
-  const record = async (store: TakeStore, sceneId: string, steps: string) => {
-    const dir = store.newTakeDir("p1", sceneId)
+  const record = async (store: TakeStore, sceneId: string, steps: string, projectId = "p1") => {
+    const dir = store.newTakeDir(projectId, sceneId)
     const page = await browser.newPage({ viewport: { width: 800, height: 600 } })
     const s = parseScenarioYaml(`version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n${steps}`)
     const error = await recordScenario(page, s, config(), { outDir: dir, timeoutMs: 1500 }).then(
@@ -503,17 +503,53 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       expect(existsSync(join(scene, ".evict-take-1790000000000-0123456789ab"))).toBe(false)
     })
 
-    it("asks only the projects with a take that could go (the newest of a scene never does)", async () => {
+    it("asks only the projects with a take out of the grace (the newest of a scene too)", async () => {
       const store = newStore()
       await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
       const asked: string[] = []
       const tight = new TakeStore(store.root, { scratchBudget: 0 })
       const ask = (id: string) => (asked.push(id), Promise.resolve(named({})))
-      expect(await tight.evict(ask, later)).toEqual([])
+      expect(await tight.evict(ask, Date.now())).toEqual([])
       expect(asked).toEqual([])
-      await record(store, "login", "  - { id: b, action: pause, ms: 50 }\n")
-      expect(await tight.evict(ask, later)).toHaveLength(1)
+      // Its newest is kept, but its project is asked (vanished, it would go).
+      expect(await tight.evict(ask, later)).toEqual([])
       expect(asked).toEqual(["p1"])
+    })
+
+    it("lets a vanished project's takes go first, its newest too, never within the grace", async () => {
+      const store = newStore()
+      const { take: old } = await record(store, "login", "  - { id: a, action: pause, ms: 50 }\n")
+      const { take: vanished } = await record(
+        store,
+        "intro",
+        "  - { id: v, action: pause, ms: 50 }\n",
+        "p2",
+      )
+      if (old === undefined || vanished === undefined) throw new Error("no take")
+      const { take: b } = await record(store, "login", "  - { id: b, action: pause, ms: 50 }\n")
+      if (b === undefined) throw new Error("no take")
+      // p1's old take the least recently played; p2 vanished.
+      writeFileSync(join(old.dir, "used"), "1")
+      const answer = (id: string) =>
+        Promise.resolve(id === "p2" ? ("vanished" as const) : named({}))
+      // Within the grace: kept, vanished or not.
+      const fresh = new TakeStore(store.root, { scratchBudget: 0 })
+      expect(await fresh.evict(answer, Date.now())).toEqual([old.dir])
+      // Room for all but one take: the vanished one goes, though p1's b was played longer ago.
+      const { take: older } = await record(store, "login", "  - { id: c, action: pause, ms: 50 }\n")
+      if (older === undefined) throw new Error("no take")
+      writeFileSync(join(b.dir, "used"), "1")
+      const total = (dir: string) =>
+        readdirSync(dir, { recursive: true, withFileTypes: true })
+          .filter((e) => e.isFile())
+          .reduce((sum, e) => sum + statSync(join(e.parentPath, e.name)).size, 0)
+      const all = total(join(store.root, "takes"))
+      const roomy = new TakeStore(store.root, { scratchBudget: all - total(vanished.dir) })
+      expect(await roomy.evict(answer, later)).toEqual([vanished.dir])
+      // Unchanged no more (opened from a new place meanwhile): nothing of it goes.
+      const tight = new TakeStore(store.root, { scratchBudget: 0 })
+      expect(await tight.evict(answer, later, () => false)).toEqual([])
+      expect(existsSync(older.dir)).toBe(true)
     })
 
     it("notes a take played when it's opened: within the grace again", async () => {
@@ -528,21 +564,6 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       // Played now: kept the day after.
       expect(await tight.evict(() => Promise.resolve(named({})), before + DAY / 2)).toEqual([])
       expect(existsSync(a.dir)).toBe(true)
-    })
-
-    it("removes a project's takes only while it's still removed, moved aside first", async () => {
-      const store = newStore()
-      await recordThree(store)
-      const dir = join(store.root, "takes", "p1")
-      expect(await store.removeProject("p1", () => false)).toBe(false)
-      expect(existsSync(dir)).toBe(true)
-      expect(await store.removeProject("p1", () => true)).toBe(true)
-      expect(existsSync(dir)).toBe(false)
-      expect(
-        readdirSync(join(store.root, "takes")).filter((n) => n.startsWith(".removed-")),
-      ).toEqual([])
-      // No take of it: removed all the same.
-      expect(await store.removeProject("p1", () => true)).toBe(true)
     })
   })
 })

@@ -104,12 +104,17 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
 
-## Take store: eviction and removed projects
+## Take store: eviction and vanished projects
 - **Kept for good by design:** takes of a project only on a drive never plugged back, of a project never opened since the index existed (from before it, a CLI), whose meta doesn't read: listed in the storage view (M4-6) so the user can free them.
 - **A take only another git branch names:** scratch (evicted past the grace and the budget): "its take is gone: record the scene again" when that branch is checked out (the honest contract).
-- **The device rule:** a removable or network volume's device number can be reused; another volume mounted at the same place with the same number would make a folder read as gone. Record the mount's own identity (its root's inode or birth time) too.
+- **The device rule (raised: a false gone now makes a project's takes scratch at once):** a removable or network volume's device number can be reused; another volume mounted at the same place with the same number would make a folder read as gone. Record the mount's own identity (its root's inode or birth time) too.
+- **A vanished project found again:** a project moved and not opened since loses its takes when space runs short (the user's trade-off). Spotlight (`mdfind` on project.json's id) could find it moved and keep them.
+- **Old paths kept forever:** the index never forgets a folder. One that later reads unknown (another project made there, a git tree) keeps its project's takes for good: a leak, never a loss (the storage view frees them).
+- **A composition missing without an error** (mid-sync, `composition.json` absent): the scene reads as naming nothing, its named take scratch unless the newest. Treating a scene with a scenario but no composition as unread would close it.
+- **Fewer passes:** once named takes alone pass the budget, every recording runs a pass that frees nothing (worker reads off the main thread). Remember the last pass's slack and skip while the store grew less; measure first.
+- **The folder worker's exit:** a worker that ends without an error event is answered at its timeout (unknown, then 10 minutes of unknown); an `exit` listener would answer at once.
 - **Sizing on the main thread:** over the budget check, each take folder is measured once per launch (a recursive stat walk, kept in memory). Hundreds of takes with many shots can stall the window briefly at start; measure in the folder worker or keep sizes on disk.
-- **A deleted project inside a git repo** is never counted removed (a branch may bring it back): its takes stay until the storage view (M4-6) frees them.
+- **A deleted project inside a git repo** is never gone (a branch may bring it back): its takes stay until the storage view (M4-6) frees them.
 - **Named versions (M1-10):** their takes are named the same way only if a version's compositions are files in the project (or cached per commit); reading git refs at every eviction is too slow.
 - **Not yet:** the storage view (sizes, "Free up space", deleting a pinned take with a warning: M4-6); export pins (M3-3: `exports/*.json` read the same way).
 

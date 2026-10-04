@@ -44,34 +44,36 @@ export function inspectFolder(folder: Folder, projectId: string): FolderState {
     const key = stored.composition?.take?.key
     if (key !== undefined) scenes[id] = key
   }
-  // Only a part that didn't read (a scene outside the sequence reads fine: its takes may go).
+  // A part that didn't read, or a sequence scene whose folder is missing (mid-sync): its takes
+  // kept. A scene outside the sequence reads fine: its scratch may go.
+  const inSequence = new Set(opened.project.sequence)
   const unread = [
-    ...new Set(opened.problems.filter((p) => p.part !== undefined).map((p) => p.sceneId)),
+    ...new Set(
+      opened.problems
+        .filter((p) => p.part !== undefined || inSequence.has(p.sceneId))
+        .map((p) => p.sceneId),
+    ),
   ]
   return { state: "here", scenes, unread }
 }
 
 /**
- * The folder not there: gone only when the nearest folder above it is on the device the project was on (its
- * filesystem still mounted there) and no git working tree holds it (a branch without the project
- * brings it back on checkout: never counted as removed). Else unknown.
+ * The folder not there: gone only when its own parent is there, on the device the project was on
+ * (the filesystem still mounted), and no git working tree holds it (a branch without the project
+ * brings it back). A parent missing too (a sync root signed out, a renamed parent) or on another
+ * device is unknown: never walked further up.
  */
 function goneOrUnknown(folder: Folder): FolderState {
-  for (let at = dirname(folder.path); ; at = dirname(at)) {
-    let dev: number
-    try {
-      dev = statSync(at).dev
-    } catch (error) {
-      // Only "no such folder" walks up: any other error (a permission) can't tell.
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || dirname(at) === at) {
-        return { state: "unknown", why: "its surroundings can't be read" }
-      }
-      continue
-    }
-    if (dev !== folder.dev) return { state: "unknown", why: "not mounted" }
-    if (inGitTree(at)) return { state: "unknown", why: "in a git working tree (another branch?)" }
-    return { state: "gone" }
+  const parent = dirname(folder.path)
+  let dev: number
+  try {
+    dev = statSync(parent).dev
+  } catch {
+    return { state: "unknown", why: "the folder it was in isn't there" }
   }
+  if (dev !== folder.dev) return { state: "unknown", why: "not mounted" }
+  if (inGitTree(parent)) return { state: "unknown", why: "in a git working tree (another branch?)" }
+  return { state: "gone" }
 }
 
 /** Whether a folder or one above it is a git working tree. */
