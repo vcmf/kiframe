@@ -106,6 +106,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## Performance and resources (audit 2026-10-04, PERFORMANCE.md)
 - **Playwright in the main process:** the agent's browser is driven from Electron's main process, so a recording's screencast (about 60 frames a second, JPEG decoded from base64) and the recorder's synchronous writes run on the main thread: 93% CPU at peak on minmux.dev. The window stayed responsive in the scripted measure (p95 2.9 ms), but a heavy page could stall the app's requests. Move the studio and runtime into a `utilityProcess`.
+- **Live frames as binary:** frames go main → window as base64 strings (a third larger, a string per frame), up to 1600px at 8 a second; send the bytes (a Uint8Array over IPC) and size them to the stage's real pixels.
 - **Live frames nobody sees:** the live view sends base64 JPEG frames (up to 8 a second) while the window shows the Preview tab or is closed (macOS); each becomes a new `data:` image. Pause them when the Live tab isn't shown, and send binary with blob URLs.
 - **Opening a preview:** main reads the whole `frames.webm`, decrypts it synchronously and copies it to the window; a click through several scenes decrypts each (stale loads aren't cancelled). Measure on a long take (Cal.com's 72 s) and stream or cancel.
 - **Tabs the app opens:** a popup the runner follows leaves its opener open, and a tab never followed stays, until the project closes (a headless renderer each). Close the live context's other pages after a step.

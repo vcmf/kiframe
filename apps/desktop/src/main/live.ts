@@ -6,6 +6,8 @@ import type { LiveFrame } from "../shared/ipc.ts"
 /** How often the page followed is checked (a popup the runner switched to), and frames sent. */
 const FOLLOW_MS = 400
 const FRAME_MS = 125
+/** JPEG quality of the live frames (text on the page stays legible). */
+const QUALITY = 80
 
 export class LiveView {
   readonly #page: () => Page | undefined
@@ -45,7 +47,7 @@ export class LiveView {
     this.#latest = undefined
     if (page === undefined || page.isClosed()) return
     const last = await page
-      .screenshot({ type: "jpeg", quality: 70, timeout: 2000 })
+      .screenshot({ type: "jpeg", quality: QUALITY, timeout: 2000 })
       .catch(() => undefined)
     if (last !== undefined) this.#send({ jpeg: last.toString("base64"), path: pathOf(page) })
   }
@@ -73,9 +75,13 @@ export class LiveView {
     this.#followed = page
     await old?.screencast.stop().catch(() => undefined)
     if (page === undefined) return
+    // At the page's own size, capped (sharp on the stage, without full-size frames over IPC
+    // several times a second): unsized, Playwright scales every frame down to 800×500.
+    const size = frameSize(page.viewportSize())
     await page.screencast
       .start({
-        quality: 70,
+        quality: QUALITY,
+        size,
         onFrame: ({ data }) => {
           if (page !== this.#followed) return
           // At most every FRAME_MS, and never the last of a burst dropped: the latest one waits
@@ -101,4 +107,20 @@ function pathOf(page: Page): string {
   } catch {
     return ""
   }
+}
+
+/** The longest side a live frame is sent at (the stage is narrower than most viewports). */
+export const LIVE_MAX_SIDE = 1600
+
+/**
+ * A live frame's size: the page's viewport scaled to fit LIVE_MAX_SIDE (never up); a page with no
+ * viewport (the window's own size) is sent at 1280×800.
+ */
+export function frameSize(viewport: { width: number; height: number } | null): {
+  width: number
+  height: number
+} {
+  const { width, height } = viewport ?? { width: 1280, height: 800 }
+  const k = Math.min(1, LIVE_MAX_SIDE / Math.max(width, height))
+  return { width: Math.round(width * k), height: Math.round(height * k) }
 }
