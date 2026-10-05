@@ -209,7 +209,8 @@ export class AgentHost {
       })) {
         // The run's turns, kept as they come.
         if ("messages" in event) this.#history = [...this.#history, ...event.messages]
-        for (const item of this.#log.event(event)) this.#emit(item, event.type === "assistant_text")
+        // Only the answer's text is throttled (a thinking row that ends with it goes at once).
+        for (const item of this.#log.event(event)) this.#emit(item, item.kind === "assistant")
         if (event.type === "tool_result" && PROJECT_TOOLS.has(event.toolName)) {
           this.#notify("projectChanged")
         }

@@ -85,6 +85,8 @@ beforeAll(async () => {
       // After the project is closed and opened again: a step in a new browser.
       step("c9", { id: "home", action: "goto", url: "/" }),
       { kind: "text", text: "Back home." },
+      // A turn that thinks a while first.
+      { kind: "text", text: "Thought it through.", think: 2500 },
     ]),
   )
   env.KIFRAME_TEST_MODEL = model
@@ -512,6 +514,31 @@ describe("the desktop app", () => {
       .toBe(true)
     expect(await page.getByText(/didn.t start/).count()).toBe(0)
     expect(await browsers()).toBe(1)
+  })
+
+  it("shows the agent thinking (its dots moving), then for how long it thought", async () => {
+    // Motion allowed (a machine set to reduce it shows still dots).
+    await page.emulateMedia({ reducedMotion: "no-preference" })
+    const box = page.getByLabel("Message the agent")
+    await box.fill("Think it over")
+    await box.press("Enter")
+    const thinking = page.locator(".thinking-row .thinking-dots")
+    await expect.poll(() => thinking.isVisible(), { timeout: 10_000 }).toBe(true)
+    // The dots, drawn by CSS: they change while it thinks.
+    const dots = new Set<string>()
+    for (let i = 0; i < 8; i++) {
+      dots.add(await thinking.evaluate((el) => getComputedStyle(el, "::after").content))
+      await page.waitForTimeout(150)
+    }
+    expect(dots.size).toBeGreaterThan(1)
+    if (shots !== undefined) await page.screenshot({ path: join(shots, "agent-thinking.png") })
+    await expect
+      .poll(() => page.getByText("Thought it through.").isVisible(), { timeout: 30_000 })
+      .toBe(true)
+    expect(await thinking.count()).toBe(0)
+    const row = page.locator(".thinking-row").last()
+    expect(await row.innerText()).toMatch(/^Thought\s*for [23]s$/)
+    if (shots !== undefined) await page.screenshot({ path: join(shots, "agent-thought.png") })
   })
 
   it("is served from the app's own origin, sandboxed, with a strict CSP", async () => {

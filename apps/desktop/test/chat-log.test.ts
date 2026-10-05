@@ -16,6 +16,54 @@ describe("the chat, folded from the agent's events", () => {
     expect(log.items[1]).toMatchObject({ text: "Looking at the app" })
   })
 
+  it("shows each stretch of thinking once, never its words, then how long it took", () => {
+    let now = 0
+    const log = new ChatLog(() => now)
+    // The streamed thinking: one item, opened by the first piece.
+    expect(log.event({ type: "reasoning", text: "The page" })).toEqual([
+      { kind: "thinking", id: expect.any(String) as unknown },
+    ])
+    now = 95_000
+    expect(log.event({ type: "reasoning", text: "The page is long" })).toEqual([])
+    // A tool call ends it.
+    log.event({ type: "tool_start", callId: "c1", toolName: "snapshot", args: {} })
+    log.event({ type: "tool_result", callId: "c1", toolName: "snapshot", result: "url: /" })
+    now = 100_000
+    log.event({ type: "reasoning", text: "Done" })
+    now = 102_500
+    // So does the run's end.
+    log.event({ type: "done", messages: [] })
+    expect(log.items.map((i) => (i.kind === "thinking" ? i.ms : i.kind))).toEqual([
+      95_000,
+      "tool",
+      2_500,
+      "end",
+    ])
+    expect(JSON.stringify(log.items)).not.toContain("The page")
+  })
+
+  it("keeps one row for a reply that thinks, says something, then thinks again", () => {
+    let now = 0
+    const log = new ChatLog(() => now)
+    log.event({ type: "reasoning", text: "a" })
+    now = 3000
+    // An empty piece of text: still thinking.
+    expect(log.event({ type: "assistant_text", text: "" })).toEqual([])
+    expect(log.items[0]).not.toHaveProperty("ms")
+    log.event({ type: "assistant_text", text: "Let me" })
+    now = 4000
+    log.event({ type: "reasoning", text: "a b" })
+    expect(log.items.map((i) => i.kind)).toEqual(["thinking", "assistant"])
+    expect(log.items[0]).not.toHaveProperty("ms")
+    now = 6000
+    log.event({ type: "assistant_text", text: "Let me check." })
+    expect(log.items[0]).toMatchObject({ kind: "thinking", ms: 5000 })
+    // A new reply (after a tool call): a row of its own.
+    log.event({ type: "tool_start", callId: "c", toolName: "snapshot", args: {} })
+    log.event({ type: "reasoning", text: "x" })
+    expect(log.items.filter((i) => i.kind === "thinking")).toHaveLength(2)
+  })
+
   it("shows a tool running, then how it ended (the studio's failures are words)", () => {
     const log = new ChatLog()
     const step = {
