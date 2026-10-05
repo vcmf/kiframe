@@ -104,6 +104,9 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Off-screen duplicates in `nth` / ambiguity:** they still count (existing scenes use `nth` to skip them). Counting only reachable matches is better, but needs a migration of `nth` in grounded scenes.
 - **Risky approval in the grounding harness:** every step the model marks risky is approved (printed). The v0 agent needs per-environment pre-approval and a human check for anything not created by the scene (prompt injection from page text).
 
+## A project's apps (OBJECT-MODEL §0.9)
+- **Environments (staging, prod) left out of v0:** each app has its own URL. When switching the same demo between copies of the app is wanted, an environment gives each app name its URL (an app it doesn't name keeps its own); the schema's `environment` field (org settings, from the server) is unused until then.
+
 ## Performance and resources (audit 2026-10-04, PERFORMANCE.md)
 - **Playwright in the main process:** the agent's browser is driven from Electron's main process, so a recording's screencast (about 60 frames a second, JPEG decoded from base64) and the recorder's synchronous writes run on the main thread: 93% CPU at peak on minmux.dev. The window stayed responsive in the scripted measure (p95 2.9 ms), but a heavy page could stall the app's requests. Move the studio and runtime into a `utilityProcess`.
 - **Live frames nobody sees:** the live view sends base64 JPEG frames (up to 8 a second) while the window shows the Preview tab or is closed (macOS); each becomes a new `data:` image. Pause them when the Live tab isn't shown, and send binary with blob URLs.

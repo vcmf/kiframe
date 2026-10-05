@@ -225,10 +225,10 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **Existing projects convert** on open: `target` becomes `apps.app` (the rest unchanged).
 
-**Open points:**
-- **Environments with several apps**: an org environment (staging, prod: APPROACHES §10c) gives today's single target its URL; with several apps, an environment would give each app name its URL.
-- **Viewport**: per app (a docs site and a desktop window differ), or one for the project's video.
-- **Removing an app** a saved scene uses: refused, or the scene marked unreadable until edited.
+**Settled with the user (2026-10-05):**
+- **Each app has its own URL, and that's all** (no environments: v0 has no staging/prod switching; BACKLOG notes how it would fit).
+- **A viewport per app**: each take is recorded at its app's size; the compositor fits every take into the video's one output frame.
+- **Removing an app a scene uses**: warned with what it affects (*"Remove docs? 2 scenes use it: Install, First run. They'll need reworking."* Cancel / Remove). Removed, those scenes show **"Uses a removed app"** in the strip (never "unreadable"; their takes stay previewable until re-recorded), and one click asks the agent to rework the scene without it, or the app is added back.
 
 ### 0.10 `story.md`: the project's memory (designed 2026-10-05, not built)
 
