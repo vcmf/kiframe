@@ -42,11 +42,19 @@ export type LlmConfig = {
    */
   sendReasoning?: boolean
   /**
-   * How OpenRouter picks the model's provider (its `provider.sort`): `throughput` is what the
-   * `:nitro` suffix does, the id kept plain. Sent to OpenRouter only (another API would refuse it).
-   * Default: OpenRouter's own routing.
+   * Ask OpenRouter for the model's fastest provider (`provider.sort: throughput`, what the
+   * `:nitro` suffix does, the id kept plain). OpenRouter's endpoint only (another API would refuse
+   * it). Default: OpenRouter's own routing.
    */
-  providerSort?: "throughput" | "price" | "latency"
+  fastestProvider?: boolean
+}
+
+/** What a client sends beyond the model and messages (OpenRouter's fields: off for other APIs). */
+export interface ClientOptions {
+  /** Send the reasoning state back (`reasoning_details`). */
+  sendReasoning?: boolean
+  /** Ask for the model's fastest provider (`provider.sort: throughput`). */
+  fastestProvider?: boolean
 }
 
 /** The SDK calls the client makes: injectable, so tests never reach the network. */
@@ -159,35 +167,28 @@ export class OpenAiCompatibleClient implements LlmClient {
   readonly #completer: ChatCompleter
   readonly #model: string
   readonly #reasoning: boolean
-  readonly #sort: LlmConfig["providerSort"]
+  readonly #fastest: boolean
 
-  /**
-   * `sendReasoning`: send the reasoning state back (OpenRouter's field; off for other APIs).
-   * `providerSort`: OpenRouter's provider order (OpenRouter only).
-   */
-  constructor(
-    completer: ChatCompleter,
-    model: string,
-    sendReasoning = false,
-    providerSort?: LlmConfig["providerSort"],
-  ) {
+  constructor(completer: ChatCompleter, model: string, options: ClientOptions = {}) {
     this.#completer = completer
     this.#model = model
-    this.#reasoning = sendReasoning
-    this.#sort = providerSort
+    this.#reasoning = options.sendReasoning ?? false
+    this.#fastest = options.fastestProvider ?? false
   }
 
   static fromConfig(config: LlmConfig): OpenAiCompatibleClient {
     const openRouter = isOpenRouter(config)
-    const reasoning = config.sendReasoning ?? openRouter
-    const sort = openRouter ? config.providerSort : undefined
-    return new OpenAiCompatibleClient(makeCompleter(config), config.model, reasoning, sort)
+    return new OpenAiCompatibleClient(makeCompleter(config), config.model, {
+      sendReasoning: config.sendReasoning ?? openRouter,
+      fastestProvider: openRouter && config.fastestProvider === true,
+    })
   }
 
   #params(messages: LlmMessage[], tools: LlmToolDef[]) {
     return {
       model: this.#model,
-      ...(this.#sort !== undefined && { provider: { sort: this.#sort } }),
+      // OpenRouter's routing (which upstream serves the model), not `LlmConfig.provider`.
+      ...(this.#fastest && { provider: { sort: "throughput" } }),
       messages: toOpenAiMessages(messages, this.#reasoning),
       ...(tools.length > 0 && { tools: toOpenAiTools(tools), tool_choice: "auto" as const }),
     }

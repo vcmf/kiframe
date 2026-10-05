@@ -124,13 +124,16 @@ describe("reasoning state: OpenRouter only, fragments joined", () => {
 
   it("asks OpenRouter for its fastest provider when told, and never another API", async () => {
     const { OpenAiCompatibleClient } = await import("../src/llm-client.ts")
-    const sent = async (config: { provider?: "openai"; providerSort?: "throughput" }) => {
+    // `api`: which API the client calls (LlmConfig.provider); the body's `provider` is
+    // OpenRouter's routing.
+    const sent = async ({ api, fastest }: { api?: "openai"; fastest?: boolean }) => {
       let body: Record<string, unknown> = {}
       const client = OpenAiCompatibleClient.fromConfig({
         apiKey: "k",
         model: "deepseek/deepseek-v4.1-flash",
         maxRetries: 0,
-        ...config,
+        ...(api !== undefined && { provider: api }),
+        ...(fastest !== undefined && { fastestProvider: fastest }),
         fetch: (_url, init) => {
           body = JSON.parse(init?.body as string) as Record<string, unknown>
           return Promise.resolve(
@@ -143,15 +146,13 @@ describe("reasoning state: OpenRouter only, fragments joined", () => {
       await client.complete([{ role: "user", content: "go" }], [])
       return body
     }
-    const fast = await sent({ providerSort: "throughput" })
+    const fast = await sent({ fastest: true })
     expect(fast).toMatchObject({
       model: "deepseek/deepseek-v4.1-flash",
       provider: { sort: "throughput" },
     })
     expect(await sent({})).not.toHaveProperty("provider")
-    expect(await sent({ provider: "openai", providerSort: "throughput" })).not.toHaveProperty(
-      "provider",
-    )
+    expect(await sent({ api: "openai", fastest: true })).not.toHaveProperty("provider")
   })
 
   it("sends reasoning back only to OpenRouter's endpoint", async () => {
