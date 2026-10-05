@@ -11,7 +11,7 @@ import {
 import { describe, expect, it } from "vitest"
 import { BUILTIN_BACKGROUNDS, DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kiframe/schema"
 import { drawScene } from "../src/draw.ts"
-import { contentBox, cursorAt, prepare, sceneAt } from "../src/scene.ts"
+import { contentBox, cursorAt, prepare, sceneAt, stageTransform } from "../src/scene.ts"
 
 const project = parseProjectYaml(`version: 1
 target: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } }
@@ -189,22 +189,8 @@ describe("camera", () => {
 
   it("draws no window look without a background: black around the app, no shadow", () => {
     const { scenario, take, composition } = fixture()
-    // A canvas that records what's asked of it (the drawing's choices, not its pixels).
     const drawn = (style: Composition["style"]) => {
-      const ops: string[] = []
-      const ctx = new Proxy(
-        {},
-        {
-          get: (_t, key) =>
-            key === "createLinearGradient"
-              ? () => ({ addColorStop: () => ops.push("gradient") })
-              : (...args: unknown[]) => ops.push(`${String(key)}(${args.map(String).join(",")})`),
-          set: (_t, key, value) => {
-            ops.push(`${String(key)}=${String(value)}`)
-            return true
-          },
-        },
-      ) as unknown as CanvasRenderingContext2D
+      const { ctx, ops } = recorder()
       const prepared = prepare({ ...composition, style }, scenario, take)
       const frame = { width: 1280, height: 800 } as unknown as CanvasImageSource & {
         width: number
@@ -217,11 +203,15 @@ describe("camera", () => {
     // First, the whole frame black (the bars of an app of another aspect).
     expect(bare.slice(0, 2)).toEqual(["fillStyle=#000", "fillRect(0,0,1920,1080)"])
     // The window's shadow (the cursor keeps its own small one).
-    expect(bare).not.toContain("shadowBlur=48")
+    expect(bare.some((o) => o.startsWith("shadowBlur=") && Number(o.slice(11)) >= 48)).toBe(false)
     expect(bare).not.toContain("gradient")
     const framed = drawn({ background: { builtin: "mountain-lake" } })
     expect(framed).toContain("gradient")
-    expect(framed).toContain("shadowBlur=48")
+    // The whole frame painted, whatever the zoom (never the last frame's pixels left at an edge).
+    expect(framed).toContain("fillRect(0,0,1920,1080)")
+    expect(
+      framed.some((o) => /^shadowBlur=(\d+(\.\d+)?)$/.test(o) && Number(o.slice(11)) >= 48),
+    ).toBe(true)
   })
 
   it("ships exactly the backgrounds the schema names, each one's file there", () => {
@@ -394,5 +384,164 @@ describe("overlays", () => {
     expect(scene.ripples[0]?.progress).toBeCloseTo(0.2, 1)
     const rest = cursorAt(p.timeline, 2500)
     expect(rest?.x).toBeCloseTo(0.15, 5)
+  })
+})
+
+/** A canvas that records what's asked of it: each call with its arguments, each property set. */
+function recorder(): { ctx: CanvasRenderingContext2D; ops: string[] } {
+  const ops: string[] = []
+  const ctx = new Proxy(
+    {},
+    {
+      get: (_t, key) =>
+        key === "createLinearGradient"
+          ? () => ({ addColorStop: () => ops.push("gradient") })
+          : key === "measureText"
+            ? (text: string) => ({ width: text.length * 10 })
+            : (...args: unknown[]) => ops.push(`${String(key)}(${args.map(String).join(",")})`),
+      set: (_t, key, value) => {
+        ops.push(`${String(key)}=${String(value)}`)
+        return true
+      },
+    },
+  ) as unknown as CanvasRenderingContext2D
+  return { ctx, ops }
+}
+const numbers = (op: string) =>
+  op
+    .slice(op.indexOf("(") + 1, -1)
+    .split(",")
+    .map(Number)
+
+describe("the camera over the whole picture (OBJECT-MODEL §0.14)", () => {
+  const W = 1920
+  const H = 1080
+  const zoomed = (style: Composition["style"]) => {
+    const { scenario, take, composition } = fixture()
+    const p = prepare({ ...composition, style }, scenario, take)
+    const frames: { t: number; view: ReturnType<typeof sceneAt>["view"] }[] = []
+    for (let t = 0; t <= p.duration; t += 40) frames.push({ t, view: sceneAt(p, t).view })
+    return { p, frames, frame: take.meta.frameSize }
+  }
+
+  it("shows the whole picture at rest, and never past the background's edges zoomed", () => {
+    const { p, frames, frame } = zoomed({ background: { builtin: "mountain-lake" } })
+    const rest = stageTransform(p.style, frame, { scale: 1, cx: 0.5, cy: 0.5 })
+    expect(rest.out(0, 0)).toEqual({ x: 0, y: 0 })
+    expect(rest.out(W, H)).toEqual({ x: W, y: H })
+    expect(Math.max(...frames.map((f) => f.view.scale))).toBeGreaterThan(1.5)
+    for (const { t, view } of frames) {
+      const tr = stageTransform(p.style, frame, view)
+      const a = tr.out(0, 0)
+      const b = tr.out(W, H)
+      expect(a.x <= 1e-6 && a.y <= 1e-6 && b.x >= W - 1e-6 && b.y >= H - 1e-6, `t=${t}`).toBe(true)
+    }
+  })
+
+  it("without a background, zooms the app only: never an empty border past it", () => {
+    const { p, frames, frame } = zoomed({ background: "none" })
+    for (const { t, view } of frames) {
+      const tr = stageTransform(p.style, frame, view)
+      const a = tr.fromApp(0, 0)
+      const b = tr.fromApp(1, 1)
+      // Larger than the frame on an axis: it covers it; smaller (an app of another aspect): centered.
+      if (b.x - a.x >= W) expect(a.x <= 1e-6 && b.x >= W - 1e-6, `t=${t}`).toBe(true)
+      else expect(Math.abs(a.x + b.x - W) < 1e-6, `t=${t}`).toBe(true)
+      if (b.y - a.y >= H) expect(a.y <= 1e-6 && b.y >= H - 1e-6, `t=${t}`).toBe(true)
+      else expect(Math.abs(a.y + b.y - H) < 1e-6, `t=${t}`).toBe(true)
+    }
+  })
+
+  it("paints the background while a rounded corner of the window is on screen", () => {
+    const { p } = zoomed({ background: { builtin: "mountain-lake" } })
+    // The window's top-left 2px past the frame's corner: its bounding box covers the frame, its
+    // rounded corner doesn't (the arc leaves the corner itself to the background).
+    const scale = 2
+    const box = contentBox(p.style, p.frame)
+    const at = (edge: number, size: number, screen: number) =>
+      (edge + (screen / 2 + 2) / scale - edge) / size
+    const view = { scale, cx: at(box.x, box.w, W), cy: at(box.y, box.h, H) }
+    const tr = stageTransform(p.style, p.frame, view)
+    expect(tr.out(box.x, box.y).x).toBeCloseTo(-2, 6)
+    const { ctx, ops } = recorder()
+    const scene = { ...sceneAt(p, 0), view }
+    const frame = { width: 1280, height: 800 } as unknown as CanvasImageSource & {
+      width: number
+      height: number
+    }
+    drawScene(ctx, frame, scene, p.style)
+    expect(ops).toContain("gradient")
+  })
+
+  it("aims each zoom where the camera can go: near an edge, no stall then jump", () => {
+    const { scenario, take, composition } = fixture()
+    const seg = (id: string, step: string, x: number, y: number) => ({
+      id,
+      source: "manual" as const,
+      at: { step, edge: "start" as const },
+      until: { step, edge: "end" as const },
+      scale: 2,
+      focus: { mode: "rect" as const, rect: { x, y, w: 0.04, h: 0.04 } },
+    })
+    const edited: Composition = {
+      ...composition,
+      style: { background: { builtin: "mountain-lake" } },
+      tracks: {
+        ...composition.tracks,
+        camera: [seg("corner", "a", 0, 0), seg("middle", "b", 0.48, 0.48)],
+      },
+    }
+    const p = prepare(edited, scenario, take)
+    // Where each move starts, its spring is where the camera shows (never beyond the clamp).
+    const later = p.moves.slice(1)
+    expect(later.length).toBeGreaterThan(0)
+    for (const m of later) {
+      const v = sceneAt(p, m.t).view
+      expect(Math.abs(m.x0[1] - v.cx), `cx at ${m.t}`).toBeLessThan(0.02)
+      expect(Math.abs(m.x0[2] - v.cy), `cy at ${m.t}`).toBeLessThan(0.02)
+    }
+  })
+
+  it("keeps captions still, and blurs on their fields, at any zoom; the shadow grows with it", () => {
+    const { p, frames } = zoomed({ background: { builtin: "mountain-lake" } })
+    const frame = { width: 1280, height: 800 } as unknown as CanvasImageSource & {
+      width: number
+      height: number
+    }
+    const drawn = (scene: ReturnType<typeof sceneAt>) => {
+      const { ctx, ops } = recorder()
+      drawScene(ctx, frame, scene, p.style)
+      return ops
+    }
+    const draw = (t: number) => {
+      const scene = sceneAt(p, t)
+      return { ops: drawn(scene), scene }
+    }
+    const captions = (ops: string[]) => ops.filter((o) => o.startsWith("fillText("))
+    // The same moment with its caption, drawn at rest and zoomed: the caption drawn the same.
+    const moment = frames.find((f) => sceneAt(p, f.t).captions.length > 0)
+    expect(moment).toBeDefined()
+    const shown = sceneAt(p, moment!.t)
+    const rest = captions(drawn({ ...shown, view: { scale: 1, cx: 0.5, cy: 0.5 } }))
+    expect(rest.length).toBeGreaterThan(0)
+    expect(captions(drawn({ ...shown, view: { scale: 2.4, cx: 0.2, cy: 0.3 } }))).toEqual(rest)
+    // The secret's blur, while zoomed: where the field is in the window as drawn.
+    const blurred = frames.find((f) => f.view.scale > 1.2 && sceneAt(p, f.t).blurs.length > 0)
+    expect(blurred).toBeDefined()
+    const { ops, scene } = draw(blurred!.t)
+    const window = numbers(ops.find((o) => o.startsWith("drawImage(") && numbers(o).length === 9)!)
+    const [wx, wy, ww, wh] = window.slice(5)
+    const rect = numbers(ops.find((o) => o.startsWith("rect("))!)
+    const r = scene.blurs[0]!
+    expect(rect[0]).toBeCloseTo(wx! + r.x * ww!, 6)
+    expect(rect[1]).toBeCloseTo(wy! + r.y * wh!, 6)
+    expect(rect[2]).toBeCloseTo(r.w * ww!, 6)
+    expect(rect[3]).toBeCloseTo(r.h * wh!, 6)
+    // The window's shadow as large as the window is, at this frame's own zoom (when it shows: the
+    // window not covering the whole frame).
+    const covers = wx! <= 0 && wy! <= 0 && wx! + ww! >= W && wy! + wh! >= H
+    if (!covers) expect(ops).toContain(`shadowBlur=${48 * scene.view.scale}`)
+    else
+      expect(ops.some((o) => o.startsWith("shadowBlur=") && Number(o.slice(11)) >= 48)).toBe(false)
   })
 })

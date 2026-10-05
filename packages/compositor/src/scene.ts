@@ -81,17 +81,49 @@ export function flatten(
   }
 }
 
-/** The part of the source frame on screen: its center and zoom (1 = the whole frame). */
+/**
+ * The camera: the point of the app (normalized to the take's frame) at the output's center, and the
+ * zoom: 1 is the whole picture (the background with the app's window on it), `scale` magnifies the
+ * picture around that point (the app's window by as much: OBJECT-MODEL §0.14).
+ */
 export interface View {
   scale: number
   cx: number
   cy: number
 }
 
+/**
+ * Where the camera puts the picture: the window's box at rest (`box`), and `out`, from the picture
+ * at rest (the output at scale 1: background over the whole frame, the window in its box) to the
+ * output; `fromApp` the same from a point of the app.
+ */
+export function stageTransform(
+  style: Style,
+  frame: { width: number; height: number },
+  view: View,
+): {
+  box: { x: number; y: number; w: number; h: number }
+  scale: number
+  out: (x: number, y: number) => { x: number; y: number }
+  fromApp: (x: number, y: number) => { x: number; y: number }
+} {
+  const box = contentBox(style, frame)
+  const px = box.x + view.cx * box.w
+  const py = box.y + view.cy * box.h
+  const s = view.scale
+  const out = (x: number, y: number) => ({
+    x: (x - px) * s + style.width / 2,
+    y: (y - py) * s + style.height / 2,
+  })
+  return { box, scale: s, out, fromApp: (x, y) => out(box.x + x * box.w, box.y + y * box.h) }
+}
+
 export interface Scene {
   /** Source time (ms) of the take frame to show. */
   sourceT: number
   view: View
+  /** The take's frame size: the window's box is laid out from it (the camera's own, never a decoded frame's rounding). */
+  frame: { width: number; height: number }
   /** Regions to blur, normalized to the source frame. */
   blurs: NRect[]
   /** Normalized to the source frame; undefined when hidden. */
@@ -101,6 +133,8 @@ export interface Scene {
 }
 
 export interface Prepared {
+  /** The take's frame size (the app's window, at rest, in its box). */
+  frame: { width: number; height: number }
   timeline: Timeline
   map: TimeMap
   style: Style
@@ -154,6 +188,7 @@ export function prepare(
     style: s,
     composition,
     regionIndex: indexRegions(timeline.regions),
+    frame: take.meta.frameSize,
     duration: map.outputDuration,
   }
   const moves = cameraMoves(base)
@@ -239,6 +274,7 @@ export function sceneAt(p: Prepared, tOut: number): Scene {
   return {
     sourceT,
     view: viewAt(p, tOut, sourceT),
+    frame: p.frame,
     blurs,
     ...(cursor !== undefined && { cursor }),
     ripples,
@@ -343,7 +379,10 @@ function targetOf(
     c = { x: focus.rect.x + focus.rect.w / 2, y: focus.rect.y + focus.rect.h / 2 }
   else if (focus.mode === "point") c = focus.p
   else c = followPoint(p.timeline, s)
-  return [Math.log(scale), c.x, c.y]
+  // Aimed where the camera can go (kept inside the picture at that zoom): the spring never runs
+  // on toward a view the clamp won't show (a stall, then a jump, near an edge).
+  const kept = keepInPicture(p.style, p.frame, { scale, cx: c.x, cy: c.y })
+  return [Math.log(scale), kept.cx, kept.cy]
 }
 
 /** Average cursor position over the last FOLLOW_WINDOW_MS: smooth, and deterministic. */
@@ -423,11 +462,28 @@ function viewAt(p: Prepared, tOut: number, sourceT: number): View {
   for (const m of p.moves) if (m.t <= tOut) move = m
   const x = move === undefined ? targetOf(p, undefined, sourceT) : springState(p, move, tOut).x
   const scale = Math.min(p.style.maxScale, Math.max(1, Math.exp(x[0])))
-  // Keep the view inside the frame (no empty border when zoomed near an edge).
-  const half = 0.5 / scale
-  return {
-    scale,
-    cx: Math.min(1 - half, Math.max(half, x[1])),
-    cy: Math.min(1 - half, Math.max(half, x[2])),
+  return keepInPicture(p.style, p.frame, { scale, cx: x[1], cy: x[2] })
+}
+
+/**
+ * A view kept inside the picture: the background (no empty border past its edges), or the app
+ * itself without one (bars around an app of another aspect never grow). The camera's every view.
+ */
+export function keepInPicture(
+  style: Style,
+  frame: { width: number; height: number },
+  view: View,
+): View {
+  const { scale } = view
+  const box = contentBox(style, frame)
+  const extent = style.background === "none" ? box : { x: 0, y: 0, w: style.width, h: style.height }
+  const keep = (at: number, from: number, size: number, screen: number) => {
+    const half = screen / (2 * scale)
+    return size <= 2 * half
+      ? from + size / 2
+      : Math.min(from + size - half, Math.max(from + half, at))
   }
+  const px = keep(box.x + view.cx * box.w, extent.x, extent.w, style.width)
+  const py = keep(box.y + view.cy * box.h, extent.y, extent.h, style.height)
+  return { scale, cx: (px - box.x) / box.w, cy: (py - box.y) / box.h }
 }
