@@ -43,6 +43,12 @@ body {
   overflow: clip;
 }
 
+/* The hidden attribute always hides (a class's own display never overrides it: the preview's
+   player showed over the live app). */
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
