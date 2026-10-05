@@ -4,29 +4,38 @@ import { contentBox, type Scene, type Style } from "./scene.ts"
 // the camera → blurs → cursor → ripples → captions. No state: the same scene draws the same pixels.
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
+
 type Frame = CanvasImageSource & { width: number; height: number }
+
+/** Behind the window until the background's image is drawn: the former default gradient. */
+const PLACEHOLDER = ["#1e1b4b", "#0f172a"] as const
 
 export function drawScene(ctx: Ctx, frame: Frame, scene: Scene, style: Style): void {
   const src = { width: frame.width, height: frame.height }
   const box = contentBox(style, src)
   const { scale, cx, cy } = scene.view
 
-  // Background.
-  const bg = ctx.createLinearGradient(0, 0, style.width, style.height)
-  bg.addColorStop(0, style.background[0])
-  bg.addColorStop(1, style.background[1])
-  ctx.fillStyle = bg
-  ctx.fillRect(0, 0, style.width, style.height)
-
-  // Window shadow, then the frame clipped to the rounded window.
-  ctx.save()
-  ctx.shadowColor = "rgba(0, 0, 0, 0.45)"
-  ctx.shadowBlur = 48
-  ctx.shadowOffsetY = 16
-  ctx.fillStyle = "#000"
-  roundRect(ctx, box.x, box.y, box.w, box.h, style.radius)
-  ctx.fill()
-  ctx.restore()
+  // Background: none, black around the app (it fills the frame, bars only for another aspect);
+  // an image, a gradient standing in until the image is drawn (OBJECT-MODEL §0.14, next).
+  if (style.background === "none") {
+    ctx.fillStyle = "#000"
+    ctx.fillRect(0, 0, style.width, style.height)
+  } else {
+    const bg = ctx.createLinearGradient(0, 0, style.width, style.height)
+    bg.addColorStop(0, PLACEHOLDER[0])
+    bg.addColorStop(1, PLACEHOLDER[1])
+    ctx.fillStyle = bg
+    ctx.fillRect(0, 0, style.width, style.height)
+    // The window's shadow (only with a background: no window look without one).
+    ctx.save()
+    ctx.shadowColor = "rgba(0, 0, 0, 0.45)"
+    ctx.shadowBlur = 48
+    ctx.shadowOffsetY = 16
+    ctx.fillStyle = "#000"
+    roundRect(ctx, box.x, box.y, box.w, box.h, style.radius)
+    ctx.fill()
+    ctx.restore()
+  }
 
   // Source rect under the camera, and source-normalized → output mapping.
   const sw = src.width / scale

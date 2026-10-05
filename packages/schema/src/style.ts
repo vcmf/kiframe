@@ -54,11 +54,28 @@ const CaptionStyle = z.strictObject({
   position: z.enum(["bottom", "top"]),
 })
 
+/** Kiframe's own background images (packages/compositor/backgrounds/backgrounds.json). */
+export const BUILTIN_BACKGROUNDS = ["mountain-lake", "forest-lake", "autumn-road"] as const
+export const BuiltinBackground = z.enum(BUILTIN_BACKGROUNDS)
+export type BuiltinBackground = z.infer<typeof BuiltinBackground>
+
+/**
+ * What's behind the app (OBJECT-MODEL §0.14): one of Kiframe's images, or none (the app fills the
+ * frame: no padding, no window look). Images only for now (decided by the user, 2026-10-05).
+ */
+export const Background = z.union([
+  z.literal("none"),
+  z.strictObject({ builtin: BuiltinBackground }),
+])
+export type Background = z.infer<typeof Background>
+
 /** A complete style (the product defaults, or the result of resolution). */
 export const Style = z.strictObject({
-  /** Background gradient behind the window (from, to). */
-  background: z.tuple([Color, Color]),
-  /** Space around the window, as a fraction of the output's shorter side (≤ 0.3: content keeps ≥ 40%). */
+  background: Background,
+  /**
+   * Space around the window where the background shows, as a fraction of the output's shorter
+   * side (≤ 0.3: content keeps ≥ 40%). None without a background (`framePadding`).
+   */
   padding: z.number().min(0).max(0.3),
   /** Window corner radius, in output pixels. */
   radius: z.number().int().min(0).max(200),
@@ -69,9 +86,17 @@ export const Style = z.strictObject({
 })
 export type Style = z.infer<typeof Style>
 
+/** The background's format before 2026-10-05: two colors (read as unset, nothing else is). */
+const FormerGradient = z.tuple([Color, Color])
+
 /** A partial style, one level deep: an override sets only what it names. */
 export const StyleOverride = z.strictObject({
-  background: Style.shape.background.optional(),
+  // A gradient (the format before 2026-10-05, never set by the user: no UI wrote it) reads as
+  // unset, the default then: a file of before still opens.
+  background: z.preprocess(
+    (v) => (FormerGradient.safeParse(v).success ? undefined : v),
+    Style.shape.background.optional(),
+  ),
   padding: Style.shape.padding.optional(),
   radius: Style.shape.radius.optional(),
   cursor: CursorStyle.partial().optional(),
@@ -81,7 +106,7 @@ export const StyleOverride = z.strictObject({
 export type StyleOverride = z.infer<typeof StyleOverride>
 
 export const DEFAULT_STYLE: Style = {
-  background: ["#1e1b4b", "#0f172a"],
+  background: { builtin: "mountain-lake" },
   padding: 0.06,
   radius: 18,
   cursor: { size: 30 },
@@ -94,14 +119,14 @@ export function applyStyle(base: Style, ...overrides: (StyleOverride | undefined
   // Fresh objects all the way down: a caller editing its result never changes a lower layer.
   let style: Style = {
     ...base,
-    background: [...base.background],
+    background: copyBackground(base.background),
     cursor: { ...base.cursor },
     captions: { ...base.captions },
   }
   for (const o of overrides) {
     if (o === undefined) continue
     style = {
-      background: o.background !== undefined ? [...o.background] : style.background,
+      background: o.background !== undefined ? copyBackground(o.background) : style.background,
       padding: o.padding ?? style.padding,
       radius: o.radius ?? style.radius,
       cursor: { size: o.cursor?.size ?? style.cursor.size },
@@ -113,6 +138,10 @@ export function applyStyle(base: Style, ...overrides: (StyleOverride | undefined
     }
   }
   return style
+}
+
+function copyBackground(b: Background): Background {
+  return b === "none" ? "none" : { ...b }
 }
 
 /** Brand kit (org level): used by `card` scenes and, later, the guide's look. */
