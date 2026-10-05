@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, describe, expect, it } from "vitest"
 import type { ChatItem, ProjectView } from "../../shared/ipc.ts"
 import { App } from "../src/app.tsx"
-import { newNeedUser, turns } from "../src/components/chat-column.tsx"
+import { newNeedUser, thoughtFor, turns } from "../src/components/chat-column.tsx"
 import { useChat } from "../src/chat-store.ts"
 import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
@@ -95,6 +95,39 @@ describe("the chat", () => {
       push("chat:item", { kind: "assistant", id: "a1", text: "It isn't there, I'll look again." }),
     )
     expect(within(log).queryByText("It isn't there.")).toBeNull()
+  })
+
+  it("shows the agent thinking among its steps (dots), then for how long it thought", async () => {
+    const { push } = open()
+    await screen.findByLabelText("Message the agent")
+    act(() => {
+      push("chat:item", { kind: "user", id: "u1", text: "go" })
+      push("chat:item", { kind: "thinking", id: "th1" })
+    })
+    const log = screen.getByRole("log", { name: "Messages" })
+    // Thinking alone: its row, no head repeating it.
+    expect(log.querySelector(".thinking-row")?.textContent).toBe("Thinking")
+    expect(log.querySelector(".thinking-row .thinking-dots")).not.toBeNull()
+    expect(within(log).queryByRole("button")).toBeNull()
+    act(() => {
+      push("chat:item", { kind: "thinking", id: "th1", ms: 95_000 })
+      push("chat:item", { kind: "tool", id: "t1", name: "snapshot", detail: "", status: "running" })
+    })
+    // One group: the thought, then the step.
+    expect(log.querySelectorAll(".tool-group")).toHaveLength(1)
+    expect(within(log).getByRole("button", { name: "1 step · running" })).toBeTruthy()
+    expect(within(log).getByText("Thought for 1m 35s")).toBeTruthy()
+    expect(log.querySelector(".thinking-dots")).toBeNull()
+  })
+
+  it("says how long a thought took", () => {
+    expect([400, 8_000, 59_600, 95_000, 600_000].map(thoughtFor)).toEqual([
+      "1s",
+      "8s",
+      "1m",
+      "1m 35s",
+      "10m",
+    ])
   })
 
   it("turns the composer into a status bar with Stop while the agent works", async () => {
@@ -236,7 +269,7 @@ describe("the chat's turns", () => {
     const shape = turns(items).map((t) =>
       t.kind === "user"
         ? t.item.id
-        : t.blocks.map((b) => (b.kind === "tools" ? b.tools.length : b.item.id)),
+        : t.blocks.map((b) => (b.kind === "steps" ? b.steps.length : b.item.id)),
     )
     // An error alone is a turn too (its mark shown).
     expect(shape).toEqual(["u1", ["a1", 2, "e1"], "u2", ["e2"]])

@@ -70,6 +70,17 @@ export class ChatLog {
   readonly #calls = new Map<string, string>()
   /** The assistant item text goes into, until a tool or the run's end starts a new one. */
   #assistant: string | undefined
+  /**
+   * The reply's thinking: its item, the time it took in stretches already ended, and when the one
+   * under way began. Timed from its first piece (the model's wait before it isn't counted).
+   */
+  #thinking: { id: string; ms: number; from: number | undefined } | undefined
+  readonly #now: () => number
+
+  /** `now`: a monotonic clock (a wall clock set back mid-thought would say minus a minute). */
+  constructor(now: () => number = () => performance.now()) {
+    this.#now = now
+  }
 
   #id(prefix: string): string {
     this.#next += 1
@@ -119,6 +130,31 @@ export class ChatLog {
 
   /** Folds one agent event: the items it changed. */
   event(event: AgentEvent): ChatItem[] {
+    if (event.type === "reasoning") {
+      const t = this.#thinking
+      if (t?.from !== undefined) return []
+      // A reply that thinks again after some text: the same row, thinking again.
+      this.#thinking = { id: t?.id ?? this.#id("thinking"), ms: t?.ms ?? 0, from: this.#now() }
+      return [this.#put({ kind: "thinking", id: this.#thinking.id })]
+    }
+    // An empty piece of text says nothing: the thinking goes on.
+    if (event.type === "assistant_text" && event.text === "") return []
+    const ended = this.#pauseThinking()
+    // A tool call or the run's end ends the reply: its next thinking is a row of its own.
+    if (event.type !== "assistant_text") this.#thinking = undefined
+    return [...ended, ...this.#fold(event)]
+  }
+
+  /** The thinking under way stops (text came, or the reply ended): the row says how long. */
+  #pauseThinking(): ChatItem[] {
+    const t = this.#thinking
+    if (t?.from === undefined) return []
+    t.ms += this.#now() - t.from
+    t.from = undefined
+    return [this.#put({ kind: "thinking", id: t.id, ms: t.ms })]
+  }
+
+  #fold(event: Exclude<AgentEvent, { type: "reasoning" }>): ChatItem[] {
     switch (event.type) {
       case "assistant_text": {
         // The turn's whole text so far (it replaces what was shown).
@@ -126,7 +162,6 @@ export class ChatLog {
         this.#assistant ??= this.#id("assistant")
         return [this.#put({ kind: "assistant", id: this.#assistant, text: event.text })]
       }
-      case "reasoning":
       case "tool_pending":
         return []
       case "tool_start": {

@@ -929,6 +929,42 @@ ul.strip-cards {
   color: var(--dim);
 }
 
+/* "Thinking" with its dots appearing one by one; still for those who turn motion off. */
+.thinking-dots::after {
+  content: "…";
+  display: inline-block;
+  width: 1.5ch;
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .thinking-dots::after {
+    content: "";
+    animation: thinking-dots 1.2s steps(1, end) infinite;
+  }
+}
+
+@keyframes thinking-dots {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+
+.thinking-row .tool-name {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

@@ -114,6 +114,8 @@ export type ChatItem =
       /** Its result's first line, once it has one. */
       result?: string
     }
+  /** A stretch of the model's thinking (never its words): under way, then how long it took. */
+  | { kind: "thinking"; id: string; ms?: number }
   | {
       kind: "request"
       id: string
