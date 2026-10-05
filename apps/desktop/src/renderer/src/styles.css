@@ -459,7 +459,8 @@ button:disabled {
   flex-shrink: 0;
   border-top: 1px solid var(--line);
   background: var(--bg);
-  padding: 14px 24px 18px;
+  /* 16px top and bottom: its bottom edge in line with the composer's. */
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1028,15 +1029,12 @@ ul.strip-cards {
   color: var(--danger);
 }
 
-.working-bar {
+/* The running state in the composer's box: its head as tall as the text field (two lines). */
+.working-head {
+  min-height: 42px;
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 56px;
-  padding: 0 8px 0 14px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: var(--panel);
 }
 
 .working-text {
@@ -1061,6 +1059,7 @@ ul.strip-cards {
 }
 
 .btn-stop {
+  height: 34px;
   border: 0;
   background: var(--text);
   color: var(--bg);

@@ -150,6 +150,15 @@ export function ChatColumn() {
 
 /** One agent turn: its mark above, then all it did at the column's full width. */
 function AgentTurn({ blocks: parts }: { blocks: Block[] }) {
+  // A run that ended quietly (done, nothing said): no turn, no lone mark.
+  const silent = parts.every(
+    (b) =>
+      b.kind === "item" &&
+      b.item.kind === "end" &&
+      b.item.outcome === "done" &&
+      b.item.message === undefined,
+  )
+  if (silent) return null
   return (
     <div className="agent-turn">
       <span className="agent-mark" aria-hidden="true">
@@ -401,67 +410,72 @@ function Composer() {
       void submit()
     }
   }
-  if (running) {
-    const waiting = items.some((i) => i.kind === "request" && i.state === "open")
-    const current = [...items].reverse().find((i) => i.kind === "tool" && i.status === "running")
-    return (
-      <div className="composer-wrap">
-        <div className="working-bar" role="status">
-          <span className="spin accent">
-            <CircleNotch size={18} />
-          </span>
-          <div className="working-text">
-            <span className="working-title">The agent is working</span>
-            <span className="working-sub">
-              {waiting
-                ? "waiting for your answer"
-                : current?.kind === "tool"
-                  ? `${current.name} ${current.detail}`
-                  : "thinking"}
-            </span>
-          </div>
-          <button type="button" className="btn btn-stop" onClick={stop}>
-            <Stop size={14} weight="fill" />
-            Stop
-          </button>
-        </div>
-      </div>
-    )
-  }
+  const waiting = items.some((i) => i.kind === "request" && i.state === "open")
+  const current = [...items].reverse().find((i) => i.kind === "tool" && i.status === "running")
+  // One box for both states, as tall (nothing in the window moves when a run starts or ends):
+  // running, the status where the text goes and Stop where Send is.
   return (
     <div className="composer-wrap">
       <form
-        className="composer"
+        className={running ? "composer working" : "composer"}
         onSubmit={(e) => {
           e.preventDefault()
-          void submit()
+          if (!running) void submit()
         }}
       >
-        <label htmlFor="ask" className="sr-only">
-          Message the agent
-        </label>
-        <textarea
-          id="ask"
-          rows={2}
-          maxLength={20_000}
-          placeholder="Describe a scene, or ask for changes…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKey}
-        />
+        {running ? (
+          <div className="working-head">
+            <span className="spin accent">
+              <CircleNotch size={18} />
+            </span>
+            {/* Only the status is announced (never the chip and Stop with each step). */}
+            <div className="working-text" role="status">
+              <span className="working-title">The agent is working</span>
+              <span className="working-sub">
+                {waiting
+                  ? "waiting for your answer"
+                  : current?.kind === "tool"
+                    ? `${current.name} ${current.detail}`
+                    : "thinking"}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <label htmlFor="ask" className="sr-only">
+              Message the agent
+            </label>
+            <textarea
+              id="ask"
+              rows={2}
+              maxLength={20_000}
+              placeholder="Describe a scene, or ask for changes…"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={onKey}
+            />
+          </>
+        )}
         <div className="composer-row">
           {model !== "" && <span className="chip mono">{model}</span>}
           <div className="spacer" />
-          <button
-            type="submit"
-            className="send-btn"
-            aria-label="Send"
-            disabled={text.trim() === "" || sending}
-          >
-            <PaperPlaneRight size={17} weight="fill" />
-          </button>
+          {running ? (
+            <button type="button" className="btn btn-stop" onClick={stop}>
+              <Stop size={14} weight="fill" />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="send-btn"
+              aria-label="Send"
+              disabled={text.trim() === "" || sending}
+            >
+              <PaperPlaneRight size={17} weight="fill" />
+            </button>
+          )}
         </div>
-        {refused !== null && (
+        {!running && refused !== null && (
           <div className="composer-refused" role="alert">
             {refused}
           </div>

@@ -213,9 +213,14 @@ describe("the desktop app", () => {
       .poll(() => page.getByRole("button", { name: /Fixture app/ }).isVisible())
       .toBe(true)
     const box = page.getByLabel("Message the agent")
+    const idle = (await page.locator(".composer").boundingBox())?.height ?? -1
     await box.fill("Open the projects page")
     await box.press("Enter")
     const card = page.getByLabel("Approve a risky step?")
+    // Running, the composer's box keeps its height (nothing in the window moves).
+    await expect.poll(() => page.locator(".composer.working").count()).toBe(1)
+    const working = (await page.locator(".composer.working").boundingBox())?.height ?? -1
+    expect(Math.abs(working - idle)).toBeLessThanOrEqual(1)
     // Taken: the composer is the status bar, and nothing says it was refused.
     await expect.poll(() => page.getByRole("button", { name: "Stop" }).isVisible()).toBe(true)
     expect(await page.locator(".composer-refused").count()).toBe(0)
