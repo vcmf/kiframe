@@ -1,4 +1,4 @@
-import { contentBox, type Scene, type Style } from "./scene.ts"
+import { type Scene, stageTransform, type Style } from "./scene.ts"
 
 // Draws a Scene with Canvas 2D (docs/OBJECT-MODEL.md §5): background → window → take frame through
 // the camera → blurs → cursor → ripples → captions. No state: the same scene draws the same pixels.
@@ -11,48 +11,59 @@ type Frame = CanvasImageSource & { width: number; height: number }
 const PLACEHOLDER = ["#1e1b4b", "#0f172a"] as const
 
 export function drawScene(ctx: Ctx, frame: Frame, scene: Scene, style: Style): void {
-  const src = { width: frame.width, height: frame.height }
-  const box = contentBox(style, src)
-  const { scale, cx, cy } = scene.view
+  // Laid out from the take's frame size (the camera's box); the pixels from the decoded frame.
+  const src = scene.frame
+  // The camera over the whole picture (OBJECT-MODEL §0.14): the background with the app's window
+  // on it, magnified by `scale` around the app point at the center.
+  const t = stageTransform(style, src, scene.view)
+  const { box, scale } = t
+  const win = t.out(box.x, box.y)
+  const ww = box.w * scale
+  const wh = box.h * scale
+  const radius = style.radius * scale
 
   // Background: none, black around the app (it fills the frame, bars only for another aspect);
-  // an image, a gradient standing in until the image is drawn (OBJECT-MODEL §0.14, next).
-  if (style.background === "none") {
+  // an image, a gradient standing in until the image is drawn, moving with the picture.
+  // The whole frame always painted (a canvas keeps the last frame's pixels where nothing is drawn),
+  // the background and shadow skipped when the window covers it all (zoomed in: neither shows).
+  // Covered with its rounded corners too (a corner's arc on screen would leave a notch unpainted).
+  const inset = radius * (1 - Math.SQRT1_2)
+  const covered =
+    win.x + inset <= 0 &&
+    win.y + inset <= 0 &&
+    win.x + ww - inset >= style.width &&
+    win.y + wh - inset >= style.height
+  if (style.background === "none" || covered) {
     ctx.fillStyle = "#000"
     ctx.fillRect(0, 0, style.width, style.height)
   } else {
-    const bg = ctx.createLinearGradient(0, 0, style.width, style.height)
+    const a = t.out(0, 0)
+    const b = t.out(style.width, style.height)
+    const bg = ctx.createLinearGradient(a.x, a.y, b.x, b.y)
     bg.addColorStop(0, PLACEHOLDER[0])
     bg.addColorStop(1, PLACEHOLDER[1])
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, style.width, style.height)
-    // The window's shadow (only with a background: no window look without one).
+    // The window's shadow, as large as the window is (canvas shadows ignore any transform).
     ctx.save()
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)"
-    ctx.shadowBlur = 48
-    ctx.shadowOffsetY = 16
+    ctx.shadowBlur = 48 * scale
+    ctx.shadowOffsetY = 16 * scale
     ctx.fillStyle = "#000"
-    roundRect(ctx, box.x, box.y, box.w, box.h, style.radius)
+    roundRect(ctx, win.x, win.y, ww, wh, radius)
     ctx.fill()
     ctx.restore()
   }
 
-  // Source rect under the camera, and source-normalized → output mapping.
-  const sw = src.width / scale
-  const sh = src.height / scale
-  const sx = (cx - 0.5 / scale) * src.width
-  const sy = (cy - 0.5 / scale) * src.height
-  const toOut = (x: number, y: number) => ({
-    x: box.x + ((x * src.width - sx) / sw) * box.w,
-    y: box.y + ((y * src.height - sy) / sh) * box.h,
-  })
+  // A point of the app on the output.
+  const toOut = t.fromApp
 
   ctx.save()
-  roundRect(ctx, box.x, box.y, box.w, box.h, style.radius)
+  roundRect(ctx, win.x, win.y, ww, wh, radius)
   ctx.clip()
   ctx.imageSmoothingEnabled = true
   ctx.imageSmoothingQuality = "high"
-  ctx.drawImage(frame, sx, sy, sw, sh, box.x, box.y, box.w, box.h)
+  ctx.drawImage(frame, 0, 0, frame.width, frame.height, win.x, win.y, ww, wh)
 
   // Blurs: the same pixels, blurred, inside each rect (a strong blur: text must be unreadable).
   for (const r of scene.blurs) {
@@ -63,7 +74,7 @@ export function drawScene(ctx: Ctx, frame: Frame, scene: Scene, style: Style): v
     ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y)
     ctx.clip()
     ctx.filter = `blur(${Math.max(8, (b.y - a.y) / 3)}px)`
-    ctx.drawImage(frame, sx, sy, sw, sh, box.x, box.y, box.w, box.h)
+    ctx.drawImage(frame, 0, 0, frame.width, frame.height, win.x, win.y, ww, wh)
     ctx.filter = "none"
     // Blur alone can leave a long secret's shape guessable: a light veil on top.
     ctx.fillStyle = "rgba(128, 128, 128, 0.35)"
