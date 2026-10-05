@@ -312,7 +312,7 @@ One small set of tools over the project's **files the agent may see**, each part
 - `background`: **an image**, or none. Images only for now (no color or gradient).
 - `padding`: the space around the app where the background shows; **0 when there's no background** (the app fills the frame).
 - **A project default, a scene override.** A new project's default is **an image** (one of Kiframe's, with some padding): polished out of the box. HTML pages (slides, cut-scenes: §0.11) default to none (a slide fills the frame).
-- **Images** from the user's attachments (`inputs/`, §0.12) or a small set shipped with Kiframe (as page templates are: free to ship, see BACKLOG "Backgrounds").
+- **Images** from the user's attachments (`inputs/`, §0.12) or **Kiframe's own**, shipped in `packages/compositor/backgrounds/` (`backgrounds.json`): autumn road, forest lake, mountain lake (the default), chosen by the user (BACKLOG "Backgrounds").
 - **With a background, the app keeps its window look**: rounded corners and a drop shadow, as today. Without one, no window look at all.
 
 **The camera moves over the whole picture**: the stage is the background with the app's window on it, and the camera zooms and pans over that stage. Zooming in on a target (the cursor, a clicked element: aimed as today, from the take's events), the window grows with its corners and shadow and the background slides out past the frame's edges; zoomed out, the app is seen on its background again (as Screen Studio and similar tools do). The view never goes past the background's edges (no empty border). Without a background it's a plain crop of the app.
