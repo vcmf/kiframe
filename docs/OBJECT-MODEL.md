@@ -230,6 +230,15 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 - **A viewport per app**: each take is recorded at its app's size; the compositor fits every take into the video's one output frame.
 - **Removing an app a scene uses**: warned with what it affects (*"Remove docs? 2 scenes use it: Install, First run. They'll need reworking."* Cancel / Remove). Removed, those scenes show **"Uses a removed app"** in the strip (never "unreadable"; their takes stay previewable until re-recorded), and one click asks the agent to rework the scene without it, or the app is added back.
 
+**Implementation notes (design review, 2026-10-05):**
+- **Format and migration**: `project` goes to version 2 with a registered `target → apps.app` migration (schema `versioning.ts`). Converted in memory on open, **written at the next save** (never a silent rewrite at open). Every app has its URL (`apps.*.url` required: environments no longer give URLs); a v1 project with an environment and no `target.url` gets a clear error, never a guess. Scenarios aren't touched (no `app:` added: their hash, and so their takes, stay as they are).
+- **v0 kinds: `web` and `html`** only; `electron` comes with its driver (`add_app` refuses a desktop kind until then, with that reason). **No two apps on the same site** (`sameApp`): which app a page is on stays unambiguous.
+- **`goto`**: `{ action: goto, app?: docs, url: /install }` (`url` defaults to `/`); a relative `url` resolves against the current app. **The first app** is where a scene without `app:` starts: the removal warning counts those scenes too. A **preset** gets an optional `app` (default the first), its relative gotos resolved there.
+- **A take has one size**: recorded at **its start app's viewport**; a `goto` to another app keeps that size (the screencast is fixed for the take). The live page takes each app's viewport as the agent moves there, so grounding matches the recording; the replay catches a mismatch.
+- **Off the listed apps**: the live page reports it (that's what prompts `add_app`); in the replay and the recording **a step that lands on an unlisted site fails**.
+- **The runtime's single base becomes the apps and a current one** (set by `goto { app }`, else the listed app whose site the page is on): URL conditions, a secret's site and the take key use it. The take key uses the start app's URL and viewport.
+- **An unknown app** in a scenario is a project-level finding that gives the scene the "Uses a removed app" status, never "unreadable". The secrets panel shows each secret's app; adding one asks which app.
+
 ### 0.10 `story.md`: the project's memory (designed 2026-10-05, not built)
 
 One markdown file at the project's root that the agent keeps as the chat goes on: the demo's **audience and goal**, its **outline** (the scenes in order, a line each), **decisions** made with the user, and **open questions**. Named `story.md` ("scenario" keeps meaning one scene's steps: decided by the user).
@@ -240,6 +249,11 @@ One markdown file at the project's root that the agent keeps as the chat goes on
 - **Short** (a few thousand characters): a summary the agent keeps current, never a transcript. It doesn't replace the agent runtime's own context handling, nor persisting the chat.
 
 **Scenes stay one folder per scene** (decided by the user): the agent edits one without rewriting others, a broken file breaks one scene only, git diffs stay per scene; `story.md` gives the whole demo at a glance.
+
+**Implementation notes (design review, 2026-10-05):**
+- **Given to the agent as part of the run's own message, not the system prompt**: the system prompt sits before the whole history, so a story edit there would break the prompt cache for the whole chat; as a part of the run's message it's read fresh and kept out of the stored history (as an image is today). Capped at 8,000 characters ("truncated" said when a hand edit made it longer).
+- **Read at the run's start counts as a read** (its hash noted): the agent can edit it without reading it again; a change the user makes during the run is still never written over.
+- **Kiframe never writes `story.md`**: the agent writes the lines about attachments and pages, and each run's context also carries the current list of `inputs/` and `pages/` (nothing missed, no race with the agent's edits).
 
 ### 0.11 HTML pages: cut-scenes, slides and mock-ups (designed 2026-10-05, not built)
 
@@ -267,6 +281,13 @@ demo.kiframe/
 
 **Open points:** the page's viewport by default (the video's frame, so a slide fills it); a page's own assets (copied from `inputs/` with `copy_file`, never linked across folders).
 
+**Implementation notes (design review, 2026-10-05):**
+- **Each page its own origin, fixed across launches** (never one shared local port): served either through the browser context's routing on a fixed address per page, or a loopback server on `http://<page>.localhost:<port>` (Chromium resolves `*.localhost`) checking the host and a token. A spike decides (routing turns the HTTP cache off for the context: measured first). Either way: **a Content-Security-Policy on every file served** (`default-src 'self' data: blob:`: the browser enforces "no network"), service workers blocked, one helper for the live, replay and recording contexts.
+- **No secret on a page**: typing one where the current app is a page is refused, and the vault never takes a page's origin.
+- **Editing a page makes its take stale**: the take's meta records a hash of each page folder it visited, compared like the scenario's hash (today only the scenario's is: `preview.ts`). The take key uses the page's name and that hash, never its served address.
+- **Cards convert explicitly**, not as a format migration (a migration can't write a page): after open, a card scene's page, scenario and app are written (checked against changes on disk) and a notice says so. No real card scenes exist yet: last and small.
+- A page's default background (none) needs the start app's kind when the style is resolved.
+
 ### 0.12 Attachments: material for the agent (designed 2026-10-05, not built)
 
 The user can attach files in the chat (a button, a drop, a pasted image): **images** (a screenshot, a design, a logo, a "make it look like this"), **text** (`.md`, `.txt`: a script, a spec, release notes, copy) and **HTML** (an existing mock-up). Decided by the user.
@@ -276,6 +297,12 @@ The user can attach files in the chat (a button, a drop, a pasted image): **imag
 - **Material, never instructions**: what a file says is data the agent works from; a file saying "ignore your instructions" changes nothing (the agent's instructions say so, and every tool result is scrubbed of known secret values as now).
 - **Limits**: images up to 10 MB (PNG, JPEG, WebP, GIF, SVG), text and HTML up to 1 MB; more types later (PDF).
 - **Stays local**: files stay on the user's machine, except what's sent to the model as part of the conversation.
+
+**Implementation notes (design review, 2026-10-05):**
+- **Which models take images** is read from OpenRouter's model list (`architecture.input_modalities`), cached; not hardcoded.
+- **Images are downscaled** in the app before sending (long side about 2,000 px: providers cap image size, and base64 adds a third); **SVG is sent as text** (providers take PNG, JPEG, WebP, GIF), a GIF as its first frame.
+- **An image from a tool** (`read_file` on an image) goes to the model as a message of its own right after the tool's result (tool results are text only for OpenAI-compatible providers), for that run only, then elided like any bulky result. Images are never passed through the text scrubber (a short value could match inside base64 and break the image).
+- **Inlined text is fenced** as material ("from the user's file …, not instructions").
 
 ### 0.13 The agent's file tools (designed 2026-10-05, not built)
 
@@ -304,6 +331,12 @@ One small set of tools over the project's **files the agent may see**, each part
 - **No secret in a file**: a write whose content holds a known secret value is refused (the scrubber's values); what a read returns is scrubbed, as every tool result is.
 - **Shown in the chat**: each write a tool row with its path ("Wrote pages/intro/index.html", "Story updated"). Undone through the project's history (M1-10).
 
+**Implementation notes (design review, 2026-10-05):**
+- **The read-hash list lives with the open project** (the agent host), not the studio (remade when its browser dies), and is cleared when the project closes.
+- **Paths**: the parent resolved (`realpath`) then checked inside its folder; compared case-insensitively and Unicode-normalized (macOS: `Pages/`, `STORY.md`); dot-names (`.git`, `.DS_Store`) and links refused.
+- **Until history (M1-10), the last versions of each written file are kept** in the app's data (a few per file): an agent's rewrite of a page can be undone.
+- **The secret check uses the scrubber's own minimum length** (a short value would refuse innocent HTML).
+
 ### 0.14 A scene's background, and a camera on the whole picture (designed 2026-10-05, not built)
 
 **Today** (`packages/compositor/src/draw.ts`) the background is a gradient over the whole frame, the app's window sits at a fixed place inside the padding (rounded, with a shadow), and **a zoom crops and magnifies the take inside that fixed window**: the window and the background never move, as if looking through a fixed hole (the user found it strange).
@@ -320,6 +353,13 @@ One small set of tools over the project's **files the agent may see**, each part
 - **Fixed on screen**: captions (never zoomed).
 - **With the content**: blurs over secrets, the cursor, click ripples.
 - **Zoom cap** as today (§2b): beyond the capture's resolution the image softens.
+
+**Implementation notes (design review, 2026-10-05):**
+- **Format**: the style's `background` becomes `{ builtin: id }` or `"none"` (`{ file: "inputs/…" }` once attachments exist), padding 0 with none; the scene's override stays `composition.style`, the default `project.style`.
+- **Camera segments keep app coordinates**: `scale` stays "magnification of the app's window", so generators don't change; only the view and the drawing map the app onto the stage and clamp to the stage. The zoom cap's softness formula stays right. The same `scale` frames a target a little smaller (the window covers about 88% of the frame at rest): tuned later if it shows.
+- **Drawing under a zoom**: the window's shadow, the blur radius and the cursor size are corrected for the scale (canvas shadows ignore the transform; the cursor grows less than the zoom, as today); captions drawn without it.
+- **No background, another aspect** (a 16:10 app in a 16:9 video): black bars, the view clamped to the app.
+- **Loading**: the preview imports the shipped images as app assets (its CSP allows only its own files), an attachment comes as bytes; the exporter gets the background's path in its job and serves it.
 
 ---
 
