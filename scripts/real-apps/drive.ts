@@ -4,6 +4,7 @@
 // questions answered with a fixed reply). Writes a report: the chat, the outcome, time and cost.
 //
 // Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20] [--brief "…"]
+//    or: node scripts/real-apps/drive.ts --url https://… --brief "…" [--minutes 20]
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
@@ -62,13 +63,32 @@ const { values } = parseArgs({
     minutes: { type: "string", default: "20" },
     // Another request to send than the app's own (a user's, to reproduce what they saw).
     brief: { type: "string" },
+    // Any other app: its address (with --brief), named after its host.
+    url: { type: "string" },
   },
 })
-const run = APPS[values.app ?? ""]
-if (run === undefined) {
-  console.error(`usage: --app ${Object.keys(APPS).join("|")} [--minutes 20]`)
+function usage(why: string): never {
+  console.error(
+    `${why}\nusage: --app ${Object.keys(APPS).join("|")} [--minutes 20] [--brief "…"], or --url <address> --brief "…"`,
+  )
   process.exit(2)
 }
+// Any other app: its address and the request to send, both; never with --app (which one would run).
+let custom: AppRun | undefined
+if (values.url !== undefined) {
+  if (values.app !== undefined) usage("--url and --app: give one")
+  if (values.brief === undefined) usage("--url needs --brief (what to ask the agent)")
+  let address: URL
+  try {
+    address = new URL(values.url)
+  } catch {
+    usage(`--url ${values.url}: not an address (https://…)`)
+  }
+  custom = { name: address.hostname, url: values.url, secrets: [], brief: values.brief }
+}
+const run = custom ?? APPS[values.app ?? ""] ?? usage(`no app "${values.app ?? ""}"`)
+// Names the run's folder: the host without its port (a ':' isn't allowed in a file name everywhere).
+const label = custom !== undefined ? custom.name : (values.app ?? "")
 // The app's environment: this process's own, before the `.env` is read (none of its values reach
 // the app: the key and the secrets go through the app's UI, as a user gives them).
 const inherited = { ...process.env }
@@ -77,9 +97,9 @@ const key = process.env.OPENROUTER_API_KEY
 if (key === undefined || key === "") throw new Error("OPENROUTER_API_KEY isn't set (root .env)")
 
 const root = join(import.meta.dirname, "..", "..")
-const out = join(root, ".kiframe-local", "real-apps", `${values.app}-${Date.now()}`)
+const out = join(root, ".kiframe-local", "real-apps", `${label}-${Date.now()}`)
 mkdirSync(out, { recursive: true })
-const log = (line: string) => console.log(`[${values.app}] ${line}`)
+const log = (line: string) => console.log(`[${label}] ${line}`)
 
 /** The complete takes the app's take store holds (its own reading: leftovers and bad ones skipped). */
 function completeTakes(data: string): number {
@@ -266,7 +286,7 @@ try {
   )
   const usageAfter = await credits()
   const report = {
-    app: values.app,
+    app: label,
     url: run.url,
     minutes: Math.round((Date.now() - started) / 600) / 100,
     costUsd:
