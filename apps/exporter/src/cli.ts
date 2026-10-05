@@ -11,6 +11,8 @@ import { parseArgs } from "node:util"
 import { bundleExportPage } from "@kiframe/compositor/browser/bundle.ts"
 import { buildTimeline, generate } from "@kiframe/generators"
 import {
+  applyStyle,
+  DEFAULT_STYLE,
   parseCompositionJson,
   parseProjectYaml,
   parseScenarioYaml,
@@ -19,6 +21,7 @@ import {
 import { build } from "esbuild"
 import { isEncryptedFile } from "@kiframe/project/take-crypt"
 import { readTakeRecords } from "@kiframe/project/take-records"
+import { backgroundFile } from "./background.ts"
 import type { ExportJob } from "./main.ts"
 
 const { values } = parseArgs({
@@ -85,6 +88,16 @@ if (!existsSync(dirname(out))) {
   process.exit(2)
 }
 
+// The scene's background image, checked now: the composition's style over the product defaults,
+// as the export page lays it (a project file here has no style of its own).
+let background: string | undefined
+try {
+  background = backgroundFile(applyStyle(DEFAULT_STYLE, composition.style).background)
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error))
+  process.exit(2)
+}
+
 // Bundle the Electron main and the export page into a temporary folder.
 const work = mkdtempSync(join(tmpdir(), "kiframe-exporter-"))
 let status: number
@@ -108,6 +121,7 @@ try {
     pageDir: work,
     takeDir,
     out,
+    ...(background !== undefined && { backgroundFile: background }),
     args: { composition, scenario, take, format },
   }
   const jobFile = join(work, "job.json")

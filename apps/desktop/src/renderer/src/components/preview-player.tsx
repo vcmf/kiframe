@@ -4,6 +4,7 @@ import { flatten, Player } from "@kiframe/compositor"
 import { Pause, Play, WarningCircle } from "@phosphor-icons/react"
 import { useEffect, useRef, useState } from "react"
 import { api } from "../api.ts"
+import { loadBackground } from "../backgrounds.ts"
 
 type Loaded =
   | { state: "loading" }
@@ -45,14 +46,22 @@ export function PreviewPlayer(props: {
         }
         const target = canvas.current
         if (target === null) return
+        // The scene's style as it exports (main resolved its layers and its output's size).
+        const style = flatten(preview.style, preview.format)
+        // An image that doesn't load leaves the gradient in its place: the take still plays.
+        const background =
+          style.background === "none"
+            ? undefined
+            : await loadBackground(style.background.builtin).catch(() => undefined)
+        if (gone) return
         player = await Player.load(target, {
           // Read where IPC put it (a buffer of its own): never copied.
           video: preview.video as Uint8Array<ArrayBuffer>,
           composition: preview.composition,
           scenario: preview.scenario,
           take: preview.take,
-          // The scene's style as it exports (main resolved its layers and its output's size).
-          style: flatten(preview.style, preview.format),
+          style,
+          ...(background !== undefined && { background }),
         })
         if (gone) {
           player.dispose()

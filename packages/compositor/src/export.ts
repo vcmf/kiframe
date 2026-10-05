@@ -29,6 +29,8 @@ export interface ExportOptions {
   style?: Partial<Style>
   /** Org + project style (`resolveStyle(org, project)`), below the scene's. Default: product defaults. */
   baseStyle?: SchemaStyle
+  /** The style's background image, loaded (none: a gradient stands in). */
+  background?: CanvasImageSource & { width: number; height: number }
   format: "mp4" | "webm"
   onProgress?: (done: number, total: number) => void
 }
@@ -87,7 +89,7 @@ export async function exportVideo(options: ExportOptions): Promise<ExportResult>
   for await (const wrapped of sink.canvasesAtTimestamps(timestamps)) {
     const scene = scenes[i]
     if (scene === undefined) break
-    if (wrapped !== null) drawScene(ctx, wrapped.canvas, scene, style)
+    if (wrapped !== null) drawScene(ctx, wrapped.canvas, scene, style, options.background)
     await source.add(i / style.fps, 1 / style.fps)
     i++
     options.onProgress?.(i, total)

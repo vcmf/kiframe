@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./browser/bundle.ts": "./browser/bundle.ts",
-    "./browser/export-page.ts": "./browser/export-page.ts"
+    "./browser/export-page.ts": "./browser/export-page.ts",
+    "./backgrounds/*": "./backgrounds/*"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.src.json"

@@ -7,10 +7,35 @@ type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
 
 type Frame = CanvasImageSource & { width: number; height: number }
 
-/** Behind the window until the background's image is drawn: the former default gradient. */
+/** Behind the window when the host passes no image: the former default gradient. */
 const PLACEHOLDER = ["#1e1b4b", "#0f172a"] as const
 
-export function drawScene(ctx: Ctx, frame: Frame, scene: Scene, style: Style): void {
+/**
+ * The part of a background image that covers a `width`×`height` picture: centered, cropped to its
+ * aspect, never stretched (as CSS `object-fit: cover`).
+ */
+export function coverCrop(
+  image: { width: number; height: number },
+  width: number,
+  height: number,
+): { sx: number; sy: number; sw: number; sh: number } {
+  const k = Math.min(image.width / width, image.height / height)
+  const sw = width * k
+  const sh = height * k
+  return { sx: (image.width - sw) / 2, sy: (image.height - sh) / 2, sw, sh }
+}
+
+/**
+ * Draws one output frame. `background`: the style's background image, loaded (the host loads it:
+ * the app's preview, the exporter); none yet, a gradient stands in.
+ */
+export function drawScene(
+  ctx: Ctx,
+  frame: Frame,
+  scene: Scene,
+  style: Style,
+  background?: Frame,
+): void {
   // Laid out from the take's frame size (the camera's box); the pixels from the decoded frame.
   const src = scene.frame
   // The camera over the whole picture (OBJECT-MODEL §0.14): the background with the app's window
@@ -39,11 +64,19 @@ export function drawScene(ctx: Ctx, frame: Frame, scene: Scene, style: Style): v
   } else {
     const a = t.out(0, 0)
     const b = t.out(style.width, style.height)
-    const bg = ctx.createLinearGradient(a.x, a.y, b.x, b.y)
-    bg.addColorStop(0, PLACEHOLDER[0])
-    bg.addColorStop(1, PLACEHOLDER[1])
-    ctx.fillStyle = bg
-    ctx.fillRect(0, 0, style.width, style.height)
+    if (background !== undefined) {
+      // The image covering the picture, moving with it (the view never leaves it: keepInPicture).
+      const c = coverCrop(background, style.width, style.height)
+      ctx.imageSmoothingEnabled = true
+      ctx.imageSmoothingQuality = "high"
+      ctx.drawImage(background, c.sx, c.sy, c.sw, c.sh, a.x, a.y, b.x - a.x, b.y - a.y)
+    } else {
+      const bg = ctx.createLinearGradient(a.x, a.y, b.x, b.y)
+      bg.addColorStop(0, PLACEHOLDER[0])
+      bg.addColorStop(1, PLACEHOLDER[1])
+      ctx.fillStyle = bg
+      ctx.fillRect(0, 0, style.width, style.height)
+    }
     // The window's shadow, as large as the window is (canvas shadows ignore any transform).
     ctx.save()
     ctx.shadowColor = "rgba(0, 0, 0, 0.45)"

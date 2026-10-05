@@ -14,6 +14,7 @@ const TYPES: Record<string, string> = {
   ".woff": "font/woff",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
 }
 
 /** Before `ready`: the app's scheme is a secure, standard one (fetch, relative URLs work). */
