@@ -11,8 +11,10 @@ export interface ExportJob {
   pageDir: string
   takeDir: string
   out: string
-  /** Everything the page's `kiframeExport` needs, except the video URL. */
-  args: Omit<PageExportArgs, "videoUrl">
+  /** The style's background image file (none: the page draws a gradient). */
+  backgroundFile?: string
+  /** Everything the page's `kiframeExport` needs, except the video and background URLs. */
+  args: Omit<PageExportArgs, "videoUrl" | "backgroundUrl">
 }
 
 const jobFile = process.env.KIFRAME_EXPORT_JOB
@@ -32,12 +34,13 @@ const types: Record<string, string> = {
   ".html": "text/html",
   ".js": "text/javascript",
   ".webm": "video/webm",
+  ".jpg": "image/jpeg",
 }
 
 async function run(job: ExportJob): Promise<void> {
   protocol.handle("kiframe", (request) => {
     const { host, pathname } = new URL(request.url)
-    // One origin (the page fetches the take), two fixed files: nothing else is served.
+    // One origin (the page fetches the take), fixed files: nothing else is served.
     const file =
       host !== "app"
         ? undefined
@@ -45,7 +48,9 @@ async function run(job: ExportJob): Promise<void> {
           ? join(job.pageDir, pathname)
           : pathname === "/take/frames.webm"
             ? join(job.takeDir, "frames.webm")
-            : undefined
+            : pathname === "/background.jpg"
+              ? job.backgroundFile
+              : undefined
     if (file === undefined) return new Response("not found", { status: 404 })
     const ext = file.slice(file.lastIndexOf("."))
     return new Response(readFileSync(file), { headers: { "content-type": types[ext] ?? "" } })
@@ -58,7 +63,11 @@ async function run(job: ExportJob): Promise<void> {
     'typeof window.kiframeExport === "function"',
   )) as boolean
   if (!ready) throw new Error("the export page didn't load (see the page's console)")
-  const args: PageExportArgs = { ...job.args, videoUrl: "kiframe://app/take/frames.webm" }
+  const args: PageExportArgs = {
+    ...job.args,
+    videoUrl: "kiframe://app/take/frames.webm",
+    ...(job.backgroundFile !== undefined && { backgroundUrl: "kiframe://app/background.jpg" }),
+  }
   const result = (await win.webContents.executeJavaScript(
     `window.kiframeExport(${JSON.stringify(args)})`,
   )) as { data: string; codec: string; frames: number; durationMs: number; softness: number }

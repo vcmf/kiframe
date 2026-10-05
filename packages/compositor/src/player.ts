@@ -21,6 +21,8 @@ export interface PlayerSource {
   style?: Partial<Style>
   /** Org + project style, below the scene's. Default: product defaults. */
   baseStyle?: SchemaStyle
+  /** The style's background image, loaded by the host (none: a gradient stands in). */
+  background?: CanvasImageSource & { width: number; height: number }
 }
 
 type Ctx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
@@ -33,6 +35,7 @@ export class Player {
   readonly #first: number
   readonly #ctx: Ctx
   readonly #input: Input
+  readonly #background: (CanvasImageSource & { width: number; height: number }) | undefined
   #time = 0
   /** The time the next seek shows (the latest asked), and the seeking under way. */
   #target: number | undefined
@@ -42,7 +45,15 @@ export class Player {
   #playing = false
   #listeners = new Set<() => void>()
 
-  private constructor(ctx: Ctx, prepared: Prepared, input: Input, sink: CanvasSink, first: number) {
+  private constructor(
+    ctx: Ctx,
+    prepared: Prepared,
+    input: Input,
+    sink: CanvasSink,
+    first: number,
+    background: PlayerSource["background"],
+  ) {
+    this.#background = background
     this.#ctx = ctx
     this.#prepared = prepared
     this.#input = input
@@ -76,7 +87,14 @@ export class Player {
       const track = await input.getPrimaryVideoTrack()
       if (track === null) throw new Error("the take has no video track")
       const first = await track.getFirstTimestamp()
-      const player = new Player(ctx, prepared, input, new CanvasSink(track, { poolSize: 2 }), first)
+      const player = new Player(
+        ctx,
+        prepared,
+        input,
+        new CanvasSink(track, { poolSize: 2 }),
+        first,
+        source.background,
+      )
       await player.#show(0)
       return player
     } catch (error) {
@@ -134,7 +152,7 @@ export class Player {
     const scene = sceneAt(this.#prepared, t)
     const frame = await this.#sink.getCanvas(this.#first + scene.sourceT / 1000)
     if (run !== this.#run) return
-    if (frame !== null) drawScene(this.#ctx, frame.canvas, scene, this.style)
+    if (frame !== null) drawScene(this.#ctx, frame.canvas, scene, this.style, this.#background)
     this.#time = t
     this.#emit()
   }
@@ -200,7 +218,8 @@ export class Player {
       const wait = start + shown.t - performance.now()
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
       if (run !== this.#run) return
-      if (wrapped !== null) drawScene(this.#ctx, wrapped.canvas, shown.scene, this.style)
+      if (wrapped !== null)
+        drawScene(this.#ctx, wrapped.canvas, shown.scene, this.style, this.#background)
       drawn = performance.now()
       this.#time = shown.t
       this.#emit()

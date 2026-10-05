@@ -10,7 +10,7 @@ import {
 } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
 import { BUILTIN_BACKGROUNDS, DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kiframe/schema"
-import { drawScene } from "../src/draw.ts"
+import { coverCrop, drawScene } from "../src/draw.ts"
 import { contentBox, cursorAt, prepare, sceneAt, stageTransform } from "../src/scene.ts"
 
 const project = parseProjectYaml(`version: 1
@@ -212,6 +212,50 @@ describe("camera", () => {
     expect(
       framed.some((o) => /^shadowBlur=(\d+(\.\d+)?)$/.test(o) && Number(o.slice(11)) >= 48),
     ).toBe(true)
+  })
+
+  it("draws the background's image over the whole picture, cropped to its aspect, no gradient", () => {
+    const { scenario, take, composition } = fixture()
+    const { ctx, ops } = recorder()
+    const prepared = prepare(
+      { ...composition, style: { background: { builtin: "mountain-lake" } } },
+      scenario,
+      take,
+    )
+    const frame = { width: 1280, height: 800 } as unknown as CanvasImageSource & {
+      width: number
+      height: number
+    }
+    // A taller image than the 16:9 picture: its middle band, the full width.
+    const image = { width: 3840, height: 2880, toString: () => "image" } as unknown as typeof frame
+    drawScene(ctx, frame, sceneAt(prepared, 0), prepared.style, image)
+    expect(ops).not.toContain("gradient")
+    const drawn = ops.find((o) => o.startsWith("drawImage(image,"))
+    expect(drawn).toBeDefined()
+    const [sx, sy, sw, sh, dx, dy, dw, dh] = numbers(drawn ?? "").slice(1)
+    expect([sx, sy, sw, sh]).toEqual([0, 360, 3840, 2160])
+    // Over the picture as the camera shows it (zoomed here): the frame covered, edge to edge.
+    expect(dx).toBeLessThanOrEqual(0)
+    expect(dy).toBeLessThanOrEqual(0)
+    expect(dx! + dw!).toBeGreaterThanOrEqual(1920)
+    expect(dy! + dh!).toBeGreaterThanOrEqual(1080)
+    expect(dw! / dh!).toBeCloseTo(16 / 9)
+  })
+
+  it("crops an image to cover a picture (never stretched), centered", () => {
+    expect(coverCrop({ width: 3840, height: 2160 }, 1920, 1080)).toEqual({
+      sx: 0,
+      sy: 0,
+      sw: 3840,
+      sh: 2160,
+    })
+    // A vertical output from a landscape image: its middle, the full height.
+    expect(coverCrop({ width: 3840, height: 2160 }, 1080, 1920)).toEqual({
+      sx: (3840 - 1215) / 2,
+      sy: 0,
+      sw: 1215,
+      sh: 2160,
+    })
   })
 
   it("ships exactly the backgrounds the schema names, each one's file there", () => {

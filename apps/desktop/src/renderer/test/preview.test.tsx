@@ -40,6 +40,14 @@ vi.mock("@kiframe/compositor", () => ({
   flatten: (style: object, format: object) => ({ ...style, ...format }),
 }))
 
+// Images decode in a real browser only: a stand-in naming the background it was asked for.
+vi.mock("../src/backgrounds.ts", () => ({
+  loadBackground: (id: string) =>
+    id === "autumn-road"
+      ? Promise.reject(new Error("can't decode"))
+      : Promise.resolve({ image: id }),
+}))
+
 afterEach(cleanup)
 
 const ready = {
@@ -50,7 +58,7 @@ const ready = {
   scenario: {},
   take: { meta: {}, events: [], cursor: [] },
   video: new Uint8Array([1, 2, 3]),
-  style: {},
+  style: { background: { builtin: "forest-lake" } },
   format: { width: 1920, height: 1080, fps: 30 },
 } as unknown as Preview
 
@@ -80,6 +88,40 @@ describe("the preview", () => {
     })
     expect(fake.player.seek).toHaveBeenCalledWith(6000)
     await waitFor(() => expect(screen.getByText("0:06 / 0:12")).toBeTruthy())
+  })
+
+  it("draws the scene's background image, or none without a background", async () => {
+    fake.load.mockClear()
+    stubApi({ "preview:open": () => ready })
+    const { unmount } = render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
+    await screen.findByRole("button", { name: "Play" })
+    expect(fake.load).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ background: { image: "forest-lake" } }),
+    )
+    unmount()
+    fake.load.mockClear()
+    stubApi({ "preview:open": () => ({ ...ready, style: { background: "none" } }) as Preview })
+    render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
+    await screen.findByRole("button", { name: "Play" })
+    expect(fake.load).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.not.objectContaining({ background: expect.anything() as unknown }),
+    )
+  })
+
+  it("still plays when the background image doesn't load (the gradient stands in)", async () => {
+    fake.load.mockClear()
+    stubApi({
+      "preview:open": () =>
+        ({ ...ready, style: { background: { builtin: "autumn-road" } } }) as Preview,
+    })
+    render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
+    await screen.findByRole("button", { name: "Play" })
+    expect(fake.load).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.not.objectContaining({ background: expect.anything() as unknown }),
+    )
   })
 
   it("lets go of the player when the scene changes", async () => {

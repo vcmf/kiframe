@@ -119,13 +119,26 @@ async function exportVideo(status: unknown, file: string): Promise<void> {
     ).kiframe
     const r = (await api.invoke("preview:open", id)) as
       | { ok: false; why: string }
-      | { ok: true; video: Uint8Array; take: unknown; composition: unknown; scenario: unknown }
+      | {
+          ok: true
+          video: Uint8Array
+          take: unknown
+          composition: object
+          scenario: unknown
+          style: object
+        }
     if (!r.ok) return { why: r.why }
     let bin = ""
     for (let i = 0; i < r.video.length; i += 0x8000) {
       bin += String.fromCharCode(...r.video.subarray(i, i + 0x8000))
     }
-    return { video: btoa(bin), take: r.take, composition: r.composition, scenario: r.scenario }
+    return {
+      video: btoa(bin),
+      take: r.take,
+      composition: r.composition,
+      scenario: r.scenario,
+      style: r.style,
+    }
   }, scene.id)
   if ("why" in preview) return log(`no export: ${preview.why}`)
   const take = preview.take as { meta: unknown; events: unknown[]; cursor: unknown[] }
@@ -145,7 +158,12 @@ async function exportVideo(status: unknown, file: string): Promise<void> {
   // JSON is YAML: the scenario as the app has it; a project file only to be read (the composition
   // is given: nothing generated from it).
   writeFileSync(join(dir, "scenario.yaml"), JSON.stringify(preview.scenario))
-  writeFileSync(join(dir, "composition.json"), JSON.stringify(preview.composition))
+  // The style as the preview resolved it (the project's and the scene's): the exporter reads no
+  // project style.
+  writeFileSync(
+    join(dir, "composition.json"),
+    JSON.stringify({ ...preview.composition, style: preview.style }),
+  )
   writeFileSync(
     join(dir, "project.yaml"),
     `version: 1\ntarget: { kind: web, url: "${run.url}", viewport: { width: 1440, height: 900 } }\n`,

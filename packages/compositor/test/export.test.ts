@@ -40,6 +40,11 @@ steps:
       await recordPage.close()
       const { composition } = generate(project, scenario, take)
 
+      // A plain magenta background: its pixels show in the video wherever the picture shows.
+      const backgroundPng = execFileSync("ffmpeg", [
+        ...["-v", "error", "-f", "lavfi", "-i", "color=c=0xff00ff:s=64x36"],
+        ...["-frames:v", "1", "-f", "image2pipe", "-c:v", "png", "-"],
+      ])
       const script = await bundleExportPage()
       const page = await browser.newPage()
       // localhost is a secure context: WebCodecs exists only there.
@@ -52,6 +57,8 @@ steps:
             contentType: "video/webm",
           })
         }
+        if (path === "/background.png")
+          return route.fulfill({ body: backgroundPng, contentType: "image/png" })
         if (path === "/export.js")
           return route.fulfill({ body: script, contentType: "text/javascript" })
         return route.fulfill({
@@ -64,6 +71,7 @@ steps:
       const style = { width: 1920, height: 1080, fps: 30 }
       const result = await page.evaluate((args) => window.kiframeExport(args), {
         videoUrl: `${origin}/frames.webm`,
+        backgroundUrl: `${origin}/background.png`,
         composition,
         scenario,
         take: { meta: take.meta, events: take.events, cursor: take.cursor },
@@ -96,6 +104,16 @@ steps:
       expect(probe.streams[0]).toMatchObject({ width: 1920, height: 1080, codec_name: "vp9" })
       expect(Math.abs(Number(probe.format.duration) * 1000 - expected)).toBeLessThan(100)
       expect(result.frames).toBe(Math.round((expected / 1000) * 30))
+      // The last frame (the camera back at rest, the whole picture): its corner is the image.
+      const corner = execFileSync("ffmpeg", [
+        ...["-v", "error", "-sseof", "-0.2", "-i", out, "-frames:v", "1"],
+        ...["-vf", "crop=8:8:0:0,scale=1:1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+      ])
+      expect([...corner]).toEqual([
+        expect.closeTo(255, -1.5),
+        expect.closeTo(0, -1.5),
+        expect.closeTo(255, -1.5),
+      ])
     } finally {
       await browser.close()
       await server.close()
