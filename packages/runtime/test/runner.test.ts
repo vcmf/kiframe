@@ -2785,3 +2785,91 @@ teardown:
     }
   })
 })
+
+describe("an app whose address redirects to www. (minmux.dev → www.minmux.dev)", () => {
+  it("replays on the redirected host: its gotos, URL checks and links are the app's", async () => {
+    // Its own browser: the two host names on this machine.
+    const own = await chromium.launch({
+      args: ["--host-resolver-rules=MAP kiframe.test 127.0.0.1, MAP www.kiframe.test 127.0.0.1"],
+    })
+    const { createServer } = await import("node:http")
+    const server = createServer((req, res) => {
+      if (!(req.headers.host ?? "").startsWith("www.")) {
+        res.writeHead(301, { location: `http://www.${req.headers.host ?? ""}${req.url ?? "/"}` })
+        res.end()
+        return
+      }
+      res.writeHead(200, { "content-type": "text/html" })
+      res.end(
+        req.url === "/docs"
+          ? "<!doctype html><title>Docs</title><h1>Docs</h1>"
+          : req.url === "/login"
+            ? '<!doctype html><title>Login</title><label>Password <input type="password" aria-label="Password input"></label>'
+            : '<!doctype html><title>Home</title><h1>Home</h1><a href="/docs">Docs</a>',
+      )
+    })
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
+    const port = (server.address() as { port: number }).port
+    const app = parseProjectYaml(`version: 1
+target: { kind: web, url: "http://kiframe.test:${port}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+    const p = await own.newPage()
+    try {
+      await runScenario(
+        p,
+        scenario(`setup: [{ action: goto, url: / }]
+steps:
+  - { id: home, action: expect, that: { url: / } }
+  - { id: open, action: click, target: { by: role, role: link, name: Docs } }
+  - { id: there, action: expect, that: { url: /docs } }
+  - { id: back, action: goto, url: / }
+  - { id: seen, action: expect, that: { visible: { by: role, role: heading, name: Home } } }
+`),
+        app,
+        { timeoutMs: 3000 },
+      )
+      expect(new URL(p.url()).host).toBe(`www.kiframe.test:${port}`)
+      // Never a secret there: one added for the app's address isn't typed on its www. page (exact
+      // origins only; the approval would name a host the page isn't on).
+      const appUrl = `http://kiframe.test:${port}`
+      const vault = Vault.open(
+        join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+        memoryBackend(),
+      )
+      await vault.request(
+        { name: "acme.password", kind: "password", origin: appUrl, reason: "log in" },
+        () => Promise.resolve("hunter2-secret"),
+      )
+      const asked: ApprovalRequest[] = []
+      const refused = await runScenario(
+        p,
+        scenario(`setup: [{ action: goto, url: /login }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password input }, value: "{{secrets.acme.password}}" }
+`),
+        app,
+        {
+          timeoutMs: 3000,
+          scope: "project-1",
+          sceneId: "login",
+          resolveSecret: vault.resolver(),
+          requestApproval: (request: ApprovalRequest) => {
+            asked.push(request)
+            return Promise.resolve(true)
+          },
+        },
+      ).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(refused).toBeInstanceOf(StepError)
+      expect((refused as StepError).reason).toBe("off-origin")
+      expect(asked).toEqual([])
+      expect(await p.getByLabel("Password input").inputValue()).toBe("")
+    } finally {
+      await own.close()
+      server.close()
+    }
+  }, 30_000)
+})

@@ -3,7 +3,7 @@
 // the Secrets panel, the brief sent, and every request answered (risky steps and secrets allowed,
 // questions answered with a fixed reply). Writes a report: the chat, the outcome, time and cost.
 //
-// Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20]
+// Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20] [--brief "…"]
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
@@ -57,7 +57,12 @@ const APPS: Record<string, AppRun> = {
 }
 
 const { values } = parseArgs({
-  options: { app: { type: "string" }, minutes: { type: "string", default: "20" } },
+  options: {
+    app: { type: "string" },
+    minutes: { type: "string", default: "20" },
+    // Another request to send than the app's own (a user's, to reproduce what they saw).
+    brief: { type: "string" },
+  },
 })
 const run = APPS[values.app ?? ""]
 if (run === undefined) {
@@ -159,7 +164,7 @@ try {
     await box.press("Enter")
     await page.getByRole("button", { name: "Stop" }).waitFor({ timeout: 30_000 })
   }
-  await send(run.brief)
+  await send(values.brief ?? run.brief)
   log("brief sent")
 
   const deadline = started + Number(values.minutes) * 60_000

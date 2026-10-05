@@ -43,6 +43,12 @@ body {
   overflow: clip;
 }
 
+/* The hidden attribute always hides (a class's own display never overrides it: the preview's
+   player showed over the live app). */
+[hidden] {
+  display: none !important;
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -326,15 +332,15 @@ button:disabled {
 }
 
 .composer-wrap {
-  padding: 14px 16px 16px;
+  padding: 16px;
   border-top: 1px solid var(--line);
 }
 
 .composer {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 12px 10px 14px;
+  gap: 10px;
+  padding: 14px;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -407,8 +413,11 @@ button:disabled {
   color: var(--text);
 }
 
+/* Takes what the strip leaves, never more: it shrinks (the preview's canvas fits in it) rather
+   than push the strip out of the window. */
 .stage-well {
   flex-grow: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -447,9 +456,11 @@ button:disabled {
 
 /* ── scene strip ── */
 .strip {
+  flex-shrink: 0;
   border-top: 1px solid var(--line);
   background: var(--bg);
-  padding: 14px 24px 18px;
+  /* 16px top and bottom: its bottom edge in line with the composer's. */
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -780,27 +791,20 @@ ul.strip-cards {
   overflow-wrap: anywhere;
 }
 
-.msg-agent {
+/* An agent turn: its mark on top, then everything it did at the column's full width. */
+.agent-turn {
   display: flex;
+  flex-direction: column;
   gap: 10px;
-  align-items: flex-start;
+  min-width: 0;
 }
 
 .agent-mark {
-  width: 24px;
-  height: 24px;
-  flex-shrink: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 7px;
-  border: 1px solid var(--line);
-  background: var(--panel);
   color: var(--accent);
 }
 
 .msg-agent-text {
-  padding-top: 2px;
   line-height: 1.55;
   overflow-wrap: anywhere;
   min-width: 0;
@@ -855,7 +859,6 @@ ul.strip-cards {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-left: 34px;
 }
 
 .tool-group-head {
@@ -948,7 +951,6 @@ ul.strip-cards {
 }
 
 .request-card {
-  margin-left: 34px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1019,7 +1021,6 @@ ul.strip-cards {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-left: 34px;
   font-size: 12.5px;
   color: var(--muted);
 }
@@ -1028,15 +1029,12 @@ ul.strip-cards {
   color: var(--danger);
 }
 
-.working-bar {
+/* The running state in the composer's box: its head as tall as the text field (two lines). */
+.working-head {
+  min-height: 42px;
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 56px;
-  padding: 0 8px 0 14px;
-  border-radius: 12px;
-  border: 1px solid var(--line);
-  background: var(--panel);
 }
 
 .working-text {
@@ -1061,6 +1059,7 @@ ul.strip-cards {
 }
 
 .btn-stop {
+  height: 34px;
   border: 0;
   background: var(--text);
   color: var(--bg);

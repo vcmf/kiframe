@@ -50,6 +50,32 @@ const TOOL_ICONS: Record<string, ReactNode> = {
 /** Items in order, consecutive tool steps as one group. */
 type Block = { kind: "item"; item: ChatItem } | { kind: "tools"; id: string; tools: ToolItem[] }
 
+/**
+ * The chat as the user sees it: each message of theirs, and between them one agent turn holding
+ * all it did (its text, tool steps, a request, how the run ended) under one mark.
+ */
+export type Turn =
+  | { kind: "user"; item: Extract<ChatItem, { kind: "user" }> }
+  | { kind: "agent"; id: string; blocks: Block[] }
+
+export function turns(items: ChatItem[]): Turn[] {
+  const out: Turn[] = []
+  let agent: ChatItem[] = []
+  const close = () => {
+    const first = agent[0]
+    if (first !== undefined) out.push({ kind: "agent", id: first.id, blocks: blocks(agent) })
+    agent = []
+  }
+  for (const item of items) {
+    if (item.kind === "user") {
+      close()
+      out.push({ kind: "user", item })
+    } else agent.push(item)
+  }
+  close()
+  return out
+}
+
 export function blocks(items: ChatItem[]): Block[] {
   const out: Block[] = []
   for (const item of items) {
@@ -107,11 +133,11 @@ export function ChatColumn() {
               </p>
             </div>
           ) : (
-            blocks(items).map((block) =>
-              block.kind === "tools" ? (
-                <ToolGroup key={block.id} tools={block.tools} />
+            turns(items).map((turn) =>
+              turn.kind === "user" ? (
+                <Item key={turn.item.id} item={turn.item} />
               ) : (
-                <Item key={block.item.id} item={block.item} />
+                <AgentTurn key={turn.id} blocks={turn.blocks} />
               ),
             )
           )}
@@ -122,19 +148,41 @@ export function ChatColumn() {
   )
 }
 
+/** One agent turn: its mark above, then all it did at the column's full width. */
+function AgentTurn({ blocks: parts }: { blocks: Block[] }) {
+  // A run that ended quietly (done, nothing said): no turn, no lone mark.
+  const silent = parts.every(
+    (b) =>
+      b.kind === "item" &&
+      b.item.kind === "end" &&
+      b.item.outcome === "done" &&
+      b.item.message === undefined,
+  )
+  if (silent) return null
+  return (
+    <div className="agent-turn">
+      <span className="agent-mark" aria-hidden="true">
+        <Sparkle size={20} weight="fill" />
+      </span>
+      {parts.map((block) =>
+        block.kind === "tools" ? (
+          <ToolGroup key={block.id} tools={block.tools} />
+        ) : (
+          <Item key={block.item.id} item={block.item} />
+        ),
+      )}
+    </div>
+  )
+}
+
 function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case "user":
       return <div className="msg-user">{item.text}</div>
     case "assistant":
       return (
-        <div className="msg-agent">
-          <span className="agent-mark" aria-hidden="true">
-            <Sparkle size={14} weight="fill" />
-          </span>
-          <div className="msg-agent-text">
-            <AgentText text={item.text} />
-          </div>
+        <div className="msg-agent-text">
+          <AgentText text={item.text} />
         </div>
       )
     case "request":
@@ -362,67 +410,72 @@ function Composer() {
       void submit()
     }
   }
-  if (running) {
-    const waiting = items.some((i) => i.kind === "request" && i.state === "open")
-    const current = [...items].reverse().find((i) => i.kind === "tool" && i.status === "running")
-    return (
-      <div className="composer-wrap">
-        <div className="working-bar" role="status">
-          <span className="spin accent">
-            <CircleNotch size={18} />
-          </span>
-          <div className="working-text">
-            <span className="working-title">The agent is working</span>
-            <span className="working-sub">
-              {waiting
-                ? "waiting for your answer"
-                : current?.kind === "tool"
-                  ? `${current.name} ${current.detail}`
-                  : "thinking"}
-            </span>
-          </div>
-          <button type="button" className="btn btn-stop" onClick={stop}>
-            <Stop size={14} weight="fill" />
-            Stop
-          </button>
-        </div>
-      </div>
-    )
-  }
+  const waiting = items.some((i) => i.kind === "request" && i.state === "open")
+  const current = [...items].reverse().find((i) => i.kind === "tool" && i.status === "running")
+  // One box for both states, as tall (nothing in the window moves when a run starts or ends):
+  // running, the status where the text goes and Stop where Send is.
   return (
     <div className="composer-wrap">
       <form
-        className="composer"
+        className={running ? "composer working" : "composer"}
         onSubmit={(e) => {
           e.preventDefault()
-          void submit()
+          if (!running) void submit()
         }}
       >
-        <label htmlFor="ask" className="sr-only">
-          Message the agent
-        </label>
-        <textarea
-          id="ask"
-          rows={2}
-          maxLength={20_000}
-          placeholder="Describe a scene, or ask for changes…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKey}
-        />
+        {running ? (
+          <div className="working-head">
+            <span className="spin accent">
+              <CircleNotch size={18} />
+            </span>
+            {/* Only the status is announced (never the chip and Stop with each step). */}
+            <div className="working-text" role="status">
+              <span className="working-title">The agent is working</span>
+              <span className="working-sub">
+                {waiting
+                  ? "waiting for your answer"
+                  : current?.kind === "tool"
+                    ? `${current.name} ${current.detail}`
+                    : "thinking"}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <>
+            <label htmlFor="ask" className="sr-only">
+              Message the agent
+            </label>
+            <textarea
+              id="ask"
+              rows={2}
+              maxLength={20_000}
+              placeholder="Describe a scene, or ask for changes…"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              onKeyDown={onKey}
+            />
+          </>
+        )}
         <div className="composer-row">
           {model !== "" && <span className="chip mono">{model}</span>}
           <div className="spacer" />
-          <button
-            type="submit"
-            className="send-btn"
-            aria-label="Send"
-            disabled={text.trim() === "" || sending}
-          >
-            <PaperPlaneRight size={17} weight="fill" />
-          </button>
+          {running ? (
+            <button type="button" className="btn btn-stop" onClick={stop}>
+              <Stop size={14} weight="fill" />
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="send-btn"
+              aria-label="Send"
+              disabled={text.trim() === "" || sending}
+            >
+              <PaperPlaneRight size={17} weight="fill" />
+            </button>
+          )}
         </div>
-        {refused !== null && (
+        {!running && refused !== null && (
           <div className="composer-refused" role="alert">
             {refused}
           </div>
