@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "default": "mountain-lake",
+  "backgrounds": [
+    {
+      "id": "autumn-road",
+      "title": "Autumn road",
+      "file": "autumn-road.jpg",
+      "source": "Unsplash",
+      "license": "Unsplash License (https://unsplash.com/license)"
+    },
+    {
+      "id": "forest-lake",
+      "title": "Forest lake",
+      "file": "forest-lake.jpg",
+      "source": "Unsplash",
+      "license": "Unsplash License (https://unsplash.com/license)"
+    },
+    {
+      "id": "mountain-lake",
+      "title": "Mountain lake",
+      "file": "mountain-lake.jpg",
+      "source": "Unsplash",
+      "license": "Unsplash License (https://unsplash.com/license)"
+    }
+  ]
+}
