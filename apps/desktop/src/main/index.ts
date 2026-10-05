@@ -46,8 +46,11 @@ if (!app.requestSingleInstanceLock()) {
 
 const message = errorMessage
 
-/** The agent's model by default (OpenRouter ids; a picker comes later). */
-export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
+/**
+ * The agent's model by default (OpenRouter ids; a picker comes later). `:nitro`: OpenRouter routes
+ * to its fastest provider for it (a slow one made a turn take minutes).
+ */
+export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash:nitro"
 /** How long quitting waits for the run and the browser to close. */
 const QUIT_WAIT_MS = 5000
 
