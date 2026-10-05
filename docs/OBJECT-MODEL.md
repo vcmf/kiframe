@@ -182,6 +182,64 @@ Why outside the folder: takes are **heavy**, and they're **sensitive**, since ra
 
 **Later track (option C): the take as an object (DOM capture).** Record the DOM and its changes (rrweb-style) instead of pixels, and render frames at export: any resolution, blur by selector, lightweight. Risky with canvas, WebGL, embedded video and cross-origin iframes. A spike after v0. The model allows it (`capture.mode: "dom"`), and the renderer reads the base through one interface.
 
+### 0.8 How the agent builds a scene (as built)
+
+One scene, three phases. The agent's own instructions say the same (`packages/studio/src/prompt.ts`).
+
+1. **Explore and ground, on the live page.** The agent reads the page with `snapshot` (roles, labels, text, each element's ref) and tries actions with `run_step` / `run_steps`: each really runs on the page and says whether it worked and where the page ended. Nothing is written yet: every step is proven on the real app first ("ground every step"). It ends with the scene's teardown, run the same way, so the app is back as it was.
+2. **Write the scene.** `save_scene` takes the whole `scenario.yaml` (setup, on-camera steps, teardown), checks it, and **replays it from scratch in a fresh browser** (no cookies, no storage). Saved only if the replay passes; otherwise the failure comes back and the agent fixes the YAML.
+3. **Record.** `record_scene` films the saved scenario at human pace in another fresh browser; the composition (camera, cursor, captions) is generated from the take.
+
+**The live page isn't fresh.** It's one browser session for as long as the project is open, shared by every scene: it keeps what the agent did (signed in, scrolled, a setting changed). The replay in phase 2 is what catches a scene that only works because of that state. Refs never reach the YAML (a ref becomes a locator that finds that element alone).
+
+### 0.9 Apps a demo shows (designed 2026-10-05, not built)
+
+**Today** a project has one `target`: `{ kind: web, url, viewport }`, and a scene never leaves that site (its address redirected to `www.` or `https` counts as it: `sameApp`). That's too narrow: Kiframe also targets **Electron** apps (v0.1) and **Tauri** (later, partial), and one demo can go from a web app to its docs site or its desktop app.
+
+**Named apps, in `project.json`** (replacing `target`):
+
+```json
+"apps": {
+  "app":     { "kind": "web", "url": "https://minmux.dev", "viewport": { "width": 1440, "height": 900 } },
+  "docs":    { "kind": "web", "url": "https://docs.minmux.dev" },
+  "desktop": { "kind": "electron", "launch": "/Applications/Minmux.app" }
+}
+```
+
+- **A scene starts in one app**: the first, unless its scenario names another (`app: docs`).
+- **Steps may go to any listed app, never elsewhere**: `goto: { app: docs, path: /install }`; a plain `goto: /x` stays in the current app; a link or a redirect landing on another listed app's site is fine. A page on an unlisted site is refused as today (the step says so; a scene can't be saved or recorded there).
+- **Secrets stay tied to their app** (its origin, as now): one added for `app` is never typed on `docs`.
+- **The list is the one place** that says everything a demo touches.
+
+**The agent adds an app, the user approves** (decided by the user):
+
+1. Exploring, the agent reaches an unlisted site (a link, a redirect, a step it needs). The step's result already says it's not the app's site.
+2. It calls `add_app({ name, kind, url | launch, why })`. The user sees a card like a risky step's: *"Add docs.minmux.dev (web) to this project? Why: the install guide lives there."* **Allow / Decline.**
+3. Allowed: written to `project.json` `apps`, usable at once by the live page, the replay and the recording. Declined: the agent goes on without it.
+
+- **Never added without the user.** A desktop app's card shows the exact program to launch (running a local program is a larger permission than opening a page).
+- **Once added, allowed for the project** until the user removes it (decided by the user): no asking again each session.
+- **Approved at the project, used by scenes** (decided by the user): one approval, every scene may use it.
+
+**Desktop apps.** The same `apps` entry with `kind: electron` (launched and attached over its debugging port: `--remote-debugging-port` + `connectOverCDP`, measured working on a hardened packaged app in Phase 0, F4) or `kind: tauri` (WebKit on macOS: no CDP, partial support, APPROACHES §6b). The format is ready for them; driving them is v0.1 work.
+
+**Existing projects convert** on open: `target` becomes `apps.app` (the rest unchanged).
+
+**Open points:**
+- **Environments with several apps**: an org environment (staging, prod: APPROACHES §10c) gives today's single target its URL; with several apps, an environment would give each app name its URL.
+- **Viewport**: per app (a docs site and a desktop window differ), or one for the project's video.
+- **Removing an app** a saved scene uses: refused, or the scene marked unreadable until edited.
+
+### 0.10 `story.md`: the project's memory (designed 2026-10-05, not built)
+
+One markdown file at the project's root that the agent keeps as the chat goes on: the demo's **audience and goal**, its **outline** (the scenes in order, a line each), **decisions** made with the user, and **open questions**. Named `story.md` ("scenario" keeps meaning one scene's steps: decided by the user).
+
+- **Read at the start of every run** (part of the agent's context): what the agent knows about the demo survives the chat, which lives in memory only today (BACKLOG "Data persistence").
+- **Written by the agent** with `update_story` (the whole file or one section), each change a small "Story updated" row in the chat; the user may edit it too (a plain file in the project, versioned with it).
+- **Short** (a few thousand characters): a summary the agent keeps current, never a transcript. It doesn't replace the agent runtime's own context handling, nor persisting the chat.
+
+**Scenes stay one folder per scene** (decided by the user): the agent edits one without rewriting others, a broken file breaks one scene only, git diffs stay per scene; `story.md` gives the whole demo at a glance.
+
 ---
 
 ## 1. Three layers
@@ -219,7 +277,7 @@ The format, refined with ideas from demo-machine, VHS and Maestro. **The scenari
 ```yaml
 version: 1
 environment: staging             # org-level environment (APPROACHES §10c): URL, sandbox flag, pre-approvals
-target:
+target:                          # to become named `apps` (§0.9, designed)
   kind: web                      # web (v0) | electron (v0.1) | tauri (later)
   url: https://staging.acme.com  # Phase 0: set here. Later: comes from the environment
   viewport: { width: 1440, height: 900, deviceScaleFactor: 2 }
