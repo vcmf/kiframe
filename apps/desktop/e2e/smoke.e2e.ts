@@ -106,6 +106,21 @@ afterAll(async () => {
 })
 
 describe("the desktop app", () => {
+  it("opens inside its screen's work area (never under the Dock or past an edge)", async () => {
+    const fits = await app.evaluate(({ BrowserWindow, screen }) => {
+      const bounds = BrowserWindow.getAllWindows()[0]?.getBounds()
+      if (bounds === undefined) return false
+      const area = screen.getDisplayMatching(bounds).workArea
+      return (
+        bounds.x >= area.x &&
+        bounds.y >= area.y &&
+        bounds.x + bounds.width <= area.x + area.width &&
+        bounds.y + bounds.height <= area.y + area.height
+      )
+    })
+    expect(fits).toBe(true)
+  })
+
   it("asks for the OpenRouter key, then for a project", async () => {
     await expect
       .poll(() => page.getByRole("heading", { name: "Connect a model" }).isVisible())

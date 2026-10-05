@@ -2,7 +2,8 @@
 // no permissions, the CSP on every response, and the pages served from the app's own protocol.
 import { readFile } from "node:fs/promises"
 import { extname, join } from "node:path"
-import { app, BrowserWindow, protocol, session } from "electron"
+import { app, BrowserWindow, protocol, screen, session } from "electron"
+import { initialSize } from "./window-size.ts"
 import { APP_ORIGIN, APP_SCHEME, appFile, contentSecurityPolicy, isAppUrl } from "./security.ts"
 
 const TYPES: Record<string, string> = {
@@ -79,11 +80,15 @@ export const TITLE_BAR_HEIGHT = 48
  */
 export function createWindow(preloadDir: string, devServer?: string): BrowserWindow {
   const mac = process.platform === "darwin"
+  // The screen it opens on (macOS opens a window where the user is: the display under the
+  // cursor, not always the primary).
+  const size = initialSize(
+    screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workAreaSize,
+  )
   const window = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1024,
-    minHeight: 680,
+    ...size,
+    center: true,
+
     title: app.getName(),
     backgroundColor: "#FFFFFF",
     show: false,
