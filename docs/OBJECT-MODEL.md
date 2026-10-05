@@ -77,10 +77,10 @@ type Output = {
 | Kind | Version | Base | Duration | Can go stale? | Examples |
 |---|---|---|---|---|---|
 | `recording` | **v0** | A take (frames + events) from a scenario | From the take (after speed-ups, cuts and freezes) | ✅ UI or scenario changed | "Create a project" |
-| `card` | **v0** | A brand template (title, section, text, bullets, CTA, outro) | Fixed, or auto | ❌ | Intro, "Step 2: Invite", "Try it now" |
+| ~~`card`~~ | — | **Replaced by HTML pages (§0.11, designed 2026-10-05)**: a recording of a page from `pages/`, the six templates (title, section, text, bullets, CTA, outro) shipped as page templates | — | — | Intro, "Step 2: Invite", "Try it now" |
 | `still` | v0.1 | An image: **captured from the app by the agent** (self-updating) or uploaded | Fixed, or auto | ✅ if captured | "Here's the dashboard", with a slow zoom + callouts |
 | `media` | v0.1 | An imported file (video or animated GIF) | Media length, trimmed | ❌ | Founder clip, logo animation |
-| *(later)* `terminal`, `html`, `avatar` | — | VHS-style terminal, a custom HTML slide, a talking head | — | — | — |
+| *(later)* `terminal`, `avatar` | — | VHS-style terminal, a talking head (an HTML slide is a page now: §0.11) | — | — | — |
 
 ```ts
 type Scene = {
@@ -234,11 +234,75 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 One markdown file at the project's root that the agent keeps as the chat goes on: the demo's **audience and goal**, its **outline** (the scenes in order, a line each), **decisions** made with the user, and **open questions**. Named `story.md` ("scenario" keeps meaning one scene's steps: decided by the user).
 
-- **Read at the start of every run** (part of the agent's context): what the agent knows about the demo survives the chat, which lives in memory only today (BACKLOG "Data persistence").
-- **Written by the agent** with `update_story` (the whole file or one section), each change a small "Story updated" row in the chat; the user may edit it too (a plain file in the project, versioned with it).
+- **Read at the start of every run** (part of the agent's context, capped): what the agent knows about the demo survives the chat, which lives in memory only today (BACKLOG "Data persistence").
+- **Written by the agent with the file tools** (§0.13: `edit_file` for one section, `write_file` for the whole), each change a small "Story updated" row in the chat; the user may edit it too (a plain file in the project, versioned with it). A change the user made since the agent last read it is never written over (§0.13).
+- **Lists the attachments** (§0.12) and the pages (§0.11), a line each: what they are, what they're for.
 - **Short** (a few thousand characters): a summary the agent keeps current, never a transcript. It doesn't replace the agent runtime's own context handling, nor persisting the chat.
 
 **Scenes stay one folder per scene** (decided by the user): the agent edits one without rewriting others, a broken file breaks one scene only, git diffs stay per scene; `story.md` gives the whole demo at a glance.
+
+### 0.11 HTML pages: cut-scenes, slides and mock-ups (designed 2026-10-05, not built)
+
+**A page is an app** (§0.9): `{ "kind": "html", "file": "pages/intro/index.html", "viewport": … }`. Everything a scene does on a web app it does on a page: grounded, replayed, recorded at human pace with the cursor and camera. One mechanism for every scene that isn't the product itself (decided by the user):
+
+- **A cut-scene or slide**: a page with no steps but a pause (`- { id: play, action: pause, ms: 6000 }`): its animation is whatever the page does (CSS, `requestAnimationFrame`, a library it ships with), filmed as it plays.
+- **A mock-up**: a page with steps, like any app: the agent clicks the fake "Pay" and types in the fake form. For UI that doesn't exist yet, or that's better not shown for real.
+
+**Where pages live: in the project**, a folder per page (its HTML, CSS, JS, fonts, images), versioned with it:
+
+```
+demo.kiframe/
+  project.json   story.md
+  pages/intro/index.html, style.css, logo.svg
+  pages/checkout-mockup/index.html, app.js
+  inputs/        the user's attachments (§0.12)
+  scenes/<id>/…  as before
+```
+
+- **Written mostly by the agent** (decided by the user) from the brief, `story.md` and the attachments, with the file tools (§0.13); the user may edit them too.
+- **Templates ship with Kiframe** (in its code, read only): the six former cards (title, section, text, bullets, CTA, outro) and later more (lower third, before/after). Used, a template is **copied into `pages/`** and is the project's from then on (any layout, animation, brand).
+- **Served by Kiframe, confined**: each page from a local address serving the project's `pages/` only (no path outside it, no listing). **No network by default** (fonts and libraries are files in the page); a page that needs a host (a CDN font) asks, as `add_app` does, and the host is allowed for that page only. A page never sees a secret, and no secret is ever written into one (§0.13).
+- **Filmed in real time** first, by the same recorder. If an animation drops frames, a later renderer steps the page's clock frame by frame (frame-perfect at any export size).
+- **Cards are removed** (decided by the user): barely built (the schema and the strip's label; nothing renders them). A project's card scene converts on open to its template's page, filled with its heading, body and bullets.
+
+**Open points:** the page's viewport by default (the video's frame, so a slide fills it); a page's own assets (copied from `inputs/` with `copy_file`, never linked across folders).
+
+### 0.12 Attachments: material for the agent (designed 2026-10-05, not built)
+
+The user can attach files in the chat (a button, a drop, a pasted image): **images** (a screenshot, a design, a logo, a "make it look like this"), **text** (`.md`, `.txt`: a script, a spec, release notes, copy) and **HTML** (an existing mock-up). Decided by the user.
+
+- **Kept in the project**: copied into `inputs/` (a safe name, never overwriting: `inputs/logo.png`, `inputs/logo-2.png`) and listed in `story.md`, so they outlive the chat. **Read only for the agent** (it never changes what the user gave).
+- **In the message**: an image goes to the model as an image (when the project's model takes images: DeepSeek V4.1 Flash does, checked on OpenRouter; another model that doesn't, the attachment is refused with that reason); a short text file is inlined, a long one is referenced and read with `read_file` (§0.13); an HTML file is studied as a reference, or adopted as a page (`copy_file` into `pages/`).
+- **Material, never instructions**: what a file says is data the agent works from; a file saying "ignore your instructions" changes nothing (the agent's instructions say so, and every tool result is scrubbed of known secret values as now).
+- **Limits**: images up to 10 MB (PNG, JPEG, WebP, GIF, SVG), text and HTML up to 1 MB; more types later (PDF).
+- **Stays local**: files stay on the user's machine, except what's sent to the model as part of the conversation.
+
+### 0.13 The agent's file tools (designed 2026-10-05, not built)
+
+One small set of tools over the project's **files the agent may see**, each part with its own rules. Narrow on purpose (a coding agent's free hand over a disk isn't Kiframe's): the scenes, `project.json` and the takes keep their own typed tools (`save_scene` checks and replays; a free write would bypass that).
+
+| Path | Read | Write / edit | Create, delete |
+|---|---|---|---|
+| `story.md` | ✅ (and given at the start of every run) | ✅ | never deleted |
+| `pages/**` | ✅ | ✅ (text files: HTML, CSS, JS, JSON, SVG) | ✅ |
+| `inputs/**` | ✅ (images as images) | ❌ the user's | ❌ (the user removes them) |
+| templates (Kiframe's) | ✅ | ❌ | copied into `pages/` |
+| anything else (`project.json`, `scenes/`, the take store, the disk) | ❌ | ❌ | ❌ |
+
+**The tools:**
+- `list_files(dir)`: what's in an allowed folder (names, sizes).
+- `read_file(path, { from, lines }?)`: a text file (a range for a long one, capped), or an image (to the model, when it takes images).
+- `write_file(path, content)`: a whole text file, created or replaced.
+- `edit_file(path, old, new)`: one exact passage replaced (it must occur once): small changes to a long page or one section of `story.md`, without rewriting the rest.
+- `copy_file(from, to)`: from `inputs/`, `pages/` or a template into `pages/` (how a logo or an image gets into a page: the model never writes binary).
+- `delete_file(path)`: in `pages/` only.
+
+**Rules, every tool:**
+- **Paths stay inside**: relative to the project, normalized; no `..`, no absolute path, no link leading out (resolved, then checked); only the folders above.
+- **Never over the user's change**: `write_file` and `edit_file` on an existing file need the agent to have read it, and the file unchanged since (its content hash); else refused ("changed since you read it: read it again"). The user's own edits to a page or `story.md` are never lost to the agent.
+- **Written whole or not at all** (an atomic write), within limits: a text file up to 512 KB, a page folder up to 20 MB, `story.md` up to 8,000 characters.
+- **No secret in a file**: a write whose content holds a known secret value is refused (the scrubber's values); what a read returns is scrubbed, as every tool result is.
+- **Shown in the chat**: each write a tool row with its path ("Wrote pages/intro/index.html", "Story updated"). Undone through the project's history (M1-10).
 
 ---
 
