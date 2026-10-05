@@ -41,6 +41,12 @@ export type LlmConfig = {
    * endpoint is OpenRouter's; set it for a gateway in front of OpenRouter.
    */
   sendReasoning?: boolean
+  /**
+   * How OpenRouter picks the model's provider (its `provider.sort`): `throughput` is what the
+   * `:nitro` suffix does, the id kept plain. Sent to OpenRouter only (another API would refuse it).
+   * Default: OpenRouter's own routing.
+   */
+  providerSort?: "throughput" | "price" | "latency"
 }
 
 /** The SDK calls the client makes: injectable, so tests never reach the network. */
@@ -153,22 +159,35 @@ export class OpenAiCompatibleClient implements LlmClient {
   readonly #completer: ChatCompleter
   readonly #model: string
   readonly #reasoning: boolean
+  readonly #sort: LlmConfig["providerSort"]
 
-  /** `sendReasoning`: send the reasoning state back (OpenRouter's field; off for other APIs). */
-  constructor(completer: ChatCompleter, model: string, sendReasoning = false) {
+  /**
+   * `sendReasoning`: send the reasoning state back (OpenRouter's field; off for other APIs).
+   * `providerSort`: OpenRouter's provider order (OpenRouter only).
+   */
+  constructor(
+    completer: ChatCompleter,
+    model: string,
+    sendReasoning = false,
+    providerSort?: LlmConfig["providerSort"],
+  ) {
     this.#completer = completer
     this.#model = model
     this.#reasoning = sendReasoning
+    this.#sort = providerSort
   }
 
   static fromConfig(config: LlmConfig): OpenAiCompatibleClient {
-    const reasoning = config.sendReasoning ?? isOpenRouter(config)
-    return new OpenAiCompatibleClient(makeCompleter(config), config.model, reasoning)
+    const openRouter = isOpenRouter(config)
+    const reasoning = config.sendReasoning ?? openRouter
+    const sort = openRouter ? config.providerSort : undefined
+    return new OpenAiCompatibleClient(makeCompleter(config), config.model, reasoning, sort)
   }
 
   #params(messages: LlmMessage[], tools: LlmToolDef[]) {
     return {
       model: this.#model,
+      ...(this.#sort !== undefined && { provider: { sort: this.#sort } }),
       messages: toOpenAiMessages(messages, this.#reasoning),
       ...(tools.length > 0 && { tools: toOpenAiTools(tools), tool_choice: "auto" as const }),
     }

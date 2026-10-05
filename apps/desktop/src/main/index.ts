@@ -46,11 +46,8 @@ if (!app.requestSingleInstanceLock()) {
 
 const message = errorMessage
 
-/**
- * The agent's model by default (OpenRouter ids; a picker comes later). `:nitro`: OpenRouter routes
- * to its fastest provider for it (a slow one made a turn take minutes).
- */
-export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash:nitro"
+/** The agent's model by default (OpenRouter ids; a picker comes later). */
+export const DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 /** How long quitting waits for the run and the browser to close. */
 const QUIT_WAIT_MS = 5000
 
@@ -133,7 +130,13 @@ function start(): void {
     if (scripted !== undefined) return scripted
     const apiKey = await keys.key()
     if (apiKey === undefined) throw new Error("no OpenRouter key: add one first")
-    return OpenAiCompatibleClient.fromConfig({ apiKey, model: DEFAULT_MODEL })
+    // OpenRouter's fastest provider for the model (as `:nitro`): the default route's was a third
+    // as fast (95-188 tokens/s against 245-318), and the agent's turns took minutes.
+    return OpenAiCompatibleClient.fromConfig({
+      apiKey,
+      model: DEFAULT_MODEL,
+      providerSort: "throughput",
+    })
   }
 
   /** The app's secrets: the vault read when first needed, and again after a failure (said). */
