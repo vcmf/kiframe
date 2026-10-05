@@ -5,11 +5,12 @@
 //
 // Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20] [--brief "…"]
 //    or: node scripts/real-apps/drive.ts --url https://… --brief "…" [--minutes 20]
+// Add --export demo.mp4 to export the recorded scene (the take as the app reads it, then the exporter).
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { TakeStore } from "@kiframe/project"
 import { _electron as electron } from "playwright"
@@ -65,6 +66,8 @@ const { values } = parseArgs({
     brief: { type: "string" },
     // Any other app: its address (with --brief), named after its host.
     url: { type: "string" },
+    // The recorded scene exported to a video file (.mp4 or .webm), through the exporter.
+    export: { type: "string" },
   },
 })
 function usage(why: string): never {
@@ -100,6 +103,73 @@ const root = join(import.meta.dirname, "..", "..")
 const out = join(root, ".kiframe-local", "real-apps", `${label}-${Date.now()}`)
 mkdirSync(out, { recursive: true })
 const log = (line: string) => console.log(`[${label}] ${line}`)
+
+/**
+ * The recorded scene to a video file: its take, as the app's preview reads it (decrypted, while the
+ * app runs: its key is in memory), written as a plain take next to the report, then the exporter.
+ */
+async function exportVideo(status: unknown, file: string): Promise<void> {
+  const scenes = (status as { project?: { scenes?: { id: string; status: string }[] } }).project
+    ?.scenes
+  const scene = scenes?.find((s) => s.status === "recorded")
+  if (scene === undefined) return log("no export: nothing recorded")
+  const preview = await page.evaluate(async (id) => {
+    const api = (
+      window as unknown as { kiframe: { invoke: (c: string, a: string) => Promise<unknown> } }
+    ).kiframe
+    const r = (await api.invoke("preview:open", id)) as
+      | { ok: false; why: string }
+      | { ok: true; video: Uint8Array; take: unknown; composition: unknown; scenario: unknown }
+    if (!r.ok) return { why: r.why }
+    let bin = ""
+    for (let i = 0; i < r.video.length; i += 0x8000) {
+      bin += String.fromCharCode(...r.video.subarray(i, i + 0x8000))
+    }
+    return { video: btoa(bin), take: r.take, composition: r.composition, scenario: r.scenario }
+  }, scene.id)
+  if ("why" in preview) return log(`no export: ${preview.why}`)
+  const take = preview.take as { meta: unknown; events: unknown[]; cursor: unknown[] }
+  const dir = join(out, "export")
+  const takeDir = join(dir, "take")
+  mkdirSync(takeDir, { recursive: true })
+  writeFileSync(join(takeDir, "meta.json"), JSON.stringify(take.meta))
+  writeFileSync(
+    join(takeDir, "events.jsonl"),
+    take.events.map((e) => JSON.stringify(e)).join("\n") + "\n",
+  )
+  writeFileSync(
+    join(takeDir, "cursor.jsonl"),
+    take.cursor.map((c) => JSON.stringify(c)).join("\n") + "\n",
+  )
+  writeFileSync(join(takeDir, "frames.webm"), Buffer.from(preview.video, "base64"))
+  // JSON is YAML: the scenario as the app has it; a project file only to be read (the composition
+  // is given: nothing generated from it).
+  writeFileSync(join(dir, "scenario.yaml"), JSON.stringify(preview.scenario))
+  writeFileSync(join(dir, "composition.json"), JSON.stringify(preview.composition))
+  writeFileSync(
+    join(dir, "project.yaml"),
+    `version: 1\ntarget: { kind: web, url: "${run.url}", viewport: { width: 1440, height: 900 } }\n`,
+  )
+  const { spawnSync } = await import("node:child_process")
+  const done = spawnSync(
+    process.execPath,
+    [
+      join(root, "apps", "exporter", "src", "cli.ts"),
+      "--project",
+      join(dir, "project.yaml"),
+      "--scenario",
+      join(dir, "scenario.yaml"),
+      "--composition",
+      join(dir, "composition.json"),
+      "--take",
+      takeDir,
+      "--out",
+      resolve(file),
+    ],
+    { stdio: "inherit" },
+  )
+  log(done.status === 0 ? `exported: ${resolve(file)}` : `export failed (${done.status ?? "?"})`)
+}
 
 /** The complete takes the app's take store holds (its own reading: leftovers and bad ones skipped). */
 function completeTakes(data: string): number {
@@ -284,6 +354,7 @@ try {
       "app:status",
     ),
   )
+  if (values.export !== undefined && previewed) await exportVideo(status, values.export)
   const usageAfter = await credits()
   const report = {
     app: label,
