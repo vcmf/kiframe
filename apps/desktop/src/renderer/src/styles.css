@@ -413,8 +413,11 @@ button:disabled {
   color: var(--text);
 }
 
+/* Takes what the strip leaves, never more: it shrinks (the preview's canvas fits in it) rather
+   than push the strip out of the window. */
 .stage-well {
   flex-grow: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -453,6 +456,7 @@ button:disabled {
 
 /* ── scene strip ── */
 .strip {
+  flex-shrink: 0;
   border-top: 1px solid var(--line);
   background: var(--bg);
   padding: 14px 24px 18px;

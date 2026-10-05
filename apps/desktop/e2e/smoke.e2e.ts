@@ -162,6 +162,45 @@ describe("the desktop app", () => {
     if (shots !== undefined) await page.screenshot({ path: join(shots, "workspace.png") })
   })
 
+  it("keeps the scene strip in the window at its smallest, and hidden elements hidden", async () => {
+    const size = await app.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0]?.getSize(),
+    )
+    try {
+      await app.evaluate(({ BrowserWindow }) =>
+        BrowserWindow.getAllWindows()[0]?.setSize(1024, 680),
+      )
+      // A preview's canvas is as large as the video (1080p): the strip below it stays in view.
+      const layout = await page.evaluate(async () => {
+        const well = document.querySelector(".stage-well")
+        const canvas = document.createElement("canvas")
+        canvas.width = 1920
+        canvas.height = 1080
+        well?.append(canvas)
+        const hidden = document.createElement("div")
+        hidden.className = "player"
+        hidden.hidden = true
+        well?.append(hidden)
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
+        const strip = document.querySelector(".strip")?.getBoundingClientRect()
+        const out = {
+          stripInWindow: strip !== undefined && strip.bottom <= window.innerHeight + 1,
+          // A class's own display (the preview player's flex) never shows a hidden element.
+          hiddenShown: getComputedStyle(hidden).display !== "none",
+        }
+        canvas.remove()
+        hidden.remove()
+        return out
+      })
+      expect(layout).toEqual({ stripInWindow: true, hiddenShown: false })
+    } finally {
+      await app.evaluate(({ BrowserWindow }, s) => {
+        const [w = 1440, h = 900] = s ?? []
+        BrowserWindow.getAllWindows()[0]?.setSize(w, h)
+      }, size)
+    }
+  })
+
   it("runs the agent: a risky step asks in the chat, and Stop closes it with nothing more run", async () => {
     const dir = join(mkdtempSync(join(tmpdir(), "kiframe-e2e-app-")), "app.kiframe")
     createProject(dir, { id: "p2", name: "Fixture app", url: server.url })
