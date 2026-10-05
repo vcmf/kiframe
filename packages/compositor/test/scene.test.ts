@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { generate, type TakeInput } from "@kiframe/generators"
 import {
   parseProjectYaml,
@@ -7,7 +9,8 @@ import {
   type TakeMeta,
 } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
-import { DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kiframe/schema"
+import { BUILTIN_BACKGROUNDS, DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kiframe/schema"
+import { drawScene } from "../src/draw.ts"
 import { contentBox, cursorAt, prepare, sceneAt } from "../src/scene.ts"
 
 const project = parseProjectYaml(`version: 1
@@ -165,6 +168,71 @@ describe("camera", () => {
     const base = { ...SCHEMA_DEFAULT_STYLE, radius: 30, padding: 0.1 }
     const s = prepare(styled, scenario, take, { captionSize: 50 }, base).style
     expect(s).toMatchObject({ radius: 4, padding: 0.1, captionSize: 50 })
+  })
+
+  it("fills the frame with the app when there's no background (no padding, no corners)", () => {
+    const { scenario, take, composition } = fixture()
+    const bare: Composition = { ...composition, style: { background: "none", padding: 0.2 } }
+    const s = prepare(bare, scenario, take).style
+    expect(s).toMatchObject({ background: "none", padding: 0, radius: 0 })
+    // The output's own layer comes last: it can't put a window look back without a background,
+    // nor keep the scene's padding when it takes the background away.
+    expect(prepare(bare, scenario, take, { padding: 0.1, radius: 9 }).style).toMatchObject({
+      padding: 0,
+      radius: 0,
+    })
+    const framedScene: Composition = { ...composition, style: { padding: 0.06 } }
+    expect(prepare(framedScene, scenario, take, { background: "none" }).style.padding).toBe(0)
+    // A 16:9 take in a 16:9 frame: the whole frame.
+    expect(contentBox(s, { width: 1920, height: 1080 })).toEqual({ x: 0, y: 0, w: 1920, h: 1080 })
+  })
+
+  it("draws no window look without a background: black around the app, no shadow", () => {
+    const { scenario, take, composition } = fixture()
+    // A canvas that records what's asked of it (the drawing's choices, not its pixels).
+    const drawn = (style: Composition["style"]) => {
+      const ops: string[] = []
+      const ctx = new Proxy(
+        {},
+        {
+          get: (_t, key) =>
+            key === "createLinearGradient"
+              ? () => ({ addColorStop: () => ops.push("gradient") })
+              : (...args: unknown[]) => ops.push(`${String(key)}(${args.map(String).join(",")})`),
+          set: (_t, key, value) => {
+            ops.push(`${String(key)}=${String(value)}`)
+            return true
+          },
+        },
+      ) as unknown as CanvasRenderingContext2D
+      const prepared = prepare({ ...composition, style }, scenario, take)
+      const frame = { width: 1280, height: 800 } as unknown as CanvasImageSource & {
+        width: number
+        height: number
+      }
+      drawScene(ctx, frame, sceneAt(prepared, 0), prepared.style)
+      return ops
+    }
+    const bare = drawn({ background: "none" })
+    // First, the whole frame black (the bars of an app of another aspect).
+    expect(bare.slice(0, 2)).toEqual(["fillStyle=#000", "fillRect(0,0,1920,1080)"])
+    // The window's shadow (the cursor keeps its own small one).
+    expect(bare).not.toContain("shadowBlur=48")
+    expect(bare).not.toContain("gradient")
+    const framed = drawn({ background: { builtin: "mountain-lake" } })
+    expect(framed).toContain("gradient")
+    expect(framed).toContain("shadowBlur=48")
+  })
+
+  it("ships exactly the backgrounds the schema names, each one's file there", () => {
+    const dir = join(import.meta.dirname, "..", "backgrounds")
+    const list = JSON.parse(readFileSync(join(dir, "backgrounds.json"), "utf8")) as {
+      default: string
+      backgrounds: { id: string; file: string }[]
+    }
+    expect(list.backgrounds.map((b) => b.id).sort()).toEqual([...BUILTIN_BACKGROUNDS].sort())
+    for (const b of list.backgrounds) expect(existsSync(join(dir, b.file)), b.file).toBe(true)
+    expect(SCHEMA_DEFAULT_STYLE.background).toEqual({ builtin: list.default })
   })
 
   it("keeps the content box valid on vertical outputs, even at the maximum padding", () => {

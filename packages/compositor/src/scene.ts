@@ -13,6 +13,7 @@ import {
   applyStyle,
   DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE,
   type Anchor,
+  type Background,
   type CameraSegment,
   type Composition,
   type NRect,
@@ -29,9 +30,9 @@ export interface Style {
   width: number
   height: number
   fps: number
-  /** Background behind the window (CSS color or gradient stops). */
-  background: [string, string]
-  /** Space around the window, as a fraction of the output height. */
+  /** What's behind the window: one of Kiframe's images, or none (the app fills the frame). */
+  background: Background
+  /** Space around the window, as a fraction of the output's shorter side (0 without a background). */
   padding: number
   /** Window corner radius, in output pixels. */
   radius: number
@@ -46,11 +47,22 @@ export interface Style {
 }
 
 /** The product defaults (packages/schema), flattened, at the landscape output size. */
-export const DEFAULT_STYLE: Style = flatten(SCHEMA_DEFAULT_STYLE, {
-  width: 1920,
-  height: 1080,
-  fps: 30,
-})
+export const DEFAULT_STYLE: Style = framed(
+  flatten(SCHEMA_DEFAULT_STYLE, {
+    width: 1920,
+    height: 1080,
+    fps: 30,
+  }),
+)
+
+/**
+ * The window look follows the background, once every layer is on (product, org, project, scene,
+ * output): without a background, no padding and no corners (the app fills the frame; its shadow is
+ * skipped where it's drawn). The style's own padding stays in the files, for when one comes back.
+ */
+export function framed(style: Style): Style {
+  return style.background === "none" ? { ...style, padding: 0, radius: 0 } : style
+}
 
 /** A resolved schema style (resolveStyle) plus an output size, as the compositor draws it. */
 export function flatten(
@@ -133,7 +145,7 @@ export function prepare(
   baseStyle: SchemaStyle = SCHEMA_DEFAULT_STYLE,
 ): Prepared {
   const size = { width: DEFAULT_STYLE.width, height: DEFAULT_STYLE.height, fps: DEFAULT_STYLE.fps }
-  const s = { ...flatten(applyStyle(baseStyle, composition.style), size), ...style }
+  const s = framed({ ...flatten(applyStyle(baseStyle, composition.style), size), ...style })
   const { timeline } = buildTimeline(scenario, take)
   const map = timeMap(composition.tracks.clips, timeline)
   const base: Omit<Prepared, "moves" | "softness"> = {

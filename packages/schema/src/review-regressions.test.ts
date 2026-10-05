@@ -37,7 +37,7 @@ describe("strictness everywhere (typos are errors)", () => {
     const c = Composition.parse({
       version: 1,
       // Typed since M1-1 (a StyleOverride).
-      style: { background: ["#000000", "#111111"] },
+      style: { background: { builtin: "forest-lake" }, radius: 4 },
       tracks: {
         callouts: [
           {
@@ -53,7 +53,7 @@ describe("strictness everywhere (typos are errors)", () => {
         keystrokes: [{ id: "k", source: "auto", keys: "Mod+K", at: { ms: 0 }, until: { ms: 300 } }],
       },
     })
-    expect(c.style).toEqual({ background: ["#000000", "#111111"] })
+    expect(c.style).toEqual({ background: { builtin: "forest-lake" }, radius: 4 })
     expect(c.tracks.callouts).toHaveLength(1)
     expect(c.tracks.keystrokes).toHaveLength(1)
     expect(Composition.safeParse({ version: 1, tracks: {}, extra: 1 }).success).toBe(false)

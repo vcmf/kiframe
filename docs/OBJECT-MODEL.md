@@ -338,9 +338,9 @@ One small set of tools over the project's **files the agent may see**, each part
 - **Until history (M1-10), the last versions of each written file are kept** in the app's data (a few per file): an agent's rewrite of a page can be undone.
 - **The secret check uses the scrubber's own minimum length** (a short value would refuse innocent HTML).
 
-### 0.14 A scene's background, and a camera on the whole picture (designed 2026-10-05, not built)
+### 0.14 A scene's background, and a camera on the whole picture (designed 2026-10-05; the format built, the image and the camera next)
 
-**Today** (`packages/compositor/src/draw.ts`) the background is a gradient over the whole frame, the app's window sits at a fixed place inside the padding (rounded, with a shadow), and **a zoom crops and magnifies the take inside that fixed window**: the window and the background never move, as if looking through a fixed hole (the user found it strange).
+**Before** (`packages/compositor/src/draw.ts`, until 2026-10-05) the background was a gradient over the whole frame, the app's window sits at a fixed place inside the padding (rounded, with a shadow), and **a zoom crops and magnifies the take inside that fixed window**: the window and the background never move, as if looking through a fixed hole (the user found it strange).
 
 **A background per scene, or none** (decided by the user):
 - `background`: **an image**, or none. Images only for now (no color or gradient).
@@ -356,7 +356,7 @@ One small set of tools over the project's **files the agent may see**, each part
 - **Zoom cap** as today (§2b): beyond the capture's resolution the image softens.
 
 **Implementation notes (design review, 2026-10-05):**
-- **Format**: the style's `background` becomes `{ builtin: id }` or `"none"` (`{ file: "inputs/…" }` once attachments exist), padding 0 with none; the scene's override stays `composition.style`, the default `project.style`.
+- **Format** (built 2026-10-05: a shipped image or none; until the image is drawn, the former gradient stands in behind the window, the same for every image): the style's `background` becomes `{ builtin: id }` or `"none"` (`{ file: "inputs/…" }` once attachments exist), padding 0 with none; the scene's override stays `composition.style`, the default `project.style`.
 - **Camera segments keep app coordinates**: `scale` stays "magnification of the app's window", so generators don't change; only the view and the drawing map the app onto the stage and clamp to the stage. The zoom cap's softness formula stays right. The same `scale` frames a target a little smaller (the window covers about 88% of the frame at rest): tuned later if it shows.
 - **Drawing under a zoom**: the window's shadow, the blur radius and the cursor size are corrected for the scale (canvas shadows ignore the transform; the cursor grows less than the zoom, as today); captions drawn without it.
 - **No background, another aspect** (a 16:10 app in a 16:9 video): black bars, the view clamped to the app.
