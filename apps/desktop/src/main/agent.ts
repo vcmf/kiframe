@@ -12,6 +12,7 @@ import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.
 import { errorMessage } from "../shared/util.ts"
 import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
+import { AgentTrace } from "./trace.ts"
 import type { Secrets } from "./secrets.ts"
 
 /** `work`, or the stop: a keychain prompt waiting for the user never holds Stop. */
@@ -115,6 +116,8 @@ export function secretRequest(
 export class AgentHost {
   readonly #options: AgentHostOptions
   readonly #log = new ChatLog()
+  /** The agent's events, traced for runs on real apps (`KIFRAME_TRACE`: a file); none: no trace. */
+  readonly #trace = AgentTrace.fromEnv(process.env.KIFRAME_TRACE)
   #history: LlmMessage[] = []
   #studio: Studio | undefined
   /** The studio was made with the app's secrets. */
@@ -207,6 +210,7 @@ export class AgentHost {
         signal,
         maxTurns: MAX_TURNS,
       })) {
+        this.#trace?.event(event)
         // The run's turns, kept as they come.
         if ("messages" in event) this.#history = [...this.#history, ...event.messages]
         for (const item of this.#log.event(event)) this.#emit(item, event.type === "assistant_text")
@@ -227,6 +231,7 @@ export class AgentHost {
         this.#emit(item)
       }
     } finally {
+      this.#trace?.flush()
       this.#flushText()
       // The run is over for the user at once (Stop works, a message can go); the live view's last
       // frame comes after, and a next run's live view waits for it.

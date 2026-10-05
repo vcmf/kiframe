@@ -30,6 +30,7 @@ import {
   timeoutOf,
 } from "./context.ts"
 import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
+import { findMainScroller } from "../scroller.ts"
 import {
   COVERED_AT_POINT,
   clickAtCursor,
@@ -741,32 +742,4 @@ async function scrollUntil(
       await ctx.page.waitForTimeout(100)
     }
   }
-}
-
-/**
- * The page's main scroller: the document when it scrolls, otherwise the largest visible scrollable
- * element (app-shell layouts, where `<body>` doesn't scroll and a `<main>` pane does). Runs in the page.
- */
-function findMainScroller(): Element {
-  const doc = document.scrollingElement ?? document.documentElement
-  const docScrolls =
-    doc.scrollHeight > innerHeight + 1 &&
-    getComputedStyle(document.documentElement).overflowY !== "hidden" &&
-    getComputedStyle(document.body).overflowY !== "hidden"
-  if (docScrolls) return doc
-  let best: Element = doc
-  let bestArea = 0
-  for (const el of document.querySelectorAll("*")) {
-    const { overflowY } = getComputedStyle(el)
-    if (!/(auto|scroll|overlay)/.test(overflowY) || el.scrollHeight <= el.clientHeight + 1) continue
-    const r = el.getBoundingClientRect()
-    const area =
-      Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
-      Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0))
-    if (area > bestArea) {
-      bestArea = area
-      best = el
-    }
-  }
-  return best
 }

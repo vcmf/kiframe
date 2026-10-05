@@ -55,6 +55,8 @@ Rules:
 - run_step runs steps on the live page in order: after the steps, clean up with the teardown actions too
   (run them with run_step as well) so the app is back to its initial state before you save. Give run_step
   the part each item is for (\`part: setup\` / \`teardown\`; steps by default).
+- A long page's snapshot is cut: to reach something further down (a section, a paragraph), snapshot with
+  \`find\` (text it mentions): you get its elements and refs, then scroll to one (\`scroll\` with \`to\`).
 - Explore with snapshot and run_step; once you know the locators, run the rest with run_steps (several
   steps in one call) to save turns.
 - As soon as every step and the teardown ran ok once, call save_scene. Don't start over by hand to re-check:

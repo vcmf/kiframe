@@ -365,6 +365,46 @@ describe("studio tools", () => {
     await studio.close()
   }, 30_000)
 
+  it("finds what a long page has past the snapshot's cut, its refs ready to scroll to", async () => {
+    const value = "sk-live-4242424242"
+    const { studio } = makeStudio(undefined, { knownValues: () => new Set([value]) })
+    const step = (s: object) => tool("run_step").run({ scene: "long", step: s }, studio, never)
+    const page = await studio.livePage()
+    const rows = Array.from({ length: 600 }, (_, i) => `<p>Season ${i}: matches and goals</p>`)
+    await page.setContent(
+      `<main>${rows.join("")}<h2>World Cup 2026</h2><p>Key: ${value}</p><p>The final.</p></main>`,
+    )
+    const whole = (await tool("snapshot").run({}, studio, never)) as string
+    expect(whole).toMatch(/cut: .*use `find`/)
+    expect(whole).toMatch(/\nview: at the top of the page \(this snapshot covers the whole page/)
+    // A region's snapshot: no word of the page's view.
+    expect(
+      await tool("snapshot").run({ within: { by: "role", role: "main" } }, studio, never),
+    ).not.toMatch(/view:/)
+    expect(whole).not.toContain("World Cup 2026")
+    const found = (await tool("snapshot").run({ find: "world cup" }, studio, never)) as string
+    expect(found).toMatch(
+      /- main( \[ref=e\d+\])?:\n {2}…\n {2}- heading "World Cup 2026" \[level=2\] \[ref=e\d+\]\n…$/,
+    )
+    const ref = /heading "World Cup 2026" \[level=2\] \[ref=(e\d+)\]/.exec(found)?.[1]
+    expect(await step({ id: "to", action: "scroll", to: { ref } })).toMatch(/^ok/)
+    expect(
+      await page.getByRole("heading", { name: "World Cup 2026" }).evaluate((h) => {
+        const r = h.getBoundingClientRect()
+        return r.top >= 0 && r.bottom <= innerHeight
+      }),
+    ).toBe(true)
+    // After the scroll, the snapshot says where the view is (its text still starts at the top).
+    expect(await tool("snapshot").run({}, studio, never)).toMatch(
+      /\nview: (9\d|100)% down the page, in "World Cup 2026"/,
+    )
+    // A search runs on the scrubbed snapshot: a secret's value is never told from a miss.
+    expect(await tool("snapshot").run({ find: value.slice(0, 10) }, studio, never)).toMatch(
+      /nothing in the page mentions/,
+    )
+    await studio.close()
+  }, 30_000)
+
   it("keeps a tool's error as it was, scrubbed, even one that can't be written (a DOMException)", async () => {
     const { studio } = makeStudio(
       () => Promise.reject(new DOMException("timed out for sk-live-4242424242", "TimeoutError")),
