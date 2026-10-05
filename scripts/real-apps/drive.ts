@@ -225,6 +225,8 @@ const env = Object.fromEntries(
   ),
 )
 env.KIFRAME_TEST_KEYCHAIN = "memory"
+// The agent's every event, timed, next to the report (what it called, with what, how long).
+env.KIFRAME_TRACE = join(out, "trace.jsonl")
 const profile = mkdtempSync(join(tmpdir(), "kiframe-real-"))
 const usageBefore = await credits()
 const started = Date.now()

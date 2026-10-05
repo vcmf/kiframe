@@ -16,6 +16,7 @@ import {
   isPageGone,
   type Lasting,
   lastingLocator,
+  viewOf,
 } from "@kiframe/runtime"
 import {
   ACTION_REFERENCE,
@@ -48,6 +49,7 @@ import {
   type SnapshotNode,
   withAt,
 } from "./refs.ts"
+import { findInSnapshot } from "./snapshot-find.ts"
 
 // The studio: what the agent's tools act on (the project, the live app, the take store), for one
 // open project. The host (the desktop app's main process) makes one per project and passes it to
@@ -238,8 +240,11 @@ export class Studio {
     return { ok: true, text: `${said}. url: ${this.#where(url, site)}`, site }
   }
 
-  /** The live page's accessibility snapshot (or one region's), with its URL. */
-  async snapshot(within?: unknown): Promise<StepResult> {
+  /**
+   * The live page's accessibility snapshot (or one region's), with its URL; with `find`, only the
+   * parts that mention it (a long page's content past the cut).
+   */
+  async snapshot(within?: unknown, find?: string): Promise<StepResult> {
     // Its refs are gone whatever this one gives (as Playwright's are).
     this.#snapshot = undefined
     this.#checked = undefined
@@ -288,17 +293,44 @@ export class Studio {
     } catch (e) {
       return failed(`snapshot failed: ${this.scrub(String(e))}`)
     }
-    // Scrubbed whole, then cut (a value the cut splits would pass the scrubber in part).
+    // Scrubbed whole, then searched and cut: a value the cut splits would pass the scrubber in
+    // part, and a search before scrubbing would tell a guess of a value from a miss.
     const scrubbed = this.scrub(text)
+    const shown = find === undefined ? scrubbed : findInSnapshot(scrubbed, find)
+    if (find !== undefined && shown === "") {
+      return {
+        ok: true,
+        text: `url: ${this.#where(page.url())}\nnothing in the ${within === undefined ? "page" : "region"} mentions ${JSON.stringify(find)}`,
+      }
+    }
     const cut =
-      scrubbed.length > SNAPSHOT_MAX
-        ? `${scrubbed.slice(0, SNAPSHOT_MAX)}\n… (cut: ${scrubbed.length} chars; use \`within\` to look at a region)`
-        : scrubbed
+      shown.length > SNAPSHOT_MAX
+        ? `${shown.slice(0, SNAPSHOT_MAX)}\n… (cut: ${shown.length} chars; ${find === undefined ? "use `find` to look for what you need further down, or `within` for a region" : "make `find` more specific"})`
+        : shown
     const note =
       unusable === ""
         ? ""
         : `\n(${unusable}: its refs can't be used; snapshot again to point at them, or write locators)`
-    return { ok: true, text: `url: ${this.#where(page.url())}${note}\n${cut}` }
+    return {
+      ok: true,
+      text: `url: ${this.#where(page.url())}${within === undefined ? await this.#view(page) : ""}${note}\n${cut}`,
+    }
+  }
+
+  /**
+   * Where the view is, said with a snapshot: it covers the whole page whatever is on screen, so
+   * after a scroll it reads as if nothing moved (the agent once spent minutes on why).
+   */
+  async #view(page: Page): Promise<string> {
+    const view = await viewOf(page).catch(() => undefined)
+    if (view === undefined) return ""
+    const down = !view.scrolled
+      ? "at the top of the page"
+      : view.percent === 0
+        ? "a little way down the page"
+        : `${view.percent}% down the page`
+    const where = `${down}${view.heading === undefined ? "" : `, in "${view.heading}"`}`
+    return `\nview: ${this.scrub(where)} (this snapshot covers the whole page, on screen or not)`
   }
 
   /**
