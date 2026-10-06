@@ -18,8 +18,8 @@ afterAll(async () => {
 describe("stopping a run (its signal)", () => {
   it("stops at the next step, and runs nothing more (not the teardown)", async () => {
     const page = await browser.newPage()
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const scenario = parseScenarioYaml(`version: 1
@@ -48,8 +48,8 @@ teardown: [{ action: pause, ms: 1 }]
 
   it("runs no teardown after a stop during the setup (it would clean what this run didn't make)", async () => {
     const page = await browser.newPage()
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const scenario = parseScenarioYaml(`version: 1
@@ -78,8 +78,8 @@ teardown: [{ action: pause, ms: 1 }]
 
   it("stops before an ensure: its check, and the teardown it would run, never start", async () => {
     const page = await browser.newPage()
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     // The leftover is there: without the stop, the ensure would run the teardown to remove it.
@@ -110,8 +110,8 @@ teardown: [{ action: pause, ms: 1 }]
 
   it("reports a stop that closed a dialog as a stop, and runs nothing more", async () => {
     const page = await browser.newPage()
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const scenario = parseScenarioYaml(`version: 1
@@ -140,8 +140,8 @@ teardown: [{ action: pause, ms: 1 }]
 
   it("runs no teardown after a stop that lands once the steps are done", async () => {
     const page = await browser.newPage()
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const scenario = parseScenarioYaml(`version: 1
@@ -166,8 +166,8 @@ teardown: [{ action: pause, ms: 1 }]
 
   it("reports a stop during the teardown as a stop, even after a failure", async () => {
     const page = await browser.newPage()
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const scenario = parseScenarioYaml(`version: 1

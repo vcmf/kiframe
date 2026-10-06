@@ -107,14 +107,17 @@ function remove(opened: OpenedProject, rel: string): void {
 export function createProject(dir: string, init: NewProject): OpenedProject {
   if (existsSync(join(dir, PROJECT_FILE))) throw new Error(`${dir} already holds a project`)
   const project = Project.parse({
-    version: 1,
+    version: 2,
     id: init.id,
     orgId: LOCAL_ORG,
     name: init.name,
-    target: {
-      kind: "web",
-      url: init.url,
-      viewport: init.viewport ?? { width: 1440, height: 900 },
+    apps: {
+      // (No viewport given: the schema's default.)
+      app: {
+        kind: "web",
+        url: init.url,
+        ...(init.viewport !== undefined && { viewport: init.viewport }),
+      },
     },
   })
   mkdirSync(join(dir, "scenes"), { recursive: true })

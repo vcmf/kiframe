@@ -118,8 +118,8 @@ describe("scrubSecrets", () => {
 describe("recording", () => {
   it("blurs a secret shown as text, from the scan before it was seen", async () => {
     const dir = join(mkdtempSync(join(tmpdir(), "kiframe-scan-")), "take")
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const take = await recordScenario(
@@ -146,8 +146,8 @@ steps: [{ id: wait, action: pause, ms: 900 }]
 
   it("keeps every occurrence blurred through re-renders: a region never comes back", async () => {
     const dir = join(mkdtempSync(join(tmpdir(), "kiframe-scan-")), "take")
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const take = await recordScenario(

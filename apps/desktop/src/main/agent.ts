@@ -4,7 +4,7 @@
 import type { LlmClient, LlmMessage } from "@kiframe/agent"
 import { runAgent } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
-import { resolveProjectConfig } from "@kiframe/schema"
+import { firstApp, resolveProjectConfig } from "@kiframe/schema"
 import { Studio, studioTools, systemPrompt } from "@kiframe/studio"
 import type { Browser } from "playwright"
 import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
@@ -269,7 +269,7 @@ export class AgentHost {
     this.#withSecrets = secrets !== undefined
     // Every value known before anything runs (R6); the browser launches meanwhile.
     const [browser] = await Promise.all([this.#options.browser(), secrets?.ready()])
-    const origin = new URL(config.target.url).origin
+    const origin = new URL(firstApp(config).app.url).origin
     this.#browser = browser
     this.#studio = new Studio({
       project,

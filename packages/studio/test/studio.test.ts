@@ -40,8 +40,8 @@ function makeStudio(
     url: server.url,
     viewport: { width: 800, height: 600 },
   })
-  const config = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+  const config = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
   const asked: UserRequest[] = []
@@ -367,8 +367,8 @@ describe("studio tools", () => {
 
   it("replays a scene at the recording's pace before saving (what a person's typing changes, it sees)", async () => {
     // Typed at a person's pace, the suggestions open (a pause after the comma); at once, never.
-    const config = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    const config = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: human } }
 `)
     const { studio } = makeStudio(undefined, { config })
@@ -454,8 +454,8 @@ steps:
 
   it("says a preset stopped when a step closed the popup it started on", async () => {
     const { studio } = makeStudio(undefined, {
-      config: parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+      config: parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 presets:
   finish:

@@ -13,6 +13,7 @@ import { writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import {
   CursorSample,
+  firstApp,
   TakeEvent,
   TakeMeta,
   type ProjectConfig,
@@ -455,13 +456,15 @@ export async function recordScenario(
         warnings.push("couldn't read the frame size: assuming the CSS viewport")
       const size = frameSize ?? viewport
       const scenarioHash = scenarioHashOf(scenario)
+      // The app the take starts in (its URL and viewport in the key: the same as a v1 target's).
+      const start = firstApp(project)
       meta = TakeMeta.parse({
         version: 1,
-        takeKey: `${sha256(`${scenarioHash}|${project.target.url}|${JSON.stringify(project.target.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
+        takeKey: `${sha256(`${scenarioHash}|${start.app.url}|${JSON.stringify(start.app.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
         scenarioHash,
         recordedAt: recordedAt.toISOString(),
-        appUrl: project.target.url,
-        ...(project.environment !== undefined && { environment: project.environment }),
+        appUrl: start.app.url,
+        app: start.name,
         // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
         viewport: {
           width: viewport.width,

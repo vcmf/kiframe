@@ -30,8 +30,8 @@ let project: ProjectConfig
 beforeAll(async () => {
   server = await startFixtureServer()
   browser = await chromium.launch()
-  project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+  project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
 })

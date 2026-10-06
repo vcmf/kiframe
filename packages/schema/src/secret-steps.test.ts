@@ -24,8 +24,8 @@ describe("secret-typing steps", () => {
 
   it("need an id in a preset", () => {
     const project = (step: string) => () =>
-      parseProjectYaml(`version: 1
-target: { kind: web, url: "https://app.example.com", viewport: { width: 800, height: 600 } }
+      parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "https://app.example.com", viewport: { width: 800, height: 600 } } }
 presets:
   login:
     steps: [${step}]

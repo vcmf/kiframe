@@ -1,8 +1,8 @@
 # Phase 0 third-party app for grounding (P0-8): Cal.com, a throwaway free account.
 # Credentials come from the vault in the app; in the Phase 0 scripts from env vars
 # CALCOM_USERNAME (the account email) / CALCOM_PASSWORD (secret names calcom.username / calcom.password).
-version: 1
-target: { kind: web, url: "https://app.cal.com", viewport: { width: 1440, height: 900 } }
+version: 2
+apps: { app: { kind: web, url: "https://app.cal.com", viewport: { width: 1440, height: 900 } } }
 presets:
   # Once per batch; later scenes reuse the signed-in session (storage state).
   login:

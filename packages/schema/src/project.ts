@@ -12,21 +12,59 @@ import {
   type Scenario,
   requireSecretStepIds,
 } from "./scenario.ts"
-import { Pacing, RuleName, Viewport } from "./settings.ts"
+import { AppName, Pacing, RuleName, Viewport } from "./settings.ts"
+import { sameApp } from "./site.ts"
 
-// Two shapes (docs/OBJECT-MODEL.md §0.5, §2; APPROACHES §10c):
-// - `Project`: the user's file, `project.json` (org, environment, sequence, outputs, settings);
+// Two shapes (docs/OBJECT-MODEL.md §0.5, §0.9, §2; APPROACHES §10c):
+// - `Project`: the user's file, `project.json` (org, apps, sequence, outputs, settings);
 // - `ProjectConfig`: what the runtime reads, resolved from org settings + the project
-//   (`resolveProjectConfig` in resolve.ts): the target URL comes from the environment, the rule
-//   bank from the org.
+//   (`resolveProjectConfig` in resolve.ts): the rule bank from the org.
 
-export const TargetApp = z.strictObject({
+/** An app a demo shows: v0 drives web apps (pages and desktop apps come with their drivers). */
+export const App = z.strictObject({
   kind: z.literal("web"),
-  /** http(s) only, and no embedded credentials (use the vault): the app Kiframe drives. */
+  /** http(s) only, and no embedded credentials (use the vault). */
   url: withoutCredentials(z.url({ protocol: /^https?$/ })),
-  viewport: Viewport,
+  /** The size its takes are recorded at. */
+  viewport: Viewport.prefault({ width: 1440, height: 900 }),
 })
-export type TargetApp = z.infer<typeof TargetApp>
+export type App = z.infer<typeof App>
+
+/** The apps of a project, in order (the first is where a scene starts), never two on one site. */
+export const Apps = z.record(AppName, App).superRefine((apps, ctx) => {
+  const entries = Object.entries(apps)
+  if (entries.length === 0) ctx.addIssue({ code: "custom", message: "a project has an app" })
+  // Over the cap: said once, never the pairwise check (a hostile file with thousands).
+  if (entries.length > 20) {
+    ctx.addIssue({ code: "custom", message: "at most 20 apps" })
+    return
+  }
+  entries.forEach(([name, app], i) => {
+    const other = entries
+      .slice(0, i)
+      .find(([, o]) => sameApp(app.url, o.url) || sameApp(o.url, app.url))
+    if (other !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: `apps "${other[0]}" and "${name}" are on the same site: one app per site`,
+        path: [name, "url"],
+      })
+    }
+  })
+})
+export type Apps = z.infer<typeof Apps>
+
+/** The app a scene starts in (the first listed). */
+export function firstApp(project: { apps: Apps }): { name: string; app: App } {
+  const [name, app] = Object.entries(project.apps)[0] ?? []
+  if (name === undefined || app === undefined) throw new Error("a project has an app")
+  return { name, app }
+}
+
+/** An app by its name (undefined: not listed; never a key every object has). */
+export function appOf(project: { apps: Apps }, name: string): App | undefined {
+  return Object.hasOwn(project.apps, name) ? project.apps[name] : undefined
+}
 
 /** A shared off-camera setup. Presets are flat: they can't reference other presets (no recursion). */
 export const Preset = z.strictObject({
@@ -66,9 +104,8 @@ function checkIds(
 /** Unguarded: internal only, use the guarded export. */
 const ProjectConfigBase = z
   .strictObject({
-    version: z.literal(1),
-    environment: RuleName.optional(),
-    target: TargetApp,
+    version: z.literal(2),
+    apps: Apps,
     defaults: z
       .strictObject({
         pacing: Pacing.prefault({}),
@@ -169,14 +206,12 @@ export type Output = z.infer<typeof Output>
 /** Unguarded: internal only, use the guarded export. */
 const ProjectBase = z
   .strictObject({
-    version: z.literal(1),
+    version: z.literal(2),
     id: ProjectId,
     orgId: OrgId,
     name: z.string().min(1).max(200),
-    /** An environment of the org (its URL and safety flags). */
-    environment: RuleName.optional(),
-    /** `url` only without an environment (a local app, no org settings). */
-    target: TargetApp.extend({ url: TargetApp.shape.url.optional() }),
+    /** Every app the demo shows (no environments: each app has its own URL, §0.9). */
+    apps: Apps,
     defaults: ProjectConfigBase.shape.defaults,
     presets: ProjectConfigBase.shape.presets,
     interrupts: ProjectConfigBase.shape.interrupts,
@@ -188,18 +223,6 @@ const ProjectBase = z
     style: StyleOverride.optional(),
   })
   .superRefine((p, ctx) => {
-    // One source for the URL: an environment (org settings) or the project's own, never both
-    // (the project would silently drive the environment's app instead of the URL it shows).
-    if ((p.environment === undefined) === (p.target.url === undefined)) {
-      ctx.addIssue({
-        code: "custom",
-        message:
-          p.environment === undefined
-            ? "a project needs an environment, or a target url"
-            : "a project has an environment or a target url, not both",
-        path: ["target", "url"],
-      })
-    }
     checkIds(p, ctx)
     const inSequence = new Set<string>()
     p.sequence.forEach((id, i) => {

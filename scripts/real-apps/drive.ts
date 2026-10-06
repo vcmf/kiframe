@@ -166,7 +166,7 @@ async function exportVideo(status: unknown, file: string): Promise<void> {
   )
   writeFileSync(
     join(dir, "project.yaml"),
-    `version: 1\ntarget: { kind: web, url: "${run.url}", viewport: { width: 1440, height: 900 } }\n`,
+    `version: 2\napps: { app: { kind: web, url: "${run.url}", viewport: { width: 1440, height: 900 } } }\n`,
   )
   const { spawnSync } = await import("node:child_process")
   const done = spawnSync(

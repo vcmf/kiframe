@@ -37,8 +37,8 @@ export interface ProjectView {
   name: string
   /** The folder (shown in the title bar's menu; never sent back by the window to open it). */
   dir: string
-  /** The app it films (null when the project names an environment instead). */
-  url: string | null
+  /** The app its scenes start in (the project's first). */
+  url: string
   scenes: SceneView[]
   /** Parts that didn't read (shown, never hidden). */
   problems: string[]

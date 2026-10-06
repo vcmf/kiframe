@@ -18,7 +18,7 @@ function yamlBlockAfter(marker: string): string {
 describe("docs/OBJECT-MODEL.md examples", () => {
   it("project-level example (§2) is a valid project config", () => {
     const project = parseProjectYaml(yamlBlockAfter("**Project level**"))
-    expect(project.target.url).toBe("https://staging.acme.com")
+    expect(project.apps.app?.url).toBe("https://staging.acme.com")
     expect(project.presets["login-as-manager"]?.session).toBe(true)
     expect(project.defaults.pacing.settleMs).toBe(400)
   })
@@ -36,7 +36,7 @@ describe("docs/OBJECT-MODEL.md examples", () => {
   })
 
   it("interrupts example (§2b) is valid inside a project config", () => {
-    const base = `version: 1\ntarget: { kind: web, url: "https://x.test", viewport: { width: 1440, height: 900 } }\n`
+    const base = `version: 2\napps: { app: { kind: web, url: "https://x.test" } }\n`
     const project = parseProjectYaml(base + yamlBlockAfter("Two project-level mechanisms"))
     expect(project.interrupts.map((r) => r.id)).toEqual(["cookie-banner", "whats-new"])
     expect(project.hide).toHaveLength(2)

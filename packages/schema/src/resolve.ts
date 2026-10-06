@@ -1,5 +1,5 @@
-import type { Environment, OrgSettings } from "./org.ts"
-import { ProjectConfig, type Output, type Project } from "./project.ts"
+import type { OrgSettings } from "./org.ts"
+import { firstApp, ProjectConfig, type Output, type Project } from "./project.ts"
 import { secretRefName } from "./common.ts"
 import type { Scenario } from "./scenario.ts"
 import type { SceneId } from "./scene.ts"
@@ -17,26 +17,17 @@ import {
 
 /** The environment a project runs against, after resolution. */
 export interface ResolvedEnvironment {
-  /** Undefined for a project with its own URL and no environment. */
-  name?: string
   url: string
   sandbox: boolean
   preApproveTeardown: boolean
   requiredSecrets: string[]
 }
 
-export class ResolveError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "ResolveError"
-  }
-}
-
 /**
- * The runtime config of a project: the target URL from its environment, or its own URL (a project
- * has exactly one of them), and the org's rule bank before the project's rules (a project rule with
- * the same id replaces the org's, in its place). A named environment the org doesn't declare is an
- * error, never a silent fallback: the project could then drive the wrong app.
+ * The runtime config of a project: its apps, and the org's rule bank before the project's rules (a
+ * project rule with the same id replaces the org's, in its place). A project has no environment
+ * since v2 (each app has its own URL, OBJECT-MODEL §0.9): never a sandbox, so nothing risky is
+ * pre-approved (an environment's flags would otherwise cover whatever URL the apps name).
  */
 export function resolveProjectConfig(
   project: Project,
@@ -50,18 +41,6 @@ export function resolveProjectConfig(
    */
   orgInterrupts: string[]
 } {
-  let env: Environment | undefined
-  if (project.environment !== undefined) {
-    env = org?.environments.find((e) => e.name === project.environment)
-    if (env === undefined) {
-      throw new ResolveError(
-        `environment "${project.environment}" isn't declared in the org settings`,
-      )
-    }
-  }
-  const url = env !== undefined ? env.url : project.target.url
-  // The schema guarantees one of them; kept as a guard for configs built without it.
-  if (url === undefined) throw new ResolveError("the project has no environment and no target url")
   const own = new Map(project.interrupts.map((r) => [r.id, r]))
   const orgRules = org?.rules.interrupts ?? []
   const orgIds = new Set(orgRules.map((r) => r.id))
@@ -72,9 +51,8 @@ export function resolveProjectConfig(
   ]
   const hide = [...new Set([...(org?.rules.hide ?? []), ...project.hide])]
   const config = ProjectConfig.parse({
-    version: 1,
-    ...(env !== undefined && { environment: env.name }),
-    target: { kind: "web", url, viewport: project.target.viewport },
+    version: 2,
+    apps: project.apps,
     defaults: project.defaults,
     presets: project.presets,
     interrupts,
@@ -85,11 +63,10 @@ export function resolveProjectConfig(
     config,
     orgInterrupts: orgRules.filter((r) => !own.has(r.id)).map((r) => r.id),
     environment: {
-      ...(env !== undefined && { name: env.name }),
-      url,
-      sandbox: env?.sandbox ?? false,
-      preApproveTeardown: env?.preApproveTeardown ?? false,
-      requiredSecrets: env?.requiredSecrets ?? [],
+      url: firstApp(config).app.url,
+      sandbox: false,
+      preApproveTeardown: false,
+      requiredSecrets: [],
     },
   }
 }

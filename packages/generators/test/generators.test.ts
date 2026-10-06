@@ -16,8 +16,8 @@ import {
 } from "../src/index.ts"
 
 const project = (camera = "auto") =>
-  parseProjectYaml(`version: 1
-target: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } }
+  parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } } }
 defaults: { camera: ${camera} }
 `)
 

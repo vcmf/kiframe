@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto"
 import { existsSync, readdirSync, statSync } from "node:fs"
 import type { OpenedProject } from "@kiframe/project"
-import { TargetApp } from "@kiframe/schema"
+import { App, firstApp } from "@kiframe/schema"
 import type { ProjectView, SceneView } from "../shared/ipc.ts"
 
 /** A project folder's extension (a new project's folder gets it). */
@@ -11,7 +11,7 @@ export const PROJECT_EXTENSION = ".kiframe"
 
 /** The app's address, by the project schema's own rule (http(s), no credentials in it). */
 export function targetUrl(url: string): string {
-  const parsed = TargetApp.shape.url.safeParse(url.trim())
+  const parsed = App.shape.url.safeParse(url.trim())
   if (!parsed.success) {
     throw new Error(`App address: ${parsed.error.issues[0]?.message ?? "not a URL"}`)
   }
@@ -119,7 +119,7 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
     session,
     name: project.name,
     dir: opened.dir,
-    url: project.target.url ?? null,
+    url: firstApp(project).app.url,
     scenes: views,
     problems: problems.map((p) => `${p.sceneId}: ${p.message}`),
   }

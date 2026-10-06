@@ -17,7 +17,6 @@ import {
   resolveFormat,
   resolveProjectConfig,
   resolveStyle,
-  ResolveError,
   scenesOf,
   guideFormats,
   SchemaError,
@@ -28,13 +27,14 @@ import {
 // M1-1: the v0 project model (project.json, scene.json, org settings, user preferences), the
 // settings layers and document versioning.
 
-const noUrl = { kind: "web", viewport: { width: 1440, height: 900 } }
 const project = (extra: object = {}) => ({
-  version: 1,
+  version: 2,
   id: "p1",
   orgId: "org1",
   name: "Q4 release",
-  target: { kind: "web", url: "https://app.example.com", viewport: { width: 1440, height: 900 } },
+  apps: {
+    app: { kind: "web", url: "https://app.example.com", viewport: { width: 1440, height: 900 } },
+  },
   sequence: ["intro", "create-project", "outro"],
   ...extra,
 })
@@ -69,17 +69,7 @@ describe("project.json", () => {
     const p = parseProjectJson(JSON.stringify(project()))
     expect(p.outputs).toEqual([])
     expect(p.defaults.pacing.cursor).toBe("natural")
-    expect(p.target.viewport.deviceScaleFactor).toBe(2)
-  })
-
-  it("needs an environment or a target url", () => {
-    const bare = project({ target: noUrl })
-    expect(Project.safeParse(bare).success).toBe(false)
-    expect(Project.safeParse({ ...bare, environment: "staging" }).success).toBe(true)
-    // Both: the environment's app would be driven instead of the URL the file shows.
-    const both = Project.safeParse(project({ environment: "staging" }))
-    expect(both.success).toBe(false)
-    expect(JSON.stringify(both.error?.issues)).toMatch(/not both/)
+    expect(p.apps.app?.viewport.deviceScaleFactor).toBe(2)
   })
 
   it("rejects duplicates in the sequence and outputs that include unknown scenes", () => {
@@ -108,7 +98,7 @@ describe("project.json", () => {
   })
 
   it("rejects forbidden keys and secret references outside their slots (guards)", () => {
-    expect(() => parseProjectJson('{"__proto__": {}, "version": 1}')).toThrow()
+    expect(() => parseProjectJson('{"__proto__": {}, "version": 2}')).toThrow()
     expect(() =>
       parseProjectJson(JSON.stringify(project({ name: "{{secrets.acme.password}}" }))),
     ).toThrow()
@@ -209,11 +199,9 @@ describe("org settings and user preferences", () => {
 })
 
 describe("settings layers", () => {
-  it("takes the URL from the environment and the org's rule bank before the project's", () => {
+  it("takes the org's rule bank before the project's, never an environment's flags", () => {
     const p = Project.parse(
       project({
-        environment: "staging",
-        target: noUrl,
         interrupts: [
           // Same id as the org's rule: the project's replaces it.
           { id: "cookies", when: { text: "Cookies?" }, do: { action: "press", keys: "Escape" } },
@@ -222,14 +210,11 @@ describe("settings layers", () => {
       }),
     )
     const { config, environment } = resolveProjectConfig(p, org())
-    expect(config.target.url).toBe("https://staging.example.com")
-    expect(config.environment).toBe("staging")
+    expect(config.apps.app?.url).toBe("https://app.example.com")
     expect(config.interrupts.map((r) => r.do.action)).toEqual(["press"])
     expect(config.hide).toEqual([".intercom-launcher", ".beta-banner"])
-    expect(environment).toMatchObject({ sandbox: true, preApproveTeardown: true })
-    expect(missingSecrets(requiredSecrets(config, environment), ["acme.email"])).toEqual([
-      "acme.password",
-    ])
+    // The org's sandbox environment never pre-approves anything on the project's apps.
+    expect(environment).toMatchObject({ sandbox: false, preApproveTeardown: false })
   })
 
   it("keeps an overridden org rule in its place (rules are tried in order)", () => {
@@ -260,7 +245,7 @@ describe("settings layers", () => {
     ])
   })
 
-  it("counts every secret the project types, not only the environment's list", () => {
+  it("counts every secret the project types", () => {
     const o = org({
       rules: {
         interrupts: [
@@ -275,14 +260,9 @@ describe("settings layers", () => {
           },
         ],
       },
-      environments: [
-        { name: "staging", url: "https://staging.example.com", requiredSecrets: ["acme.email"] },
-      ],
     })
     const p = Project.parse(
       project({
-        environment: "staging",
-        target: noUrl,
         presets: {
           login: {
             session: true,
@@ -304,21 +284,17 @@ describe("settings layers", () => {
     const { config, environment } = resolveProjectConfig(p, o)
     expect(requiredSecrets(config, environment, [scene]).sort()).toEqual([
       "acme.api_key",
-      "acme.email",
       "acme.password",
       "acme.token",
     ])
+    expect(missingSecrets(requiredSecrets(config, environment), ["acme.token"])).toEqual([
+      "acme.password",
+    ])
   })
 
-  it("fails on an environment the org doesn't declare (never falls back to another URL)", () => {
-    const p = Project.parse(project({ environment: "prod", target: noUrl }))
-    expect(() => resolveProjectConfig(p, org())).toThrow(ResolveError)
-    expect(() => resolveProjectConfig(p, undefined)).toThrow(/isn't declared/)
-  })
-
-  it("works without org settings for a project with its own URL", () => {
+  it("works without org settings", () => {
     const { config, environment } = resolveProjectConfig(Project.parse(project()), undefined)
-    expect(config.target.url).toBe("https://app.example.com")
+    expect(config.apps.app?.url).toBe("https://app.example.com")
     expect(environment).toMatchObject({ sandbox: false, requiredSecrets: [] })
   })
 
@@ -379,11 +355,11 @@ describe("settings layers", () => {
 describe("versioning", () => {
   it("refuses a document from a newer Kiframe, with a message saying so", () => {
     // A file-level problem like any other: a SchemaError, with the reason.
-    expect(() => parseProjectJson(JSON.stringify(project({ version: 2 })))).toThrow(SchemaError)
+    expect(() => parseProjectJson(JSON.stringify(project({ version: 3 })))).toThrow(SchemaError)
     expect(() => parseCompositionJson('{"version": 7, "tracks": {}}')).toThrow(
       /newer version of Kiframe/,
     )
-    expect(() => migrate("project", { version: 2 })).toThrow(VersionError)
+    expect(() => migrate("project", { version: 3 })).toThrow(VersionError)
   })
 
   it("upgrades older documents one version at a time, without mutating the input", () => {

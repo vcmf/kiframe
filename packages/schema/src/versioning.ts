@@ -24,18 +24,47 @@ export interface MigrationRegistry {
   migrations: Partial<Record<DocumentKind, Record<number, Migration>>>
 }
 
-/** The versions this Kiframe writes, and the migrations it knows (none yet: every kind is v1). */
+/**
+ * Project 1 → 2 (OBJECT-MODEL §0.9): its one `target` becomes the first of its named apps,
+ * `apps.app`. A project that took its URL from an org environment has no URL to carry over:
+ * refused with what to do (environments no longer give URLs), never a guess. Anything malformed
+ * is passed on for the schema to report.
+ */
+function targetToApps(project: boolean): Migration {
+  return (doc) => {
+    const { target, ...rest } = doc
+    // An environment first, whatever its target looks like: the message says what to do.
+    if (project && "environment" in doc && !("apps" in doc)) {
+      const name = typeof doc.environment === "string" ? `"${doc.environment}"` : "of the org"
+      throw new VersionError(
+        `this project takes its app's address from the environment ${name}; Kiframe now keeps each app's address in the project: replace "environment" and "target" with "apps": { "app": { "kind": "web", "url": "https://…" } }`,
+      )
+    }
+    if (typeof target !== "object" || target === null || Array.isArray(target) || "apps" in doc) {
+      return { ...doc }
+    }
+    // A resolved config's environment only named where its URL came from: the URL is kept.
+    const { environment: _named, ...kept } = rest
+    // `target` as it is (never walked: the guards still see every key in it).
+    return { ...(project ? rest : kept), apps: { app: target } }
+  }
+}
+
+/** The versions this Kiframe writes, and the migrations it knows. */
 export const MIGRATIONS: MigrationRegistry = {
   current: {
-    project: 1,
-    "project-config": 1,
+    project: 2,
+    "project-config": 2,
     scene: 1,
     scenario: 1,
     composition: 1,
     "org-settings": 1,
     "user-preferences": 1,
   },
-  migrations: {},
+  migrations: {
+    project: { 1: targetToApps(true) },
+    "project-config": { 1: targetToApps(false) },
+  },
 }
 
 const LABELS: Record<DocumentKind, string> = {

@@ -18,8 +18,8 @@ describe("export", { timeout: 180_000 }, () => {
     const server = await startFixtureServer()
     const browser = await chromium.launch()
     try {
-      const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+      const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: fast, typing: fast } }
 `)
       const scenario = parseScenarioYaml(`version: 1
