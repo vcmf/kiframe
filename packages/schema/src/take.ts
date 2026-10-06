@@ -8,7 +8,7 @@ import {
   withoutCredentials,
 } from "./common.ts"
 import { guarded } from "./guards.ts"
-import { RuleName, ViewportShape } from "./settings.ts"
+import { AppName, RuleName, ViewportShape } from "./settings.ts"
 
 // A take = the facts of one replay (docs/OBJECT-MODEL.md §3).
 // `t` is milliseconds from the first frame, on the same clock as the screencast frames.
@@ -125,6 +125,8 @@ const TakeMetaBase = z.strictObject({
   scenarioHash: z.string().min(1),
   recordedAt: z.iso.datetime({ offset: true }),
   appUrl: withoutCredentials(z.string()),
+  /** The app the take starts in, by its name in the project (takes from before named apps: none). */
+  app: AppName.optional(),
   /** The environment the take was recorded on (APPROACHES §10c), when known. */
   environment: RuleName.optional(),
   /** The page's CSS viewport, and the capture scale actually obtained (frame pixels per CSS pixel). */

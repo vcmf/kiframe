@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
-import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { sceneIdOf } from "./lib/scenes.ts"
 import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
@@ -41,9 +41,11 @@ if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
   process.exit(2)
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
+/** The app every scene starts in (the project's first). */
+const start = firstApp(project).app
 // A high DPR only helps headed (headless frames stay at CSS resolution, F1): the project's DPR
 // headed, 1 headless, unless --dpr says otherwise.
-const dpr = Number(values.dpr ?? (values.headed ? project.target.viewport.deviceScaleFactor : 1))
+const dpr = Number(values.dpr ?? (values.headed ? start.viewport.deviceScaleFactor : 1))
 if (!Number.isFinite(dpr) || dpr <= 0 || dpr > 3) {
   console.error(`--dpr must be a number in (0, 3], got ${values.dpr}`)
   process.exit(2)
@@ -53,7 +55,7 @@ const browser = await chromium.launch({ headless: !values.headed })
 try {
   // Headed on a high-DPI screen: frames at device resolution (Phase 0 finding F2).
   const page = await browser.newPage({
-    viewport: project.target.viewport,
+    viewport: start.viewport,
     deviceScaleFactor: dpr,
   })
   const take = await recordScenario(page, scenario, project, {

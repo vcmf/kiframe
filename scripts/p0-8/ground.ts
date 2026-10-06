@@ -18,6 +18,7 @@ import {
   checkScenarioAgainstProject,
   parseProjectYaml,
   parseScenarioYaml,
+  firstApp,
   Action,
   Ensure,
   Locator,
@@ -121,6 +122,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   })
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
+/** The app every scene starts in (the project's first). */
+const start = firstApp(project).app
 const model = values.model
 // The scene being grounded (its steps and its replays are one scene: they share approvals).
 const sceneId = sceneIdOf(values.out)
@@ -186,7 +189,7 @@ Rules:
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.
 Project presets available: ${Object.keys(project.presets).join(", ") || "none"}.
-App: ${project.target.url}`
+App: ${start.url}`
 
 // ─── Browser ─────────────────────────────────────────────────────────────────
 // Our own Ctrl-C handling closes the browser after the current call (Playwright would at once).
@@ -195,7 +198,10 @@ const browser: Browser = await chromium.launch({
   handleSIGINT: false,
   handleSIGTERM: false,
 })
-const viewport = { width: project.target.viewport.width, height: project.target.viewport.height }
+const viewport = {
+  width: start.viewport.width,
+  height: start.viewport.height,
+}
 const page: Page = await browser.newPage({ viewport })
 
 const quickProject: ProjectConfig = {
@@ -424,7 +430,7 @@ const started = Date.now()
 let finalYaml: string | undefined
 
 try {
-  await page.goto(project.target.url)
+  await page.goto(start.url)
   for (let turn = 0; turn < maxTurns && finalYaml === undefined && !stopRequested; turn++) {
     stats.turns++
     const response = await client.chat.completions.create({

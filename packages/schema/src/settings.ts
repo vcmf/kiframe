@@ -42,3 +42,16 @@ export const RuleName = z
   .refine((name) => !FORBIDDEN_KEYS.has(name), {
     message: "reserved name (it clashes with JavaScript object keys)",
   })
+
+/**
+ * An app's name in the project (`app`, `docs`): starts with a letter (an integer-like key would be
+ * ordered first by JavaScript, and the first app is where scenes start), never a key every object
+ * has (`constructor`, `__proto__`: a lookup would find it on any object).
+ */
+export const AppName = z
+  .string()
+  .regex(/^[a-z][a-z0-9_-]{0,39}$/, "app names start with a-z and use a-z, 0-9, - or _ (≤ 40)")
+  // (Lower case from a letter: every other key objects have, `toString`, `__proto__`, is refused.)
+  .refine((name) => !FORBIDDEN_KEYS.has(name), {
+    message: "reserved name (it clashes with JavaScript object keys)",
+  })

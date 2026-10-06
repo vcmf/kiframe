@@ -35,6 +35,8 @@ import {
   SetupItem,
   Step,
   sameApp,
+  firstApp,
+  type App,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
@@ -124,11 +126,14 @@ export class Studio {
   #checked: Map<string, SnapshotNode> | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
+  /** The app the agent works in: the project's first (one app per scene until B2). */
+  readonly #start: App
   /** The live page being opened (one at a time: a second caller waits for it). */
   #opening: Promise<Page> | undefined
 
   constructor(options: StudioOptions) {
     this.options = options
+    this.#start = firstApp(options.config).app
   }
 
   get project(): OpenedProject {
@@ -151,12 +156,12 @@ export class Studio {
   #filmed() {
     return {
       viewport: this.#viewport(),
-      deviceScaleFactor: this.options.config.target.viewport.deviceScaleFactor,
+      deviceScaleFactor: this.#start.viewport.deviceScaleFactor,
     }
   }
 
   #viewport() {
-    const { width, height } = this.options.config.target.viewport
+    const { width, height } = this.#start.viewport
     return { width, height }
   }
 
@@ -206,7 +211,7 @@ export class Studio {
     const context = await this.options.browser.newContext({ viewport: this.#viewport() })
     try {
       const page = await context.newPage()
-      await page.goto(this.options.config.target.url)
+      await page.goto(this.#start.url)
       // Closed meanwhile: never kept (nothing would close it).
       if (this.#lifetime.signal.aborted) throw new Error("the studio was closed")
       // Kept only once it's at the app (a failed first visit is tried again next time).
@@ -232,12 +237,12 @@ export class Studio {
   }
 
   #where(url: string, site?: Site): string {
-    return whereOf(url, this.options.config.target.url, site)
+    return whereOf(url, this.#start.url, site)
   }
 
   /** A step done, and where its page is: a page that failed to load makes it a failure. */
   #landed(url: string, said: string): StepResult {
-    const site = siteOf(url, this.options.config.target.url)
+    const site = siteOf(url, this.#start.url)
     if (site === "unloaded") {
       return {
         ok: false,

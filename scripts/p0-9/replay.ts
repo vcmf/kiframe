@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { sceneIdOf } from "../lib/scenes.ts"
 import { parseArgs } from "node:util"
 import { recordScenario, type RunnerEvent } from "@kiframe/runtime"
-import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium, type BrowserContextOptions } from "playwright"
 
 const { values } = parseArgs({
@@ -30,6 +30,8 @@ if (!values.project || !values.scenario || !values.out) {
   process.exit(2)
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
+/** The app every scene starts in (the project's first). */
+const start = firstApp(project).app
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const runs = Number(values.runs)
 const dirty = new Set(values.dirty.split(",").filter(Boolean).map(Number))
@@ -53,8 +55,11 @@ const report: Record<string, unknown>[] = []
 try {
   for (let run = 1; run <= runs; run++) {
     const context = await browser.newContext({
-      viewport: { width: project.target.viewport.width, height: project.target.viewport.height },
-      deviceScaleFactor: values.headed ? project.target.viewport.deviceScaleFactor : 1,
+      viewport: {
+        width: start.viewport.width,
+        height: start.viewport.height,
+      },
+      deviceScaleFactor: values.headed ? start.viewport.deviceScaleFactor : 1,
       ...(storageState !== undefined && { storageState }),
     })
     const page = await context.newPage()

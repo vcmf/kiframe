@@ -19,15 +19,11 @@ export function TitleBar() {
           <div className="titlebar-sep" />
           <ProjectMenu name={project.name} />
           <div className="spacer" />
-          {project.url !== null && (
-            <span className="chip" title={project.url}>
-              <Globe size={13} />
-              {hostOf(project.url)}
-            </span>
-          )}
-          {project.url !== null && (
-            <SecretsButton key={project.session} origin={new URL(project.url).origin} />
-          )}
+          <span className="chip" title={project.url}>
+            <Globe size={13} />
+            {hostOf(project.url)}
+          </span>
+          <SecretsButton key={project.session} origin={new URL(project.url).origin} />
           <button
             type="button"
             className="btn btn-ghost"

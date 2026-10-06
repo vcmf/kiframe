@@ -107,7 +107,7 @@ export function Stage({ project }: { project: ProjectView }) {
             ) : (
               <>
                 <h2>The agent’s browser</h2>
-                <p>While the agent works on {project.url ?? "your app"}, you watch it here.</p>
+                <p>While the agent works on {project.url}, you watch it here.</p>
               </>
             )}
           </>

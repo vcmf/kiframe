@@ -16,8 +16,8 @@ let project: ProjectConfig
 beforeAll(async () => {
   server = await startFixtureServer()
   browser = await chromium.launch()
-  project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+  project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 presets:
   open-projects:
@@ -273,8 +273,8 @@ steps:
 
     it("keys a preset's step by the preset: one approval serves every scene", async () => {
       const vault = await vaultWithPassword()
-      const withPreset = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+      const withPreset = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 presets:
   login:
@@ -296,8 +296,8 @@ presets:
 
     it("keys an org interrupt rule by the org, a project rule by the project", async () => {
       const vault = await vaultWithPassword()
-      const withRule = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+      const withRule = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 interrupts:
   - id: relogin
@@ -620,8 +620,8 @@ steps:
     })
 
     it("skips a hide rule the A8 grammar refuses when the run can know a secret, with a warning", async () => {
-      const withHide = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+      const withHide = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 hide: ["#chat", "form:has(input[value^='h']) button"]
 `)
@@ -649,8 +649,8 @@ hide: ["#chat", "form:has(input[value^='h']) button"]
     })
 
     it("applies hide rules using the grammar's `:has` and `*` (common banner rules)", async () => {
-      const withHide = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+      const withHide = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 hide: ["body:has(> #chat) > #chat", "#nothing *"]
 `)
@@ -787,8 +787,8 @@ steps:
     })
 
     it("skips an interrupt rule whose selector the browser rejects (no secret known)", async () => {
-      const withRule = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+      const withRule = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 interrupts:
   - id: bad
@@ -1807,8 +1807,8 @@ steps:
   // ─── M1-3: interrupts and hide ──────────────────────────────────────────────
 
   const withRules = () =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 hide: ["#chat"]
 interrupts:
@@ -1870,8 +1870,8 @@ steps:
   })
 
   const rules = (extra: string) =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 interrupts:
 ${extra}`)
@@ -2594,8 +2594,8 @@ steps:
   // ─── P0-4: human motion ────────────────────────────────────────────────────
 
   it("moves the cursor along a path and clicks exactly where it stopped", async () => {
-    const human = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    const human = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: natural, typing: human } }
 `)
     const events: RunnerEvent[] = []
@@ -2627,8 +2627,8 @@ defaults: { pacing: { settleMs: 0, cursor: natural, typing: human } }
   })
 
   it("moves the same way on every replay (seeded motion)", async () => {
-    const human = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    const human = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
 `)
     const replay = async () => {
@@ -2654,8 +2654,8 @@ defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
   // ─── P0-4 review round 1 (regressions) ─────────────────────────────────────
 
   const humanProject = () =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: fast, typing: instant } }
 `)
 
@@ -3097,8 +3097,8 @@ describe("an app whose address redirects to www. (minmux.dev → www.minmux.dev)
     })
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r))
     const port = (server.address() as { port: number }).port
-    const app = parseProjectYaml(`version: 1
-target: { kind: web, url: "http://kiframe.test:${port}", viewport: { width: 800, height: 600 } }
+    const app = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "http://kiframe.test:${port}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
     const p = await own.newPage()

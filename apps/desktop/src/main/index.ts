@@ -9,6 +9,7 @@ import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
+import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { DEFAULT_MODEL, modelConfig } from "./model.ts"
 import { newProjectDir, projectFileName, targetUrl } from "./project.ts"
@@ -185,7 +186,7 @@ function start(): void {
   /** The open project's app origin (its secrets are those usable there). */
   const origin = (): string | null => {
     const url = workspace.view()?.url
-    return url === null || url === undefined ? null : new URL(url).origin
+    return url === undefined ? null : new URL(url).origin
   }
 
   /**
@@ -321,6 +322,8 @@ function start(): void {
         "project:create": (init) =>
           act(async () => {
             const url = targetUrl(init.url)
+            // Where the address really lands (its www. or https form), asked while the user picks.
+            const resolving = resolveAppAddress(url)
             const picked = await dialog.showSaveDialog(parent(), {
               title: "Create a project",
               buttonLabel: "Create",
@@ -328,7 +331,11 @@ function start(): void {
               properties: ["createDirectory", "showOverwriteConfirmation"],
             })
             if (picked.canceled || picked.filePath === undefined) return
-            await workspace.create(newProjectDir(picked.filePath), { name: init.name, url })
+            const address = await resolving
+            await workspace.create(newProjectDir(picked.filePath), {
+              name: init.name,
+              url: address,
+            })
           }),
         "project:open": () =>
           act(async () => {

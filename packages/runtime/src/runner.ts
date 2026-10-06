@@ -1,4 +1,4 @@
-import type { ProjectConfig, Scenario } from "@kiframe/schema"
+import { firstApp, type ProjectConfig, type Scenario } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
@@ -47,7 +47,7 @@ export async function runScenario(
     options.skipSessionPresets ?? [],
     options.sessionLandings ?? {},
   )
-  const base = new URL(project.target.url)
+  const base = new URL(firstApp(project).app.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
   // Tabs and popups opened by the page being driven: followed after the step that opened them.

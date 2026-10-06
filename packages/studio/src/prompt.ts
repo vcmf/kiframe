@@ -1,4 +1,4 @@
-import { stepReference } from "@kiframe/schema"
+import { firstApp, stepReference } from "@kiframe/schema"
 import type { Studio } from "./studio.ts"
 
 /** The agent's instructions for a project (the scene format, how to ground, the tools' rules). */
@@ -72,5 +72,5 @@ Rules:
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.
 Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
-App: ${studio.scrub(config.target.url)}`
+App: ${studio.scrub(firstApp(config).app.url)}`
 }

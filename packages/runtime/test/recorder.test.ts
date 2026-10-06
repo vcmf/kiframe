@@ -40,8 +40,8 @@ const SECRET = "hunter2-very-secret"
 
 describe("recordScenario", { timeout: 60_000 }, () => {
   it("writes a complete, schema-valid take with one clock and no secret in any file", async () => {
-    const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: fast, typing: fast } }
 `)
     const scenario = parseScenarioYaml(`version: 1
@@ -83,6 +83,8 @@ steps:
       .map((l) => CursorSample.parse(JSON.parse(l)))
     const meta = TakeMeta.parse(JSON.parse(readFileSync(join(outDir, "meta.json"), "utf8")))
     expect(meta).toEqual(take.meta)
+    // The app it starts in, by name and address (the project's first).
+    expect([meta.app, meta.appUrl]).toEqual(["app", server.url])
     expect(readdirSync(join(outDir, "shots")).sort()).toEqual(
       ["away", "create", "done", "name", "open-new", "palette", "pw"].map((s) => `${s}.jpg`),
     )
@@ -139,8 +141,8 @@ steps:
   })
 
   const project = () =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
   const record = async (
@@ -302,8 +304,8 @@ describe("scrubSecrets", () => {
 
 describe("take directories", { timeout: 60_000 }, () => {
   const project = () =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
   const scenario = (steps: string) =>
@@ -445,8 +447,8 @@ describe("scrubbing, one pass", () => {
 
 describe("take details", { timeout: 60_000 }, () => {
   const project = () =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
   const scenario = (steps: string) =>
@@ -575,8 +577,8 @@ steps:
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
     const page = await context.newPage()
-    const withRules = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } }
+    const withRules = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 1280, height: 800 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 interrupts:
   - id: cookies

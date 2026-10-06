@@ -13,8 +13,8 @@ import { BUILTIN_BACKGROUNDS, DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kif
 import { coverCrop, drawScene } from "../src/draw.ts"
 import { contentBox, cursorAt, prepare, sceneAt, stageTransform, appFill } from "../src/scene.ts"
 
-const project = parseProjectYaml(`version: 1
-target: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } }
+const project = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } } }
 `)
 
 const btn = (id: string, extra = "") =>

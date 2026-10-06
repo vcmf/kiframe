@@ -625,7 +625,7 @@ describe("round 5: secrets", () => {
 describe("round 6: whole-document guards", () => {
   it("rejects __proto__ keys coming from JSON (project.json), not only YAML", () => {
     const config = JSON.parse(
-      `{"version":1,"target":{"kind":"web","url":"https://x.test","viewport":{"width":1440,"height":900}},"presets":{"__proto__":{"steps":[{"action":"goto","url":"/x"}]}}}`,
+      `{"version":2,"apps":{"app":{"kind":"web","url":"https://x.test","viewport":{"width":1440,"height":900}}},"presets":{"__proto__":{"steps":[{"action":"goto","url":"/x"}]}}}`,
     ) as unknown
     expect(ProjectConfig.safeParse(config).success).toBe(false)
     const comp = JSON.parse(`{"version":1,"tracks":{},"style":{"__proto__":{"a":1}}}`) as unknown
@@ -1064,7 +1064,7 @@ describe("round 12", () => {
 
   it("reports a forbidden record key once", () => {
     const config = JSON.parse(
-      `{"version":1,"target":{"kind":"web","url":"https://x.test","viewport":{"width":1440,"height":900}},"presets":{"constructor":{"steps":[{"action":"goto","url":"/x"}]}}}`,
+      `{"version":2,"apps":{"app":{"kind":"web","url":"https://x.test"}},"presets":{"constructor":{"steps":[{"action":"goto","url":"/x"}]}}}`,
     ) as unknown
     const messages = ProjectConfig.safeParse(config).error?.issues.map((i) => i.message) ?? []
     expect(messages).toEqual(['forbidden key "constructor"'])

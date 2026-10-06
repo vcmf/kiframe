@@ -1,5 +1,6 @@
 import {
   Action,
+  firstApp,
   type ProjectConfig,
   type ResolvedEnvironment,
   type Scenario,
@@ -88,7 +89,9 @@ export async function recordBatch(
   if (environment !== undefined) {
     record.approveRisky = approvalPolicy(environment, options.approveRisky)
   }
-  const origin = new URL(project.target.url).origin
+  // Every scene starts in the first app (one app per scene until scenes move between apps).
+  const start = firstApp(project).app
+  const origin = new URL(start.url).origin
   let state: BrowserContextOptions["storageState"]
   // The session presets the saved state holds, and the page each one ended on.
   let landings: Record<string, string> = {}
@@ -128,11 +131,8 @@ export async function recordBatch(
       }
       ids.add(scene.sceneId)
       context = await browser.newContext({
-        viewport: {
-          width: project.target.viewport.width,
-          height: project.target.viewport.height,
-        },
-        deviceScaleFactor: project.target.viewport.deviceScaleFactor,
+        viewport: { width: start.viewport.width, height: start.viewport.height },
+        deviceScaleFactor: start.viewport.deviceScaleFactor,
         ...contextOptions,
         ...(saved !== undefined && { storageState: saved }),
       })

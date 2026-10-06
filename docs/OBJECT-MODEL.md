@@ -123,7 +123,7 @@ card / media / still-asset: always ready
 
 Rule of thumb: **one scene = one idea, 5–30s**.
 
-**Implemented (M1-1, `packages/schema`):** `Project` (`project.json`), `Scene` (`scene.json`), `OrgSettings` (brand kit, style, environments, rule bank, LLM policy), `UserPreferences`, `Style` / `StyleOverride`, and `resolveProjectConfig` (org + project → the `ProjectConfig` the runtime reads: URL from the environment, org rules before the project's). Differences from the sketch above: a scene's scenario and composition are separate files (`scene.json` holds `source: { kind: "recording" }`), a guide output lists its `formats`, v0 has only the `recording` / `card` kinds and `video` / `guide` outputs, and every document has a `version` with migrations on read (a newer version is refused).
+**Implemented (M1-1, `packages/schema`):** `Project` (`project.json`), `Scene` (`scene.json`), `OrgSettings` (brand kit, style, environments, rule bank, LLM policy), `UserPreferences`, `Style` / `StyleOverride`, and `resolveProjectConfig` (org + project → the `ProjectConfig` the runtime reads: the project's apps, org rules before the project's; no environment since project v2, §0.9). Differences from the sketch above: a scene's scenario and composition are separate files (`scene.json` holds `source: { kind: "recording" }`), a guide output lists its `formats`, v0 has only the `recording` / `card` kinds and `video` / `guide` outputs, and every document has a `version` with migrations on read (a newer version is refused).
 
 **Project on disk.** The folder contains **objects only**, so it can live anywhere, including the user's app repo:
 ```
@@ -155,7 +155,7 @@ Why outside the folder: takes are **heavy**, and they're **sensitive**, since ra
 | Eviction | **Never automatic.** Only an explicit "delete" by the user (with a warning) | LRU with a size limit, plus a "Free up 2.3 GB" button |
 | Versioned in git | No (heavy, sensitive). Referenced by **`takeKey`** from `composition.json` and `exports/*.json` | No |
 
-**The take key:** `takeKey = hash(scenario + target environment + capture settings) + recordedAt`.
+**The take key:** `takeKey = hash(scenario + start app's URL and viewport + capture settings) + recordedAt`.
 - The composition references the take it was generated from: `composition.take = { key }`.
 - A re-record produces a new take. The generators then **rebase** the composition: `auto` segments are regenerated, `manual` ones are kept (orphans flagged), and `composition.take.key` points to the new take. The previous take stays pinned if an export or a named version references it, and otherwise becomes scratch.
 
@@ -192,7 +192,7 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **The live page isn't fresh.** It's one browser session for as long as the project is open, shared by every scene: it keeps what the agent did (signed in, scrolled, a setting changed). The replay in phase 2 is what catches a scene that only works because of that state. Refs never reach the YAML (a ref becomes a locator that finds that element alone).
 
-### 0.9 Apps a demo shows (designed 2026-10-05, not built)
+### 0.9 Apps a demo shows (designed 2026-10-05; the format built 2026-10-06, B1)
 
 **Today** a project has one `target`: `{ kind: web, url, viewport }`, and a scene never leaves that site (its address redirected to `www.` or `https` counts as it: `sameApp`). That's too narrow: Kiframe also targets **Electron** apps (v0.1) and **Tauri** (later, partial), and one demo can go from a web app to its docs site or its desktop app.
 
@@ -230,9 +230,15 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 - **A viewport per app**: each take is recorded at its app's size; the compositor fits every take into the video's one output frame.
 - **Removing an app a scene uses**: warned with what it affects (*"Remove docs? 2 scenes use it: Install, First run. They'll need reworking."* Cancel / Remove). Removed, those scenes show **"Uses a removed app"** in the strip (never "unreadable"; their takes stay previewable until re-recorded), and one click asks the agent to rework the scene without it, or the app is added back.
 
+**Built (B1, 2026-10-06):** the format and its migration; behaviour as before (every scene in the first app, steps and secrets on its site).
+- `Project` and `ProjectConfig` are version 2: `apps` (1–20, named `^[a-z][a-z0-9_-]{0,39}$`, never two on one site), no `target` and **no `environment`** (an environment's sandbox flags would otherwise pre-approve risky teardowns on whatever URL the apps name). `firstApp`, `appOf` (own keys only); an app's `viewport` defaults to 1440×900 @2x.
+- A v1 project converts on read (`target` → `apps.app`; with an environment, refused with what to do); the file is rewritten at the next save, a scene the agent saves included.
+- A take's meta names its start app (`app`); the take key hashes the start app's URL and viewport (as the target's before).
+- A new project's address is resolved when it's created (desktop main, `resolveAppAddress`), only when it's a bare site (`minmux.dev`: a typed path was never checked on another origin, and the app may live there on this one; a one-time link is never fetched): its root fetched with Node's fetch (no browser session), redirects followed one by one (≤ 5, http(s) only, 5 s, run while the save dialog is open); adopted (its origin's root) only when it lands on the same app and answers (2xx) (`www.` or https), never a login host or another site; offline or slow: kept as typed.
+
 **Implementation notes (design review, 2026-10-05):**
 - **Format and migration**: `project` goes to version 2 with a registered `target → apps.app` migration (schema `versioning.ts`). Converted in memory on open, **written at the next save** (never a silent rewrite at open). Every app has its URL (`apps.*.url` required: environments no longer give URLs); a v1 project with an environment and no `target.url` gets a clear error, never a guess. Scenarios aren't touched (no `app:` added: their hash, and so their takes, stay as they are).
-- **An app's address is resolved once when it's added** (its redirect followed, the landed origin stored: `minmux.dev` is stored as `https://www.minmux.dev`): a secret is added for the origin its login is really on, and its approval names that exact host (secrets never use the `www.` alias that steps and URL checks do).
+- **An app's address is resolved once when it's added** (its redirect followed, the landed origin stored: `minmux.dev` is stored as `https://www.minmux.dev/`): a secret is added for the origin its login is really on, and its approval names that exact host (secrets never use the `www.` alias that steps and URL checks do).
 - **v0 kinds: `web` and `html`** only; `electron` comes with its driver (`add_app` refuses a desktop kind until then, with that reason). **No two apps on the same site** (`sameApp`): which app a page is on stays unambiguous.
 - **`goto`**: `{ action: goto, app?: docs, url: /install }` (`url` defaults to `/`); a relative `url` resolves against the current app. **The first app** is where a scene without `app:` starts: the removal warning counts those scenes too. A **preset** gets an optional `app` (default the first), its relative gotos resolved there.
 - **A take has one size**: recorded at **its start app's viewport**; a `goto` to another app keeps that size (the screencast is fixed for the take). The live page takes each app's viewport as the agent moves there, so grounding matches the recording; the replay catches a mismatch.
@@ -402,12 +408,12 @@ The format, refined with ideas from demo-machine, VHS and Maestro. **The scenari
 **Project level** (`project.json`, shown as YAML for readability):
 
 ```yaml
-version: 1
-environment: staging             # org-level environment (APPROACHES §10c): URL, sandbox flag, pre-approvals
-target:                          # to become named `apps` (§0.9, designed)
-  kind: web                      # web (v0) | electron (v0.1) | tauri (later)
-  url: https://staging.acme.com  # Phase 0: set here. Later: comes from the environment
-  viewport: { width: 1440, height: 900, deviceScaleFactor: 2 }
+version: 2
+apps:                            # the apps the demo shows (§0.9); the first is where scenes start
+  app:
+    kind: web                    # web (v0) | html, electron (later)
+    url: https://staging.acme.com
+    viewport: { width: 1440, height: 900, deviceScaleFactor: 2 }
 defaults:                        # like VHS `Set`: global, separate from actions
   pacing: { cursor: natural, typing: human, settleMs: 400 }
   camera: auto                   # generators decide framing unless a step overrides (§2b)
@@ -618,7 +624,7 @@ One replay of a scene produces a **take** in the take store (§0.6):
   events.jsonl         timestamped semantic events
   cursor.jsonl         cursor samples (real mouse positions, so hover states happened in the app)
   shots/<stepId>.jpg   frame at each step_start (storyboard + guide screenshots)
-  meta.json            viewport, DPR, fps, scenario hash, environment, app URL, recordedAt, Kiframe version
+  meta.json            viewport, DPR, fps, scenario hash, start app (name, URL), recordedAt, Kiframe version
   (pinned or scratch is derived from the compositions, exports and versions that name it: never stored in the take)
 ```
 

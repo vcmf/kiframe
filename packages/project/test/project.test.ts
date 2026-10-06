@@ -55,7 +55,30 @@ describe("project store", () => {
     expect(opened.scenes.get("login")?.scenario).toEqual(scenario)
     expect(opened.scenes.get("create")?.scenario).toBeUndefined()
     // Stable, readable JSON on disk.
-    expect(readFileSync(join(dir, "project.json"), "utf8")).toMatch(/^\{\n {2}"version": 1,/)
+    expect(readFileSync(join(dir, "project.json"), "utf8")).toMatch(/^\{\n {2}"version": 2,/)
+  })
+
+  it("opens a v1 project as v2, its file rewritten only by a save (a scene the agent saves too)", () => {
+    const dir = folder()
+    mkdirSync(join(dir, "scenes"), { recursive: true })
+    const v1 = JSON.stringify({
+      version: 1,
+      id: "p1",
+      orgId: "local",
+      name: "Old",
+      target: { kind: "web", url: "https://www.app.test", viewport: { width: 1280, height: 800 } },
+    })
+    writeFileSync(join(dir, "project.json"), v1)
+    const opened = openProject(dir)
+    expect(opened.project.apps.app?.url).toBe("https://www.app.test")
+    expect(opened.project.apps.app?.viewport.width).toBe(1280)
+    // Opening never rewrites it.
+    expect(readFileSync(join(dir, "project.json"), "utf8")).toBe(v1)
+    saveScene(opened, scene("first"), { scenario })
+    const written = JSON.parse(readFileSync(join(dir, "project.json"), "utf8")) as object
+    expect(written).toMatchObject({ version: 2, apps: { app: { url: "https://www.app.test" } } })
+    expect("target" in written).toBe(false)
+    expect(openProject(dir).project.sequence).toEqual(["first"])
   })
 
   it("refuses to create over an existing project, or to write an invalid scene", () => {
@@ -199,8 +222,8 @@ describe("take store (with the real recorder)", () => {
     await server.close()
   })
   const config = () =>
-    parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
   const record = async (store: TakeStore, sceneId: string, steps: string, projectId = "p1") => {

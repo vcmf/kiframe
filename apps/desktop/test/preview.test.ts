@@ -25,8 +25,8 @@ describe("a scene's preview", { timeout: 120_000 }, () => {
         },
       )
       const takes = new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-data-")))
-      const config = parseProjectYaml(`version: 1
-target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+      const config = parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
       const scenario = parseScenarioYaml(`version: 1
