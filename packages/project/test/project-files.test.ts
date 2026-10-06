@@ -440,22 +440,26 @@ describe("what review round 2 found", () => {
     files.write("pages/site/index.html", "<p>x</p>", { ifHash: null })
   })
 
-  it("refuses a link swapped into a middle folder at the open itself (the kernel's check)", () => {
-    const { dir, outside } = project({ "pages/a/index.html": "<p>x</p>" })
-    writeFileSync(join(outside, "index.html"), "outside")
-    let swapped = false
-    const files = new ProjectFiles(dir, {
-      beforeOpen: () => {
-        if (swapped) return
-        swapped = true
-        renameSync(join(dir, "pages", "a"), join(dir, "pages", "a-real"))
-        symlinkSync(outside, join(dir, "pages", "a"))
-      },
-    })
-    const e = refusal(() => files.read("pages/a/index.html"))
-    expect(e.code).toBe(process.platform === "darwin" ? "link" : e.code)
-    if (process.platform === "darwin") expect(e.message).not.toContain("outside")
-  })
+  // macOS only: elsewhere such a swap during an open is a stated residual (no kernel flag).
+  it.runIf(process.platform === "darwin")(
+    "refuses a link swapped into a middle folder at the open itself (the kernel's check)",
+    () => {
+      const { dir, outside } = project({ "pages/a/index.html": "<p>x</p>" })
+      writeFileSync(join(outside, "index.html"), "outside")
+      let swapped = false
+      const files = new ProjectFiles(dir, {
+        beforeOpen: () => {
+          if (swapped) return
+          swapped = true
+          renameSync(join(dir, "pages", "a"), join(dir, "pages", "a-real"))
+          symlinkSync(outside, join(dir, "pages", "a"))
+        },
+      })
+      const e = refusal(() => files.read("pages/a/index.html"))
+      expect(e.code).toBe("link")
+      expect(e.message).not.toContain("outside")
+    },
+  )
 
   it("never blocks on a FIFO swapped in at the open", () => {
     const { dir } = project({ "pages/a.html": "<p>x</p>" })
