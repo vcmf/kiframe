@@ -1,5 +1,6 @@
 export * from "./project.ts"
 export * from "./takes.ts"
+export * from "./project-files.ts"
 export * from "./take-records.ts"
 export * from "./take-crypt.ts"
 export { jsonText, writeAtomic } from "./files.ts"

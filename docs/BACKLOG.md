@@ -334,3 +334,6 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **A point below the fold:** a step with `at` whose point is off screen is refused ("scroll it into view first"); scrolling the point itself into view (a tall canvas) when a real app needs it.
 - **A project's address that redirects** (2026-10-05): the app's address redirected to `www.` or https is the app for its steps and URL checks (`sameApp`): scenes save and record there. Not for secrets (above).
 
+## Project files (C1)
+
+- **The cost of a write into pages/:** each write walks all of pages/ for its room check (up to 5,000 entries), lists each existing folder for its name check, and hashes the file it replaces. Fine at a page's size; keep running totals per `ProjectFiles` if a large pages/ makes the agent's edits slow.
