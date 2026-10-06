@@ -56,22 +56,23 @@ describe("finding in a snapshot", () => {
   })
 
   it("stays linear on a huge snapshot with a common word", () => {
-    // Time per size, not a wall-clock budget (CI and coverage are several times slower): doubling
-    // the snapshot about doubles the time; a quadratic search quadruples it.
+    // Time per size, not a wall-clock budget (CI and coverage are several times slower): four times
+    // the snapshot takes about four times as long; a quadratic search takes about sixteen times.
+    // The median of five runs, against noise.
     const timed = (n: number) => {
       const rows = Array.from({ length: n }, (_, i) => `  - paragraph: the row ${i}`)
       const snap = ["- main:", ...rows].join("\n")
       expect(find(snap, "the").split("\n")).toHaveLength(n + 1)
-      const runs = [0, 1, 2].map(() => {
+      const runs = [0, 1, 2, 3, 4].map(() => {
         const started = performance.now()
         find(snap, "the")
         return performance.now() - started
       })
-      return runs.sort((a, b) => a - b)[1]!
+      return runs.sort((a, b) => a - b)[2]!
     }
     timed(10_000) // warm up
-    const ratio = timed(100_000) / timed(50_000)
-    expect(ratio).toBeLessThan(3)
+    const ratio = timed(100_000) / timed(25_000)
+    expect(ratio).toBeLessThan(8)
   })
 
   it("reads a sentence over a link, as written by a reader (dashes, quotes, case)", () => {
