@@ -147,6 +147,14 @@ export class Studio {
     }
   }
 
+  /** A fresh browser as the recording films it: the app's viewport and pixel ratio. */
+  #filmed() {
+    return {
+      viewport: this.#viewport(),
+      deviceScaleFactor: this.options.config.target.viewport.deviceScaleFactor,
+    }
+  }
+
   #viewport() {
     const { width, height } = this.options.config.target.viewport
     return { width, height }
@@ -639,11 +647,29 @@ export class Studio {
     return { scenario }
   }
 
-  /** Replays a scenario from scratch in a fresh browser (the grounding check): "ok" or why not. */
+  /**
+   * Replays a scenario from scratch in a fresh browser (the grounding check): "ok" or why not. As
+   * the recording runs it (its pace: cursor, typing, settling; its pixel ratio): what a person's
+   * pace changes in an app (a field it swaps as it's typed into, suggestions that open after a
+   * pause) fails here rather than in the recording.
+   */
   async replay(scenario: Scenario, scene: string, signal: AbortSignal): Promise<string> {
-    const context = await this.options.browser.newContext({ viewport: this.#viewport() })
+    const context = await this.options.browser.newContext(this.#filmed())
     try {
-      await runScenario(await context.newPage(), scenario, this.#quick, this.#run(scene, signal))
+      // The pointer at once, also over the scene's own pacing (its typing and settling stay).
+      const paced: Scenario = {
+        ...scenario,
+        overrides: {
+          ...scenario.overrides,
+          pacing: { ...scenario.overrides?.pacing, cursor: "instant" },
+        },
+      }
+      await runScenario(
+        await context.newPage(),
+        paced,
+        this.options.config,
+        this.#run(scene, signal),
+      )
       return "ok"
     } catch (error) {
       if (isStopped(error)) throw error
@@ -669,10 +695,7 @@ export class Studio {
     const { scenario } = stored
     const { config, takes } = this.options
     const dir = takes.newTakeDir(this.project.project.id, sceneId)
-    const context = await this.options.browser.newContext({
-      viewport: this.#viewport(),
-      deviceScaleFactor: config.target.viewport.deviceScaleFactor,
-    })
+    const context = await this.options.browser.newContext(this.#filmed())
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
     let why: string | undefined
     let stopped: StepError | undefined

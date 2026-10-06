@@ -1140,6 +1140,68 @@ steps: [{ id: t, action: type, target: { by: label, name: Hidden field }, value:
     expect(await page.locator("#v").textContent()).toBe("abc")
   })
 
+  // ─── Submitting what was typed ─────────────────────────────────────────────
+  it("submits where the text went when the app swaps its field mid-typing", async () => {
+    await run(`setup: [{ action: goto, url: /swap-search }]
+steps:
+  - { id: q, action: type, target: { by: role, role: searchbox, name: Search site, exact: true }, value: messi, submit: true }
+  - { id: there, action: waitFor, until: { url: /searched } }
+`)
+    expect(new URL(page.url()).searchParams.get("q")).toBe("messi")
+  })
+
+  it("presses Enter on the target when it's still there, wherever focus went", async () => {
+    // Focus moved to a button as the field was typed into: Enter goes to the field (focused again),
+    // never to the button.
+    await run(`setup: [{ action: goto, url: /blur-on-type }]
+steps:
+  - { id: n, action: type, target: { by: label, name: Note }, value: hello, submit: true }
+`)
+    expect(await page.evaluate(() => document.body.dataset.pressed)).toBeUndefined()
+    // Enter reached the field (it holds what went in before focus left: keys follow focus).
+    expect(await page.evaluate(() => document.body.dataset.submitted)).toBe("h")
+    // A widget that takes keys without being a text field still gets its Enter.
+    await run(`setup: [{ action: goto, url: /key-widget }]
+steps:
+  - { id: c, action: type, target: { by: label, name: Cell }, value: ab, submit: true }
+`)
+    expect(await page.evaluate(() => document.body.dataset.entered)).toBe("ab")
+  })
+
+  it("never presses Enter on what the app put in the field's place, if it isn't a text field", async () => {
+    // Replaced by a submit button as it was typed into: the target, as always (gone: a loud
+    // failure), never the button.
+    await failure(`setup: [{ action: goto, url: /swap-to-button }]
+steps:
+  - { id: q, action: type, target: { by: label, name: Search site }, value: messi, submit: true }
+`)
+    expect(await page.evaluate(() => document.body.dataset.pressed)).toBeUndefined()
+  })
+
+  it("presses Enter on the target when it holds the text, not on another field echoing it", async () => {
+    await run(`setup: [{ action: goto, url: /mirror-field }]
+steps:
+  - { id: q, action: type, target: { by: label, name: Main search }, value: messi, submit: true }
+`)
+    expect(await page.evaluate(() => document.body.dataset.submitted)).toBe("main")
+  })
+
+  it("never presses Enter on a field that merely contains the typed text", async () => {
+    await run(`setup: [{ action: goto, url: /chip-input }]
+steps:
+  - { id: t, action: type, target: { by: label, name: Tags }, value: red, submit: true }
+`)
+    expect(await page.evaluate(() => document.body.dataset.notes)).toBeUndefined()
+  })
+
+  it("submits in the modal the text went into, not the page's box behind it", async () => {
+    await run(`setup: [{ action: goto, url: /modal-search }]
+steps:
+  - { id: q, action: type, target: { by: label, name: Search docs }, value: messi, submit: true }
+`)
+    expect(await page.evaluate(() => document.body.dataset.searched)).toBe("messi")
+  })
+
   // ─── Selecting text ────────────────────────────────────────────────────────
   describe("selecting text", () => {
     const selected = () =>

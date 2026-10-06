@@ -64,7 +64,8 @@ Rules:
 - Explore with snapshot and run_step; once you know the locators, run the rest with run_steps (several
   steps in one call) to save turns.
 - As soon as every step and the teardown ran ok once, call save_scene. Don't start over by hand to re-check:
-  save_scene replays the whole scene from scratch in a fresh browser and tells you what fails.
+  save_scene replays the whole scene from scratch in a fresh browser, at the recording's pace (a person's
+  typing and pointer), and tells you what fails.
 - A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.
   A point (\`at\`) off screen is below the fold: scroll to it first.
 - The replay starts in a FRESH browser (no cookies, no storage): panels, sidebars and menus are in their
