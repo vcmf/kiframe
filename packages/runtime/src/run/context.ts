@@ -1,4 +1,4 @@
-import type { Action, ProjectConfig, Step } from "@kiframe/schema"
+import type { Action, Apps, ProjectConfig, Step } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
 import { type ApprovalRequest, type SecretUse, StepError, type StepRef } from "../errors.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
@@ -93,7 +93,9 @@ export interface RunOptions {
   /**
    * Resolves a secret NAME to its value, at the moment of the write, for this use (step, page,
    * target, element): the vault's resolver (`Vault.resolver`). Throw if unavailable or refused (a
-   * `SecretRefusal`'s message is reported; any other error's never is).
+   * `SecretRefusal`'s message is reported; any other error's never is). Must refuse an origin the
+   * secret isn't for (`use.origin`): the runtime keeps a secret on the project's apps, never on one
+   * of them rather than another.
    */
   resolveSecret?: (name: string, use: SecretUse) => string | Promise<string>
   /**
@@ -144,10 +146,16 @@ export interface RunOptions {
    */
   onSessionReady?: (preset: string, page: Page) => void | Promise<void>
   /**
-   * Where each skipped session preset ended (a path of the target app): the setup goes there in
+   * Where each skipped session preset ended (its app and a path there): the setup goes there in
    * its place, since a later setup step may rely on that page.
    */
-  sessionLandings?: Readonly<Record<string, string>>
+  sessionLandings?: Readonly<Record<string, SessionLanding>>
+}
+
+/** Where a session preset ended: the project's app and the URL relative to it (a `goto` back). */
+export interface SessionLanding {
+  app: string
+  url: string
 }
 
 export type AnyAction = Action | Step
@@ -163,7 +171,14 @@ export const MIN_TIMEOUT_MS = 1
 
 export interface Ctx {
   page: Page
-  base: URL
+  /** The project's apps (OBJECT-MODEL §0.9). */
+  apps: Apps
+  /**
+   * The app the step being run means when it names none (by name, set by `runOne` from its
+   * caller: `run/apps.ts`), and the scene's start app.
+   */
+  app: string
+  startApp: string
   settleMs: number
   timeoutMs: number
   navigationTimeoutMs: number

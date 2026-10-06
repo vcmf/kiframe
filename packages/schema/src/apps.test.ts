@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest"
 import {
   AppName,
   appOf,
+  checkScenarioAgainstProject,
+  parseScenarioYaml,
+  startAppOf,
+  unknownApps,
   firstApp,
   migrate,
   parseProjectJson,
@@ -170,5 +174,74 @@ describe("a v1 project, read", () => {
     )
     expect(ProjectConfig.parse(config).apps.app?.url).toBe("https://s.dev")
     expect(firstApp(config).app.viewport.width).toBe(1280)
+  })
+})
+
+describe("a scene that names apps (B2)", () => {
+  const config = ProjectConfig.parse({
+    version: 2,
+    apps: { app: app("https://a.dev"), docs: app("https://docs.a.dev") },
+    presets: { login: { app: "docs", steps: [{ action: "goto", url: "/in" }] } },
+  })
+  const scene = (yaml: string) => parseScenarioYaml(`version: 1\n${yaml}`)
+
+  it("names its start app, a goto's app, a URL condition's app, a preset's app", () => {
+    const s = scene(`app: docs
+steps:
+  - { id: a, action: goto, app: app, url: /x }
+  - { id: b, action: waitFor, until: { url: /x, app: docs } }
+`)
+    expect(s.app).toBe("docs")
+    expect(unknownApps(s, config)).toEqual([])
+    expect(config.presets.login?.app).toBe("docs")
+  })
+
+  it("lists every app it uses that the project doesn't (start, gotos, conditions, presets; not the rules', an org's apply to every project)", () => {
+    const withRule = ProjectConfig.parse({
+      ...config,
+      presets: { login: { app: "sso", steps: [{ action: "goto", app: "auth", url: "/" }] } },
+      interrupts: [
+        { id: "away", when: { text: "Moved" }, do: { action: "goto", app: "old", url: "/" } },
+      ],
+    })
+    const s = scene(`app: nope
+setup: [{ preset: login }, { action: goto, app: setup-app, url: / }]
+steps:
+  - { id: a, action: expect, that: { url: /x, app: cond } }
+teardown: [{ action: goto, app: down, url: / }]
+`)
+    expect(
+      unknownApps(s, withRule)
+        .map((p) => /"(.+)"/.exec(p)?.[1])
+        .sort(),
+    ).toEqual(["auth", "cond", "down", "nope", "setup-app", "sso"].sort())
+    expect(checkScenarioAgainstProject(s, withRule)).toContain(
+      `uses app "nope", which the project doesn't list`,
+    )
+  })
+
+  it("keeps the hash of a scene that names no app (its takes stay its own)", () => {
+    // The parsed scenario the hash is taken over, as main (before B2) wrote it for the same YAML.
+    expect(JSON.stringify(scene("steps: [{ id: a, action: goto, url: /x }]"))).toBe(
+      '{"version":1,"steps":[{"action":"goto","url":"/x","id":"a"}]}',
+    )
+    expect(
+      JSON.stringify(
+        scene(`setup: [{ action: goto, url: / }]
+steps:
+  - { id: w, action: waitFor, until: { url: /x } }
+  - { id: e, action: expect, that: { url: /y } }`),
+      ),
+    ).toBe(
+      '{"version":1,"setup":[{"action":"goto","url":"/"}],"steps":[{"action":"waitFor","until":{"url":"/x"},"id":"w"},{"action":"expect","that":{"url":"/y"},"id":"e"}]}',
+    )
+  })
+
+  it("starts in the app it names, else the first", () => {
+    expect(startAppOf(scene("steps: [{ id: a, action: pause, ms: 1 }]"), config).name).toBe("app")
+    expect(
+      startAppOf(scene("app: docs\nsteps: [{ id: a, action: pause, ms: 1 }]"), config).name,
+    ).toBe("docs")
+    expect(() => startAppOf({ app: "nope" }, config)).toThrow(/isn't one of the project's apps/)
   })
 })

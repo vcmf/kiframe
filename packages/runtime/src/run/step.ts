@@ -9,8 +9,17 @@ import { settle } from "./settle.ts"
 
 // One step's lifecycle: follow the page, handle interrupts, approval, the action, settle.
 
-/** Runs one action. Every failure, including from callbacks, is a StepError naming this step. */
-export async function runOne(ctx: Ctx, action: AnyAction, step: StepRef): Promise<void> {
+/**
+ * Runs one action. Every failure, including from callbacks, is a StepError naming this step.
+ * `app`: the app it means when it names none (`run/apps.ts`), given by its caller.
+ */
+export async function runOne(
+  ctx: Ctx,
+  action: AnyAction,
+  step: StepRef,
+  app: string,
+): Promise<void> {
+  ctx.app = app
   // Stopped: no later step, of any kind (a cleanup neither).
   if (ctx.options.signal?.aborted === true) {
     throw new StepError(step, "stopped", "the run was stopped")

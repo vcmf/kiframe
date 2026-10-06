@@ -1,6 +1,7 @@
 import {
   Action,
-  firstApp,
+  startAppOf,
+  unknownApps,
   type ProjectConfig,
   type ResolvedEnvironment,
   type Scenario,
@@ -9,6 +10,8 @@ import {
 import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
+import { appAtOrigin } from "./run/apps.ts"
+import type { SessionLanding } from "./run/context.ts"
 import { secretsOf } from "./secret-state.ts"
 
 // A recording batch (APPROACHES §7.2): several scenes of one project, one after another. Each scene
@@ -89,12 +92,9 @@ export async function recordBatch(
   if (environment !== undefined) {
     record.approveRisky = approvalPolicy(environment, options.approveRisky)
   }
-  // Every scene starts in the first app (one app per scene until scenes move between apps).
-  const start = firstApp(project).app
-  const origin = new URL(start.url).origin
   let state: BrowserContextOptions["storageState"]
-  // The session presets the saved state holds, and the page each one ended on.
-  let landings: Record<string, string> = {}
+  // The session presets the saved state holds, and the page each one ended on (in which app).
+  let landings: Record<string, SessionLanding> = {}
   const results: BatchResult[] = []
   const seenValues = new Set<string>()
   const report = (index: number, result: BatchResult) => {
@@ -130,9 +130,20 @@ export async function recordBatch(
         throw new Error(`an earlier scene of the batch has the id "${scene.sceneId}"`)
       }
       ids.add(scene.sceneId)
+      // An app it names that the project doesn't list: refused as a single run refuses it.
+      const unknown = unknownApps(scene.scenario, project)
+      if (unknown.length > 0) {
+        throw new StepError(
+          { phase: "setup", index: 0, action: "setup" },
+          "invalid-setup",
+          unknown.join("; "),
+        )
+      }
+      // Filmed at the size of the app the scene starts in (one size per take).
+      const start = startAppOf(scene.scenario, project)
       context = await browser.newContext({
-        viewport: { width: start.viewport.width, height: start.viewport.height },
-        deviceScaleFactor: start.viewport.deviceScaleFactor,
+        viewport: { width: start.app.viewport.width, height: start.app.viewport.height },
+        deviceScaleFactor: start.app.viewport.deviceScaleFactor,
         ...contextOptions,
         ...(saved !== undefined && { storageState: saved }),
       })
@@ -155,9 +166,14 @@ export async function recordBatch(
           savedHere.add(preset)
           const url = new URL(at.url())
           const landing = `${url.pathname}${url.search}${url.hash}`
-          // Kept only if the runner can go back there (same origin, a valid relative `goto`).
-          if (url.origin === origin && Action.safeParse({ action: "goto", url: landing }).success) {
-            landings[preset] = landing
+          // Kept only if the runner can go back there: on a listed app's own origin (a `goto` there
+          // can't reach a www. alias), a valid relative `goto`.
+          const app = appAtOrigin(project.apps, url.href)
+          if (
+            app !== undefined &&
+            Action.safeParse({ action: "goto", app, url: landing }).success
+          ) {
+            landings[preset] = { app, url: landing }
           }
         },
       })

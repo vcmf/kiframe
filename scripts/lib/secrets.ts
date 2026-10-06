@@ -12,11 +12,16 @@ export function loadDotEnv(): void {
 export const envName = (secret: string) => secret.toUpperCase().replace(/[^A-Z0-9]/g, "_")
 
 /**
- * A resolver for the runner: throws (never returns "") when a secret isn't provided. It ignores the
- * use: no grants (SECRETS-DESIGN §3) here, the user's own `.env` for throwaway harnesses only.
+ * A resolver for the runner: throws (never returns "") when a secret isn't provided, or is asked
+ * for anywhere but `origin` (the app the `.env`'s secrets are for: a project's other apps never get
+ * them). No grants (SECRETS-DESIGN §3) here, the user's own `.env` for throwaway harnesses only.
  */
-export function envSecretResolver(names: readonly string[]): (name: string) => string {
-  return (name) => {
+export function envSecretResolver(
+  names: readonly string[],
+  origin: string,
+): (name: string, use: { origin: string }) => string {
+  return (name, use) => {
+    if (use.origin !== new URL(origin).origin) throw new Error("not for this site")
     const value = process.env[envName(name)]
     if (!names.includes(name) || value === undefined || value === "") throw new Error("unavailable")
     return value

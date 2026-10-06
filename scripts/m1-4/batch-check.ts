@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { recordBatch } from "@kiframe/runtime"
-import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
 
@@ -45,7 +45,10 @@ try {
     project,
     {
       scope: "phase0",
-      resolveSecret: envSecretResolver(["calcom.username", "calcom.password"]),
+      resolveSecret: envSecretResolver(
+        ["calcom.username", "calcom.password"],
+        firstApp(project).app.url,
+      ),
       timeoutMs: 15000,
       onEvent: (e) => {
         if (e.kind === "preset_done" && e.session) logins++

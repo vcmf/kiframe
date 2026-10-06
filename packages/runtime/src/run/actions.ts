@@ -19,6 +19,7 @@ import {
   toPlaywright,
   viewportOf,
 } from "../targets.ts"
+import { appNamed } from "./apps.ts"
 import { waitForCondition } from "./conditions.ts"
 import {
   type AnyAction,
@@ -63,10 +64,12 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
   const { page } = ctx
   switch (action.action) {
     case "goto": {
-      const url = new URL(action.url, ctx.base)
-      // Enforced here too (not only by the schema): a scene never leaves the target app.
-      if (url.origin !== ctx.base.origin) {
-        throw new StepError(step, "off-origin", `goto would leave the target app (${url.origin})`)
+      // The app it names, else the one its step means (its scene's or its preset's).
+      const base = new URL(appNamed(ctx.apps, action.app ?? ctx.app, step).url)
+      const url = new URL(action.url, base)
+      // Enforced here too (not only by the schema): a goto never leaves its app.
+      if (url.origin !== base.origin) {
+        throw new StepError(step, "off-origin", `goto would leave the app (${url.origin})`)
       }
       await guard(step, async () => {
         await page.goto(url.href, { waitUntil: "load", timeout: ctx.navigationTimeoutMs })

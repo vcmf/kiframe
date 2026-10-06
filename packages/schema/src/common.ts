@@ -130,7 +130,7 @@ export function hasUrlCredentials(url: string): boolean {
 }
 
 /**
- * A URL relative to the environment: once resolved, it must stay on the environment's origin.
+ * A URL relative to the app: once resolved, it must stay on the app's origin.
  * Resolving (instead of pattern-matching the string) follows the WHATWG parser exactly, which strips
  * leading spaces and control characters and ignores tabs/newlines anywhere: `" https://evil.com"`,
  * `"h\\nttps://evil.com"` or `"/\\t/evil.com"` all resolve off-origin and are rejected, like

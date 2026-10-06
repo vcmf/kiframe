@@ -192,7 +192,7 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **The live page isn't fresh.** It's one browser session for as long as the project is open, shared by every scene: it keeps what the agent did (signed in, scrolled, a setting changed). The replay in phase 2 is what catches a scene that only works because of that state. Refs never reach the YAML (a ref becomes a locator that finds that element alone).
 
-### 0.9 Apps a demo shows (designed 2026-10-05; the format built 2026-10-06, B1)
+### 0.9 Apps a demo shows (designed 2026-10-05; the format and the runtime built 2026-10-06, B1–B2)
 
 **Today** a project has one `target`: `{ kind: web, url, viewport }`, and a scene never leaves that site (its address redirected to `www.` or `https` counts as it: `sameApp`). That's too narrow: Kiframe also targets **Electron** apps (v0.1) and **Tauri** (later, partial), and one demo can go from a web app to its docs site or its desktop app.
 
@@ -236,14 +236,22 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 - A take's meta names its start app (`app`); the take key hashes the start app's URL and viewport (as the target's before).
 - A new project's address is resolved when it's created (desktop main, `resolveAppAddress`), only when it's a bare site (`minmux.dev`: a typed path was never checked on another origin, and the app may live there on this one; a one-time link is never fetched): its root fetched with Node's fetch (no browser session), redirects followed one by one (≤ 5, http(s) only, 5 s, run while the save dialog is open); adopted (its origin's root) only when it lands on the same app and answers (2xx) (`www.` or https), never a login host or another site; offline or slow: kept as typed.
 
+**Built (B2, 2026-10-06):** scenes move between the listed apps (the agent is told in B3).
+- A scenario's `app` (where it starts), `goto { app, url }`, a URL condition's `app`, a preset's `app`: all optional, by name; a scene naming no app keeps its hash (and its takes). An app the scene or its presets name but the project doesn't list: refused before anything runs (`unknownApps`; an interrupt rule's goto to one fails where it runs: an org's rules apply to every project).
+- **Which app a step means** is read from its own text, never from where the page went or what ran before it (a reviewed redesign: following the page, then carrying the app from step to step, made a teardown delete on whichever app the scene stopped in, and a step grounded alone mean another app than in the replay): the app it names (`goto { app }`, a URL condition's `app`), else its scene's start app (its `app`, else the first), its preset's inside a preset (else the first), the first app for an interrupt rule. A teardown and an `ensure`'s cleanup mean the scene's start app. Links, redirects and popups never change it. So every step on another app names it (the agent is told so in B3).
+- **Secrets**: the runtime types one only on a listed app's exact origin (never a `www.` alias, never an unlisted site such as an SSO host); which app's secret goes where is the resolver's to refuse (`resolveSecret`'s contract): the vault checks the secret's own origin, so a secret added for `app` is never typed on `docs`; the scripts' `.env` resolver is bound to one origin. The agent's secret names and the Secrets panel stay the first app's (B3).
+- A take is filmed at its **start app's** viewport (batch, studio replay and record); its meta names that app. A saved session's landing is kept with its app (`{ app, url }`) and replayed there.
+- `whereOf` names the app (`docs: /install`) when the project has several; a page off them is "NOT one of the project's apps".
+- Not yet (stated): a step landing on an unlisted site doesn't fail (B4, when the agent can add the app); the live page stays at the first app's size (B3: the scene's start app known to the studio).
+
 **Implementation notes (design review, 2026-10-05):**
 - **Format and migration**: `project` goes to version 2 with a registered `target → apps.app` migration (schema `versioning.ts`). Converted in memory on open, **written at the next save** (never a silent rewrite at open). Every app has its URL (`apps.*.url` required: environments no longer give URLs); a v1 project with an environment and no `target.url` gets a clear error, never a guess. Scenarios aren't touched (no `app:` added: their hash, and so their takes, stay as they are).
 - **An app's address is resolved once when it's added** (its redirect followed, the landed origin stored: `minmux.dev` is stored as `https://www.minmux.dev/`): a secret is added for the origin its login is really on, and its approval names that exact host (secrets never use the `www.` alias that steps and URL checks do).
 - **v0 kinds: `web` and `html`** only; `electron` comes with its driver (`add_app` refuses a desktop kind until then, with that reason). **No two apps on the same site** (`sameApp`): which app a page is on stays unambiguous.
-- **`goto`**: `{ action: goto, app?: docs, url: /install }` (`url` defaults to `/`); a relative `url` resolves against the current app. **The first app** is where a scene without `app:` starts: the removal warning counts those scenes too. A **preset** gets an optional `app` (default the first), its relative gotos resolved there.
+- **`goto`**: `{ action: goto, app?: docs, url: /install }` (`url` required, as built); a relative `url` resolves against the app it names, else the scene's start app (as built in B2: never the app the page went to). **The first app** is where a scene without `app:` starts: the removal warning counts those scenes too. A **preset** gets an optional `app` (default the first), its relative gotos resolved there.
 - **A take has one size**: recorded at **its start app's viewport**; a `goto` to another app keeps that size (the screencast is fixed for the take). The live page takes each app's viewport as the agent moves there, so grounding matches the recording; the replay catches a mismatch.
 - **Off the listed apps**: the live page reports it (that's what prompts `add_app`); in the replay and the recording **a step that lands on an unlisted site fails**.
-- **The runtime's single base becomes the apps and a current one** (set by `goto { app }`, else the listed app whose site the page is on): URL conditions, a secret's site and the take key use it. The take key uses the start app's URL and viewport.
+- **The runtime's single base becomes the apps** (as built in B2: each step means the app it names, else its scene's start app; the design's "current app followed from the page" was replaced after review): URL conditions, a secret's site and the take key use them. The take key uses the start app's URL and viewport.
 - **An unknown app** in a scenario is a project-level finding that gives the scene the "Uses a removed app" status, never "unreadable". The secrets panel shows each secret's app; adding one asks which app.
 
 ### 0.10 `story.md`: the project's memory (designed 2026-10-05, not built)
@@ -520,7 +528,7 @@ Principles:
 ### App actions (v0)
 | Action | Key params | Notes |
 |---|---|---|
-| `goto` | `url` | **Relative** to the environment's URL (absolute and `//host` URLs are rejected, so a scene never leaves the target app) |
+| `goto` | `url`, `app?` | **Relative** to the app it names, else the scene's start app, a preset's own inside a preset (absolute and `//host` URLs are rejected, so a goto never leaves the project's apps; §0.9) |
 | `click` | `target`, `button?`, `count?` (2 = double-click), `modifiers?` | Also covers checkboxes, custom menus and dropdowns |
 | `hover` | `target`, `hold?` | Shows tooltips and menus |
 | `type` | `target`, `value`, `clear?`, `submit?` (Enter at the end), `instant?` (off camera) | Human typing by default. `value` can be `{{secrets.x}}` |

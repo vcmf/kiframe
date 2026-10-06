@@ -1,4 +1,4 @@
-import { firstApp, type ProjectConfig, type Scenario } from "@kiframe/schema"
+import { type ProjectConfig, type Scenario, startAppOf, unknownApps } from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
@@ -38,16 +38,26 @@ export async function runScenario(
   project: ProjectConfig,
   options: RunOptions = {},
 ): Promise<void> {
-  // Static config errors (unknown preset) fail BEFORE anything runs or is
-  // attached to the page, and don't trigger teardown: nothing was created, and teardown could delete
+  // Static config errors (unknown preset, unknown app) fail BEFORE anything runs or is attached to
+  // the page, and don't trigger teardown: nothing was created, and teardown could delete
   // pre-existing data.
+  const unknown = unknownApps(scenario, project)
+  if (unknown.length > 0) {
+    throw new StepError(
+      { phase: "setup", index: 0, action: "setup" },
+      "invalid-setup",
+      unknown.join("; "),
+    )
+  }
+  // The scene's start app: what its steps mean when they name no app.
+  const start = startAppOf(scenario, project).name
   const setup = expandSetup(
     scenario.setup ?? [],
     project,
     options.skipSessionPresets ?? [],
     options.sessionLandings ?? {},
+    start,
   )
-  const base = new URL(firstApp(project).app.url)
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
   // Tabs and popups opened by the page being driven: followed after the step that opened them.
@@ -123,7 +133,9 @@ export async function runScenario(
     hideCss: hide.css,
     interruptsDone: new WeakMap(),
     inInterrupt: false,
-    base,
+    apps: project.apps,
+    app: start,
+    startApp: start,
     settleMs,
     options,
     network,
@@ -194,7 +206,12 @@ export async function runScenario(
         await runSetupEntry(ctx, scenario, setup, position, entry)
       }
       for (const [index, step] of scenario.steps.entries()) {
-        await runOne(ctx, step, { phase: "steps", index, stepId: step.id, action: step.action })
+        await runOne(
+          ctx,
+          step,
+          { phase: "steps", index, stepId: step.id, action: step.action },
+          ctx.startApp,
+        )
       }
     } catch (error) {
       // The step's own error is the one reported: don't let a pending listener error from the same
@@ -264,7 +281,8 @@ export async function runScenario(
         cleanup: true,
       }
       try {
-        await runOne(ctx, action, ref)
+        // A teardown means the scene's start app, wherever the setup or the steps stopped.
+        await runOne(ctx, action, ref, ctx.startApp)
       } catch (error) {
         ctx.clearListenerError()
         // Stopped during the teardown: the rest of it doesn't run.

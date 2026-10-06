@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { sceneIdOf } from "../lib/scenes.ts"
 import { parseArgs } from "node:util"
 import { recordScenario, type RunnerEvent } from "@kiframe/runtime"
-import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { parseProjectYaml, parseScenarioYaml, startAppOf } from "@kiframe/schema"
 import { chromium, type BrowserContextOptions } from "playwright"
 
 const { values } = parseArgs({
@@ -30,9 +30,9 @@ if (!values.project || !values.scenario || !values.out) {
   process.exit(2)
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
-/** The app every scene starts in (the project's first). */
-const start = firstApp(project).app
 const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
+/** The app the scene starts in: replayed at its size, as it's filmed. */
+const start = startAppOf(scenario, project).app
 const runs = Number(values.runs)
 const dirty = new Set(values.dirty.split(",").filter(Boolean).map(Number))
 if (!Number.isInteger(runs) || runs < 1 || [...dirty].some((d) => !Number.isInteger(d) || d < 1)) {

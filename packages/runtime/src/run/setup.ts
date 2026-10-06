@@ -1,5 +1,6 @@
 import {
   Action,
+  firstApp,
   type Ensure,
   type ProjectConfig,
   type Scenario,
@@ -8,29 +9,35 @@ import {
 import { StepError, type StepRef } from "../errors.ts"
 import { describeLocator } from "../targets.ts"
 import { waitForCondition } from "./conditions.ts"
-import { type Ctx, firstLine, guard } from "./context.ts"
+import { type Ctx, firstLine, guard, type SessionLanding } from "./context.ts"
 import { syncPage } from "./pages.ts"
 import { settle } from "./settle.ts"
 import { runOne } from "./step.ts"
 
 // Setup: presets inlined (session presets skipped or replaced by their landing), and `ensure`.
 
-/** A setup item once presets are inlined: an action, an `ensure`, or the end of a preset. */
+/**
+ * A setup item once presets are inlined: an action (with the app it means, worked out from the
+ * text: `run/apps.ts`), an `ensure`, or the end of a preset.
+ */
 type PresetOrigin = { name: string; session: boolean }
 type SetupEntry =
-  | { kind: "action"; index: number; action: Action; preset?: PresetOrigin }
+  | { kind: "action"; index: number; action: Action; app: string; preset?: PresetOrigin }
   | { kind: "ensure"; index: number; ensure: Ensure["ensure"] }
   | ({ kind: "preset_done"; index: number } & PresetOrigin)
 
 /**
  * Inlines presets into setup, and drops session presets the page already has (`skipSessionPresets`).
- * Error indexes are post-expansion, like the `setup[i]` of runtime errors.
+ * Error indexes are post-expansion, like the `setup[i]` of runtime errors. Each step means the
+ * scene's start app (`start`) when it names none; a preset's steps its own app (the first by
+ * default), a skipped session preset's landing its app.
  */
 export function expandSetup(
   items: readonly SetupItem[],
   project: ProjectConfig,
   skip: readonly string[],
-  landings: Readonly<Record<string, string>>,
+  landings: Readonly<Record<string, SessionLanding>>,
+  start: string,
 ): SetupEntry[] {
   const out: SetupEntry[] = []
   // Setup indexes count actions and ensures only (`preset_done` is a marker, not a step).
@@ -48,23 +55,33 @@ export function expandSetup(
         // Its state is kept, not its page: back where it ended (a setup may rely on that page).
         const landing = Object.hasOwn(landings, item.preset) ? landings[item.preset] : undefined
         const goto =
-          landing === undefined ? undefined : Action.safeParse({ action: "goto", url: landing })
-        if (goto?.success === true)
-          out.push({ kind: "action", index: n++, action: goto.data, preset: from })
+          landing === undefined
+            ? undefined
+            : Action.safeParse({ action: "goto", app: landing.app, url: landing.url })
+        if (goto?.success === true && landing !== undefined) {
+          out.push({
+            kind: "action",
+            index: n++,
+            action: goto.data,
+            app: landing.app,
+            preset: from,
+          })
+        }
         continue
       }
+      const own = preset.app ?? firstApp(project).name
       for (const s of preset.steps) {
         out.push(
           "ensure" in s
             ? { kind: "ensure", index: n++, ensure: s.ensure }
-            : { kind: "action", index: n++, action: s, preset: from },
+            : { kind: "action", index: n++, action: s, app: own, preset: from },
         )
       }
       out.push({ kind: "preset_done", index: n - 1, ...from })
     } else if ("ensure" in item) {
       out.push({ kind: "ensure", index: n++, ensure: item.ensure })
     } else {
-      out.push({ kind: "action", index: n++, action: item })
+      out.push({ kind: "action", index: n++, action: item, app: start })
     }
   }
   return out
@@ -101,13 +118,18 @@ export async function runSetupEntry(
   }
   if (entry.kind === "action") {
     const { action } = entry
-    await runOne(ctx, action, {
-      phase: "setup",
-      index: entry.index,
-      stepId: action.id,
-      action: action.action,
-      ...(entry.preset !== undefined && { preset: entry.preset.name }),
-    })
+    await runOne(
+      ctx,
+      action,
+      {
+        phase: "setup",
+        index: entry.index,
+        stepId: action.id,
+        action: action.action,
+        ...(entry.preset !== undefined && { preset: entry.preset.name }),
+      },
+      entry.app,
+    )
     return
   }
   await ensure(ctx, scenario, setup.slice(0, position), entry.index, entry.ensure)
@@ -183,27 +205,35 @@ async function ensure(
     // (their state is kept, but the page they led to may be the only `goto`).
     const replay = before.flatMap((e) =>
       e.kind === "action" && (e.preset?.session !== true || e.action.action === "goto")
-        ? [{ action: e.action, preset: e.preset?.name }]
+        ? [{ action: e.action, preset: e.preset?.name, app: e.app }]
         : [],
     )
     // Only the teardown is a cleanup (a sandbox may pre-approve it); going back replays the setup.
-    // Each action keeps the list it's written in, for its secret approvals (§3 A1).
-    const stages: [string, string, readonly { action: Action; preset?: string | undefined }[]][] = [
+    // Each action keeps the list it's written in, for its secret approvals (§3 A1), and the app it
+    // means (the teardown: from the scene's start app on; the replay: each as the setup meant it).
+    type Item = { action: Action; preset?: string | undefined; app?: string }
+    const stages: [string, string, readonly Item[]][] = [
       [`removing ${what} (teardown)`, "ensure", teardown.map((action) => ({ action }))],
       ["returning to the setup page", "ensure (back)", replay],
     ]
     for (const [stage, label, items] of stages) {
       const cleanup = label === "ensure"
-      for (const [i, { action, preset }] of items.entries()) {
+      for (const [i, { action, preset, app }] of items.entries()) {
         try {
-          await runOne(ctx, action, {
-            phase: "setup",
-            index,
-            stepId: action.id,
-            action: `${label}: ${action.action}`,
-            ...(cleanup && { cleanup: true as const, keyPhase: "teardown" as const }),
-            ...(preset !== undefined && { preset }),
-          })
+          await runOne(
+            ctx,
+            action,
+            {
+              phase: "setup",
+              index,
+              stepId: action.id,
+              action: `${label}: ${action.action}`,
+              ...(cleanup && { cleanup: true as const, keyPhase: "teardown" as const }),
+              ...(preset !== undefined && { preset }),
+            },
+            // The cleanup is written for the scene's start app; going back, each step for its own.
+            cleanup || app === undefined ? ctx.startApp : app,
+          )
         } catch (error) {
           ctx.clearListenerError()
           // The cause's own reason is kept (a risky step waiting for approval must stay that).

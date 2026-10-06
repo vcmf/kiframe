@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
 import { createProject, openProject, TakeStore } from "@kiframe/project"
-import { parseProjectYaml } from "@kiframe/schema"
+import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { type Browser, chromium } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../runtime/test/fixture-server.ts"
@@ -637,6 +637,51 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 150
     expect(whereOf("https://github.com/x", "https://app.example")).toMatch(/NOT the app's site/)
     await studio.close()
   }, 30_000)
+
+  it("replays a scene at the size of the app it starts in (B2)", async () => {
+    const docs = new URL(server.url)
+    docs.hostname = "localhost"
+    const config = parseProjectYaml(`version: 2
+apps:
+  app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+  docs: { kind: web, url: "${docs.origin}", viewport: { width: 640, height: 480 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+    const { studio } = makeStudio(undefined, { config })
+    const scenario = parseScenarioYaml(`version: 1
+app: docs
+setup: [{ action: goto, url: /size }]
+steps: [{ id: w, action: expect, that: { text: "w=640" } }]
+`)
+    expect(await studio.replay(scenario, "sized", new AbortController().signal)).toBe("ok")
+    await studio.close()
+  }, 30_000)
+
+  it("says a replay of a scene naming an app the project doesn't list failed (never throws)", async () => {
+    const { studio } = makeStudio()
+    const scenario = parseScenarioYaml(`version: 1
+app: docs
+steps: [{ id: a, action: pause, ms: 1 }]
+`)
+    expect(await studio.replay(scenario, "gone", new AbortController().signal)).toMatch(
+      /^replay failed: .*"docs" isn't one of the project's apps/,
+    )
+    await studio.close()
+  }, 30_000)
+
+  it("says which of the project's apps a page is on (B2)", () => {
+    const apps = { app: { url: "https://app.example" }, docs: { url: "https://docs.example" } }
+    expect(whereOf("https://app.example/x", apps)).toBe("/x")
+    expect(whereOf("https://docs.example/install", apps)).toBe("docs: /install")
+    expect(whereOf("https://www.docs.example/i", apps)).toBe(
+      "docs: /i (on https://www.docs.example, the app's site: secrets are typed on https://docs.example only)",
+    )
+    expect(siteOf("https://docs.example/i", apps)).toBe("app")
+    expect(siteOf("https://login.example/", apps)).toBe("other")
+    expect(whereOf("https://login.example/sso", apps)).toBe(
+      "/sso (on login.example: NOT one of the project's apps, app.example, docs.example)",
+    )
+  })
 
   it("acts on an element pointed at by its snapshot ref, and says the step as written", async () => {
     const { studio } = makeStudio()

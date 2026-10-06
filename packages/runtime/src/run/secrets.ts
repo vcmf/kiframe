@@ -16,6 +16,7 @@ import {
 import type { Box } from "../motion.ts"
 import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { isNavigationError, viewportOf } from "../targets.ts"
+import { appAtOrigin } from "./apps.ts"
 import { type Ctx, firstLine, guard, type RegionReport, type Viewport } from "./context.ts"
 import {
   containsKnownValue,
@@ -562,13 +563,15 @@ export function pathOnly(url: string): string {
   return `${parsed.origin}${parsed.pathname}`
 }
 
-/** A secret is never typed outside the target app (a redirect may have left it, e.g. SSO). */
+/**
+ * A secret is typed only on a listed app's exact origin (a redirect may have left them, e.g. SSO;
+ * never a `www.` alias). Which app's: the resolver's to say (the vault checks the secret's own
+ * origins; `resolveSecret` must refuse any other).
+ */
 export function assertSecretOrigin(ctx: Ctx, secret: string | undefined, step: StepRef) {
   if (secret === undefined) return
   const origin = new URL(ctx.page.url()).origin
-  // Always the project's origin, whatever the resolver: the vault then checks the secret's own
-  // origins (a secret for another origin, an SSO page, is refused here; BACKLOG).
-  if (origin !== ctx.base.origin) {
+  if (appAtOrigin(ctx.apps, origin) === undefined) {
     throw new StepError(step, "off-origin", `refusing to type secret "${secret}" on ${origin}`)
   }
 }

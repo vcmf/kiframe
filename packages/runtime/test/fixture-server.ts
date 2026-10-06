@@ -785,6 +785,16 @@ line2</textarea></label>`,
   "/late-redirect": `<!doctype html><title>Late redirect</title>
     <script>addEventListener("load", () => setTimeout(() => location.replace("/login"), 300))</script>`,
   "/login": `<!doctype html><title>Login</title><button>Sign in</button>`,
+  // B2: a link to the same path on the other host (127.0.0.1 ↔ localhost: two apps of a project),
+  // and a password field.
+  "/swap-host": `<!doctype html><title>Swap host</title><a id="o" href="#">Other host</a>
+    <script>const u = new URL(location.href); u.hostname = u.hostname === "localhost" ? "127.0.0.1" : "localhost"; u.pathname = new URLSearchParams(location.search).get("to") ?? "/projects"; u.search = ""; document.getElementById("o").href = u.href</script>`,
+  "/pw": `<!doctype html><title>Password</title><label>Password <input type="password"></label>`,
+  // A leftover kept per site (localStorage: each origin its own), and its cleanup.
+  "/item": `<!doctype html><title>Item</title><p id="d"></p><script>if (localStorage.getItem("draft") !== "gone") document.getElementById("d").textContent = "Draft"</script>`,
+  "/clean": `<!doctype html><title>Clean</title><p>Clean</p><script>localStorage.setItem("draft", "gone")</script>`,
+  // The page's own width (the viewport a scene is filmed at).
+  "/size": `<!doctype html><title>Size</title><p id="w"></p><script>document.getElementById("w").textContent = "w=" + innerWidth</script>`,
   "/covered": `<!doctype html><title>Covered</title>
     <div style="height:1500px"></div><p id="t">Under the banner</p>
     <div style="position:fixed; left:0; right:0; bottom:0; height:200px; background:#000">Cookie banner</div>`,

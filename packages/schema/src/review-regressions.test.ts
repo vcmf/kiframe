@@ -388,7 +388,7 @@ describe("round 3: secrets and credentials in every author string", () => {
       parseScenarioYaml(
         `version: 1\nsteps:\n  - { id: g, action: goto, url: "https://u:p@x.com" }\n`,
       ),
-    ).toThrow(/relative to the environment/)
+    ).toThrow(/relative to the app/)
     expect(
       parseScenarioYaml(`version: 1\nsteps:\n  - { id: g, action: goto, url: /projects }\n`).steps,
     ).toHaveLength(1)
@@ -430,19 +430,19 @@ describe("round 4: goto URLs", () => {
   it.each(["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi"])(
     "rejects %s",
     (url) => {
-      expect(() => parseScenarioYaml(goto(url))).toThrow(/relative to the environment/)
+      expect(() => parseScenarioYaml(goto(url))).toThrow(/relative to the app/)
     },
   )
 
   it("rejects credentials in protocol-relative URLs", () => {
     expect(() => parseScenarioYaml(goto("//user:pass@staging.acme.com/app"))).toThrow(
-      /relative to the environment/,
+      /relative to the app/,
     )
   })
 
   it("accepts relative URLs only", () => {
     expect(() => parseScenarioYaml(goto("https://staging.acme.com/x"))).toThrow(
-      /relative to the environment/,
+      /relative to the app/,
     )
     for (const url of ["/projects", "projects?tab=1", "?tab=2"]) {
       expect(parseScenarioYaml(goto(url)).steps).toHaveLength(1)
@@ -866,7 +866,7 @@ describe("round 9: goto can't leave the app through parser quirks", () => {
     "/\t/evil.com",
     "\\\\evil.com",
   ])("rejects %j", (url) => {
-    expect(() => parseScenarioYaml(goto(url))).toThrow(/relative to the environment/)
+    expect(() => parseScenarioYaml(goto(url))).toThrow(/relative to the app/)
   })
 })
 
@@ -933,7 +933,7 @@ describe("round 10", () => {
   it("rejects goto URLs naming a placeholder host", () => {
     for (const url of ["//base.invalid/admin", "//a.invalid/x", "//b.invalid/x"]) {
       const yaml = `version: 1\nsteps:\n  - { id: g, action: goto, url: ${JSON.stringify(url)} }\n`
-      expect(() => parseScenarioYaml(yaml)).toThrow(/relative to the environment/)
+      expect(() => parseScenarioYaml(yaml)).toThrow(/relative to the app/)
     }
   })
 

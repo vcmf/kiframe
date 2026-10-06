@@ -36,6 +36,7 @@ import {
   Step,
   sameApp,
   firstApp,
+  startAppOf,
   type App,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
@@ -126,7 +127,7 @@ export class Studio {
   #checked: Map<string, SnapshotNode> | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
-  /** The app the agent works in: the project's first (one app per scene until B2). */
+  /** The app the live page opens at: the project's first. */
   readonly #start: App
   /** The live page being opened (one at a time: a second caller waits for it). */
   #opening: Promise<Page> | undefined
@@ -152,11 +153,15 @@ export class Studio {
     }
   }
 
-  /** A fresh browser as the recording films it: the app's viewport and pixel ratio. */
-  #filmed() {
+  /**
+   * A fresh browser as the recording films a scene: the viewport and pixel ratio of the app it
+   * starts in (one size per take).
+   */
+  #filmed(scenario: Scenario): Filmed {
+    const { viewport } = startAppOf(scenario, this.options.config).app
     return {
-      viewport: this.#viewport(),
-      deviceScaleFactor: this.#start.viewport.deviceScaleFactor,
+      viewport: { width: viewport.width, height: viewport.height },
+      deviceScaleFactor: viewport.deviceScaleFactor,
     }
   }
 
@@ -237,12 +242,12 @@ export class Studio {
   }
 
   #where(url: string, site?: Site): string {
-    return whereOf(url, this.#start.url, site)
+    return whereOf(url, this.options.config.apps, site)
   }
 
   /** A step done, and where its page is: a page that failed to load makes it a failure. */
   #landed(url: string, said: string): StepResult {
-    const site = siteOf(url, this.#start.url)
+    const site = siteOf(url, this.options.config.apps)
     if (site === "unloaded") {
       return {
         ok: false,
@@ -659,7 +664,13 @@ export class Studio {
    * pause) fails here rather than in the recording.
    */
   async replay(scenario: Scenario, scene: string, signal: AbortSignal): Promise<string> {
-    const context = await this.options.browser.newContext(this.#filmed())
+    let filmed: Filmed
+    try {
+      filmed = this.#filmed(scenario)
+    } catch (error) {
+      return `replay failed: ${failure(error)}`
+    }
+    const context = await this.options.browser.newContext(filmed)
     try {
       // The pointer at once, also over the scene's own pacing (its typing and settling stay).
       const paced: Scenario = {
@@ -699,8 +710,14 @@ export class Studio {
     }
     const { scenario } = stored
     const { config, takes } = this.options
+    let filmed: Filmed
+    try {
+      filmed = this.#filmed(scenario)
+    } catch (error) {
+      return failed(`can't record "${sceneId}": ${failure(error)}`)
+    }
     const dir = takes.newTakeDir(this.project.project.id, sceneId)
-    const context = await this.options.browser.newContext(this.#filmed())
+    const context = await this.options.browser.newContext(filmed)
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
     let why: string | undefined
     let stopped: StepError | undefined
@@ -823,13 +840,28 @@ function shapeOf(raw: object): string {
 }
 
 /**
- * Where a page is, against the app's address (read from the URLs, never from text): the app (its
- * origin, or its address redirected to www. or https: `sameApp`); another site; or Chromium's
- * error page (the load failed). A blob: URL is its creator's origin; data: and file: pages are another site.
+ * Where a page is, against the project's apps (read from the URLs, never from text): one of them
+ * (its origin, or its address redirected to www. or https: `sameApp`); another site; or Chromium's
+ * error page (the load failed). A blob: URL is its creator's origin; data: and file: pages are
+ * another site.
  */
 export type Site = "app" | "other" | "unloaded"
 
-export function siteOf(url: string, appUrl: string): Site {
+/** The project's apps (by name), or one app's address. */
+type AppsArg = string | Readonly<Record<string, { url: string }>>
+
+function listed(apps: AppsArg): [string, URL][] {
+  return typeof apps === "string"
+    ? [["", new URL(apps)]]
+    : Object.entries(apps).map(([name, app]) => [name, new URL(app.url)])
+}
+
+/** The listed app a page is on (its name, "" for a single address; its URL), if any. */
+function appAt(page: URL, apps: AppsArg): [string, URL] | undefined {
+  return listed(apps).find(([, app]) => sameApp(page, app))
+}
+
+export function siteOf(url: string, apps: AppsArg): Site {
   let page: URL
   try {
     page = new URL(url)
@@ -838,8 +870,14 @@ export function siteOf(url: string, appUrl: string): Site {
   }
   if (page.protocol === "chrome-error:") return "unloaded"
   if (page.protocol === "about:") return "app"
-  // The app's own origin, or its address redirected to www. or https (`sameApp`).
-  return sameApp(page, appUrl) ? "app" : "other"
+  // A listed app's own origin, or its address redirected to www. or https (`sameApp`).
+  return appAt(page, apps) !== undefined ? "app" : "other"
+}
+
+/** A fresh browser's size as a scene is filmed (its start app's viewport and pixel ratio). */
+interface Filmed {
+  viewport: { width: number; height: number }
+  deviceScaleFactor: number
 }
 
 /** A step's outcome: ok or not, what the agent reads, and where the page is (when it was read). */
@@ -850,10 +888,11 @@ export interface StepResult {
 }
 
 /**
- * Where a page is, as the agent reads it: its path (never its query: it may hold a value), and
- * what its site is when it isn't the app's own origin (`siteOf`).
+ * Where a page is, as the agent reads it: its path (never its query: it may hold a value), the
+ * app's name when the project has several and it isn't the first, and what its site is when it
+ * isn't a listed app's own origin (`siteOf`).
  */
-export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl)): string {
+export function whereOf(url: string, apps: AppsArg, site = siteOf(url, apps)): string {
   if (site === "unloaded") return "(the page failed to load: try again)"
   let page: URL
   try {
@@ -863,18 +902,23 @@ export function whereOf(url: string, appUrl: string, site = siteOf(url, appUrl))
   }
   // A blank page (a popup not loaded yet, the first page before a goto): the app's, but empty.
   if (page.protocol === "about:") return "(a blank page)"
-  if (site === "app") {
+  const all = listed(apps)
+  const on = site === "app" ? appAt(page, apps) : undefined
+  if (on !== undefined) {
+    const [name, app] = on
+    const path =
+      all.length > 1 && name !== all[0]?.[0] ? `${name}: ${page.pathname}` : page.pathname
     // The app's site under another address (redirected to www. or https): its steps work, its
     // secrets don't (typed on their exact origin only): said, so a refused secret step has a why.
-    const app = new URL(appUrl)
     return page.origin === app.origin
-      ? page.pathname
-      : `${page.pathname} (on ${page.origin}, the app's site: secrets are typed on ${app.origin} only)`
+      ? path
+      : `${path} (on ${page.origin}, the app's site: secrets are typed on ${app.origin} only)`
   }
-  const app = new URL(appUrl)
   if (page.origin === "null") return `(a ${page.protocol.replace(":", "")} page: not the app)`
   const shown = new URL(page.origin)
-  return `${page.pathname} (on ${shown.host}: NOT the app's site, ${app.host})`
+  return all.length === 1
+    ? `${page.pathname} (on ${shown.host}: NOT the app's site, ${all[0]?.[1].host ?? ""})`
+    : `${page.pathname} (on ${shown.host}: NOT one of the project's apps, ${all.map(([, a]) => a.host).join(", ")})`
 }
 
 /** Where in a scenario an item runs. */
