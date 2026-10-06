@@ -333,6 +333,107 @@ const pages: Record<string, string> = {
         }
       })
     </script>`,
+  // A search field the app replaces while it's typed into (Wikipedia's turns into a combobox):
+  // the third keystroke swaps it for another input, value and focus moved.
+  "/swap-search": `<!doctype html><meta charset="utf-8"><title>Swap</title>
+    <form action="/searched"><input type="search" name="q" aria-label="Search site"></form>
+    <script>
+      let keys = 0
+      document.querySelector("input").addEventListener("input", (e) => {
+        if (++keys !== 3) return
+        const old = e.target
+        const next = document.createElement("input")
+        next.name = "q"
+        next.setAttribute("role", "combobox")
+        next.setAttribute("aria-label", "Search suggestions")
+        next.value = old.value
+        old.replaceWith(next)
+        next.focus()
+      })
+    </script>`,
+  "/searched": `<!doctype html><title>Searched</title><h1>Results</h1>`,
+  // A field the app replaces with a submit button as it's typed into: Enter there would press it.
+  "/swap-to-button": `<!doctype html><meta charset="utf-8"><title>Swap to button</title>
+    <input type="search" aria-label="Search site">
+    <script>
+      let keys = 0
+      document.querySelector("input").addEventListener("input", (e) => {
+        if (++keys !== 3) return
+        const danger = document.createElement("input")
+        danger.type = "submit"
+        // It shows what was typed: only its not being a text field keeps Enter off it.
+        danger.value = "messi"
+        danger.onclick = () => (document.body.dataset.pressed = "yes")
+        e.target.replaceWith(danger)
+        danger.focus()
+      })
+    </script>`,
+  // A second field that echoes the first and takes focus on its last key (a header search box
+  // mirroring the page's): Enter belongs to the field typed into.
+  "/mirror-field": `<!doctype html><meta charset="utf-8"><title>Mirror</title>
+    <form onsubmit="event.preventDefault(); document.body.dataset.submitted = 'main'"><input aria-label="Main search" id="main"></form>
+    <form onsubmit="event.preventDefault(); document.body.dataset.submitted = 'mirror'"><input aria-label="Header search" id="mirror"></form>
+    <script>
+      document.getElementById("main").addEventListener("input", (e) => {
+        const mirror = document.getElementById("mirror")
+        mirror.value = e.target.value
+        if (e.target.value.length === 5) mirror.focus()
+      })
+    </script>`,
+  // A tag input that turns what was typed into a chip and empties itself, then focuses a notes
+  // field that happens to contain the word: Enter isn't the notes' (it doesn't hold exactly it).
+  "/chip-input": `<!doctype html><meta charset="utf-8"><title>Chips</title>
+    <input aria-label="Tags" id="tags"><span id="chips"></span>
+    <form onsubmit="event.preventDefault(); document.body.dataset.notes = 'submitted'"><input aria-label="Notes" id="notes" value="red apple"></form>
+    <script>
+      document.getElementById("tags").addEventListener("input", (e) => {
+        if (e.target.value !== "red") return
+        document.getElementById("chips").textContent = "red"
+        e.target.value = ""
+        document.getElementById("notes").focus()
+      })
+    </script>`,
+  // A modal search that opens on the first key and takes the rest (the page's box stays behind).
+  "/modal-search": `<!doctype html><meta charset="utf-8"><title>Docs</title>
+    <input type="search" aria-label="Search docs" id="page-box">
+    <dialog id="modal"><form onsubmit="event.preventDefault(); document.body.dataset.searched = this.q.value"><input name="q" aria-label="Search in modal"></form></dialog>
+    <script>
+      document.getElementById("page-box").addEventListener("keydown", (e) => {
+        if (e.key.length !== 1) return
+        e.preventDefault()
+        const modal = document.getElementById("modal")
+        modal.show()
+        const q = modal.querySelector("input")
+        q.value += e.key
+        q.focus()
+      })
+    </script>`,
+  // A widget that takes keys without being a text field (a grid cell, a custom editor).
+  "/key-widget": `<!doctype html><meta charset="utf-8"><title>Widget</title>
+    <div role="gridcell" tabindex="0" aria-label="Cell" id="cell" style="min-width: 120px; min-height: 24px; border: 1px solid"></div>
+    <script>
+      document.getElementById("cell").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") document.body.dataset.entered = e.currentTarget.textContent
+        else if (e.key.length === 1) e.currentTarget.textContent += e.key
+      })
+    </script>`,
+  // A field that hands focus to a button as it's typed into: Enter there would press it.
+  "/blur-on-type": `<!doctype html><meta charset="utf-8"><title>Blur</title>
+    <form onsubmit="event.preventDefault(); document.body.dataset.submitted = this.note.value"><label>Note <input id="note" name="note"></label></form>
+    <button id="danger" onclick="document.body.dataset.pressed = 'yes'">Delete everything</button>
+    <script>document.getElementById("note").addEventListener("input", () => document.getElementById("danger").focus())</script>`,
+  // Suggestions that open when typing pauses (150 ms) then goes on: a person's pace does it (a
+  // pause follows the comma), keys sent at once never do.
+  "/slow-suggest": `<!doctype html><meta charset="utf-8"><title>Suggest</title>
+    <label>Find <input id="q"></label><div id="suggest" hidden>Suggestions</div>
+    <script>
+      let last = 0
+      document.getElementById("q").addEventListener("input", () => {
+        const now = performance.now()
+        if (last > 0 && now - last > 150) document.getElementById("suggest").hidden = false
+        last = now
+      })
+    </script>`,
   // Pages that scroll another way: the root clips sideways (so it scrolls itself), the body is the
   // scroller, a pane sits below the fold.
   "/select-html-hidden": `<!doctype html><meta charset="utf-8"><style>html { overflow-x: hidden }</style>

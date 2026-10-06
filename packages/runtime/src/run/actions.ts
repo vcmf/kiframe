@@ -228,7 +228,13 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
           secretWrite !== undefined &&
           !(await secretWrite.input.evaluate((e) => e.isConnected).catch(() => false))
         if (!gone) {
-          await guard(step, () => on.press("Enter", { timeout: ctx.timeoutMs }))
+          // Where the text is when the target can't take it (FAILURE-CATALOGUE #23).
+          const where =
+            secretWrite === undefined &&
+            (await target.evaluateAll(enterWhereFocused, text.trim()).catch(() => false))
+          await guard(step, () =>
+            where ? page.keyboard.press("Enter") : on.press("Enter", { timeout: ctx.timeoutMs }),
+          )
           ctx.options.onEvent?.({ kind: "key", step, keys: "Enter" })
         }
       }
@@ -741,4 +747,35 @@ async function scrollUntil(
       await ctx.page.waitForTimeout(100)
     }
   }
+}
+
+/**
+ * A submit's Enter goes to the focused field rather than the target when the app moved the typed
+ * text there (a field swapped in mid-typing, a modal that took the keys): only a yes or no leaves
+ * the page. Runs in the page.
+ */
+function enterWhereFocused(targets: Element[], typed: string): boolean {
+  const folded = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase()
+  const want = folded(typed)
+  if (want === "") return false
+  const content = (e: Element | null): string | undefined =>
+    e instanceof HTMLTextAreaElement || e instanceof HTMLInputElement
+      ? e.value
+      : e instanceof HTMLElement && e.isContentEditable
+        ? (e.textContent ?? "")
+        : undefined
+  let focused = document.activeElement
+  while (focused?.shadowRoot?.activeElement != null) focused = focused.shadowRoot.activeElement
+  const usable =
+    (focused instanceof HTMLTextAreaElement && !focused.disabled && !focused.readOnly) ||
+    (focused instanceof HTMLInputElement &&
+      ["text", "search", "email", "url", "tel", "password", "number"].includes(focused.type) &&
+      !focused.disabled &&
+      !focused.readOnly) ||
+    (focused instanceof HTMLElement && focused.isContentEditable)
+  // Exactly the typed text (never a field that merely contains a short value), not the target
+  // (focused, it takes the Enter as always), and no target holding the text.
+  if (!usable || folded(content(focused) ?? "") !== want) return false
+  if (targets.includes(focused as Element)) return false
+  return !targets.some((t) => folded(content(t) ?? "").includes(want))
 }

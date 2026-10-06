@@ -365,6 +365,35 @@ describe("studio tools", () => {
     await studio.close()
   }, 30_000)
 
+  it("replays a scene at the recording's pace before saving (what a person's typing changes, it sees)", async () => {
+    // Typed at a person's pace, the suggestions open (a pause after the comma); at once, never.
+    const config = parseProjectYaml(`version: 1
+target: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: human } }
+`)
+    const { studio } = makeStudio(undefined, { config })
+    // The project's typing pace (the scene's own cursor pacing set: the pointer goes at once).
+    const yaml = `version: 1
+overrides: { pacing: { cursor: natural } }
+setup: [{ action: goto, url: /slow-suggest }]
+steps:
+  - { id: find, action: type, target: { by: label, name: Find }, value: "red, green" }
+  - { id: closed, action: expect, that: { hidden: { by: css, selector: "#suggest" } }, timeout: 100 }
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
+  - { id: c, action: pause, ms: 1 }
+`
+    const saved = await tool("save_scene").run(
+      { id: "suggest", title: "Suggest", yaml },
+      studio,
+      never,
+    )
+    expect(saved).toMatchObject({
+      error: expect.stringMatching(/replay failed: .*closed/) as unknown,
+    })
+    await studio.close()
+  }, 60_000)
+
   it("finds what a long page has past the snapshot's cut, its refs ready to scroll to", async () => {
     const value = "sk-live-4242424242"
     const { studio } = makeStudio(undefined, { knownValues: () => new Set([value]) })

@@ -181,7 +181,7 @@ const askUser = defineTool({
 const saveSceneTool = defineTool({
   name: "save_scene",
   description:
-    "Save a scene: its complete scenario YAML is validated and replayed from scratch in a fresh browser; saved only if the replay passes (the result comes back).",
+    "Save a scene: its complete scenario YAML is validated and replayed from scratch in a fresh browser at the recording's pace; saved only if the replay passes (the result comes back).",
   parameters: z.object({
     id: sceneId,
     title: z.string().min(1).max(200),
