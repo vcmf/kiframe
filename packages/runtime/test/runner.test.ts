@@ -1140,6 +1140,231 @@ steps: [{ id: t, action: type, target: { by: label, name: Hidden field }, value:
     expect(await page.locator("#v").textContent()).toBe("abc")
   })
 
+  // ─── Selecting text ────────────────────────────────────────────────────────
+  describe("selecting text", () => {
+    const selected = () =>
+      page.evaluate(() => (window.getSelection()?.toString() ?? "").replace(/\s+/g, " ").trim())
+    const select = (target: string, text: string) =>
+      `setup: [{ action: goto, url: /article }]\nsteps:\n  - { id: s, action: selectText, target: ${target}, text: ${JSON.stringify(text)} }\n`
+
+    it("drags the pointer over a passage, across a link and lines, as written by a reader", async () => {
+      // Straight quote and hyphen for the page's curly quote and en dash; a link in the middle.
+      const events = await run(
+        select(
+          "{ by: css, selector: '#campaign' }",
+          "eight goals and four assists, becoming the tournament's all-time top scorer",
+        ),
+        { recording: true },
+      )
+      expect(await selected()).toBe(
+        "eight goals and four assists, becoming the tournament\u2019s all\u2013time top scorer",
+      )
+      // Pressed, moved with the button held, released: a gesture, never a scripted selection.
+      const pressed = events.filter((e) => e.kind === "cursor" && e.pressed)
+      expect(pressed.length).toBeGreaterThanOrEqual(5)
+      // The camera frames the passage: over more than one line (the paragraph is 420 px wide).
+      const press = events.find((e) => e.kind === "click")
+      expect(press?.kind === "click" && press.box !== undefined && press.box.height > 30).toBe(true)
+    })
+
+    it("selects in an app shell's pane (smooth by CSS), a re-rendering list, a component's pane", async () => {
+      for (const [target, text] of [
+        ["#deep", "deep inside the pane"],
+        // The pane itself as the target: the selection scrolls it (instantly, over CSS smooth).
+        ["#pane", "deep inside the pane"],
+        ["#row", "a recycled row"],
+        ["#xpane", "slotted deep text"],
+      ] as const) {
+        await run(
+          `setup: [{ action: goto, url: /select-pane }]\nsteps:\n  - { id: s, action: selectText, target: { by: css, selector: '${target}' }, text: "${text}" }\n`,
+        )
+        // As the page shows it (the agent wrote it in lower case).
+        expect(
+          await page.evaluate(() => window.getSelection()?.toString().replace(/\s+/g, " ").trim()),
+          target,
+        ).toBe(text.replace(/^./, (c) => c.toUpperCase()))
+      }
+    })
+
+    it("brings a passage on screen however the page scrolls: root, body, a pane below the fold", async () => {
+      for (const [path, target, text] of [
+        // The body as the target (finding it scrolls nothing): the selection does the scrolling.
+        ["/select-html-hidden", "body", "far down the page"],
+        ["/select-body-scroll", "body", "far down the page"],
+        // The body's overflow is the window's (the root's is visible): the page scrolls.
+        ["/select-body-viewport", "body", "far down the page"],
+        ["/select-low-pane", "body", "middle passage text"],
+        // A page that scrolls sideways.
+        ["/select-wide", "body", "far to the right"],
+      ] as const) {
+        await run(
+          `setup: [{ action: goto, url: ${path} }]\nsteps:\n  - { id: s, action: selectText, target: { by: css, selector: '${target}' }, text: "${text}" }\n`,
+        )
+        expect(
+          await page.evaluate(() => window.getSelection()?.toString().replace(/\s+/g, " ").trim()),
+          path,
+        ).toBe(text.replace(/^./, (c) => c.toUpperCase()))
+      }
+    })
+
+    it("selecting the same editor text twice never moves it (a press in a selection drags it)", async () => {
+      await run(
+        `setup: [{ action: goto, url: /article }]
+steps:
+  - { id: a, action: selectText, target: { by: label, name: Editor }, text: "Q4 launch notes" }
+  - { id: b, action: selectText, target: { by: label, name: Editor }, text: "Q4 launch notes" }
+`,
+      )
+      expect(await page.locator("#editor").textContent()).toBe("Ship the Q4 launch notes today.")
+      // The same in an editor inside a web component (its selection is the shadow root's).
+      await run(
+        `setup: [{ action: goto, url: /article }]
+steps:
+  - { id: a, action: selectText, target: { by: css, selector: "#xeditor" }, text: "release notes" }
+  - { id: b, action: selectText, target: { by: css, selector: "#xeditor" }, text: "release notes" }
+`,
+      )
+      expect(await page.locator("#xeditor").evaluate((e) => e.shadowRoot?.textContent)).toBe(
+        "Draft the release notes now.",
+      )
+    })
+
+    it("then acts on the selection: an editor's Bold", async () => {
+      await run(
+        `setup: [{ action: goto, url: /article }]
+steps:
+  - { id: s, action: selectText, target: { by: label, name: Editor }, text: "Q4 launch notes" }
+  - { id: b, action: click, target: { by: role, role: button, name: Bold } }
+`,
+      )
+      expect(await page.locator("#editor b").textContent()).toBe("Q4 launch notes")
+    })
+
+    it("selects past an emoji, over a line break, between blocks, inside a web component", async () => {
+      for (const [target, text, shown] of [
+        ["#emoji", "ship it", "Ship it"],
+        ["#lines", "one line two", "one\nline two"],
+        ["#blocks", "title release body", "title\nRelease body"],
+        ["#card", "the card text", "the card text"],
+        // Far down an element taller than the screen: the passage's own box brought into view.
+        ["#tall", "bottom passage", "Bottom passage"],
+        // Ending inside a link (the release's click goes to what holds both ends: the paragraph).
+        ["#campaign", "eight goals and four assists", "eight goals and four assists"],
+        // A node starting with whitespace (server-rendered HTML), words in separate elements.
+        ["#indented", "indented start", "Indented start"],
+        ["#spaced", "eight goals scored", "eight goals scored"],
+        // Direction marks and a soft hyphen (Wikipedia), an accent typed as two characters, RTL.
+        ["#marks", "rafael nadal won", "Ra\u200Ffael Na\u00ADdal won"],
+        ["#cafe", "caf\u00E9 est", "cafe\u0301 est"],
+        ["#rtl", "\u05E2\u05D5\u05DC\u05DD", "\u05E2\u05D5\u05DC\u05DD"],
+        ["#sha", "abc123def", "abc123def"],
+        // Text whose parent has no box of its own (display: contents; a slot's fallback text).
+        ["#contents", "contents and more", "contents and more"],
+        ["#fallback", "default label", "Default label"],
+        // A web component after plain text: its own root checked and read.
+        ["#mixed", "the card text", "the card text"],
+        // Over two paragraphs at the top of a shadow root (what holds them is the root).
+        ["#two", "first para second para", "First para Second para"],
+        // An inline-block runs on with the text beside it, as the browser shows it.
+        ["#ib", "newfeature launched", "NewFeature launched"],
+        // Written as a snapshot line reads ("Nadal 's"), the page's own text selected.
+        ["#poss", "nadal 's career", "Nadal's career"],
+      ] as const) {
+        await run(select(`{ by: css, selector: '${target}' }`, text))
+        expect(
+          await page.evaluate(() => window.getSelection()?.toString().replace(/\s+/g, " ").trim()),
+          target,
+        ).toBe(shown.replace(/\s+/g, " "))
+      }
+    })
+
+    it("refuses where a press would do something else: a link, a control, something on top", async () => {
+      const why = async (target: string, text: string) => {
+        const e = await failure(select(`{ by: css, selector: '${target}' }`, text))
+        return e.message
+      }
+      expect(await why("#linked", "Start link then")).toMatch(/starts inside a link/)
+      // The label holds the whole passage: its release would click it.
+      expect(await why("#labelled", "the terms")).toMatch(/inside something clickable/)
+      expect(await why("#covered", "under a banner")).toMatch(
+        /something covers or clips the passage/,
+      )
+      expect(await why("#withfield", "before after")).toMatch(/holds a form field/)
+      expect(await why("#sha", "abc123")).toMatch(/selected whole on a press/)
+      // Selected whole by an ancestor (user-select is inherited).
+      expect(await why("#nested", "123")).toMatch(/selected whole on a press/)
+      expect(await why("#opt", "text here")).toMatch(/option or a menu item|clickable/)
+      expect(await why("#clickcard", "card body")).toMatch(/inside something clickable/)
+      // On something with its own text on top, even placed before the passage.
+      expect(await why("#under", "covered from")).toMatch(/covers or clips/)
+      expect(await why("#under-empty", "covered by")).toMatch(/covers or clips/)
+      // Starting on an ARIA button (a press there may act).
+      expect(await why("#rolebtn", "open the menu")).toMatch(/starts inside a link or a control/)
+      // A link around a component's slot (the text's flat-tree parent is the shadow's link).
+      expect(await why("#slotlink", "the docs today")).toMatch(/starts inside a link or a control/)
+      // A field in a component's shadow root, inside the passage.
+      expect(await why("#xform", "enter here")).toMatch(/holds a form field/)
+      // A component that shows its content in another order than the page holds it.
+      expect(await why("#pair", "first shown second")).toMatch(/another order/)
+      expect(await page.locator("#clickcard").getAttribute("data-clicked")).toBeNull()
+      // Nothing was clicked: the checkbox is as it was.
+      expect(await page.locator("#labelled input").isChecked()).toBe(false)
+    })
+
+    it("selects only a whole element's text while a field holding a secret is on the page", async () => {
+      const secret = (text: string) =>
+        failure(
+          `setup: [{ action: goto, url: /login-form }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: s, action: selectText, target: { by: css, selector: body }, text: ${JSON.stringify(text)} }
+`,
+          { scope: "test", sceneId: "test", resolveSecret: () => "hunter2-secret" },
+        )
+      // A part of the page's text: refused before any matching (a guess is never told from a miss).
+      for (const guess of ["hunter2", "Password"]) {
+        const e = await secret(guess)
+        expect(e.reason, guess).toBe("secret-refused")
+        expect(e.message).toMatch(/whole text/)
+      }
+      // The page echoes the value: a right guess of the whole text and a wrong one, refused alike.
+      const echo = (text: string) =>
+        failure(
+          `setup: [{ action: goto, url: /evil-mirror }]
+steps:
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.acme.password}}" }
+  - { id: s, action: selectText, target: { by: css, selector: "#echo" }, text: ${JSON.stringify(text)} }
+`,
+          { scope: "test", sceneId: "test", resolveSecret: () => "hunter2-secret" },
+        )
+      const right = await echo("You typed hunter2-secret")
+      const wrong = await echo("You typed wrongguess1")
+      expect(right.reason).toBe("secret-refused")
+      expect([right.reason, right.message]).toEqual([wrong.reason, wrong.message])
+    })
+
+    it("says why it can't: not there, there twice, not selectable, or a field's value", async () => {
+      const why = async (target: string, text: string) => {
+        const e = await failure(select(target, text))
+        return `${e.reason}: ${e.message}`
+      }
+      expect(await why("{ by: css, selector: '#campaign' }", "nine goals")).toMatch(
+        /target-not-found: .*doesn't hold that passage/,
+      )
+      expect(await why("{ by: css, selector: '#twice' }", "the final")).toMatch(
+        /target-ambiguous: .*2 times/,
+      )
+      expect(await why("{ by: css, selector: '#locked' }", "can't be selected")).toMatch(
+        /action-failed: .*nothing can be selected there/,
+      )
+      // A form field's value isn't the page's text (a secret may be in one): never searched, and
+      // said as text that isn't there (another message would tell it's in the field).
+      expect(await why("{ by: css, selector: main }", "private note")).toMatch(
+        /target-not-found: .*doesn't hold that passage/,
+      )
+    })
+  })
+
   // ─── M1-2: select, drag, upload, tabs and popups ───────────────────────────
 
   it("selects a native option by label or by value", async () => {

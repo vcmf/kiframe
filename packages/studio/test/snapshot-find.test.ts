@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { findInSnapshot } from "../src/snapshot-find.ts"
 
+const find = (snap: string, query: string) => findInSnapshot(snap, query).text
+
 const SNAP = `- banner:
   - link "Home" [ref=e1]
 - main:
@@ -18,7 +20,7 @@ const SNAP = `- banner:
 
 describe("finding in a snapshot", () => {
   it("gives each match with its ancestors and its subtree's start, in page order", () => {
-    expect(findInSnapshot(SNAP, "2026 world cup")).toBe(`…
+    expect(find(SNAP, "2026 world cup")).toBe(`…
 - main:
   …
   - paragraph:
@@ -29,7 +31,7 @@ describe("finding in a snapshot", () => {
   })
 
   it("merges matches that share ancestors, and finds nothing when nothing matches", () => {
-    expect(findInSnapshot(SNAP, "world cup")).toBe(`…
+    expect(find(SNAP, "world cup")).toBe(`…
 - main:
   …
   - paragraph:
@@ -40,23 +42,94 @@ describe("finding in a snapshot", () => {
   - list:
     - listitem: World Cup winner 2022
 …`)
-    expect(findInSnapshot(SNAP, "Messi")).toBe("")
+    expect(find(SNAP, "Messi")).toBe("")
   })
 
   it("matches a line's words, never its refs or states; a quoted name as shown", () => {
-    expect(findInSnapshot(SNAP, "e3")).toBe("")
-    expect(findInSnapshot(SNAP, "level")).toBe("")
-    expect(findInSnapshot('- heading "The \\"Flea\\"" [ref=e1]', '"flea"')).toBe(
+    expect(find(SNAP, "e3")).toBe("")
+    expect(find(SNAP, "level")).toBe("")
+    expect(find('- heading "The \\"Flea\\"" [ref=e1]', '"flea"')).toBe(
       '- heading "The \\"Flea\\"" [ref=e1]',
     )
     // A URL is the link's words too.
-    expect(findInSnapshot(SNAP, "2026_FIFA")).toContain('link "2026 World Cup" [ref=e3]')
+    expect(find(SNAP, "2026_FIFA")).toContain('link "2026 World Cup" [ref=e3]')
   })
 
   it("stays linear on a huge snapshot with a common word", () => {
     const rows = Array.from({ length: 100_000 }, (_, i) => `  - paragraph: the row ${i}`)
     const started = performance.now()
-    expect(findInSnapshot(["- main:", ...rows].join("\n"), "the").split("\n")).toHaveLength(100_001)
+    expect(find(["- main:", ...rows].join("\n"), "the").split("\n")).toHaveLength(100_001)
     expect(performance.now() - started).toBeLessThan(1000)
+  })
+
+  it("reads a sentence over a link, as written by a reader (dashes, quotes, case)", () => {
+    // "He played in the 2026 World Cup and won." spans the paragraph's three children.
+    const found = findInSnapshot(SNAP, "played in the 2026 World Cup and WON")
+    expect(found.near).toBe(false)
+    expect(found.text).toBe(`…
+- main:
+  …
+  - paragraph:
+    - text: He played in the
+    - link "2026 World Cup" [ref=e3]:
+      - /url: /wiki/2026_FIFA_World_Cup
+    - text: and won.
+…`)
+    expect(
+      find("- paragraph: Messi\u2019s 2010\u20132013 seasons [ref=e9]", "messi's 2010-2013"),
+    ).toContain("[ref=e9]")
+    // And the other way: the agent's curly quote and en dash for the page's plain ones.
+    expect(
+      find("- paragraph: Messi's 2010-2013 seasons [ref=e9]", "Messi\u2019s 2010\u20132013"),
+    ).toContain("[ref=e9]")
+  })
+
+  it("reads a sentence over a link whose name holds quotes", () => {
+    const snap = `- paragraph [ref=e1]:
+  - text: Fans call him
+  - link "the \\"Flea\\"" [ref=e2]
+  - text: since his youth.`
+    const found = findInSnapshot(snap, 'call him the "flea" since')
+    expect(found.near).toBe(false)
+    expect(found.text).toContain("- paragraph [ref=e1]:")
+  })
+
+  it('reads a single-quoted key (a name holding ": ") as its words', () => {
+    const snap = `- paragraph [ref=e1]:
+  - text: Run
+  - 'link "Step 1: install" [ref=e2]':
+    - /url: /docs
+  - text: now.`
+    expect(findInSnapshot(snap, "run step 1: install now").text).toContain("- paragraph [ref=e1]:")
+  })
+
+  it("reads punctuation right after a link as the page shows it", () => {
+    const snap = `- paragraph [ref=e1]:
+  - text: he registered eight goals and
+  - link "four assists" [ref=e2]
+  - text: ", becoming the tournament's top scorer."`
+    const found = findInSnapshot(snap, "four assists, becoming the tournament's")
+    expect(found.near).toBe(false)
+    expect(found.text).toContain("- paragraph [ref=e1]:")
+  })
+
+  it("reads a possessive or a hyphen right after a link as the page shows it", () => {
+    const snap = `- paragraph [ref=e1]:
+  - link "Nadal" [ref=e2]
+  - text: "'s career began with"
+  - link "COVID" [ref=e3]
+  - text: "-19 rules."`
+    for (const q of ["Nadal's career", "COVID-19 rules"]) {
+      const found = findInSnapshot(snap, q)
+      expect(found.near, q).toBe(false)
+      expect(found.text, q).toContain("- paragraph [ref=e1]:")
+    }
+  })
+
+  it("falls back to the blocks that hold every word, said as near", () => {
+    const found = findInSnapshot(SNAP, "won World Cup 2026")
+    expect(found.near).toBe(true)
+    expect(found.text).toContain("  - paragraph:")
+    expect(findInSnapshot(SNAP, "won Messi").text).toBe("")
   })
 })

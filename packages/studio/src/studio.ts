@@ -296,13 +296,20 @@ export class Studio {
     // Scrubbed whole, then searched and cut: a value the cut splits would pass the scrubber in
     // part, and a search before scrubbing would tell a guess of a value from a miss.
     const scrubbed = this.scrub(text)
-    const shown = find === undefined ? scrubbed : findInSnapshot(scrubbed, find)
+    const found = find === undefined ? undefined : findInSnapshot(scrubbed, find)
+    const shown = found === undefined ? scrubbed : found.text
+    const where = within === undefined ? "page" : "region"
     if (find !== undefined && shown === "") {
       return {
         ok: true,
-        text: `url: ${this.#where(page.url())}\nnothing in the ${within === undefined ? "page" : "region"} mentions ${JSON.stringify(find)}`,
+        text: `url: ${this.#where(page.url())}\nnothing in the ${where} mentions ${JSON.stringify(find)}`,
       }
     }
+    // Only near matches: said first (the phrase as written isn't there).
+    const nearly =
+      found?.near === true
+        ? `\nnothing in the ${where} holds ${JSON.stringify(find)} as written; these hold all its words:`
+        : ""
     const cut =
       shown.length > SNAPSHOT_MAX
         ? `${shown.slice(0, SNAPSHOT_MAX)}\n… (cut: ${shown.length} chars; ${find === undefined ? "use `find` to look for what you need further down, or `within` for a region" : "make `find` more specific"})`
@@ -313,7 +320,7 @@ export class Studio {
         : `\n(${unusable}: its refs can't be used; snapshot again to point at them, or write locators)`
     return {
       ok: true,
-      text: `url: ${this.#where(page.url())}${within === undefined ? await this.#view(page) : ""}${note}\n${cut}`,
+      text: `url: ${this.#where(page.url())}${within === undefined ? await this.#view(page) : ""}${note}${nearly}\n${cut}`,
     }
   }
 

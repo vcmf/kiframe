@@ -517,6 +517,7 @@ Principles:
 | `select` | `target`, `option` | Native `<select>` only (custom dropdowns = `click`s) |
 | `scroll` | `to: target` \| `by: {y}` \| `until: target`, `within?: target` | Long pages and lists. **Smooth synthetic scroll** (eased) |
 | `drag` | `target`, `to: target \| {dx,dy}` | Kanban, sliders, reordering |
+| `selectText` | `target`, `text` | **A real selection with the pointer**: pressed before the passage's first character, dragged to after its last, then checked against what the browser selected. To point at a sentence, or act on it next (an editor's Bold). The text as shown (case, dashes, quotes, spaces don't matter), once in the target, over links and bold; matched in Node on the target's rendered text, never a form field's value |
 | `upload` | `target`, `file` (project asset) | The OS dialog isn't filmed. We show the result |
 | `waitFor` | `until: { visible \| hidden \| text \| url \| networkIdle }`, `timeout?` | Synchronization, never a fixed sleep |
 | `pause` | `ms` | **A presentation beat**: let the viewer look. Never sped up |

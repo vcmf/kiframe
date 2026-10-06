@@ -44,6 +44,14 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
       "{ id: draw, action: drag, target: <locator>, at: { x: 0.3, y: 0.3 }, to: { target: <locator>, at: { x: 0.6, y: 0.7 } } }",
     ],
   },
+  selectText: {
+    what:
+      "select a passage of the target's text with the pointer (to point at a sentence, or act on " +
+      "it next: an editor's Bold); the text as shown (case, dashes, quotes don't matter), once in the target, links and bold included",
+    forms: [
+      '{ id: quote, action: selectText, target: <locator>, text: "eight goals and four assists" }',
+    ],
+  },
   upload: {
     what: "put a project asset in a file input",
     forms: [

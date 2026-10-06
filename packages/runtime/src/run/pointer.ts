@@ -309,6 +309,14 @@ export function visiblePart(
   return width > 0 && height > 0 ? { x, y, width, height } : undefined
 }
 
+/** `n` evenly spaced samples from `from` (excluded) to `to` (included), 16 ms apart. */
+export function evenPath(from: Point, to: Point, n: number): { t: number; x: number; y: number }[] {
+  return Array.from({ length: n }, (_, i) => {
+    const u = (i + 1) / n
+    return { t: (i + 1) * 16, x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u }
+  })
+}
+
 /** Plays a planned path with the real mouse, in real time, reporting cursor samples. */
 export async function travel(
   ctx: Ctx,
