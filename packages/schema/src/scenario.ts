@@ -3,6 +3,7 @@ import {
   claimIds,
   CssSelector,
   isRelativeUrl,
+  mentionsSecret,
   Ms,
   RectTuple,
   secretRefName,
@@ -231,6 +232,21 @@ const Drag = z.strictObject({
     z.strictObject({ target: Target, at: At }),
   ]),
 })
+/**
+ * Select a passage of the target's text with the pointer (pressed at its first character, dragged
+ * to its last): to point at a sentence, or to act on it after (an editor's Bold). Case, dashes,
+ * quotes and spaces don't matter; it must appear once in the target.
+ */
+const SelectText = z.strictObject({
+  action: z.literal("selectText"),
+  target: Target,
+  text: z
+    .string()
+    .min(1)
+    .max(500)
+    .refine((t) => t.trim() !== "", "the text to select is empty")
+    .refine((t) => !mentionsSecret(t), "a secret is never selected by its value"),
+})
 /** A project asset (content-addressed, `assets/<sha256>.<ext>`). */
 export const UploadFile = z
   .string()
@@ -338,6 +354,7 @@ export const Action = z
     Hover.extend(offCamera),
     Select.extend(offCamera),
     Drag.extend(offCamera),
+    SelectText.extend(offCamera),
     Upload.extend(offCamera),
     Type.extend(offCamera),
     Press.extend(offCamera),
@@ -361,6 +378,7 @@ export const Step = z
     Hover.extend(onCamera),
     Select.extend(onCamera),
     Drag.extend(onCamera),
+    SelectText.extend(onCamera),
     Upload.extend(onCamera),
     Type.extend(onCamera),
     Press.extend(onCamera),
@@ -402,6 +420,7 @@ function hasTarget(step: Step): boolean {
     step.action === "type" ||
     step.action === "select" ||
     step.action === "drag" ||
+    step.action === "selectText" ||
     (step.action === "scroll" &&
       (step.to !== undefined || step.until !== undefined || step.within !== undefined))
   )

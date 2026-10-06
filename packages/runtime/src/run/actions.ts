@@ -31,9 +31,11 @@ import {
 } from "./context.ts"
 import { hasFocus, moveCaretToEnd, toPlaywrightKeys } from "./keys.ts"
 import { findMainScroller } from "../scroller.ts"
+import { selectText } from "./select-text.ts"
 import {
   COVERED_AT_POINT,
   clickAtCursor,
+  evenPath,
   moveCursorTo,
   namedPoint,
   onScreen,
@@ -278,6 +280,11 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
     case "upload":
       await upload(ctx, action, step)
       return
+    case "selectText": {
+      const target = await find(ctx, action.target, step)
+      await selectText(ctx, target, action.text, step)
+      return
+    }
     default: {
       // A new action kind must be implemented here: never silently skipped.
       const unknown: never = action
@@ -301,14 +308,6 @@ async function reportPress(
   const box = also === undefined ? own : unionBox(own, also)
   const where = at ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 }
   ctx.options.onEvent({ kind: "click", step, ...where, box, button: "left", count: 1 })
-}
-
-/** `n` evenly spaced samples from `from` (excluded) to `to` (included), 16 ms apart. */
-function evenPath(from: Point, to: Point, n: number): { t: number; x: number; y: number }[] {
-  return Array.from({ length: n }, (_, i) => {
-    const u = (i + 1) / n
-    return { t: (i + 1) * 16, x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u }
-  })
 }
 
 function unionBox(a: Box, b: Box): Box {

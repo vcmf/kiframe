@@ -398,6 +398,10 @@ describe("studio tools", () => {
     expect(await tool("snapshot").run({}, studio, never)).toMatch(
       /\nview: (9\d|100)% down the page, in "World Cup 2026"/,
     )
+    // No block holds the phrase as written: the ones holding all its words, said as such.
+    expect(await tool("snapshot").run({ find: "goals Season 599" }, studio, never)).toMatch(
+      /holds "goals Season 599" as written; these hold all its words:\n[\s\S]*Season 599: matches and goals/,
+    )
     // A search runs on the scrubbed snapshot: a secret's value is never told from a miss.
     expect(await tool("snapshot").run({ find: value.slice(0, 10) }, studio, never)).toMatch(
       /nothing in the page mentions/,

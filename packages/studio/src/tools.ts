@@ -53,7 +53,7 @@ const snapshot = defineTool({
       .min(1)
       .optional()
       .describe(
-        "Text to look for: only the elements that mention it (case-insensitive), with where they are and their refs. For content further down a long page, past the snapshot's cut",
+        "Text to look for: only the elements that mention it, with where they are and their refs (as a reader: case, dashes and quotes don't matter; a phrase may run over a paragraph's links; with no exact match, the blocks holding all its words). For content further down a long page, past the snapshot's cut",
       ),
   }),
   run: async ({ within, find }, studio: Studio) => said(await studio.snapshot(within, find)),

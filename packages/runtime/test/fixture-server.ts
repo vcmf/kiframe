@@ -221,6 +221,132 @@ const pages: Record<string, string> = {
     <button onclick="document.getElementById('reset').textContent = 'reset done'">Reset</button><p id="reset"></p>`,
   // An OAuth popup with a session already: closes itself at once.
   "/quick-close": `<!doctype html><title>Provider</title><script>window.close()</script>`,
+  // Text to select: a sentence with a link in it, one wrapped over lines, a phrase twice, text the
+  // page won't let be selected, and an editor whose Bold acts on the selection.
+  "/article": `<!doctype html><meta charset="utf-8"><title>Article</title>
+    <main style="width: 420px; font: 16px/1.5 sans-serif">
+      <p id="campaign">At the 2026 World Cup he registered eight goals and <a href="#a">four assists</a>, becoming the tournament\u2019s all\u2013time top scorer.</p>
+      <p id="twice">The final, then the final again.</p>
+      <p id="locked" style="user-select: none">This passage can\u2019t be selected.</p>
+      <div id="editor" contenteditable="true" aria-label="Editor">Ship the Q4 launch notes today.</div>
+      <button onclick="document.execCommand('bold')">Bold</button>
+      <label>Note <textarea>private note</textarea></label>
+      <p id="emoji">\u{1F389} Ship it today</p>
+      <p id="lines">line one<br>line two</p>
+      <div id="blocks"><div>Release title</div><div>Release body</div></div>
+      <p id="linked"><a href="#x">Start link</a> then more text.</p>
+      <label id="labelled"><input type="checkbox"> Accept the terms</label>
+      <div style="position: relative"><p id="covered">Hidden under a banner</p><div style="position: absolute; inset: 0; background: white"></div></div>
+      <x-card id="card"></x-card>
+      <div id="tall">Top of a long note<div style="height: 2500px"></div>Bottom passage of the note</div>
+      <p id="indented">
+        Indented start of a line</p>
+      <p id="spaced"><b>eight</b> <b>goals</b> scored</p>
+      <p id="marks">Ra\u200Ffael Na\u00ADdal won</p>
+      <p id="cafe">Le cafe\u0301 est ouvert</p>
+      <p id="rtl" dir="rtl">\u05E9\u05DC\u05D5\u05DD \u05E2\u05D5\u05DC\u05DD \u05D8\u05D5\u05D1</p>
+      <p id="withfield">Before <textarea>x</textarea> after</p>
+      <p>Commit <code id="sha" style="user-select: all">abc123def</code> landed</p>
+      <div role="listbox"><div role="option" id="opt">Option text here</div></div>
+      <div id="clickcard" style="cursor: pointer"><p>Card body text</p></div>
+      <p id="contents"><span style="display: contents">Wrapped in contents</span> and more words</p>
+      <div id="mixed">Intro words <x-card></x-card></div>
+      <x-two id="two"></x-two>
+      <div style="position: relative"><div style="position: absolute; inset: 0; background: white">Overlay text on top</div><p id="under">Covered from before</p></div>
+      <div style="position: relative"><div style="position: absolute; left: 0; top: 0; width: 40px; height: 100%; background: white"></div><p id="under-empty">Covered by a plain box</p></div>
+      <p id="rolebtn"><span role="button">Open</span> the menu now</p>
+      <p id="ib"><span style="display: inline-block">New</span>Feature launched</p>
+      <x-editor id="xeditor"></x-editor>
+      <p id="poss"><b>Nadal</b>'s career began early</p>
+      <p id="slotlink">See <x-mylink>the docs</x-mylink> today</p>
+      <x-form id="xform"></x-form>
+      <x-pair id="pair"><span slot="b">Second shown</span><span slot="a">First shown</span></x-pair>
+      <p>Hash <code id="nested" style="user-select: all">abc <b>123</b> def</code> here</p>
+      <x-fallback id="fallback"></x-fallback>
+      <script>document.getElementById("clickcard").addEventListener("click", (e) => (e.currentTarget.dataset.clicked = "yes"))</script>
+    </main>
+    <script>
+      customElements.define("x-two", class extends HTMLElement {
+        constructor() {
+          super()
+          // Two paragraphs at the top of the shadow root (a passage over both: the root holds it).
+          this.attachShadow({ mode: "open" }).innerHTML = "<p>First para</p><p>Second para</p>"
+        }
+      })
+      customElements.define("x-mylink", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open" }).innerHTML = '<a href="#docs"><slot></slot></a>'
+        }
+      })
+      customElements.define("x-form", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open" }).innerHTML = "<span>Enter</span><input><span>here</span>"
+        }
+      })
+      customElements.define("x-pair", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open" }).innerHTML = '<slot name="a"></slot> <slot name="b"></slot>'
+        }
+      })
+      customElements.define("x-editor", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open" }).innerHTML = '<div contenteditable="true">Draft the release notes now.</div>'
+        }
+      })
+      customElements.define("x-fallback", class extends HTMLElement {
+        constructor() {
+          super()
+          // Nothing assigned to the slot: its own (fallback) text shows.
+          this.attachShadow({ mode: "open" }).innerHTML = "<p><slot>Default label text</slot></p>"
+        }
+      })
+      customElements.define("x-card", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open" }).innerHTML = "<p>Inside the card text</p><slot></slot>"
+        }
+      })
+    </script>`,
+  // An app shell: the page doesn't scroll, a pane does (smoothly, by CSS); a list that re-renders
+  // its rows as it scrolls; a web component whose own pane scrolls what its slot shows.
+  "/select-pane": `<!doctype html><meta charset="utf-8"><title>Pane</title>
+    <style>html { scroll-behavior: smooth } body { margin: 0; height: 100vh; overflow: hidden } main { height: 100vh; overflow: auto; scroll-behavior: smooth }</style>
+    <main id="pane"><div style="height: 3000px"></div><p id="deep">Deep inside the pane text</p>
+      <div id="list" style="height: 200px; overflow: auto"><div style="height: 1500px"></div><p id="row">A recycled row of text</p></div>
+      <x-pane id="xpane"><p>Slotted deep text</p></x-pane>
+    </main>
+    <script>
+      const list = document.getElementById("list")
+      // On every scroll, the row is rendered again: same text, a new node (as virtualized lists do).
+      list.addEventListener("scroll", () => {
+        const row = document.getElementById("row")
+        row.replaceChildren(document.createTextNode(row.textContent))
+      })
+      customElements.define("x-pane", class extends HTMLElement {
+        constructor() {
+          super()
+          this.attachShadow({ mode: "open" }).innerHTML = '<div style="height: 200px; overflow: auto"><div style="height: 2000px"></div><slot></slot></div>'
+        }
+      })
+    </script>`,
+  // Pages that scroll another way: the root clips sideways (so it scrolls itself), the body is the
+  // scroller, a pane sits below the fold.
+  "/select-html-hidden": `<!doctype html><meta charset="utf-8"><style>html { overflow-x: hidden }</style>
+    <div style="height: 2500px"></div><p id="far">Far down the page text</p>`,
+  "/select-body-scroll": `<!doctype html><meta charset="utf-8"><style>html, body { height: 100%; margin: 0; overflow-x: hidden }</style>
+    <div style="height: 2500px"></div><p id="far">Far down the page text</p>`,
+  "/select-body-viewport": `<!doctype html><meta charset="utf-8"><style>html, body { height: 100% } body { overflow-y: auto }</style>
+    <div style="height: 2500px"></div><p>Far down the page text</p>`,
+  "/select-wide": `<!doctype html><meta charset="utf-8">
+    <div style="width: 4000px"><p style="margin-left: 3000px">Far to the right text</p></div>`,
+  "/select-low-pane": `<!doctype html><meta charset="utf-8">
+    <div style="height: 1200px"></div>
+    <div id="lowpane" style="height: 300px; overflow: auto"><p>Above the passage</p><div style="height: 600px"></div><p>Middle passage text</p><div style="height: 600px"></div><p>Below</p></div>
+    <div style="height: 1200px"></div>`,
   // Animated: screencast frames only come on repaint, so frames can only come from here once followed.
   "/popup-report": `<!doctype html><title>Report</title><h1>Report</h1><button onclick="window.close()">Done</button>
     <button onmouseover="window.close()">Close at once</button>

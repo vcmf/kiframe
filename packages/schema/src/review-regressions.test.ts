@@ -922,8 +922,8 @@ describe("on-camera and off-camera actions stay in sync", () => {
     const kinds = (u: { options: readonly { shape: { action: { value: string } } }[] }) =>
       u.options.map((o) => o.shape.action.value).sort()
     expect(kinds(Step)).toEqual(kinds(Action))
-    // hover (P0-9) makes 9; select, drag, upload (M1-2) make 12.
-    expect(kinds(Step)).toHaveLength(12)
+    // hover (P0-9) makes 9; select, drag, upload (M1-2) make 12; selectText 13.
+    expect(kinds(Step)).toHaveLength(13)
   })
 })
 

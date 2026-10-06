@@ -57,6 +57,10 @@ Rules:
   the part each item is for (\`part: setup\` / \`teardown\`; steps by default).
 - A long page's snapshot is cut: to reach something further down (a section, a paragraph), snapshot with
   \`find\` (text it mentions): you get its elements and refs, then scroll to one (\`scroll\` with \`to\`).
+- To point at a sentence on camera (or act on it next: an editor's Bold), select it: \`selectText\` on the
+  element that holds it once (its paragraph, found with \`find\`), with the text as shown. Text drawn by
+  CSS (bullets, separators, a required "*") can't be selected; some apps turn a drag over several blocks
+  into a block selection (Notion): select within one block there.
 - Explore with snapshot and run_step; once you know the locators, run the rest with run_steps (several
   steps in one call) to save turns.
 - As soon as every step and the teardown ran ok once, call save_scene. Don't start over by hand to re-check:
