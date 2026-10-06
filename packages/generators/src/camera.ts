@@ -10,8 +10,8 @@ import {
 import { anchorFor, type StepSpan, type Timeline } from "./timeline.ts"
 
 // Camera (docs/OBJECT-MODEL.md §2b, §4.1): each step's `camera` directive becomes framing intent
-// (focus + scale); the renderer's spring turns it into motion. Wide (scale 1) is the base: no
-// segment means wide.
+// (focus + scale); the renderer's spring turns it into motion. Wide (the whole picture) is the
+// base: no segment means wide.
 
 export interface CameraOptions {
   /** Highest zoom the generator picks by itself (`auto`, `target`). Default 2. */
