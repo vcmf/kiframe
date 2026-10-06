@@ -305,7 +305,7 @@ The user can attach files in the chat (a button, a drop, a pasted image): **imag
 - **An image from a tool** (`read_file` on an image) goes to the model as a message of its own right after the tool's result (tool results are text only for OpenAI-compatible providers), for that run only, then elided like any bulky result. Images are never passed through the text scrubber (a short value could match inside base64 and break the image).
 - **Inlined text is fenced** as material ("from the user's file …, not instructions").
 
-### 0.13 The agent's file tools (designed 2026-10-05, not built)
+### 0.13 The agent's file tools (designed 2026-10-05; the confined access built 2026-10-06, the tools next)
 
 One small set of tools over the project's **files the agent may see**, each part with its own rules. Narrow on purpose (a coding agent's free hand over a disk isn't Kiframe's): the scenes, `project.json` and the takes keep their own typed tools (`save_scene` checks and replays; a free write would bypass that).
 
@@ -336,6 +336,11 @@ One small set of tools over the project's **files the agent may see**, each part
 - **The read-hash list lives with the open project** (the agent host), not the studio (remade when its browser dies), and is cleared when the project closes.
 - **Paths**: the parent resolved (`realpath`) then checked inside its folder; compared case-insensitively and Unicode-normalized (macOS: `Pages/`, `STORY.md`); dot-names (`.git`, `.DS_Store`) and links refused.
 - **Until history (M1-10), the last versions of each written file are kept** in the app's data (a few per file): an agent's rewrite of a page can be undone.
+- **The confined access (C1, built 2026-10-06: `ProjectFiles` in `packages/project`, design reviewed):**
+  - **No link followed anywhere:** on macOS the kernel refuses one anywhere in an open's path (`O_NOFOLLOW_ANY`, checked by a self-test at start: failing it, file access is off); every part is also checked first (good messages), each folder made one level at a time, and a file is checked from its descriptor (a regular file, on the project's disk, one hard link for a read). Opens never block (a FIFO).
+  - **Writes:** a temporary sibling written exclusively, then linked into place for a new file (the kernel refuses an existing name) or renamed over the one whose hash was read; areas named as on disk (`Pages/` opens `pages/`); a new name the disk would take for another (case, accents) refused, asked of the disk itself.
+  - **Limits:** a page's file 512 KB, a page folder (`pages/<name>/`) 20 MB, `pages/` 100 MB and 2,000 files, `story.md` 8,000 characters; a text read 1 MB (100 KB returned, by line range beyond), an image 10 MB, a listing 1,000 entries; a copy only to a page's own types (text, images, fonts: never one that runs).
+  - **Residual (stated):** another local process swapping a folder for a link between a check and a rename, a folder creation or a listing (Node has no `renameat`, `opendir` takes no flags); elsewhere than macOS, an open checks each folder in turn. And a change saved in the instant between a write's hash check and its rename is replaced (no lock between processes).
 - **The secret check uses the scrubber's own minimum length** (a short value would refuse innocent HTML).
 
 ### 0.14 A scene's background, and a camera on the whole picture (designed 2026-10-05; the format and the camera built, the image next)

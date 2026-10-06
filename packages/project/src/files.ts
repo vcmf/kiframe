@@ -15,6 +15,11 @@ import { dirname, join } from "node:path"
 
 const TMP = /^\.[0-9a-f]{12}\.tmp$/
 
+/** A temporary sibling's name for an atomic write (a dot-name: hidden, and swept by `removeStrayTemps`). */
+export function tempName(): string {
+  return `.${randomBytes(6).toString("hex")}.tmp`
+}
+
 /**
  * Writes a file whole or not at all: to a temporary sibling (synced to disk), renamed over the
  * target, then the folder synced (a crash or a power loss never leaves a half-written or empty
@@ -23,7 +28,7 @@ const TMP = /^\.[0-9a-f]{12}\.tmp$/
 export function writeAtomic(path: string, content: string): void {
   const folder = dirname(path)
   const created = mkdirSync(folder, { recursive: true })
-  const tmp = join(folder, `.${randomBytes(6).toString("hex")}.tmp`)
+  const tmp = join(folder, tempName())
   try {
     const fd = openSync(tmp, "w")
     try {
@@ -52,7 +57,7 @@ export async function writeAtomicAsync(
   mode = 0o600,
 ): Promise<void> {
   const folder = dirname(path)
-  const tmp = join(folder, `.${randomBytes(6).toString("hex")}.tmp`)
+  const tmp = join(folder, tempName())
   try {
     const file = await open(tmp, "w", mode)
     try {
@@ -72,7 +77,8 @@ export async function writeAtomicAsync(
   syncFolder(folder)
 }
 
-function syncFolder(folder: string): void {
+/** Syncs a folder's entries to disk (best effort: not every system can). */
+export function syncFolder(folder: string): void {
   try {
     const fd = openSync(folder, "r")
     try {
