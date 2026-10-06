@@ -46,17 +46,19 @@ interface Span {
 }
 
 /** The page side, one object so its helpers are shared (functions run in the page). */
-interface PageLib {
+export interface PageLib {
   read(): { pieces: string[]; breaks: boolean[] }
   place(span: Span): Promise<Placed>
+  /** Whether a text node read is gone or changed since (the page re-rendered it). */
+  changed(): boolean
   points(span: Span): Points | { error: string }
   caretAt(p: Point): CaretAt
   clearSelectionAt(p: Point): void
   selected(): string
 }
 
-/** Builds the page side for one target. Runs in the page. */
-function pageLib(root: Element): PageLib {
+/** Builds the page side for one target. Runs in the page (exported for its tests). */
+export function pageLib(root: Element): PageLib {
   const nodes: Text[] = []
   const datas: string[] = []
   const breaks: boolean[] = []
@@ -243,6 +245,8 @@ function pageLib(root: Element): PageLib {
       return { pieces: [...datas], breaks: [...breaks] }
     },
     async place(span) {
+      // A page that re-rendered the text since it was read (a live list): read again first.
+      if (lib.changed()) return { ok: false, changed: true }
       const first = nodes[span.start.piece] as Text
       const last = nodes[span.end.piece] as Text
       if (first.getRootNode() !== last.getRootNode()) {
@@ -364,12 +368,13 @@ function pageLib(root: Element): PageLib {
       // A list that re-renders as it scrolls (virtualized, lazy; also after the scroll that found
       // the target): read and matched again from scratch.
       await twoFrames()
-      if (nodes.some((n, i) => !n.isConnected || n.data !== datas[i])) {
-        return { ok: false, changed: true }
-      }
+      if (lib.changed()) return { ok: false, changed: true }
       const placed = lib.points(span)
       if ("error" in placed) return { ok: false, reason: "target-not-found", error: placed.error }
       return { ok: true, ...placed }
+    },
+    changed() {
+      return nodes.some((n, i) => !n.isConnected || n.data !== datas[i])
     },
     points(span) {
       const range = rangeOf(span)
@@ -536,7 +541,7 @@ export async function selectText(
         throw new StepError(
           step,
           "target-not-found",
-          "the page changed as it scrolled to the passage: try again",
+          "the page keeps re-rendering the passage's text (a live list, an animation): select it once the page settles",
         )
       }
       if (!placed.ok) throw new StepError(step, placed.reason, placed.error)
