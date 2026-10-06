@@ -107,6 +107,9 @@ export function joinPieces(pieces: readonly string[], breaks: readonly boolean[]
 
 /** A text as matched: folded the same way as a page's, runs of whitespace one space, trimmed. */
 export function normalizeText(text: string): string {
+  // Plain ASCII (most text): only case and whitespace change, without walking its characters.
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7F]*$/.test(text)) return text.toLowerCase().replace(/\s+/g, " ").trim()
   return joinPieces([text]).text
 }
 

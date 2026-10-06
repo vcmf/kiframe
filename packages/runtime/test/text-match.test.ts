@@ -19,6 +19,11 @@ describe("text as a reader sees it", () => {
     expect(normalizeText("Stra\u00DFe")).toBe("strasse")
   })
 
+  it("folds plain ASCII the same way with or without its fast path", () => {
+    const ascii = "  The 'Flea' scored\t2010-2013,\n  then LEFT  "
+    expect(normalizeText(ascii)).toBe(joinPieces([ascii]).text)
+  })
+
   it("reads an accent typed as two characters as one", () => {
     expect(normalizeText("cafe\u0301")).toBe(normalizeText("caf\u00E9"))
     const { from } = joinPieces(["cafe\u0301 bar"])
