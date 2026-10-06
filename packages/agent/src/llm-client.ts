@@ -41,6 +41,20 @@ export type LlmConfig = {
    * endpoint is OpenRouter's; set it for a gateway in front of OpenRouter.
    */
   sendReasoning?: boolean
+  /**
+   * Ask OpenRouter for the model's fastest provider (`provider.sort: throughput`, what the
+   * `:nitro` suffix does, the id kept plain). OpenRouter's endpoint only (another API would refuse
+   * it). Default: OpenRouter's own routing.
+   */
+  fastestProvider?: boolean
+}
+
+/** What a client sends beyond the model and messages (OpenRouter's fields: off for other APIs). */
+export interface ClientOptions {
+  /** Send the reasoning state back (`reasoning_details`). */
+  sendReasoning?: boolean
+  /** Ask for the model's fastest provider (`provider.sort: throughput`). */
+  fastestProvider?: boolean
 }
 
 /** The SDK calls the client makes: injectable, so tests never reach the network. */
@@ -153,22 +167,28 @@ export class OpenAiCompatibleClient implements LlmClient {
   readonly #completer: ChatCompleter
   readonly #model: string
   readonly #reasoning: boolean
+  readonly #fastest: boolean
 
-  /** `sendReasoning`: send the reasoning state back (OpenRouter's field; off for other APIs). */
-  constructor(completer: ChatCompleter, model: string, sendReasoning = false) {
+  constructor(completer: ChatCompleter, model: string, options: ClientOptions = {}) {
     this.#completer = completer
     this.#model = model
-    this.#reasoning = sendReasoning
+    this.#reasoning = options.sendReasoning ?? false
+    this.#fastest = options.fastestProvider ?? false
   }
 
   static fromConfig(config: LlmConfig): OpenAiCompatibleClient {
-    const reasoning = config.sendReasoning ?? isOpenRouter(config)
-    return new OpenAiCompatibleClient(makeCompleter(config), config.model, reasoning)
+    const openRouter = isOpenRouter(config)
+    return new OpenAiCompatibleClient(makeCompleter(config), config.model, {
+      sendReasoning: config.sendReasoning ?? openRouter,
+      fastestProvider: openRouter && config.fastestProvider === true,
+    })
   }
 
   #params(messages: LlmMessage[], tools: LlmToolDef[]) {
     return {
       model: this.#model,
+      // OpenRouter's routing (which upstream serves the model), not `LlmConfig.provider`.
+      ...(this.#fastest && { provider: { sort: "throughput" } }),
       messages: toOpenAiMessages(messages, this.#reasoning),
       ...(tools.length > 0 && { tools: toOpenAiTools(tools), tool_choice: "auto" as const }),
     }
