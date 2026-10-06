@@ -11,7 +11,7 @@ import {
 import { describe, expect, it } from "vitest"
 import { BUILTIN_BACKGROUNDS, DEFAULT_STYLE as SCHEMA_DEFAULT_STYLE } from "@kiframe/schema"
 import { coverCrop, drawScene } from "../src/draw.ts"
-import { contentBox, cursorAt, prepare, sceneAt, stageTransform } from "../src/scene.ts"
+import { contentBox, cursorAt, prepare, sceneAt, stageTransform, appFill } from "../src/scene.ts"
 
 const project = parseProjectYaml(`version: 1
 target: { kind: web, url: "https://app.example.com", viewport: { width: 1280, height: 800 } }
@@ -122,7 +122,8 @@ describe("camera", () => {
       maxScale = Math.max(maxScale, v.scale)
       prev = v
     }
-    expect(maxScale).toBeGreaterThan(1.3)
+    // The app's own magnification (the picture goes by `fill` more with a background).
+    expect(maxScale / p.fill).toBeGreaterThan(1.3)
   })
 
   it("is random-access: seeking gives the same view as playing through", () => {
@@ -159,7 +160,7 @@ describe("camera", () => {
     const p = prepare(edited, scenario, { ...take, events })
     let max = 1
     for (let t = 0; t <= p.duration; t += 20) max = Math.max(max, sceneAt(p, t).view.scale)
-    expect(max).toBeGreaterThan(1.8)
+    expect(max / p.fill).toBeGreaterThan(1.8)
   })
 
   it("layers styles like resolveStyle: base (org + project), then the scene, then the output", () => {
@@ -296,6 +297,28 @@ describe("camera", () => {
     expect(prepare(styled, scenario, take, { radius: 9 }).style.radius).toBe(9)
   })
 
+  it("frames a target as the generators meant: the same share of the app, background or not", () => {
+    const { scenario, take, composition } = fixture()
+    const at2: Composition = {
+      ...composition,
+      tracks: {
+        ...composition.tracks,
+        camera: composition.tracks.camera.map((c) => ({ ...c, scale: 2 })),
+      },
+    }
+    // The share of the app's width the most zoomed view shows.
+    const shown = (style: Composition["style"]) => {
+      const p = prepare({ ...at2, style }, scenario, take)
+      let max = 1
+      for (let t = 0; t <= p.duration; t += 20) max = Math.max(max, sceneAt(p, t).view.scale)
+      return p.style.width / (max * contentBox(p.style, p.frame).w)
+    }
+    const bare = shown({ background: "none" })
+    // Scale 2 of the app filling the frame (a 16:10 app in 16:9: by its height).
+    expect(bare).toBeCloseTo(16 / 9 / 1.6 / 2, 2)
+    expect(shown({ background: { builtin: "mountain-lake" } })).toBeCloseTo(bare, 2)
+  })
+
   it("caps the zoom and reports the softness", () => {
     const { scenario, take, composition } = fixture()
     const forced: Composition = {
@@ -306,11 +329,16 @@ describe("camera", () => {
       },
     }
     const p = prepare(forced, scenario, take, { maxScale: 2.5 })
+    // The cap is on the app's magnification (as if it filled the frame): on the picture, by as
+    // much more as the window is smaller than the frame (the same softness with a background or
+    // without one).
+    const fill = appFill(p.style, p.frame)
+    expect(fill).toBeGreaterThan(1)
     let max = 1
     for (let t = 0; t <= p.duration; t += 20) max = Math.max(max, sceneAt(p, t).view.scale)
-    expect(max).toBeLessThanOrEqual(2.5)
-    // 2.5× of a 1280 px capture drawn ~1520 px wide: ~3 output px per source px.
-    expect(p.softness).toBeCloseTo((2.5 * 1520.64) / 1280, 2)
+    expect(max).toBeCloseTo(2.5 * fill, 2)
+    // 2.5× of the app filling the frame, a 1280 px capture drawn ~1520 px wide at rest.
+    expect(p.softness).toBeCloseTo((2.5 * fill * 1520.64) / 1280, 2)
   })
 })
 
@@ -473,7 +501,7 @@ describe("the camera over the whole picture (OBJECT-MODEL §0.14)", () => {
     const rest = stageTransform(p.style, frame, { scale: 1, cx: 0.5, cy: 0.5 })
     expect(rest.out(0, 0)).toEqual({ x: 0, y: 0 })
     expect(rest.out(W, H)).toEqual({ x: W, y: H })
-    expect(Math.max(...frames.map((f) => f.view.scale))).toBeGreaterThan(1.5)
+    expect(Math.max(...frames.map((f) => f.view.scale)) / p.fill).toBeGreaterThan(1.5)
     for (const { t, view } of frames) {
       const tr = stageTransform(p.style, frame, view)
       const a = tr.out(0, 0)
@@ -570,7 +598,9 @@ describe("the camera over the whole picture (OBJECT-MODEL §0.14)", () => {
     expect(rest.length).toBeGreaterThan(0)
     expect(captions(drawn({ ...shown, view: { scale: 2.4, cx: 0.2, cy: 0.3 } }))).toEqual(rest)
     // The secret's blur, while zoomed: where the field is in the window as drawn.
-    const blurred = frames.find((f) => f.view.scale > 1.2 && sceneAt(p, f.t).blurs.length > 0)
+    const blurred = frames.find(
+      (f) => f.view.scale / p.fill > 1.2 && sceneAt(p, f.t).blurs.length > 0,
+    )
     expect(blurred).toBeDefined()
     const { ops, scene } = draw(blurred!.t)
     const window = numbers(ops.find((o) => o.startsWith("drawImage(") && numbers(o).length === 9)!)

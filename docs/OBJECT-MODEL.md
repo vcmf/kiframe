@@ -357,7 +357,7 @@ One small set of tools over the project's **files the agent may see**, each part
 
 **Implementation notes (design review, 2026-10-05):**
 - **Format** (built 2026-10-05: a shipped image or none; the image covers the picture, cropped to its aspect, never stretched; the preview loads it from the app's bundle, the exporter from the compositor's `backgrounds/`; a host that passes no image gets the former gradient): the style's `background` becomes `{ builtin: id }` or `"none"` (`{ file: "inputs/…" }` once attachments exist), padding 0 with none; the scene's override stays `composition.style`, the default `project.style`.
-- **Camera segments keep app coordinates** (built 2026-10-05: `stageTransform`, `keepInPicture` in `packages/compositor/src/scene.ts`): `scale` stays "magnification of the app's window", so generators don't change; only the view and the drawing map the app onto the stage and clamp to the stage. The zoom cap's softness formula stays right. The same `scale` frames a target a little smaller (the window covers about 88% of the frame at rest): tuned later if it shows.
+- **Camera segments keep app coordinates** (built 2026-10-05: `stageTransform`, `keepInPicture` in `packages/compositor/src/scene.ts`): `scale` stays "magnification of the app's window", so generators don't change; only the view and the drawing map the app onto the stage and clamp to the stage. The zoom cap's softness formula stays right. A segment's `scale` counts from the app filling the frame (`appFill`, 2026-10-06): on the picture, it's magnified by as much more as the window is smaller than the frame, so a target is framed as the generators mean it, with a background or without one; rest (no segment) stays the whole picture. The zoom cap (`maxScale`) is on the app's magnification too: the same softness either way.
 - **Drawing under a zoom**: the window's shadow, the blur radius and the cursor size are corrected for the scale (canvas shadows ignore the transform; the cursor grows less than the zoom, as today); captions drawn without it.
 - **No background, another aspect** (a 16:10 app in a 16:9 video): black bars, the view clamped to the app.
 - **Loading**: the preview imports the shipped images as app assets (its CSP allows only its own files), an attachment comes as bytes; the exporter gets the background's path in its job and serves it.
@@ -698,7 +698,7 @@ type ClipSegment = SegmentBase & (
   | { id: string; source: "auto" | "manual"; at: Anchor; mode: "freeze"; ms: number; reason?: "reading" | "user" };
 
 type CameraSegment = SegmentBase & {
-  scale: number;                               // 1 = full frame, 2 = 2x zoom (capped, §2b)
+  scale: number;                               // 1 = the app filling the frame, 2 = 2x that (capped, §2b, §0.14)
   focus: { mode: "follow-cursor" } | { mode: "rect"; rect: NRect } | { mode: "point"; p: NPoint };
   ease?: "spring" | "instant";
 };

@@ -36,7 +36,10 @@ export interface Style {
   padding: number
   /** Window corner radius, in output pixels. */
   radius: number
-  /** Hard zoom cap (§2b): beyond source resolution the image gets soft; `softness` reports it. */
+  /**
+   * Zoom cap (§2b) on the app's magnification (as if it filled the frame: the picture may go by
+   * `fill` more): beyond source resolution the image gets soft; `softness` reports it.
+   */
   maxScale: number
   /** Cursor height in output pixels at scale 1. */
   cursorSize: number
@@ -135,6 +138,8 @@ export interface Scene {
 export interface Prepared {
   /** The take's frame size (the app's window, at rest, in its box). */
   frame: { width: number; height: number }
+  /** The picture's magnification at which the app fills the frame (`appFill`): segment scales count from it. */
+  fill: number
   timeline: Timeline
   map: TimeMap
   style: Style
@@ -189,16 +194,32 @@ export function prepare(
     composition,
     regionIndex: indexRegions(timeline.regions),
     frame: take.meta.frameSize,
+    fill: appFill(s, take.meta.frameSize),
     duration: map.outputDuration,
   }
   const moves = cameraMoves(base)
-  const maxScale = Math.max(
-    1,
-    ...composition.tracks.camera.map((c) => Math.min(c.scale, s.maxScale)),
-  )
+  const maxScale = Math.max(1, ...composition.tracks.camera.map((c) => pictureScale(base, c.scale)))
   const content = contentBox(s, take.meta.frameSize)
   const softness = (maxScale * content.w) / take.meta.frameSize.width
   return { ...base, moves, softness }
+}
+
+/**
+ * A segment's scale on the picture: it magnifies the app as if it filled the frame (what the
+ * generators frame by), capped there (`maxScale`); the picture by as much more as the window is
+ * smaller than the frame.
+ */
+function pictureScale(p: Pick<Prepared, "fill" | "style">, appScale: number): number {
+  return Math.min(appScale, p.style.maxScale) * p.fill
+}
+
+/**
+ * How much the picture is magnified for the app's window to fill the frame (whole, aspect kept):
+ * 1 without a background. Camera segments' scales count from there (OBJECT-MODEL §0.14).
+ */
+export function appFill(style: Style, frame: { width: number; height: number }): number {
+  const box = contentBox(style, frame)
+  return Math.min(style.width / box.w, style.height / box.h)
 }
 
 /** Where the take frame goes in the output (aspect kept, centered, inside the padding). */
@@ -372,7 +393,7 @@ function targetOf(
   s: number,
 ): Vec {
   if (seg === undefined) return [0, 0.5, 0.5]
-  const scale = Math.min(seg.scale, p.style.maxScale)
+  const scale = pictureScale(p, seg.scale)
   const focus = seg.focus
   let c: { x: number; y: number }
   if (focus.mode === "rect")
@@ -461,7 +482,7 @@ function viewAt(p: Prepared, tOut: number, sourceT: number): View {
   let move = p.moves[0]
   for (const m of p.moves) if (m.t <= tOut) move = m
   const x = move === undefined ? targetOf(p, undefined, sourceT) : springState(p, move, tOut).x
-  const scale = Math.min(p.style.maxScale, Math.max(1, Math.exp(x[0])))
+  const scale = Math.min(pictureScale(p, p.style.maxScale), Math.max(1, Math.exp(x[0])))
   return keepInPicture(p.style, p.frame, { scale, cx: x[1], cy: x[2] })
 }
 

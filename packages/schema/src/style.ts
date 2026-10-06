@@ -81,7 +81,10 @@ export const Style = z.strictObject({
   radius: z.number().int().min(0).max(200),
   cursor: CursorStyle,
   captions: CaptionStyle,
-  /** Hard zoom cap; beyond the source resolution the image gets soft (PHASE0-FINDINGS F2). */
+  /**
+   * Zoom cap on the app's magnification (counted from the app filling the frame); beyond the
+   * source resolution the image gets soft (PHASE0-FINDINGS F2).
+   */
   maxScale: z.number().min(CAMERA_SCALE.min).max(CAMERA_SCALE.max),
 })
 export type Style = z.infer<typeof Style>
