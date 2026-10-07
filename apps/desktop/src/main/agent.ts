@@ -5,7 +5,14 @@ import type { LlmClient, LlmMessage } from "@kiframe/agent"
 import { runAgent } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
 import { resolveProjectConfig } from "@kiframe/schema"
-import { type FileNote, Studio, studioTools, systemPrompt } from "@kiframe/studio"
+import {
+  type FileNote,
+  notesBlock,
+  runNotes,
+  Studio,
+  studioTools,
+  systemPrompt,
+} from "@kiframe/studio"
 import type { Browser } from "playwright"
 import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
 import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.ts"
@@ -216,6 +223,9 @@ export class AgentHost {
       )
       await this.#liveStopped
       this.#live.start()
+      // story.md and the files' names, given with this run's message (never stored): built once
+      // the vault is read (every value known to the scrubber), scrubbed again each turn.
+      const notes = runNotes(studio)
       for await (const event of runAgent({
         userMessage: text,
         tools: studioTools,
@@ -223,6 +233,7 @@ export class AgentHost {
         context: studio,
         system: systemPrompt(studio),
         history: this.#history,
+        liveContext: () => notesBlock(notes, studio.scrubber()),
         signal,
         maxTurns: MAX_TURNS,
       })) {

@@ -86,6 +86,8 @@ export type FileRead =
       partial: boolean
       /** The caller's `scrub` changed the file (said of the whole file, whatever part is returned). */
       scrubbed: boolean
+      /** The whole file's length in characters (code points), as it is (before `scrub`). */
+      chars: number
     }
   | { kind: "image"; path: string; bytes: Uint8Array; mime: string; hash: string }
 
@@ -375,17 +377,22 @@ export class ProjectFiles {
   }
 
   /**
-   * A file's canonical path, its hash and size: any file the agent may see (a font, a file too
-   * large to read), for a delete or a copy over it. Never its bytes.
+   * A file's canonical path, its hash and size, whether it's blank (no bytes, or a byte-order mark
+   * alone): any file the agent may see (a font, a file too large to read). Never its bytes.
    */
-  stat(path: string): { path: string; hash: string; size: number } {
+  stat(path: string): { path: string; hash: string; size: number; blank: boolean } {
     return safe("read", path, () => {
       const r = this.#resolve(path)
       if (r.rest.length === 0 && r.area !== "story") {
         throw new FileRefusal("not-a-file", `${r.canonical} is a folder: list it`)
       }
       const { bytes, hash } = this.#readAll(r, FILE_LIMITS.imageBytes)
-      return { path: r.canonical, hash, size: bytes.length }
+      // Whitespace alone (after a byte-order mark): nothing a replace would lose.
+      const start = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0
+      const blank = bytes
+        .subarray(start)
+        .every((b) => b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d)
+      return { path: r.canonical, hash, size: bytes.length, blank }
     })
   }
 
@@ -556,6 +563,7 @@ export class ProjectFiles {
       lines: all.length,
       partial,
       scrubbed: text !== raw,
+      chars: [...raw].length,
     }
   }
 

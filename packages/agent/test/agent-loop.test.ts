@@ -183,6 +183,60 @@ describe("runAgent", () => {
   })
 })
 
+describe("runAgent: the live context (C3)", () => {
+  it("sends the live context before this run's message on every turn, asked again each turn, never stored", async () => {
+    const noop = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "noop",
+      description: "Does nothing",
+      parameters: z.object({}),
+      run: () => Promise.resolve("ok"),
+    })
+    const { llm, seen } = scripted([{ kind: "tool_calls", calls: [call("c1", "noop", {})] }])
+    let asked = 0
+    const events = await collect(
+      runAgent({
+        userMessage: "make the intro",
+        tools: [noop],
+        llm,
+        context: { log: [] },
+        history: [{ role: "user", content: "earlier" }],
+        liveContext: () => `<notes ${++asked}>`,
+      }),
+    )
+    // Each turn: the live message carries the block as it is now, the history never does.
+    expect(
+      seen.map(
+        (m) => m.find((x) => x.role === "user" && x.content.includes("make the intro"))?.content,
+      ),
+    ).toEqual(["<notes 1>\n\nmake the intro", "<notes 2>\n\nmake the intro"])
+    expect(seen[0]?.[0]).toEqual({ role: "user", content: "earlier" })
+    const done = events.at(-1)
+    expect(done?.type === "done" && done.messages[0]).toEqual({
+      role: "user",
+      content: "make the intro",
+    })
+  })
+})
+
+describe("runAgent: a live context that fails", () => {
+  it("sends the turn without it, and the run still ends as it should", async () => {
+    const { llm, seen } = scripted([{ kind: "text", text: "ok" }])
+    const events = await collect(
+      runAgent({
+        userMessage: "go",
+        tools: [],
+        llm,
+        context: {},
+        liveContext: () => {
+          throw new Error("closing")
+        },
+      }),
+    )
+    expect(seen[0]?.at(-1)).toEqual({ role: "user", content: "go" })
+    expect(events.at(-1)?.type).toBe("done")
+  })
+})
+
 describe("runAgent: review fixes", () => {
   it("turns a result that can't be serialized into an error, and still ends", async () => {
     const circular: Record<string, unknown> = {}

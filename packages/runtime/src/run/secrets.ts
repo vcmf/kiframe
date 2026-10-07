@@ -478,6 +478,9 @@ export function scrubSecrets(text: string, values: Iterable<string>): string {
   return secretScrubber(values)(text)
 }
 
+/** The placeholder a value is replaced with, as a pattern (matched first: never scrubbed again). */
+const PLACEHOLDER_SOURCE = "\\[secret\\]"
+
 /** `scrubSecrets` for many texts: the values' variants and their pattern built once. */
 export function secretScrubber(values: Iterable<string>): (text: string) => string {
   const list = [...values]
@@ -535,13 +538,16 @@ export function secretScrubber(values: Iterable<string>): (text: string) => stri
   // One pass over one alternation of every pattern, longest first: a secret that contains another
   // ("bob@acme.com", "bob"), even split by whitespace, is replaced whole, and a replacement is never
   // re-scanned (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and
-  // over-scrubbing is safe.
-  const alternation = patterns
-    .sort((a, b) => b.length - a.length)
-    .map((p) => p.source)
-    .join("|")
+  // over-scrubbing is safe. A "[secret]" already there (any case) is matched first and kept as it
+  // is: text scrubbed twice is scrubbed once ("Secret" would make "[[[secret]]]", telling the
+  // value), and a page's own "[SECRET]" is never taken for a value.
+  const alternation = [
+    PLACEHOLDER_SOURCE,
+    ...patterns.sort((a, b) => b.length - a.length).map((p) => p.source),
+  ].join("|")
   const pattern = new RegExp(alternation, "giu")
-  return (text) => text.replace(pattern, "[secret]")
+  const placeholder = /^\[secret\]$/i
+  return (text) => text.replace(pattern, (m) => (placeholder.test(m) ? m : "[secret]"))
 }
 
 function htmlEscape(value: string, apostrophe: string): string {

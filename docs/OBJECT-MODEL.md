@@ -272,7 +272,7 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 - **The runtime's single base becomes the apps** (as built in B2: each step means the app it names, else its scene's start app; the design's "current app followed from the page" was replaced after review): URL conditions, a secret's site and the take key use them. The take key uses the start app's URL and viewport.
 - **An unknown app** in a scenario is a project-level finding that gives the scene the "Uses a removed app" status, never "unreadable". The secrets panel shows each secret's app; adding one asks which app.
 
-### 0.10 `story.md`: the project's memory (designed 2026-10-05, not built)
+### 0.10 `story.md`: the project's memory (designed 2026-10-05, built 2026-10-07)
 
 One markdown file at the project's root that the agent keeps as the chat goes on: the demo's **audience and goal**, its **outline** (the scenes in order, a line each), **decisions** made with the user, and **open questions**. Named `story.md` ("scenario" keeps meaning one scene's steps: decided by the user).
 
@@ -284,8 +284,10 @@ One markdown file at the project's root that the agent keeps as the chat goes on
 **Scenes stay one folder per scene** (decided by the user): the agent edits one without rewriting others, a broken file breaks one scene only, git diffs stay per scene; `story.md` gives the whole demo at a glance.
 
 **Implementation notes (design review, 2026-10-05):**
-- **Given to the agent as part of the run's own message, not the system prompt**: the system prompt sits before the whole history, so a story edit there would break the prompt cache for the whole chat; as a part of the run's message it's read fresh and kept out of the stored history (as an image is today). Capped at 8,000 characters ("truncated" said when a hand edit made it longer).
-- **Read at the run's start counts as a read** (its hash noted): the agent can edit it without reading it again; a change the user makes during the run is still never written over.
+- **Given to the agent as part of the run's own message, not the system prompt or the history** (C3, design reviewed): a `<project-notes-…>` block before the user's text (its tag this run's own: random) (`runAgent`'s `liveContext`), sent on every turn of the run and never stored, so stale copies never pile up in the history (within a run it's a stable prefix; across runs the cache restarts at the last run's message, as old results being elided already make it). Said "as at this run's start" (the agent's own changes since are its `edit_file` and `write_file` calls). Capped at 8,000 characters, cut at a line's end ("truncated: read_file the rest").
+- **Scrubbed** (the scrubber keeps a `[secret]` already there as it is: text scrubbed twice never tells a value inside the word "secret"), whole before it's cut (and the content again each turn: a value known since; never the tags, which a short value would break); built once the vault is read. Labelled as data, not the user's words, and no embedded text (the story, a file's name) can close the block: its tag can't be guessed (the defence), and the common spellings of one in the text are neutralised (the rest would read as the user's). Names quoted (a comma or a line break in one never reads as more).
+- **Each part on its own**: no story yet, an empty one, one too large (the user shortens it), one that can't be read (its refusal's code, never its bytes); the pages' and attachments' names (50 each, "more: list_files"), a folder that can't be listed said so.
+- **Read at the run's start counts as a read** (`noteRead`, read_file's own: its hash), **never a whole one** (re-sent scrubbed again, it may show `[secret]` where a value known since was: a whole replace reads it first), never taking a whole read of the same bytes away: the agent can edit it without reading it again; a change the user makes during the run is still never written over. An empty file is replaced without the user's say (it loses nothing).
 - **Kiframe never writes `story.md`**: the agent writes the lines about attachments and pages, and each run's context also carries the current list of `inputs/` and `pages/` (nothing missed, no race with the agent's edits).
 
 ### 0.11 HTML pages: cut-scenes, slides and mock-ups (designed 2026-10-05, not built)

@@ -642,6 +642,7 @@ describe("editing, checking and keeping (C2)", () => {
     const stat = files.stat("Pages/font.woff")
     expect(stat).toMatchObject({ path: "pages/font.woff", size: 8 })
     expect(stat.hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(stat.blank).toBe(false)
     expect(files.canonical("PAGES/x/y.html")).toBe("pages/x/y.html")
     expect(refusal(() => files.canonical("project.json")).code).toBe("not-allowed")
   })
