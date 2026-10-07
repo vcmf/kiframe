@@ -151,3 +151,15 @@ describe("the app's secrets", () => {
     expect(backend.values.get("#grant-hash-key")).toBe("k")
   })
 })
+
+describe("an app removed from a project", () => {
+  it("revokes that project's approvals on its site, keeping the secret", async () => {
+    const { secrets } = make()
+    await secrets.add({ name: "acme.password", kind: "password", value: "hunter2" }, APP)
+    await secrets.approve("acme.password", use)
+    expect(await secrets.resolve("acme.password", use)).toBe("hunter2")
+    secrets.revokeAt(use.scope, APP)
+    await expect(secrets.resolve("acme.password", use)).rejects.toThrow()
+    expect(secrets.names(APP)).toEqual([{ name: "acme.password", provided: true }])
+  })
+})

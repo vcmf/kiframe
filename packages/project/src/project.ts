@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import {
+  appsNamedBy,
   Composition,
   parseCompositionJson,
   parseProjectJson,
@@ -307,4 +308,19 @@ export function reorderScenes(opened: OpenedProject, sequence: readonly string[]
     sequence.every((id) => current.includes(id))
   if (!same) throw new Error("a new order has exactly the scenes of the sequence")
   saveProject(opened, { ...opened.project, sequence: [...sequence] })
+}
+
+/**
+ * The titles of the scenes that name `app` (their scenario, or a preset they use): every stored
+ * scene, in story order, then those outside it.
+ */
+export function scenesNaming(opened: OpenedProject, app: string): string[] {
+  const { project, scenes } = opened
+  const ids = new Set([...project.sequence, ...scenes.keys()])
+  return [...ids].flatMap((id) => {
+    const stored = scenes.get(id)
+    return stored?.scenario !== undefined && appsNamedBy(stored.scenario, project).has(app)
+      ? [stored.scene.title]
+      : []
+  })
 }

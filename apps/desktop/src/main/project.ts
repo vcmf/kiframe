@@ -2,8 +2,8 @@
 // window sent), and shown to the window as a `ProjectView`.
 import { createHash } from "node:crypto"
 import { existsSync, readdirSync, statSync } from "node:fs"
-import type { OpenedProject } from "@kiframe/project"
-import { App, firstApp } from "@kiframe/schema"
+import { type OpenedProject, saveProject, scenesNaming } from "@kiframe/project"
+import { App, appOf, appsNamedByPreset, firstApp, unlistedApps } from "@kiframe/schema"
 import type { ProjectView, SceneView } from "../shared/ipc.ts"
 
 /** A project folder's extension (a new project's folder gets it). */
@@ -90,6 +90,8 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
       views.push({ id, title: scene.title, status: "card" })
       continue
     }
+    // Apps it names that the project doesn't list (one removed): said, its status kept.
+    const removedApps = stored.scenario === undefined ? [] : unlistedApps(stored.scenario, project)
     const status =
       stored.composition !== undefined
         ? "recorded"
@@ -113,6 +115,7 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
       status,
       ...(take !== undefined && { take }),
       ...(version !== undefined && { version }),
+      ...(removedApps.length > 0 && { removedApps }),
     })
   }
   return {
@@ -143,4 +146,58 @@ export function appOriginOf(
   if (view.session !== session) return { why: "the project changed meanwhile: try again" }
   const found = view.apps.find((a) => a.name === app)
   return found === undefined ? { why: `"${app}" isn't one of the project's apps` } : found
+}
+
+/** The titles of the scenes that name `app` (`scenesNaming`: every stored scene). */
+export const scenesUsing = scenesNaming
+
+/**
+ * Takes an app off the open project (never its first: where scenes start, refused). Saved over the
+ * project as it is now (a changed project.json on disk: refused by the store).
+ */
+export function removeApp(opened: OpenedProject, app: string): void {
+  if (firstApp(opened.project).name === app) {
+    throw new Error(`"${app}" is where scenes start: it can't be removed`)
+  }
+  if (appOf(opened.project, app) === undefined) {
+    throw new Error(`"${app}" isn't one of the project's apps`)
+  }
+  const apps = Object.fromEntries(
+    Object.entries(opened.project.apps).filter(([name]) => name !== app),
+  )
+  saveProject(opened, { ...opened.project, apps })
+}
+
+/**
+ * Why the window's request to remove an app is refused (null: it may go on): the agent working (an
+ * add_app card may be open), an earlier opening of the project, an app by that name that isn't the
+ * one the window showed (`origin`), or the first app (where scenes start).
+ */
+export function appRemovalRefused(
+  view: Pick<ProjectView, "session" | "apps"> | undefined,
+  request: { session: string; name: string; origin: string },
+  running: boolean,
+): string | null {
+  if (running) return "the agent is working: stop it first"
+  const at = appOriginOf(view, request.session, request.name)
+  if ("why" in at) return at.why
+  if (at.origin !== request.origin) return "that app changed meanwhile: try again"
+  if (view?.apps[0]?.name === request.name) {
+    return `"${request.name}" is where scenes start: it can't be removed`
+  }
+  return null
+}
+
+/** The presets that name `app` (theirs, or a goto or URL condition in their steps). */
+export function presetsUsing(opened: OpenedProject, app: string): string[] {
+  return Object.entries(opened.project.presets)
+    .filter(([, preset]) => appsNamedByPreset(preset).has(app))
+    .map(([name]) => name)
+}
+
+/** The project's interrupt rules whose goto names `app`. */
+export function interruptsUsing(opened: OpenedProject, app: string): string[] {
+  return opened.project.interrupts
+    .filter((rule) => rule.do.action === "goto" && rule.do.app === app)
+    .map((rule) => rule.id)
 }

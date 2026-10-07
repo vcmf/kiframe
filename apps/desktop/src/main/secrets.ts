@@ -146,6 +146,11 @@ export class Secrets {
     return this.#vault.resolve(name, use)
   }
 
+  /** A project's approvals on a site it no longer lists (`Vault.revokeAt`: no keychain read). */
+  revokeAt(scope: string, origin: string): void {
+    this.#vault.revokeAt(scope, origin)
+  }
+
   /** The user approved this use (the host's dialog only). */
   async approve(name: string, use: SecretUse): Promise<void> {
     await this.#vault.approve(name, use)

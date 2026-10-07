@@ -27,6 +27,11 @@ export interface SceneView {
   status: "recorded" | "grounded" | "empty" | "card" | "unreadable" | "missing"
   /** What didn't read, when something didn't. */
   problem?: string
+  /**
+   * Apps it uses that the project doesn't list (one was removed): it can't run until reworked; its
+   * take still plays.
+   */
+  removedApps?: string[]
   /** A recorded scene's take (its key): the preview plays it again when it changes. */
   take?: string
   /** What a recorded scene plays (its scenario and composition, hashed): edited, played again. */
@@ -65,6 +70,8 @@ export type ChatRequest =
       plain: boolean
       lookalike: boolean
       local: boolean
+      secrets?: number
+      usedBy: string[]
       why: string
     }
   /**
@@ -237,6 +244,13 @@ export const invokeArgs = {
   "secrets:remove": z.tuple([
     z.strictObject({ session: z.string().max(64), app: AppName, name: z.string().max(120) }),
   ]),
+  /**
+   * Takes an app off the open project (main asks first, naming the scenes that use it): named with
+   * the origin the window shows (refused when the project's app by that name is another now).
+   */
+  "apps:remove": z.tuple([
+    z.strictObject({ session: z.string().max(64), name: AppName, origin: z.string().max(2048) }),
+  ]),
   /** A scene of the open project, to play (its id, checked against the project in main). */
   "preview:open": z.tuple([z.string().min(1).max(200)]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
@@ -262,6 +276,8 @@ export interface InvokeResults {
   /** null when done; else why not, in words. */
   "secrets:add": string | null
   "secrets:remove": string | null
+  /** null when removed or cancelled; else why not, in words. */
+  "apps:remove": string | null
   "preview:open": Preview
 }
 

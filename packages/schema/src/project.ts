@@ -152,32 +152,60 @@ export type ProjectConfig = z.infer<typeof ProjectConfigBase>
  * Human-readable, one per name (empty = OK).
  */
 export function unknownApps(scenario: Scenario, project: ProjectConfig): string[] {
+  return unlistedApps(scenario, project).map(
+    (name) => `uses app "${name}", which the project doesn't list`,
+  )
+}
+
+/** The apps a scene names that the project doesn't list (one removed, a typo): their names. */
+export function unlistedApps(
+  scenario: Scenario,
+  project: Pick<ProjectConfig, "presets" | "apps">,
+): string[] {
+  return [...appsNamedBy(scenario, project)].filter((name) => appOf(project, name) === undefined)
+}
+
+/** The apps a step names: a goto's, a URL condition's (a scroll's `until` is a target: no URL). */
+function appsOfItem(item: object, add: (name: unknown) => void): void {
+  const i = item as { action?: unknown; app?: unknown; until?: unknown; that?: unknown }
+  if (i.action === "goto") add(i.app)
+  for (const condition of [i.until, i.that]) {
+    if (typeof condition === "object" && condition !== null && "url" in condition) {
+      add((condition as { app?: unknown }).app)
+    }
+  }
+}
+
+/** Every app a preset names: its own, and its steps' gotos and URL conditions. */
+export function appsNamedByPreset(preset: Preset): Set<string> {
   const named = new Set<string>()
   const add = (name: unknown) => {
     if (typeof name === "string") named.add(name)
   }
-  const visit = (item: object) => {
-    const i = item as { action?: unknown; app?: unknown; until?: unknown; that?: unknown }
-    if (i.action === "goto") add(i.app)
-    // A `waitFor`'s or an `expect`'s URL condition (a scroll's `until` is a target: no URL).
-    for (const condition of [i.until, i.that]) {
-      if (typeof condition === "object" && condition !== null && "url" in condition) {
-        add((condition as { app?: unknown }).app)
-      }
-    }
+  add(preset.app)
+  for (const step of preset.steps) appsOfItem(step, add)
+  return named
+}
+
+/**
+ * Every app a scene names (listed or not): its start app, its gotos' and URL conditions', those of
+ * the presets it uses. (Not an older scene's teardown: it never runs.)
+ */
+export function appsNamedBy(
+  scenario: Scenario,
+  project: Pick<ProjectConfig, "presets">,
+): Set<string> {
+  const named = new Set<string>()
+  const add = (name: unknown) => {
+    if (typeof name === "string") named.add(name)
   }
   add(scenario.app)
-  // (Not an older scene's teardown: it never runs.)
-  for (const item of [...(scenario.setup ?? []), ...scenario.steps]) visit(item)
+  for (const item of [...(scenario.setup ?? []), ...scenario.steps]) appsOfItem(item, add)
   for (const name of presetRefs(scenario)) {
     const preset = Object.hasOwn(project.presets, name) ? project.presets[name] : undefined
-    if (preset === undefined) continue
-    add(preset.app)
-    preset.steps.forEach(visit)
+    if (preset !== undefined) for (const app of appsNamedByPreset(preset)) named.add(app)
   }
-  return [...named]
-    .filter((name) => appOf(project, name) === undefined)
-    .map((name) => `uses app "${name}", which the project doesn't list`)
+  return named
 }
 
 /** Cross-file checks a single schema can't do. Returns human-readable problems (empty = OK). */

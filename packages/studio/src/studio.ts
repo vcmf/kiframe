@@ -3,6 +3,7 @@ import {
   type OpenedProject,
   projectChangedOnDisk,
   saveProject,
+  scenesNaming,
   saveScene,
   type TakeStore,
 } from "@kiframe/project"
@@ -88,6 +89,13 @@ export interface AppCard {
   lookalike: boolean
   /** On this computer or its local network. */
   local: boolean
+  /**
+   * Secrets saved for this site (the vault keeps them across projects): they come with it, each use
+   * still asked. Undefined when the vault didn't read.
+   */
+  secrets?: number
+  /** Scenes that already name this app (it was removed, then added again): they'll open this site. */
+  usedBy: string[]
   why: string
 }
 
@@ -235,8 +243,15 @@ export class Studio {
       }
     }
     this.#appAsks++
+    // A site added before (then removed, or in another project): its saved secrets come with it.
+    const secrets = this.options.secrets?.(new URL(card.url).origin).length
+    // A name scenes already use (an app removed, then added again): said, they'll open this site.
+    const usedBy = scenesNaming(project, card.name)
     const allowed =
-      (await this.options.requestUser({ kind: "approve-app", ...card }, signal)) === true
+      (await this.options.requestUser(
+        { kind: "approve-app", ...card, usedBy, ...(secrets !== undefined && { secrets }) },
+        signal,
+      )) === true
     if (!allowed) {
       this.#declined.push(card.url)
       return { error: `the user declined adding ${card.host}: go on without it` }
@@ -251,6 +266,20 @@ export class Studio {
     // The studio's apps at once (the live page, the replay, the recording): the rest as it was.
     this.options.config = { ...config, apps: project.project.apps }
     return { added: card.name }
+  }
+
+  /**
+   * The project's apps changed outside the studio (the user removed one): its config takes them
+   * (the live page, the replay, the recording), and a scene's start app no longer listed is dropped.
+   */
+  setApps(apps: ProjectConfig["apps"]): void {
+    this.options.config = { ...this.options.config, apps }
+    // The page may be on the removed site: its refs are never used (the agent looks again).
+    this.#snapshot = undefined
+    this.#checked = undefined
+    for (const [scene, app] of this.#sceneApps) {
+      if (appOf(this.options.config, app) === undefined) this.#sceneApps.delete(scene)
+    }
   }
 
   /** A scene saved with its start app: its next steps mean that one. */
@@ -607,11 +636,15 @@ export class Studio {
     startApp?: string,
   ): Promise<StepResult> {
     // The scene's start app: the one given, else the one its last step ran in, else its saved
-    // scenario's, else the first. A step without an app means it, as in the replay.
+    // scenario's (if the project still lists it: one removed is being reworked away), else the
+    // first. A step without an app means it, as in the replay.
+    const saved = this.project.scenes.get(scene)?.scenario?.app
     const app =
       startApp ??
       this.#sceneApps.get(scene) ??
-      this.project.scenes.get(scene)?.scenario?.app ??
+      (saved !== undefined && appOf(this.options.config, saved) !== undefined
+        ? saved
+        : undefined) ??
       firstApp(this.options.config).name
     if (appOf(this.options.config, app) === undefined) {
       return failed(

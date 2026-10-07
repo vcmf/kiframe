@@ -1278,6 +1278,112 @@ describe("add_app (B4)", () => {
     await studio.close()
   })
 
+  it("says how many saved secrets come back with a site added again", async () => {
+    const { studio, cards } = adding([false], {
+      secrets: (origin: string) =>
+        origin === "https://docs.test" ? [{ name: "docs.token", provided: true }] : [],
+    })
+    await add(studio, { name: "docs", url: "https://docs.test", why: "x" })
+    expect(cards[0]).toMatchObject({ host: "docs.test", secrets: 1 })
+    await studio.close()
+  })
+
+  it("takes the apps the user left (one removed): a step on it is refused, a scene's start app dropped", async () => {
+    const { studio } = adding([true])
+    await add(studio, { name: "docs", url: docs().origin, why: "x" })
+    await tool("run_step").run(
+      { scene: "tour", step: { id: "go", action: "goto", url: "/login" }, start_app: "docs" },
+      studio,
+      never,
+    )
+    studio.setApps({ app: studio.options.config.apps.app! })
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { id: "go", action: "goto", app: "docs", url: "/login" } },
+        studio,
+        never,
+      ),
+    ).toMatchObject({
+      error: expect.stringMatching(/uses app "docs", which the project doesn't list/) as unknown,
+    })
+    // The scene's start app (docs) was dropped: its steps mean the first app again.
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { id: "go", action: "goto", url: "/login" } },
+        studio,
+        never,
+      ),
+    ).toMatch(/^ok\. url: \/login/)
+    await studio.close()
+  }, 30_000)
+
+  it("never acts on refs taken before the apps changed (the page may be on the removed site)", async () => {
+    const { studio } = makeStudio()
+    const snap = (await tool("snapshot").run({}, studio, never)) as string
+    const ref = /\[ref=(e\d+)\]/.exec(snap)?.[1]
+    expect(ref).toBeDefined()
+    studio.setApps(studio.options.config.apps)
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { id: "x", action: "hover", target: { ref } } },
+        studio,
+        never,
+      ),
+    ).toMatchObject({ error: expect.stringMatching(/snapshot/) as unknown })
+    await studio.close()
+  }, 30_000)
+
+  it("tells the user which scenes already name an app added again (they'll open this site)", async () => {
+    const { studio, cards } = adding([false])
+    saveScene(
+      studio.project,
+      {
+        version: 1,
+        id: "install",
+        title: "Install",
+        source: { kind: "recording" },
+        duration: { mode: "auto" },
+      },
+      {
+        scenario: parseScenarioYaml(
+          "version: 1\napp: docs\nsteps: [{ id: a, action: pause, ms: 1 }]\n",
+        ),
+      },
+    )
+    await add(studio, { name: "docs", url: "https://other.example", why: "x" })
+    expect(cards[0]).toMatchObject({ name: "docs", host: "other.example", usedBy: ["Install"] })
+    await studio.close()
+  })
+
+  it("reworks a scene saved in an app since removed: its steps mean the first app", async () => {
+    const { studio } = adding([true])
+    await add(studio, { name: "docs", url: docs().origin, why: "x" })
+    saveScene(
+      studio.project,
+      {
+        version: 1,
+        id: "install",
+        title: "Install",
+        source: { kind: "recording" },
+        duration: { mode: "auto" },
+      },
+      {
+        scenario: parseScenarioYaml(
+          "version: 1\napp: docs\nsteps: [{ id: a, action: pause, ms: 1 }]\n",
+        ),
+      },
+    )
+    studio.setApps({ app: studio.options.config.apps.app! })
+    expect(
+      await tool("run_step").run(
+        { scene: "install", step: { id: "go", action: "goto", url: "/login" } },
+        studio,
+        never,
+      ),
+    ).toMatch(/^ok\. url: \/login/)
+    await studio.close()
+  }, 30_000)
+
   it("never films a scene that ends off the project's apps (the replay fails), though grounding may go there", async () => {
     const { studio } = makeStudio()
     const away = `version: 1

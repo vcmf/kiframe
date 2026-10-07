@@ -123,6 +123,48 @@ describe("the agent in the app", () => {
     await agent.close()
   }, 60_000)
 
+  it("says when it's running, and gives its studio the apps the user changed", async () => {
+    const docs = new URL(server.url)
+    docs.hostname = "localhost"
+    const goto = call("run_step", {
+      scene: "tour",
+      step: { id: "go", action: "goto", app: "docs", url: "/login" },
+    })
+    const { llm } = script([
+      call("list_scenes", {}),
+      { kind: "text", text: "ok" },
+      goto,
+      { kind: "text", text: "ok" },
+    ])
+    const { agent, shown, running, until } = host(llm)
+    expect(agent.running).toBe(false)
+    expect(agent.send("look")).toBeNull()
+    expect(agent.running).toBe(true)
+    await until(() => running.at(-1) === false)
+    expect(agent.running).toBe(false)
+    // The user's apps now include docs (as after a change in main): the studio uses them at once.
+    agent.appsChanged({
+      app: {
+        kind: "web",
+        url: server.url,
+        viewport: { width: 800, height: 600, deviceScaleFactor: 2 },
+      },
+      docs: {
+        kind: "web",
+        url: docs.origin,
+        viewport: { width: 800, height: 600, deviceScaleFactor: 2 },
+      },
+    })
+    expect(agent.send("go to docs")).toBeNull()
+    await until(() => running.length === 4)
+    expect(
+      shown()
+        .filter((i) => i.kind === "tool")
+        .at(-1),
+    ).toMatchObject({ name: "run_step", status: "ok" })
+    await agent.close()
+  }, 60_000)
+
   it("asks before a risky step, in the chat, and runs it once approved; the live app is shown", async () => {
     const risky = {
       scene: "tour",

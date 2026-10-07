@@ -142,6 +142,16 @@ export class AgentHost {
     this.#options = options
   }
 
+  /** A run is going (the project's apps can't change meanwhile: an add_app card may be open). */
+  get running(): boolean {
+    return this.#run !== undefined
+  }
+
+  /** The project's apps changed (the user removed one): the studio, if any, takes them. */
+  appsChanged(apps: Parameters<Studio["setApps"]>[0]): void {
+    this.#studio?.setApps(apps)
+  }
+
   state(): ChatState {
     return {
       items: [...this.#log.items],
