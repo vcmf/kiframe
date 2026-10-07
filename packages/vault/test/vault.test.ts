@@ -206,6 +206,15 @@ describe("Vault: grants, round 1 review", () => {
     expect(await vault.resolve("acme.password", { ...use, path: "/dashboard/settings" })).toBe("v")
   })
 
+  it("never grants a secret on an origin it isn't for (another app of the project)", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    await expect(
+      vault.approve("acme.password", { ...USE, origin: "https://docs.acme.test" }),
+    ).rejects.toThrow(/isn't for https:\/\/docs\.acme\.test/)
+    expect(vault.grants()).toEqual([])
+  })
+
   it("keeps one grant per origin for the same step (staging and prod)", async () => {
     const { vault } = open()
     await vault.request(form, provide("v"))

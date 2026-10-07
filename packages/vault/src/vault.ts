@@ -260,7 +260,12 @@ export class Vault {
     }
     // Nothing page-derived in the clear (§3 A1): literal segments and the label as keyed hashes.
     const hash = await this.#hasher()
-    if (this.#find(name) === undefined) throw new Error(`secret "${name}" isn't in the vault`)
+    const meta = this.#find(name)
+    if (meta === undefined) throw new Error(`secret "${name}" isn't in the vault`)
+    // Never a grant for an origin the secret isn't for (resolve refuses it there anyway).
+    if (!meta.origins.includes(u.origin)) {
+      throw new Error(`secret "${name}" isn't for ${u.origin}`)
+    }
     const grant = Grant.parse({
       scope: u.scope,
       stepKey: u.stepKey,

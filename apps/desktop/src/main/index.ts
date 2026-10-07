@@ -12,7 +12,7 @@ import { AgentHost } from "./agent.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { DEFAULT_MODEL, modelConfig } from "./model.ts"
-import { newProjectDir, projectFileName, targetUrl } from "./project.ts"
+import { appOriginOf, newProjectDir, projectFileName, targetUrl } from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
@@ -183,11 +183,8 @@ function start(): void {
     if (takes === undefined) throw new Error("the app isn't ready yet")
     return { registry, takes }
   }
-  /** The open project's app origin (its secrets are those usable there). */
-  const origin = (): string | null => {
-    const url = workspace.view()?.url
-    return url === undefined ? null : new URL(url).origin
-  }
+  /** One of the open project's apps for the window's request (`appOriginOf`). */
+  const appOrigin = (session: string, app: string) => appOriginOf(workspace.apps(), session, app)
 
   /**
    * The open project and its agent, switched as one. An agent's events reach the window only while
@@ -373,24 +370,28 @@ function start(): void {
         "secrets:list": async () => {
           const secrets = vault()
           await secrets.ready()
-          return secrets.list(origin())
+          return (workspace.apps()?.apps ?? []).map(({ name, origin }) => ({
+            app: name,
+            origin,
+            secrets: secrets.list(origin),
+          }))
         },
-        "secrets:add": async (form) => {
-          const at = origin()
-          if (at === null) return "open a project with an app address first"
+        "secrets:add": async ({ session, app, ...form }) => {
+          const at = appOrigin(session, app)
+          if ("why" in at) return at.why
           try {
-            await vault().add(form, at)
+            await vault().add(form, at.origin)
             return null
           } catch (e) {
             // A refusal names the secret and why, never the value.
             return message(e)
           }
         },
-        "secrets:remove": async (name) => {
-          const at = origin()
-          if (at === null) return "open a project with an app address first"
+        "secrets:remove": async ({ session, app, name }) => {
+          const at = appOrigin(session, app)
+          if ("why" in at) return at.why
           try {
-            await vault().remove(name, at)
+            await vault().remove(name, at.origin)
             return null
           } catch (e) {
             return message(e)

@@ -32,6 +32,17 @@ describe("the IPC contract", () => {
     expect(invokeArgs["chat:send"].safeParse(["  "]).success).toBe(false)
     expect(invokeArgs["chat:send"].safeParse(["x".repeat(20_001)]).success).toBe(false)
     expect(invokeArgs["chat:answer"].safeParse(["request-1", true]).success).toBe(true)
+    // A secret is added for an app by its name (main finds its origin): never an origin.
+    const add = invokeArgs["secrets:add"]
+    const form = { session: "s1", app: "docs", name: "a.b", kind: "password", value: "v" }
+    expect(add.safeParse([form]).success).toBe(true)
+    expect(add.safeParse([{ ...form, origin: "https://evil.test" }]).success).toBe(false)
+    expect(add.safeParse([{ ...form, app: "https://evil.test" }]).success).toBe(false)
+    expect(add.safeParse([{ ...form, app: "__proto__" }]).success).toBe(false)
+    expect(
+      invokeArgs["secrets:remove"].safeParse([{ session: "s1", app: "docs", name: "a.b" }]).success,
+    ).toBe(true)
+    expect(invokeArgs["secrets:remove"].safeParse(["a.b"]).success).toBe(false)
     expect(invokeArgs["chat:answer"].safeParse(["request-1", "the demo one"]).success).toBe(true)
     expect(invokeArgs["chat:answer"].safeParse(["request-1", { approve: true }]).success).toBe(
       false,

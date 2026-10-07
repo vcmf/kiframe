@@ -39,6 +39,18 @@ export class Workspace<A extends Agent> {
     return this.#opened
   }
 
+  /** The open project's apps and this opening's session, without building its whole view. */
+  apps(): Pick<ProjectView, "session" | "apps"> | undefined {
+    if (this.#opened === null) return undefined
+    return {
+      session: this.#session,
+      apps: Object.entries(this.#opened.project.apps).map(([name, app]) => ({
+        name,
+        origin: new URL(app.url).origin,
+      })),
+    }
+  }
+
   view(): ProjectView | null {
     return this.#opened === null ? null : projectView(this.#opened, this.#session)
   }

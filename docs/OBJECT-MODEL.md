@@ -192,7 +192,7 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **The live page isn't fresh.** It's one browser session for as long as the project is open, shared by every scene: it keeps what the agent did (signed in, scrolled, a setting changed). The replay in phase 2 is what catches a scene that only works because of that state. Refs never reach the YAML (a ref becomes a locator that finds that element alone).
 
-### 0.9 Apps a demo shows (designed 2026-10-05; the format and the runtime built 2026-10-06, B1–B2)
+### 0.9 Apps a demo shows (designed 2026-10-05; format, runtime and agent built 2026-10-06/07, B1–B3)
 
 **Today** a project has one `target`: `{ kind: web, url, viewport }`, and a scene never leaves that site (its address redirected to `www.` or `https` counts as it: `sameApp`). That's too narrow: Kiframe also targets **Electron** apps (v0.1) and **Tauri** (later, partial), and one demo can go from a web app to its docs site or its desktop app.
 
@@ -243,6 +243,12 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 - A take is filmed at its **start app's** viewport (batch, studio replay and record); its meta names that app. A saved session's landing is kept with its app (`{ app, url }`) and replayed there.
 - `whereOf` names the app (`docs: /install`) when the project has several; a page off them is "NOT one of the project's apps".
 - Not yet (stated): a step landing on an unlisted site doesn't fail (B4, when the agent can add the app); the live page stays at the first app's size (B3: the scene's start app known to the studio).
+
+**Built (B3, 2026-10-07):** the agent and the user see the apps.
+- **The agent**: its prompt lists the apps (one app: as before) and the rule: a scene starts in the first app unless it says `app:` at the top level; a step without an app means the scene's start app, never the app the page went to; every goto and URL condition on another app names it. It writes `app:` itself (decided: explicit, what the runtime reads; the studio never infers it from where the page went). `run_step` / `run_steps` take the scene's `start_app` (else the one its last step ran in, else its saved `app:`, else the first; kept only once a step ran, and set by `save_scene`), so a step grounded alone means what it means in the replay; `save_scene` notes a scene saved with another start app than it was grounded in. `whereOf` always names the app when there are several. `list_secrets` gives each name with its app (the studio's own apps, asked at the moment).
+- **The user**: the Secrets panel lists secrets app by app and adds one for the app picked. The window names an app, never an origin: main finds the app's exact origin in the project (`appOriginOf`), refusing a request from an earlier opening of a project (`session`). `ProjectView.apps` carries each app's origin from main.
+- The vault never grants a secret on an origin it isn't for.
+- Not yet (stated, BACKLOG): the live page keeps the first app's size (resizing it would leave refs and popups at the old size, and rebuilding its context per app would sign it out); the replay, at the filmed size, catches a difference.
 
 **Implementation notes (design review, 2026-10-05):**
 - **Format and migration**: `project` goes to version 2 with a registered `target → apps.app` migration (schema `versioning.ts`). Converted in memory on open, **written at the next save** (never a silent rewrite at open). Every app has its URL (`apps.*.url` required: environments no longer give URLs); a v1 project with an environment and no `target.url` gets a clear error, never a guess. Scenarios aren't touched (no `app:` added: their hash, and so their takes, stay as they are).

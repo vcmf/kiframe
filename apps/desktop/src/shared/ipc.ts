@@ -12,6 +12,9 @@ import type {
 import { z } from "zod"
 import { INVOKE_CHANNELS, EVENT_CHANNELS } from "./channels.ts"
 
+/** An app's name as the project writes it (`AppName`'s form; main looks it up in the project). */
+const AppName = z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/)
+
 /** A scene as the window shows it (the scene strip). */
 export interface SceneView {
   id: string
@@ -39,6 +42,8 @@ export interface ProjectView {
   dir: string
   /** The app its scenes start in (the project's first). */
   url: string
+  /** Every app of the project, in order, with its exact origin (main's: never derived here). */
+  apps: { name: string; origin: string }[]
   scenes: SceneView[]
   /** Parts that didn't read (shown, never hidden). */
   problems: string[]
@@ -86,6 +91,14 @@ export type Preview =
       format: { width: number; height: number; fps: number }
     }
   | { ok: false; why: string }
+
+/** An app's secrets as the window shows them (each app of the open project, in order). */
+export interface SecretGroup {
+  app: string
+  /** Where these secrets are typed (the app's exact origin). */
+  origin: string
+  secrets: SecretView[]
+}
 
 /** A secret as the window shows it: never its value. */
 export interface SecretView {
@@ -187,24 +200,29 @@ export const invokeArgs = {
   "chat:stop": z.tuple([]),
   /** The user's answer to an open request (by its item id). */
   "chat:answer": z.tuple([z.string().max(64), z.union([z.string().max(5000), z.boolean()])]),
-  /** The open project's secrets (usable on its app). */
+  /** The open project's secrets, app by app. */
   "secrets:list": z.tuple([]),
   /**
-   * A secret for the open project's app: its value goes to the keychain (never back to the
-   * window). Its name is checked in main (a secret name, never a value).
+   * A secret for one of the open project's apps (by name: main finds its origin), in the opening
+   * the window shows (`session`: refused once another project opened). Its value goes to the
+   * keychain (never back to the window); its name is checked in main (a secret name, never a value).
    */
   "secrets:add": z.tuple([
     z.strictObject({
+      session: z.string().max(64),
+      app: AppName,
       name: z.string().trim().min(1).max(120),
       kind: z.enum(["password", "username", "api_key", "text"]),
       value: z.string().min(1).max(4096),
     }),
   ]),
   /**
-   * Takes a secret off the open project's app (its approvals there); the secret itself goes when
-   * no other app uses it. Its name is checked in main.
+   * Takes a secret off one of the open project's apps (its approvals there); the secret itself goes
+   * when no other app uses it. Its name is checked in main.
    */
-  "secrets:remove": z.tuple([z.string().max(120)]),
+  "secrets:remove": z.tuple([
+    z.strictObject({ session: z.string().max(64), app: AppName, name: z.string().max(120) }),
+  ]),
   /** A scene of the open project, to play (its id, checked against the project in main). */
   "preview:open": z.tuple([z.string().min(1).max(200)]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
@@ -226,7 +244,7 @@ export interface InvokeResults {
   "chat:send": string | null
   "chat:stop": void
   "chat:answer": void
-  "secrets:list": SecretView[]
+  "secrets:list": SecretGroup[]
   /** null when done; else why not, in words. */
   "secrets:add": string | null
   "secrets:remove": string | null

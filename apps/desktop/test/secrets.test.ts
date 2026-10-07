@@ -34,10 +34,11 @@ describe("the app's secrets", () => {
     expect([...secrets.knownValues()]).toEqual(["hunter2-secret"])
   })
 
-  it("lists nothing when no app is open (never every app's names)", async () => {
+  it("lists nothing for another origin (never every app's names)", async () => {
     const { secrets } = make()
     await secrets.add({ name: "acme.password", kind: "password", value: "a" }, APP)
-    expect(secrets.list(null)).toEqual([])
+    expect(secrets.list("https://other.test")).toEqual([])
+    expect(secrets.names("https://other.test")).toEqual([])
   })
 
   it("lists a project only the secrets usable on its app", async () => {

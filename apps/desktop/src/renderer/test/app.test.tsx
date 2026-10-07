@@ -11,6 +11,7 @@ const project: ProjectView = {
   name: "Acme Billing demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.acme.example",
+  apps: [{ name: "app", origin: "https://app.acme.example" }],
   scenes: [
     { id: "intro", title: "Intro", status: "card" },
     {

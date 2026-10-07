@@ -4,7 +4,13 @@ import { join } from "node:path"
 import { createProject, openProject, saveScene } from "@kiframe/project"
 import { parseScenarioYaml } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
-import { newProjectDir, projectFileName, projectView, targetUrl } from "../src/main/project.ts"
+import {
+  appOriginOf,
+  newProjectDir,
+  projectFileName,
+  projectView,
+  targetUrl,
+} from "../src/main/project.ts"
 
 const folder = () => join(mkdtempSync(join(tmpdir(), "kiframe-desktop-")), "demo.kiframe")
 const recording = (id: string, title: string) => ({
@@ -112,5 +118,40 @@ describe("the open project", () => {
     expect(() => targetUrl("https://u:p@app.test")).toThrow(/credentials/)
     expect(() => targetUrl("file:///etc/passwd")).toThrow(/App address/)
     expect(() => targetUrl("not a url")).toThrow(/App address/)
+  })
+})
+
+describe("a request of the window for one of the project's apps", () => {
+  const view = {
+    session: "s1",
+    apps: [
+      { name: "app", origin: "https://app.test" },
+      { name: "docs", origin: "https://docs.test" },
+    ],
+  }
+
+  it("gives the app's exact origin, found by its name in the project (never the window's)", () => {
+    expect(appOriginOf(view, "s1", "docs")).toEqual({ name: "docs", origin: "https://docs.test" })
+  })
+
+  it("refuses an app the project doesn't list, a request from another opening, or no project", () => {
+    expect(appOriginOf(view, "s1", "admin")).toEqual({
+      why: "\"admin\" isn't one of the project's apps",
+    })
+    expect(appOriginOf(view, "s0", "docs")).toEqual({
+      why: "the project changed meanwhile: try again",
+    })
+    expect(appOriginOf(undefined, "s1", "app")).toEqual({ why: "open a project first" })
+  })
+
+  it("shows every app with its exact origin (main's: the window never derives one)", () => {
+    const project = createProject(folder(), {
+      id: "p1",
+      name: "Demo",
+      url: "https://www.app.test/home",
+    })
+    expect(projectView(project, "s1").apps).toEqual([
+      { name: "app", origin: "https://www.app.test" },
+    ])
   })
 })

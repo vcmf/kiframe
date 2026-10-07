@@ -1,8 +1,9 @@
-// The project's secrets: names and kinds (never values), whether each has its value here, and a
-// form to add one. A value typed here goes to main once, to the keychain; it never comes back.
+// The project's secrets, app by app: names and kinds (never values), whether each has its value
+// here, and a form to add one for an app. A value typed here goes to main once, to the keychain; it
+// never comes back. The window names an app, never an origin (main finds it in the project).
 import { Key, Trash, WarningCircle, X } from "@phosphor-icons/react"
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react"
-import type { SecretView } from "../../../shared/ipc.ts"
+import type { ProjectView, SecretGroup, SecretView } from "../../../shared/ipc.ts"
 import { api } from "../api.ts"
 
 const KINDS: { kind: SecretView["kind"]; label: string }[] = [
@@ -12,8 +13,17 @@ const KINDS: { kind: SecretView["kind"]; label: string }[] = [
   { kind: "text", label: "Other text" },
 ]
 
-export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () => void }) {
-  const [secrets, setSecrets] = useState<SecretView[] | null>(null)
+export function SecretsPanel({
+  project,
+  onClose,
+}: {
+  project: Pick<ProjectView, "session" | "apps">
+  onClose: () => void
+}) {
+  const { session, apps } = project
+  const several = apps.length > 1
+  const [groups, setGroups] = useState<SecretGroup[] | null>(null)
+  const [app, setApp] = useState(apps[0]?.name ?? "")
   const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState("")
   const [kind, setKind] = useState<SecretView["kind"]>("password")
@@ -30,7 +40,7 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
       .invoke("secrets:list")
       .then(
         (list) => {
-          if (at === asked.current) setSecrets(list)
+          if (at === asked.current) setGroups(list)
         },
         (e: unknown) => {
           if (at === asked.current) setError(String(e))
@@ -59,7 +69,7 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
     if (busy || name.trim() === "" || value === "") return
     setBusy(true)
     const refused = await api()
-      .invoke("secrets:add", { name: name.trim(), kind, value })
+      .invoke("secrets:add", { session, app, name: name.trim(), kind, value })
       .catch((e: unknown) => String(e))
     setBusy(false)
     if (refused !== null) {
@@ -73,11 +83,11 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
     load()
   }
 
-  const remove = async (secret: string) => {
+  const remove = async (from: string, secret: string) => {
     if (busy) return
     setBusy(true)
     const refused = await api()
-      .invoke("secrets:remove", secret)
+      .invoke("secrets:remove", { session, app: from, name: secret })
       .catch((e: unknown) => String(e))
     setBusy(false)
     setRemoving(null)
@@ -96,50 +106,75 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
           </button>
         </div>
         <p className="dialog-text">
-          Logins and keys the agent may type on <span className="mono">{origin}</span>. It only ever
-          sees their names: values stay in your system’s keychain, and are blurred in every take.
+          Logins and keys the agent may type
+          {several ? (
+            ", app by app"
+          ) : (
+            <>
+              {" "}
+              on <span className="mono">{apps[0]?.origin}</span>
+            </>
+          )}
+          . It only ever sees their names: values stay in your system’s keychain, and are blurred in
+          every take.
         </p>
-        {secrets === null ? null : secrets.length === 0 ? (
+        {groups === null ? null : groups.every((g) => g.secrets.length === 0) ? (
           <p className="dialog-empty">No secrets yet.</p>
         ) : (
-          <ul className="secret-list" aria-label="The project's secrets">
-            {secrets.map((s) => (
-              <li key={s.name}>
-                <Key size={15} />
-                <span className="mono secret-name">{s.name}</span>
-                <span className="secret-kind">{KINDS.find((k) => k.kind === s.kind)?.label}</span>
-                {!s.provided && <span className="secret-missing">no value here</span>}
-                <div className="spacer" />
-                {removing === s.name ? (
-                  <>
-                    <button
-                      type="button"
-                      className="btn btn-ghost"
-                      onClick={() => setRemoving(null)}
-                    >
-                      Keep
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-danger"
-                      onClick={() => void remove(s.name)}
-                    >
-                      Remove {s.name}
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label={`Remove ${s.name}`}
-                    onClick={() => setRemoving(s.name)}
-                  >
-                    <Trash size={15} />
-                  </button>
+          groups.map((group) =>
+            group.secrets.length === 0 ? null : (
+              <section key={group.app} className="secret-group">
+                {several && (
+                  <h3 className="secret-app">
+                    {group.app} <span className="mono">{group.origin}</span>
+                  </h3>
                 )}
-              </li>
-            ))}
-          </ul>
+                <ul
+                  className="secret-list"
+                  aria-label={several ? `Secrets of ${group.app}` : "The project's secrets"}
+                >
+                  {group.secrets.map((s) => (
+                    <li key={s.name}>
+                      <Key size={15} />
+                      <span className="mono secret-name">{s.name}</span>
+                      <span className="secret-kind">
+                        {KINDS.find((k) => k.kind === s.kind)?.label}
+                      </span>
+                      {!s.provided && <span className="secret-missing">no value here</span>}
+                      <div className="spacer" />
+                      {removing === `${group.app}/${s.name}` ? (
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-ghost"
+                            onClick={() => setRemoving(null)}
+                          >
+                            Keep
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-danger"
+                            onClick={() => void remove(group.app, s.name)}
+                          >
+                            Remove {s.name}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          className="icon-btn"
+                          aria-label={`Remove ${s.name}`}
+                          onClick={() => setRemoving(`${group.app}/${s.name}`)}
+                        >
+                          <Trash size={15} />
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ),
+          )
         )}
         <form className="secret-form" onSubmit={(e) => void add(e)}>
           <div className="field">
@@ -157,6 +192,19 @@ export function SecretsPanel({ origin, onClose }: { origin: string; onClose: () 
             />
             <span className="field-hint">What scenes call it: {"{{secrets.acme.password}}"}</span>
           </div>
+          {several && (
+            <div className="field">
+              <label htmlFor="secret-app">App</label>
+              <select id="secret-app" value={app} onChange={(e) => setApp(e.target.value)}>
+                {apps.map((a) => (
+                  <option key={a.name} value={a.name}>
+                    {a.name} ({a.origin})
+                  </option>
+                ))}
+              </select>
+              <span className="field-hint">Typed on that app only.</span>
+            </div>
+          )}
           <div className="field">
             <label htmlFor="secret-kind">Kind</label>
             <select

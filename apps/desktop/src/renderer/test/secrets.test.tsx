@@ -12,6 +12,7 @@ const project: ProjectView = {
   name: "Demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.test/home",
+  apps: [{ name: "app", origin: "https://app.test" }],
   scenes: [],
   problems: [],
 }
@@ -84,9 +85,10 @@ describe("a secret's approval", () => {
 describe("the secrets panel", () => {
   it("lists the project's secrets, adds one (its value never kept in the window), removes one", async () => {
     let listed: SecretView[] = []
+    const groups = () => [{ app: "app", origin: "https://app.test", secrets: listed }]
     const { invoke } = stubApi({
       "app:status": () => status({ hasKey: true, project }),
-      "secrets:list": () => listed,
+      "secrets:list": groups,
       "secrets:add": () => {
         listed = [
           {
@@ -113,6 +115,8 @@ describe("the secrets panel", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Add secret" }))
     expect(await within(panel).findByText("acme.password")).toBeTruthy()
     expect(invoke).toHaveBeenCalledWith("secrets:add", {
+      session: project.session,
+      app: "app",
       name: "acme.password",
       kind: "password",
       value: "hunter2-secret",
@@ -122,7 +126,67 @@ describe("the secrets panel", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Remove acme.password" }))
     fireEvent.click(within(panel).getByRole("button", { name: "Remove acme.password" }))
     expect(await within(panel).findByText("No secrets yet.")).toBeTruthy()
-    expect(invoke).toHaveBeenCalledWith("secrets:remove", "acme.password")
+    expect(invoke).toHaveBeenCalledWith("secrets:remove", {
+      session: project.session,
+      app: "app",
+      name: "acme.password",
+    })
+  })
+
+  it("shows a project's secrets app by app, and adds one for the app picked (by its name)", async () => {
+    const two: ProjectView = {
+      ...project,
+      apps: [
+        { name: "app", origin: "https://app.test" },
+        { name: "docs", origin: "https://docs.test" },
+      ],
+    }
+    const { invoke } = stubApi({
+      "app:status": () => status({ hasKey: true, project: two }),
+      "secrets:list": () => [
+        {
+          app: "app",
+          origin: "https://app.test",
+          secrets: [{ name: "acme.password", kind: "password", origins: [], provided: true }],
+        },
+        {
+          app: "docs",
+          origin: "https://docs.test",
+          secrets: [{ name: "docs.token", kind: "api_key", origins: [], provided: false }],
+        },
+      ],
+      "secrets:add": () => null,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
+    const panel = screen.getByRole("dialog", { name: "Secrets" })
+    const docs = await within(panel).findByRole("list", { name: "Secrets of docs" })
+    expect(within(docs).getByText("docs.token")).toBeTruthy()
+    expect(within(panel).getByRole("list", { name: "Secrets of app" }).textContent).toMatch(
+      /acme\.password/,
+    )
+    fireEvent.change(within(panel).getByLabelText("App"), { target: { value: "docs" } })
+    fireEvent.change(within(panel).getByLabelText("Name"), { target: { value: "docs.key" } })
+    fireEvent.change(within(panel).getByLabelText("Value"), { target: { value: "k" } })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add secret" }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(invoke).toHaveBeenCalledWith("secrets:add", {
+      session: "s1",
+      app: "docs",
+      name: "docs.key",
+      kind: "password",
+      value: "k",
+    })
+  })
+
+  it("asks no app when the project has one", async () => {
+    stubApi({ "app:status": () => status({ hasKey: true, project }), "secrets:list": () => [] })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
+    const panel = screen.getByRole("dialog", { name: "Secrets" })
+    expect(within(panel).queryByLabelText("App")).toBeNull()
   })
 
   it("never moves focus while a value is typed (a status update re-renders the window)", async () => {

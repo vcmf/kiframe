@@ -21,6 +21,7 @@ import {
 import {
   ACTION_REFERENCE,
   type ActionKind,
+  appOf,
   actionReference,
   Action,
   checkScenarioAgainstProject,
@@ -81,8 +82,8 @@ export interface StudioOptions {
   browser: Browser
   /** Resolves a secret name for a use (the vault's resolver); the agent never sees values. */
   resolveSecret?: (name: string, use: SecretUse) => string | Promise<string>
-  /** The project's secret names, and whether each has a value (never the values). */
-  secrets?: () => { name: string; provided: boolean }[]
+  /** The secrets usable on an app's exact origin (names, never values), asked app by app. */
+  secrets?: (origin: string) => { name: string; provided: boolean }[]
   /** Asks the user (a dialog in the app); rejects when `signal` aborts (the dialog closes). */
   requestUser: (request: UserRequest, signal: AbortSignal) => Promise<string | boolean>
   /**
@@ -128,6 +129,25 @@ export class Studio {
   readonly #lifetime = new AbortController()
   /** The app the live page opens at: the project's first. */
   readonly #start: App
+  /** Each scene's start app its steps last ran in (by scene id): its next steps mean it too. */
+  readonly #sceneApps = new Map<string, string>()
+
+  /** The start app a scene's steps ran in (undefined: none ran). */
+  groundedApp(scene: string): string | undefined {
+    return this.#sceneApps.get(scene)
+  }
+
+  /** A scene saved with its start app: its next steps mean that one. */
+  saved(scene: string, app: string): void {
+    this.#sceneApps.set(scene, app)
+  }
+
+  /** A step's result; one that ran keeps its start app for the scene's next steps. */
+  #ran(scene: string, app: string, result: StepResult): StepResult {
+    if (result.ok) this.#sceneApps.set(scene, app)
+    return result
+  }
+
   /** The live page being opened (one at a time: a second caller waits for it). */
   #opening: Promise<Page> | undefined
 
@@ -468,7 +488,20 @@ export class Studio {
     scene: string,
     signal: AbortSignal,
     part: ScenarioPart = "steps",
+    startApp?: string,
   ): Promise<StepResult> {
+    // The scene's start app: the one given, else the one its last step ran in, else its saved
+    // scenario's, else the first. A step without an app means it, as in the replay.
+    const app =
+      startApp ??
+      this.#sceneApps.get(scene) ??
+      this.project.scenes.get(scene)?.scenario?.app ??
+      firstApp(this.options.config).name
+    if (appOf(this.options.config, app) === undefined) {
+      return failed(
+        `start_app: "${app}" isn't one of the project's apps (${Object.keys(this.options.config.apps).join(", ")})`,
+      )
+    }
     const raw = asObject(input)
     if (isCyclic(raw))
       return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
@@ -477,13 +510,17 @@ export class Studio {
     const refs = refsAt(raw)
     if (refs.length === 0) {
       this.#checked = undefined
-      return this.#runItem(raw, scene, signal, part)
+      return this.#ran(scene, app, await this.#runItem(raw, scene, signal, part, app))
     }
     const refused = this.#refusedNow(refs)
     if (refused !== undefined) return failed(refused)
     const written = await this.#written(raw, refs, part, signal)
     if ("error" in written) return failed(written.error)
-    const result = await this.#runItem(written.value, scene, signal, part)
+    const result = this.#ran(
+      scene,
+      app,
+      await this.#runItem(written.value, scene, signal, part, app),
+    )
     // Only a step that worked is one to write (a failed one's locator isn't confirmed).
     if (!result.ok) return result
     return {
@@ -547,6 +584,7 @@ export class Studio {
     scene: string,
     signal: AbortSignal,
     part: ScenarioPart,
+    app: string,
   ): Promise<StepResult> {
     if (typeof raw !== "object" || raw === null) {
       return failed(
@@ -578,10 +616,13 @@ export class Studio {
         `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}${shapeOf(raw)}`,
       )
     }
-    const scenario: Scenario =
-      step.success || setupItem?.data === undefined
+    // As in the scene: started in its start app (its steps without an app mean that one).
+    const scenario: Scenario = {
+      ...(step.success || setupItem?.data === undefined
         ? { version: 1, steps: step.success ? [step.data] : [] }
-        : { version: 1, setup: [setupItem.data], steps: [] }
+        : { version: 1, setup: [setupItem.data], steps: [] }),
+      app,
+    }
     const page = await this.livePage()
     try {
       await runScenario(page, scenario, this.#quick, {
@@ -880,7 +921,7 @@ export interface StepResult {
 
 /**
  * Where a page is, as the agent reads it: its path (never its query: it may hold a value), the
- * app's name when the project has several and it isn't the first, and what its site is when it
+ * app's name when the project has several, and what its site is when it
  * isn't a listed app's own origin (`siteOf`).
  */
 export function whereOf(url: string, apps: AppsArg, site = siteOf(url, apps)): string {
@@ -897,8 +938,8 @@ export function whereOf(url: string, apps: AppsArg, site = siteOf(url, apps)): s
   const on = site === "app" ? appAt(page, apps) : undefined
   if (on !== undefined) {
     const [name, app] = on
-    const path =
-      all.length > 1 && name !== all[0]?.[0] ? `${name}: ${page.pathname}` : page.pathname
+    // Several apps: always named (the agent tells "back on app" from "still on docs").
+    const path = all.length > 1 ? `${name}: ${page.pathname}` : page.pathname
     // The app's site under another address (redirected to www. or https): its steps work, its
     // secrets don't (typed on their exact origin only): said, so a refused secret step has a why.
     return page.origin === app.origin

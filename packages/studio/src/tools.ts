@@ -1,6 +1,6 @@
 import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
-import { SceneId } from "@kiframe/schema"
+import { AppName, firstApp, SceneId } from "@kiframe/schema"
 import { z } from "zod"
 import { isCyclic } from "./refs.ts"
 import { asObject, type ScenarioPart, type StepResult, type Studio } from "./studio.ts"
@@ -59,6 +59,11 @@ const snapshot = defineTool({
   run: async ({ within, find }, studio: Studio) => said(await studio.snapshot(within, find)),
 })
 
+/** A run_step's scene start app (by name; checked against the project's apps in the studio). */
+const startApp = AppName.optional().describe(
+  "the scene's start app (its top-level `app:`): steps without an app mean it. Default: the one its last step ran in, else its saved `app:`, else the first app",
+)
+
 const runStep = defineTool({
   name: "run_step",
   description:
@@ -74,9 +79,10 @@ const runStep = defineTool({
       .enum(["setup", "steps"])
       .default("steps")
       .describe("the part of the scene it's for (its approvals are that part's)"),
+    start_app: startApp,
   }),
-  run: async ({ scene, step, part }, studio: Studio, signal) =>
-    said(await studio.runStep(step, scene, signal, part)),
+  run: async ({ scene, step, part, start_app }, studio: Studio, signal) =>
+    said(await studio.runStep(step, scene, signal, part, start_app)),
 })
 
 const runSteps = defineTool({
@@ -91,8 +97,9 @@ const runSteps = defineTool({
         "The steps, same fields as in the YAML (a list); refs of the last snapshot work too",
       ),
     part: z.enum(["setup", "steps"]).default("steps").describe("the part they're for"),
+    start_app: startApp,
   }),
-  run: async ({ scene, steps, part }, studio: Studio, signal) => {
+  run: async ({ scene, steps, part, start_app }, studio: Studio, signal) => {
     // A list sent as YAML or JSON text (FAILURE-CATALOGUE #11) is read as the list it says.
     const list = asObject(steps)
     if (!Array.isArray(list) || list.length === 0 || list.length > 20) {
@@ -113,7 +120,7 @@ const runSteps = defineTool({
       refused = `the refs couldn't be checked: ${studio.scrub(error instanceof Error ? error.message : String(error))}`
     }
     if (refused !== undefined) return { error: `nothing ran: ${refused}` }
-    return runAll(items, scene, part, studio, signal)
+    return runAll(items, scene, part, studio, signal, start_app)
   },
 })
 
@@ -123,12 +130,13 @@ async function runAll(
   part: ScenarioPart,
   studio: Studio,
   signal: AbortSignal,
+  startApp: string | undefined,
 ): Promise<string | { error: string }> {
   const out: string[] = []
   for (const [i, step] of list.entries()) {
     let result: StepResult
     try {
-      result = await studio.runStep(step, scene, signal, part)
+      result = await studio.runStep(step, scene, signal, part, startApp)
     } catch (error) {
       // A stop ends the call; anything else is this step's failure, the ones before it kept.
       if (signal.aborted) throw error
@@ -147,7 +155,7 @@ async function runAll(
     }
     // On another site: what follows would run there (not a failure: said, and stopped).
     if (result.site === "other") {
-      return [`step ${i + 1} left the app's site`, ...out, ...stopped].join("\n")
+      return [`step ${i + 1} left the project's apps`, ...out, ...stopped].join("\n")
     }
   }
   return [`${list.length} ${list.length === 1 ? "step" : "steps"} ok`, ...out].join("\n")
@@ -155,14 +163,25 @@ async function runAll(
 
 const listSecrets = defineTool({
   name: "list_secrets",
-  description: "Names of the secrets the user provided (never their values).",
+  description:
+    "Names of the secrets the user provided (never their values), each with the app it's typed on.",
   parameters: z.object({}),
   run: (_args, studio: Studio) => {
-    const secrets = studio.options.secrets?.() ?? []
+    // App by app (each its exact origin): a secret is typed only on its own app.
+    const apps = Object.entries(studio.options.config.apps)
+    const secrets = apps.flatMap(([app, { url }]) =>
+      (studio.options.secrets?.(new URL(url).origin) ?? []).map((s) => ({ ...s, app })),
+    )
+    const named = apps.length > 1
     return Promise.resolve(
       secrets.length === 0
         ? "none"
-        : secrets.map((s) => `${s.name}${s.provided ? "" : " (missing)"}`).join(", "),
+        : secrets
+            .map((s) => {
+              const notes = [...(named ? [s.app] : []), ...(s.provided ? [] : ["missing"])]
+              return `${s.name}${notes.length > 0 ? ` (${notes.join(", ")})` : ""}`
+            })
+            .join(", "),
     )
   },
 })
@@ -219,7 +238,15 @@ const saveSceneTool = defineTool({
     }
     // A new scenario: its old composition (of another take) goes; record the scene again.
     saveScene(studio.project, scene, { scenario: checked.scenario, composition: null })
-    return "saved: the replay passed. Record it with record_scene."
+    // Grounded from another start app than the scene says: the replay passed, but say it.
+    const grounded = studio.groundedApp(id)
+    const starts = checked.scenario.app ?? firstApp(studio.options.config).name
+    studio.saved(id, starts)
+    const note =
+      grounded !== undefined && grounded !== starts
+        ? ` Note: you grounded it with start_app "${grounded}" but it starts in "${starts}" (its \`app:\`): check that's what you meant.`
+        : ""
+    return `saved: the replay passed. Record it with record_scene.${note}`
   },
 })
 

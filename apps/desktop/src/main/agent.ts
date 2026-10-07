@@ -4,7 +4,7 @@
 import type { LlmClient, LlmMessage } from "@kiframe/agent"
 import { runAgent } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
-import { firstApp, resolveProjectConfig } from "@kiframe/schema"
+import { resolveProjectConfig } from "@kiframe/schema"
 import { Studio, studioTools, systemPrompt } from "@kiframe/studio"
 import type { Browser } from "playwright"
 import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
@@ -269,7 +269,6 @@ export class AgentHost {
     this.#withSecrets = secrets !== undefined
     // Every value known before anything runs (R6); the browser launches meanwhile.
     const [browser] = await Promise.all([this.#options.browser(), secrets?.ready()])
-    const origin = new URL(firstApp(config).app.url).origin
     this.#browser = browser
     this.#studio = new Studio({
       project,
@@ -283,7 +282,8 @@ export class AgentHost {
       // Secrets (when the app has its vault): names for the agent, values for granted uses only,
       // every value known to the scrubber and the blur; an ungranted use asks the user.
       ...(secrets !== undefined && {
-        secrets: () => secrets.names(origin),
+        // Asked per app at the moment (the studio's own apps): an app's exact origin.
+        secrets: (origin: string) => secrets.names(origin),
         resolveSecret: (name: string, use: SecretUse) => secrets.resolve(name, use),
         knownValues: () => secrets.knownValues(),
         requestApproval: async (request: ApprovalRequest, signal: AbortSignal) => {
