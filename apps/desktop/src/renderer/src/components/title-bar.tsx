@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import type { ProjectView } from "../../../shared/ipc.ts"
 import { api } from "../api.ts"
 import { useApp } from "../store.ts"
+import { AppsPanel } from "./apps-panel.tsx"
 import { SecretsPanel } from "./secrets-panel.tsx"
 
 export function TitleBar() {
@@ -20,17 +21,7 @@ export function TitleBar() {
           <div className="titlebar-sep" />
           <ProjectMenu name={project.name} />
           <div className="spacer" />
-          <span
-            className="chip"
-            title={
-              project.apps.length > 1
-                ? project.apps.map((a) => `${a.name}: ${a.origin}`).join("\n")
-                : project.url
-            }
-          >
-            <Globe size={13} />
-            {hostOf(project.url)}
-          </span>
+          <AppsButton key={`apps-${project.session}`} project={project} />
           <SecretsButton key={project.session} project={project} />
           <button
             type="button"
@@ -44,6 +35,28 @@ export function TitleBar() {
         </>
       )}
     </header>
+  )
+}
+
+/** The first app's host, as a button opening the apps panel (with how many more there are). */
+function AppsButton({ project }: { project: Pick<ProjectView, "session" | "apps" | "url"> }) {
+  const [open, setOpen] = useState(false)
+  const close = useCallback(() => setOpen(false), [])
+  const more = project.apps.length - 1
+  return (
+    <>
+      <button
+        type="button"
+        className="chip chip-button"
+        title={project.apps.map((a) => `${a.name}: ${a.origin}`).join("\n")}
+        onClick={() => setOpen(true)}
+      >
+        <Globe size={13} />
+        {hostOf(project.url)}
+        {more > 0 && <span className="chip-more">+{more}</span>}
+      </button>
+      {open && <AppsPanel project={project} onClose={close} />}
+    </>
   )
 }
 

@@ -206,6 +206,17 @@ describe("Vault: grants, round 1 review", () => {
     expect(await vault.resolve("acme.password", { ...use, path: "/dashboard/settings" })).toBe("v")
   })
 
+  it("revokes one project's approvals on a site (its app removed), keeping the secret and others'", async () => {
+    const { vault } = open()
+    await vault.request(form, provide("v"))
+    await vault.approve("acme.password", USE)
+    await vault.approve("acme.password", { ...USE, scope: "other-project" })
+    // Given the app's www. form: its grants on the address it redirects from go too.
+    vault.revokeAt(USE.scope, ORIGIN.replace("://", "://www."))
+    expect(vault.grants().map((g) => g.scope)).toEqual(["other-project"])
+    expect(vault.list().map((s) => s.name)).toEqual(["acme.password"])
+  })
+
   it("never grants a secret on an origin it isn't for (another app of the project)", async () => {
     const { vault } = open()
     await vault.request(form, provide("v"))

@@ -566,7 +566,23 @@ function AppCardView({
           </li>
         )}
         {request.local && <li>On your computer or local network.</li>}
-        <li>Scenes may open it from now on. No secret is shared with it.</li>
+        <li>
+          Scenes may open it from now on.
+          {request.secrets === 0 && " No secret is shared with it."}
+          {request.secrets === undefined &&
+            " (Your secrets couldn’t be read: none are counted here.)"}
+          {request.secrets !== undefined &&
+            request.secrets > 0 &&
+            ` ${request.secrets} saved ${request.secrets === 1 ? "secret" : "secrets"} for this site come with it.`}
+        </li>
+        {request.usedBy.length > 0 && (
+          <li className="app-card-warn">
+            {request.usedBy.length}{" "}
+            {request.usedBy.length === 1 ? "scene already names" : "scenes already name"} “
+            {request.name}”: {request.usedBy.map((t) => `“${t}”`).join(", ")}. They’ll open this
+            site.
+          </li>
+        )}
       </ul>
       {request.why !== "" && (
         <p className="app-card-why">

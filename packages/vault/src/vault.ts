@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { createHmac, randomBytes } from "node:crypto"
 import { dirname } from "node:path"
 import { isDeepStrictEqual } from "node:util"
-import { SecretName } from "@kiframe/schema"
+import { sameApp, SecretName } from "@kiframe/schema"
 import type { SecretBackend } from "./backend.ts"
 import * as z from "zod"
 import {
@@ -314,6 +314,20 @@ export class Vault {
     return structuredClone(
       scope === undefined ? this.#grants : this.#grants.filter((g) => g.scope === scope),
     )
+  }
+
+  /**
+   * A site taken off a project (the user removed the app): that project's grants on it go (its
+   * www. or https form too: `sameApp`), so a site added back asks again for each use. The secrets
+   * stay (the vault is shared by projects).
+   */
+  revokeAt(scope: string, origin: string): void {
+    this.#update((file) => ({
+      ...file,
+      grants: file.grants.filter(
+        (g) => !(g.scope === scope && (sameApp(g.origin, origin) || sameApp(origin, g.origin))),
+      ),
+    }))
   }
 
   /** The user's action: the step asks again next time. */

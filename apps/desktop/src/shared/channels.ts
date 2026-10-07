@@ -16,6 +16,7 @@ export const INVOKE_CHANNELS = [
   "secrets:list",
   "secrets:add",
   "secrets:remove",
+  "apps:remove",
   "preview:open",
 ] as const
 

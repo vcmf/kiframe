@@ -557,8 +557,16 @@ button:disabled {
   color: var(--muted);
 }
 
-.status-unreadable {
+.status-unreadable,
+.status-removed-app {
   color: var(--danger);
+}
+
+/* Under a scene using a removed app: asks the agent to rework it. */
+.scene-rework {
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 2px 8px;
 }
 
 .strip-empty {
@@ -702,6 +710,13 @@ ul.strip-cards {
   list-style: none;
   margin: 0;
   padding: 0 0 2px;
+}
+
+/* A card and what's under it (a Rework button), stacked. */
+ul.strip-cards > li {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
 }
 
 /* ── menus ── */
@@ -1430,4 +1445,43 @@ ul.strip-cards {
 
 .app-card-label {
   font-style: italic;
+}
+
+/* The apps panel: each app with its origin, the first one's note. */
+.app-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+
+.app-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-list .app-origin {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.app-first {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* The app chip opens the apps panel; "+2" when there are more. */
+.chip-button {
+  cursor: pointer;
+}
+
+.chip-button:hover {
+  background: var(--hover);
+}
+
+.chip-more {
+  color: var(--muted);
+  font-size: 11px;
 }

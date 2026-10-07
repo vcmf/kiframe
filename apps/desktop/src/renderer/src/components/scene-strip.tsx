@@ -1,6 +1,8 @@
-// The project's scenes in story order, each with its status.
+// The project's scenes in story order, each with its status. A scene using an app the project no
+// longer lists says so (its recording still plays), with a way to ask the agent to rework it.
 import { CheckCircle, FilmSlate, Plus, TextT, WarningCircle } from "@phosphor-icons/react"
 import type { SceneView } from "../../../shared/ipc.ts"
+import { useChat } from "../chat-store.ts"
 
 const STATUS: Record<SceneView["status"], { label: string; icon: React.ReactNode }> = {
   recorded: { label: "Recorded", icon: <CheckCircle size={13} /> },
@@ -18,6 +20,8 @@ export function SceneStrip(props: {
   onSelect: (id: string) => void
 }) {
   const { scenes, problems } = props
+  const running = useChat((s) => s.running)
+  const send = useChat((s) => s.send)
   return (
     <section className="strip" aria-label="Scenes">
       <div className="strip-head">
@@ -42,6 +46,7 @@ export function SceneStrip(props: {
       ) : (
         <ul className="strip-cards">
           {scenes.map((scene) => {
+            const removed = scene.removedApps ?? []
             const status = STATUS[scene.status]
             return (
               <li key={scene.id}>
@@ -61,8 +66,29 @@ export function SceneStrip(props: {
                       {status.icon}
                       {status.label}
                     </span>
+                    {removed.length > 0 && (
+                      <span className="scene-status status-removed-app">
+                        <WarningCircle size={13} />
+                        Uses an app not in the project: {removed.join(", ")}
+                      </span>
+                    )}
                   </div>
                 </button>
+                {removed.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost scene-rework"
+                    disabled={running}
+                    title={running ? "The agent is working" : undefined}
+                    onClick={() =>
+                      void send(
+                        `Rework the scene “${scene.title}” (${scene.id}) without the app${removed.length > 1 ? "s" : ""} ${removed.map((a) => `"${a}"`).join(", ")}: the project no longer lists it. Keep it on the project's apps, or ask to add the site back with add_app if the scene needs it.`,
+                      )
+                    }
+                  >
+                    Rework without it
+                  </button>
+                )}
               </li>
             )
           })}

@@ -43,7 +43,11 @@ export function isLocal(hostname: string): boolean {
 }
 
 /** The card for `url` (already resolved and checked by the `App` rule), or why it can't be one. */
-export function appCard(name: string, url: string, why: string): AppCard | { error: string } {
+export function appCard(
+  name: string,
+  url: string,
+  why: string,
+): Omit<AppCard, "secrets" | "usedBy"> | { error: string } {
   const checked = App.shape.url.safeParse(url)
   if (!checked.success)
     return { error: `url: ${checked.error.issues[0]?.message ?? "not an address"}` }

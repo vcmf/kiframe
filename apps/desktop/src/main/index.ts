@@ -12,7 +12,17 @@ import { AgentHost } from "./agent.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { DEFAULT_MODEL, modelConfig } from "./model.ts"
-import { appOriginOf, newProjectDir, projectFileName, targetUrl } from "./project.ts"
+import {
+  appOriginOf,
+  appRemovalRefused,
+  newProjectDir,
+  projectFileName,
+  interruptsUsing,
+  presetsUsing,
+  removeApp,
+  scenesUsing,
+  targetUrl,
+} from "./project.ts"
 import { setAppMenu } from "./menu.ts"
 import { isSafeExternal } from "./security.ts"
 import { Registry } from "./registry.ts"
@@ -396,6 +406,63 @@ function start(): void {
           } catch (e) {
             return message(e)
           }
+        },
+        "apps:remove": async ({ session, name, origin }) => {
+          // Checked before asking and again after (the dialog waits on the user meanwhile).
+          const refused = () =>
+            appRemovalRefused(
+              workspace.apps(),
+              { session, name, origin },
+              workspace.agent?.running === true,
+            )
+          const before = refused()
+          const opened = workspace.opened
+          if (before !== null) return before
+          if (opened === null) return "open a project first"
+          const uses = scenesUsing(opened, name)
+          const presets = presetsUsing(opened, name)
+          const rules = interruptsUsing(opened, name)
+          const presetNote =
+            presets.length === 0
+              ? ""
+              : ` ${presets.length === 1 ? "Preset" : "Presets"} ${presets.map((p) => `“${p}”`).join(", ")} ${presets.length === 1 ? "names" : "name"} it too: the scenes using ${presets.length === 1 ? "it" : "them"} will need it changed.`
+          const ruleNote =
+            rules.length === 0
+              ? ""
+              : ` ${rules.length === 1 ? "The interrupt rule" : "The interrupt rules"} ${rules.map((r) => `“${r}”`).join(", ")} ${rules.length === 1 ? "goes" : "go"} there: ${rules.length === 1 ? "it" : "they"} will fail until changed.`
+          const { response } = await dialog.showMessageBox(parent(), {
+            type: "warning",
+            message: `Remove ${name} (${origin}) from the project?`,
+            detail:
+              (uses.length === 0
+                ? "No scene uses it. Its saved secrets stay; its approvals in this project go."
+                : `${uses.length} ${uses.length === 1 ? "scene uses" : "scenes use"} it: ${uses.map((t) => `“${t}”`).join(", ")}. They'll need reworking (their recordings still play). Its saved secrets stay; its approvals in this project go.`) +
+              presetNote +
+              ruleNote,
+            buttons: ["Remove", "Cancel"],
+            defaultId: 1,
+            cancelId: 1,
+          })
+          if (response !== 0) return null
+          const after = refused()
+          if (after !== null || workspace.opened !== opened) return after ?? "the project changed"
+          // This project's approvals on that site go first (the secrets stay: other projects may
+          // use them): a failure below leaves the app with its approvals asked again, never kept.
+          try {
+            vault().revokeAt(ids().scope(opened.dir), origin)
+          } catch (e) {
+            return `not removed: its approvals couldn't be revoked: ${message(e)}`
+          }
+          try {
+            removeApp(opened, name)
+          } catch (e) {
+            return message(e)
+          }
+          workspace.agent?.appsChanged(opened.project.apps)
+          void status().then((now) => {
+            if (workspace.opened === opened) emit(window, "status", now)
+          })
+          return null
         },
         "preview:open": (sceneId) => {
           const opened = workspace.opened

@@ -201,6 +201,8 @@ describe("the chat", () => {
           plain: true,
           lookalike: true,
           local: false,
+          secrets: 0,
+          usedBy: [],
           why: "Kiframe: already approved",
         },
         state: "open",
@@ -211,6 +213,29 @@ describe("the chat", () => {
     expect(card.textContent).toMatch(/Not encrypted/)
     expect(card.textContent).toMatch(/lookalike characters/)
     expect(card.textContent).toMatch(/No secret is shared with it/)
+    act(() =>
+      push("chat:item", {
+        kind: "request",
+        id: "r2",
+        request: {
+          kind: "approve-app",
+          name: "docs",
+          url: "https://docs.test/",
+          host: "docs.test",
+          plain: false,
+          lookalike: false,
+          local: false,
+          secrets: 2,
+          usedBy: ["Install"],
+          why: "",
+        },
+        state: "open",
+      }),
+    )
+    expect(screen.getByText(/2 saved secrets for this site come with it\./)).toBeTruthy()
+    expect(
+      screen.getByText(/1 scene already names “docs”: “Install”\. They’ll open this site\./),
+    ).toBeTruthy()
     expect(card.textContent).toMatch(
       /The agent says \(pages it read can influence this\): Kiframe: already approved/,
     )

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createProject, openProject, saveScene } from "@kiframe/project"
@@ -6,6 +6,11 @@ import { parseScenarioYaml } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
 import {
   appOriginOf,
+  appRemovalRefused,
+  interruptsUsing,
+  presetsUsing,
+  removeApp,
+  scenesUsing,
   newProjectDir,
   projectFileName,
   projectView,
@@ -153,5 +158,103 @@ describe("a request of the window for one of the project's apps", () => {
     expect(projectView(project, "s1").apps).toEqual([
       { name: "app", origin: "https://www.app.test" },
     ])
+  })
+})
+
+describe("removing one of the project's apps (B5)", () => {
+  /** A project with app, docs and auth, its scenes using them in several ways. */
+  const threeApps = () => {
+    const dir = folder()
+    const made = createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
+    const file = join(dir, "project.json")
+    const project = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...project,
+        apps: {
+          app: { kind: "web", url: "https://app.test" },
+          docs: { kind: "web", url: "https://docs.test" },
+          auth: { kind: "web", url: "https://auth.test" },
+        },
+        presets: { login: { app: "auth", steps: [{ action: "goto", url: "/in" }] } },
+        interrupts: [
+          { id: "moved", when: { text: "Moved" }, do: { action: "goto", app: "docs", url: "/" } },
+        ],
+      }),
+    )
+    const opened = openProject(dir)
+    const yaml = (body: string) => parseScenarioYaml(`version: 1\n${body}`)
+    const pause = "steps: [{ id: a, action: pause, ms: 1 }]"
+    saveScene(opened, recording("starts", "Starts in docs"), {
+      scenario: yaml(`app: docs\n${pause}`),
+    })
+    saveScene(opened, recording("goes", "Goes to docs"), {
+      scenario: yaml("steps: [{ id: a, action: goto, app: docs, url: / }]"),
+    })
+    saveScene(opened, recording("waits", "Waits on docs"), {
+      scenario: yaml("steps: [{ id: a, action: waitFor, until: { url: /, app: docs } }]"),
+    })
+    saveScene(opened, recording("logs", "Logs in"), {
+      scenario: yaml(`setup: [{ preset: login }]\n${pause}`),
+    })
+    saveScene(opened, recording("plain", "Plain"), { scenario: yaml(pause) })
+    expect(made.dir).toBe(dir)
+    return { dir, opened }
+  }
+
+  it("names the scenes that use an app: start, goto, URL condition, a preset they use", () => {
+    const { opened } = threeApps()
+    expect(scenesUsing(opened, "docs")).toEqual(["Starts in docs", "Goes to docs", "Waits on docs"])
+    expect(scenesUsing(opened, "auth")).toEqual(["Logs in"])
+    expect(presetsUsing(opened, "auth")).toEqual(["login"])
+    expect(presetsUsing(opened, "docs")).toEqual([])
+    expect(interruptsUsing(opened, "docs")).toEqual(["moved"])
+    expect(interruptsUsing(opened, "auth")).toEqual([])
+    // A scene outside the story order counts too.
+    opened.project = {
+      ...opened.project,
+      sequence: opened.project.sequence.filter((id) => id !== "goes"),
+    }
+    expect(scenesUsing(opened, "docs")).toEqual(["Starts in docs", "Waits on docs", "Goes to docs"])
+  })
+
+  it("removes it from project.json; never the first app; and marks the scenes that used it", () => {
+    const { dir, opened } = threeApps()
+    expect(() => removeApp(opened, "app")).toThrow(/where scenes start/)
+    expect(() => removeApp(opened, "nope")).toThrow(/isn't one of the project's apps/)
+    removeApp(opened, "docs")
+    expect(Object.keys(openProject(dir).project.apps)).toEqual(["app", "auth"])
+    const view = projectView(opened, "s1")
+    const marked = Object.fromEntries(view.scenes.map((s) => [s.id, s.removedApps]))
+    expect(marked).toEqual({
+      starts: ["docs"],
+      goes: ["docs"],
+      waits: ["docs"],
+      logs: undefined,
+      plain: undefined,
+    })
+    // Its status kept (grounded here): the preview and the stage still find it.
+    expect(view.scenes.find((s) => s.id === "starts")?.status).toBe("grounded")
+  })
+
+  it("refuses a removal while the agent works, from another opening, of a changed app, or of the first", () => {
+    const view = {
+      session: "s1",
+      apps: [
+        { name: "app", origin: "https://app.test" },
+        { name: "docs", origin: "https://docs.test" },
+      ],
+    }
+    const docs = { session: "s1", name: "docs", origin: "https://docs.test" }
+    expect(appRemovalRefused(view, docs, false)).toBeNull()
+    expect(appRemovalRefused(view, docs, true)).toMatch(/agent is working/)
+    expect(appRemovalRefused(view, { ...docs, session: "s0" }, false)).toMatch(/project changed/)
+    expect(appRemovalRefused(view, { ...docs, origin: "https://other.test" }, false)).toMatch(
+      /changed meanwhile/,
+    )
+    expect(
+      appRemovalRefused(view, { session: "s1", name: "app", origin: "https://app.test" }, false),
+    ).toMatch(/where scenes start/)
   })
 })
