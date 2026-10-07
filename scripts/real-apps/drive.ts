@@ -1,6 +1,6 @@
 // Drives the built desktop app on a real test app with the real model, as a user would (APPROACHES
 // §0 "Test apps"): the OpenRouter key entered, a project created for the app, its secrets added in
-// the Secrets panel, the brief sent, and every request answered (risky steps and secrets allowed,
+// the Secrets panel, the brief sent, and every request answered (risky steps, secrets and sites allowed,
 // questions answered with a fixed reply). Writes a report: the chat, the outcome, time and cost.
 //
 // Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20] [--brief "…"]
@@ -324,7 +324,18 @@ try {
     const allow = page.getByRole("button", { name: "Allow here" })
     const approve = page.getByRole("button", { name: "Approve this step" })
     const reply = page.getByLabel("Your answer")
-    if (await allow.isVisible().catch(() => false)) {
+    // A site the agent asks to add: allowed (its host logged, as the user would read it).
+    const site = page.getByRole("button", { name: /^Add \S+$/ })
+    if (
+      await site
+        .first()
+        .isVisible()
+        .catch(() => false)
+    ) {
+      const name = (await site.first().textContent()) ?? ""
+      await site.first().click()
+      log(`site allowed: ${name.replace(/^Add /, "")}`)
+    } else if (await allow.isVisible().catch(() => false)) {
       // Never a screenshot here: the approval shows the page unmasked (APPROACHES: never to a file).
       await allow.click()
       log("secret use allowed")

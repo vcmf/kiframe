@@ -22,7 +22,8 @@ export function sameApp(url: string | URL, app: string | URL): boolean {
   // Compared by their origins (a blob: URL's is its creator's: blob:https://www.x/… is on www.x).
   const p = new URL(page.origin)
   const t = new URL(target.origin)
-  const host = (u: URL) => u.host.replace(/^www\./, "")
+  // `minmux.dev.` (a trailing dot) is minmux.dev: never another site.
+  const host = (u: URL) => u.host.replace(/^www\./, "").replace(/\.(?=:|$)/, "")
   const protocolOk =
     p.protocol === t.protocol || (t.protocol === "http:" && p.protocol === "https:")
   return host(p) === host(t) && protocolOk

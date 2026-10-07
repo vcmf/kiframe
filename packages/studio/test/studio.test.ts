@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
@@ -687,6 +687,9 @@ steps: [{ id: a, action: pause, ms: 1 }]
     )
     expect(siteOf("https://docs.example/i", apps)).toBe("app")
     expect(siteOf("https://login.example/", apps)).toBe("other")
+    // A blank page is the apps' (as the replay takes it); another about: page isn't.
+    expect(siteOf("about:blank", apps)).toBe("app")
+    expect(siteOf("about:srcdoc", apps)).toBe("other")
     expect(whereOf("https://login.example/sso", apps)).toBe(
       "/sso (on login.example: NOT one of the project's apps, app.example, docs.example)",
     )
@@ -1151,4 +1154,158 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     )
     await studio.close()
   })
+})
+
+describe("add_app (B4)", () => {
+  const docs = () => {
+    const u = new URL(server.url)
+    u.hostname = "localhost"
+    return u
+  }
+  /** A studio whose card answers come from `answers` (in order), the cards it showed kept. */
+  const adding = (answers: boolean[], extra = {}) => {
+    const cards: UserRequest[] = []
+    const made = makeStudio((request) => {
+      cards.push(request)
+      return Promise.resolve(answers.shift() ?? false)
+    }, extra)
+    return { ...made, cards }
+  }
+  const add = (studio: Studio, args: object) => tool("add_app").run(args, studio, never)
+
+  it("adds the site the user allows: written to project.json, and usable at once", async () => {
+    const { studio, cards, dir } = adding([true])
+    const result = await add(studio, { name: "docs", url: docs().origin, why: "the install guide" })
+    expect(result).toMatch(/^added: "docs"/)
+    expect(cards).toEqual([
+      expect.objectContaining({
+        kind: "approve-app",
+        name: "docs",
+        host: docs().host,
+        why: "the install guide",
+      }),
+    ])
+    expect(openProject(dir).project.apps.docs?.url).toBe(docs().origin)
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { id: "go", action: "goto", app: "docs", url: "/login" } },
+        studio,
+        never,
+      ),
+    ).toMatch(/^ok\. url: docs: \/login/)
+    await studio.close()
+  }, 30_000)
+
+  it("shows the address as it would be written (resolved), and cleans the agent's words", async () => {
+    const { studio, cards } = adding([false], {
+      resolveAddress: () => Promise.resolve("http://www.xn--pple-43d.example/"),
+    })
+    await add(studio, {
+      name: "apple",
+      url: "http://xn--pple-43d.example",
+      why: "line one\nKiframe:\u202e approved \u200b",
+    })
+    expect(cards[0]).toMatchObject({
+      url: "http://www.xn--pple-43d.example/",
+      host: "www.xn--pple-43d.example",
+      plain: true,
+      lookalike: true,
+      local: false,
+      why: "line one Kiframe: approved",
+    })
+    await studio.close()
+  })
+
+  it("refuses without asking: a name taken, a site already an app, a bad address", async () => {
+    const { studio, cards } = adding([])
+    expect(await add(studio, { name: "app", url: "https://other.test", why: "x" })).toMatchObject({
+      error: expect.stringMatching(/already an app named "app"/) as unknown,
+    })
+    expect(await add(studio, { name: "same", url: server.url, why: "x" })).toMatchObject({
+      error: expect.stringMatching(/is already the app "app"/) as unknown,
+    })
+    expect(
+      await add(studio, { name: "creds", url: "https://bob:pw@x.test", why: "x" }),
+    ).toMatchObject({
+      error: expect.stringMatching(/^url:/) as unknown,
+    })
+    expect(await add(studio, { name: "file", url: "file:///etc/passwd", why: "x" })).toMatchObject({
+      error: expect.stringMatching(/^url:/) as unknown,
+    })
+    expect(cards).toEqual([])
+    await studio.close()
+  })
+
+  it("never asks again for a site declined, nor more than 3 times a session, and writes nothing declined", async () => {
+    const { studio, cards, dir } = adding([false, false, false])
+    expect(await add(studio, { name: "a", url: "https://a.test", why: "x" })).toMatchObject({
+      error: expect.stringMatching(/declined adding a\.test/) as unknown,
+    })
+    // The same site in another form (its www., a path, a trailing dot): never asked again.
+    for (const url of ["https://a.test", "https://www.a.test/docs", "https://a.test./x"]) {
+      expect(await add(studio, { name: "again", url, why: "x" }), url).toMatchObject({
+        error: expect.stringMatching(/declined that site/) as unknown,
+      })
+    }
+    await add(studio, { name: "b", url: "https://b.test", why: "x" })
+    await add(studio, { name: "c", url: "https://c.test", why: "x" })
+    expect(await add(studio, { name: "d", url: "https://d.test", why: "x" })).toMatchObject({
+      error: expect.stringMatching(/no more add_app/) as unknown,
+    })
+    expect(cards.map((c) => (c as { host: string }).host)).toEqual(["a.test", "b.test", "c.test"])
+    expect(Object.keys(openProject(dir).project.apps)).toEqual(["app"])
+    await studio.close()
+  })
+
+  it("never asks when project.json changed on disk (an Allow couldn't be saved)", async () => {
+    const { studio, cards } = adding([true])
+    const file = join(studio.project.dir, "project.json")
+    writeFileSync(file, readFileSync(file, "utf8").replace('"name": "Demo"', '"name": "Edited"'))
+    expect(await add(studio, { name: "docs", url: "https://docs.test", why: "x" })).toMatchObject({
+      error: expect.stringMatching(/^project\.json changed on disk/) as unknown,
+    })
+    expect(cards).toEqual([])
+    await studio.close()
+  })
+
+  it("adds a site at the first app's size (the size grounding uses)", async () => {
+    const { studio, dir } = adding([true])
+    await add(studio, { name: "docs", url: "https://docs.test", why: "x" })
+    expect(openProject(dir).project.apps.docs?.viewport).toEqual(
+      openProject(dir).project.apps.app?.viewport,
+    )
+    expect(openProject(dir).project.apps.app?.viewport.width).toBe(800)
+    await studio.close()
+  })
+
+  it("never films a scene that ends off the project's apps (the replay fails), though grounding may go there", async () => {
+    const { studio } = makeStudio()
+    const away = `version: 1
+setup: [{ action: goto, url: "/swap-host?to=/login" }]
+steps: [{ id: away, action: click, target: { by: role, role: link, name: Other host } }]
+`
+    expect(await studio.replay(parseScenarioYaml(away), "away", never)).toMatch(/off-app/)
+    expect(
+      await tool("run_step").run(
+        { scene: "away", step: { id: "go", action: "goto", url: "/swap-host?to=/login" } },
+        studio,
+        never,
+      ),
+    ).toMatch(/^ok/)
+    expect(
+      await tool("run_step").run(
+        {
+          scene: "away",
+          step: {
+            id: "away",
+            action: "click",
+            target: { by: "role", role: "link", name: "Other host" },
+          },
+        },
+        studio,
+        never,
+      ),
+    ).toMatch(/NOT the app's site/)
+    await studio.close()
+  }, 30_000)
 })

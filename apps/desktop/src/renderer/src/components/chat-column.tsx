@@ -8,6 +8,7 @@ import {
   CheckCircle,
   CircleNotch,
   CursorClick,
+  Globe,
   HandPointing,
   Key,
   ListBullets,
@@ -382,6 +383,22 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
       </div>
     )
   }
+  if (request.kind === "approve-app") return <AppCardView item={item} request={request} />
+  if (request.kind !== "question") {
+    // A request this window doesn't know: never answered by accident, only declined.
+    return (
+      <div className="request-card" aria-label="A request this version can't show">
+        <p>The agent asked for something this version of Kiframe can’t show.</p>
+        {open && (
+          <div className="request-actions">
+            <button type="button" className="btn btn-ghost" onClick={() => answer(item.id, false)}>
+              Decline
+            </button>
+          </div>
+        )}
+      </div>
+    )
+  }
   return (
     <div className="request-card" aria-label="The agent asks">
       <div className="request-title">
@@ -515,6 +532,66 @@ function Composer() {
           </div>
         )}
       </form>
+    </div>
+  )
+}
+
+/**
+ * Adding a site to the project: the site first, as the browser will reach it (its host, never a
+ * name the agent picked), what's notable about it, what allowing grants, then the agent's reason as
+ * its words.
+ */
+function AppCardView({
+  item,
+  request,
+}: {
+  item: Extract<ChatItem, { kind: "request" }>
+  request: Extract<ChatItem, { kind: "request" }>["request"] & { kind: "approve-app" }
+}) {
+  const answer = useChat((s) => s.answer)
+  const open = item.state === "open"
+  return (
+    <div className="request-card" aria-label="Add a site to the project?">
+      <div className="request-title">
+        <Globe size={17} />
+        Add a site to this project?
+      </div>
+      <p className="app-card-host mono">{request.host}</p>
+      <ul className="app-card-notes">
+        <li>Every page on this site, as the app “{request.name}”.</li>
+        {request.plain && <li className="app-card-warn">Not encrypted (http).</li>}
+        {request.lookalike && (
+          <li className="app-card-warn">
+            Its name uses lookalike characters: check it’s the site you mean.
+          </li>
+        )}
+        {request.local && <li>On your computer or local network.</li>}
+        <li>Scenes may open it from now on. No secret is shared with it.</li>
+      </ul>
+      {request.why !== "" && (
+        <p className="app-card-why">
+          <span className="app-card-label">The agent says (pages it read can influence this):</span>{" "}
+          {request.why}
+        </p>
+      )}
+      {open ? (
+        <div className="request-actions">
+          <button type="button" className="btn btn-ghost" onClick={() => answer(item.id, false)}>
+            Decline
+          </button>
+          <button type="button" className="btn btn-primary" onClick={() => answer(item.id, true)}>
+            Add {request.host}
+          </button>
+        </div>
+      ) : (
+        <div className="request-state">
+          {item.state === "closed"
+            ? "Closed: the run stopped."
+            : item.answer === true
+              ? "Added."
+              : "Declined."}
+        </div>
+      )}
     </div>
   )
 }

@@ -1,5 +1,11 @@
 import { generate } from "@kiframe/generators"
-import { type OpenedProject, saveScene, type TakeStore } from "@kiframe/project"
+import {
+  type OpenedProject,
+  projectChangedOnDisk,
+  saveProject,
+  saveScene,
+  type TakeStore,
+} from "@kiframe/project"
 import {
   locatorFor,
   recordScenario,
@@ -21,6 +27,7 @@ import {
 import {
   ACTION_REFERENCE,
   type ActionKind,
+  App,
   appOf,
   actionReference,
   Action,
@@ -28,6 +35,7 @@ import {
   Locator,
   parseScenarioYaml,
   PresetRef,
+  Project,
   type ProjectConfig,
   type Scenario,
   SceneId,
@@ -37,10 +45,10 @@ import {
   sameApp,
   firstApp,
   startAppOf,
-  type App,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
+import { appCard } from "./add-app.ts"
 import {
   asWritten,
   isCyclic,
@@ -62,6 +70,26 @@ import { findInSnapshot } from "./snapshot-find.ts"
 export type UserRequest =
   | { kind: "question"; question: string }
   | { kind: "approve-risky"; scene: string; step: string; action: string }
+  /** Add a site to the project's apps (`add_app`): the card is built from what would be written. */
+  | ({ kind: "approve-app" } & AppCard)
+
+/**
+ * A site the agent asks to add, as the user approves it: the address as the browser will use it
+ * (`host`: punycode and port included, never decoded), what's notable about it, and the agent's
+ * reason (cleaned: one line of plain text, said as the agent's words).
+ */
+export interface AppCard {
+  name: string
+  url: string
+  host: string
+  /** http: (not encrypted). */
+  plain: boolean
+  /** A punycode label (`xn--`): it may look like another site's name. */
+  lookalike: boolean
+  /** On this computer or its local network. */
+  local: boolean
+  why: string
+}
 
 export interface StudioOptions {
   project: OpenedProject
@@ -86,6 +114,8 @@ export interface StudioOptions {
   secrets?: (origin: string) => { name: string; provided: boolean }[]
   /** Asks the user (a dialog in the app); rejects when `signal` aborts (the dialog closes). */
   requestUser: (request: UserRequest, signal: AbortSignal) => Promise<string | boolean>
+  /** Where a site's address really lands (its www. or https form), as a project's first app's. */
+  resolveAddress?: (url: string) => Promise<string>
   /**
    * Asks the user to approve a secret's use (the vault's approval: A3), in the app; rejects when
    * `signal` aborts (a stop closes the dialog: the secret is never typed after it).
@@ -135,6 +165,92 @@ export class Studio {
   /** The start app a scene's steps ran in (undefined: none ran). */
   groundedApp(scene: string): string | undefined {
     return this.#sceneApps.get(scene)
+  }
+
+  /** Sites the user declined this session (their addresses): never asked again, in any form. */
+  readonly #declined: string[] = []
+  /** add_app cards shown this session (at most `MAX_APP_ASKS`). */
+  #appAsks = 0
+
+  /**
+   * Adds a site to the project's apps, if the user allows it (OBJECT-MODEL §0.9): the address
+   * resolved as a first app's, the whole project checked before asking (never an Allow that can't
+   * be saved), written to project.json, and the studio's apps updated at once. The result says
+   * what happened, in words for the agent.
+   */
+  async addApp(
+    input: { name: string; url: string; why: string },
+    signal: AbortSignal,
+  ): Promise<{ added: string } | { error: string }> {
+    const { config, project } = { config: this.options.config, project: this.project }
+    // What needs no network first (never a fetch for a call refused anyway).
+    if (this.#appAsks >= MAX_APP_ASKS) {
+      return {
+        error: "no more add_app this session: go on with the project's apps, or ask the user",
+      }
+    }
+    if (appOf(config, input.name) !== undefined) {
+      return { error: `there is already an app named "${input.name}": pick another name` }
+    }
+    const typed = App.shape.url.safeParse(input.url)
+    if (!typed.success) {
+      return {
+        error: `url: ${typed.error.issues[0]?.message ?? "not an address"} (http(s), no credentials)`,
+      }
+    }
+    const declined = (url: string) => this.#declined.some((d) => sameApp(url, d) || sameApp(d, url))
+    if (declined(typed.data)) {
+      return { error: `the user declined that site for this project: go on without it` }
+    }
+    const resolved = (await this.options.resolveAddress?.(typed.data)) ?? typed.data
+    const card = appCard(input.name, resolved, input.why)
+    if ("error" in card) return card
+    if (declined(card.url)) {
+      return { error: `the user declined ${card.host} for this project: go on without it` }
+    }
+    const same = Object.entries(config.apps).find(
+      ([, app]) => sameApp(card.url, app.url) || sameApp(app.url, card.url),
+    )
+    if (same !== undefined) {
+      return {
+        error: `${card.host} is already the app "${same[0]}": use \`goto { app: ${same[0]} }\``,
+      }
+    }
+    // The project as it would be saved: checked now (the apps' cap, one per site…), before asking.
+    // At the first app's size: the size the live page grounds at (B3).
+    const next = Project.safeParse({
+      ...project.project,
+      apps: {
+        ...project.project.apps,
+        [card.name]: { kind: "web", url: card.url, viewport: firstApp(config).app.viewport },
+      },
+    })
+    if (!next.success) {
+      return { error: `can't add it: ${formatIssue(next.error.issues[0])}` }
+    }
+    // project.json changed on disk meanwhile: said before asking (an Allow would fail to save).
+    if (projectChangedOnDisk(project)) {
+      return {
+        error: "project.json changed on disk: the user can reopen the project, then ask again",
+      }
+    }
+    this.#appAsks++
+    const allowed =
+      (await this.options.requestUser({ kind: "approve-app", ...card }, signal)) === true
+    if (!allowed) {
+      this.#declined.push(card.url)
+      return { error: `the user declined adding ${card.host}: go on without it` }
+    }
+    try {
+      saveProject(project, next.data)
+    } catch (error) {
+      return {
+        error: `allowed, but not saved: ${error instanceof Error ? error.message : String(error)} (the user can reopen the project)`,
+      }
+    }
+    // The studio's apps at once (the live page, the replay, the recording): the rest as it was.
+    this.options.config = { ...config, apps: project.project.apps }
+    return { added: card.name }
   }
 
   /** A scene saved with its start app: its next steps mean that one. */
@@ -627,6 +743,8 @@ export class Studio {
     try {
       await runScenario(page, scenario, this.#quick, {
         ...this.#run(scene, signal),
+        // Live: a step may go anywhere (it says where: the moment to add a site, `add_app`).
+        confineToApps: false,
         // The live page follows the tab or popup the runner switched to (the next step acts there).
         onPageSwitch: (next) => {
           if (this.#live !== undefined) this.#live.page = next
@@ -858,6 +976,9 @@ async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<
 const NO_CLEANUP =
   "no teardown and no ensure: Kiframe doesn't clean up after a scene (what it creates stays in the app, the user is told); remove them"
 
+/** add_app cards a session may show (asking again and again tires the user into allowing). */
+const MAX_APP_ASKS = 3
+
 const isStopped = (error: unknown) => error instanceof StepError && error.reason === "stopped"
 
 /** The forms of the action an item meant (its `action`), for a refusal: empty if it isn't one. */
@@ -901,7 +1022,9 @@ export function siteOf(url: string, apps: AppsArg): Site {
     return "other"
   }
   if (page.protocol === "chrome-error:") return "unloaded"
-  if (page.protocol === "about:") return "app"
+  // A blank page (a tab just opened, the first page before a goto): as the replay takes it. Any
+  // other about: page (about:srcdoc, about:blank#blocked) isn't one of the apps there either.
+  if (page.href === "about:blank") return "app"
   // A listed app's own origin, or its address redirected to www. or https (`sameApp`).
   return appAt(page, apps) !== undefined ? "app" : "other"
 }

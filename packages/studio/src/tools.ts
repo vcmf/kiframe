@@ -186,6 +186,22 @@ const listSecrets = defineTool({
   },
 })
 
+const addApp = defineTool({
+  name: "add_app",
+  description:
+    "Ask the user to add a site to the project's apps (a scene needs it: docs, a login on another host). Web sites only (a desktop app can't be added yet). The user approves or declines.",
+  parameters: z.object({
+    name: AppName.describe("its name in the project (lowercase: docs, auth…)"),
+    url: z.string().min(1).max(2048).describe("its address (https://docs.example.com)"),
+    why: z.string().min(1).max(400).describe("one line: what the scene needs it for"),
+  }),
+  run: async (args, studio: Studio, signal) => {
+    const result = await studio.addApp(args, signal)
+    if ("error" in result) return result
+    return `added: "${result.added}" is one of the project's apps now (your instructions above don't list it yet). A step there names it: { action: goto, app: ${result.added}, url: /path }; a scene that starts there says \`app: ${result.added}\` and you pass start_app: ${result.added}.`
+  },
+})
+
 const askUser = defineTool({
   name: "ask_user",
   description:
@@ -299,6 +315,7 @@ export const studioTools: Tool<Studio>[] = [
   runStep,
   runSteps,
   listSecrets,
+  addApp,
   askUser,
   saveSceneTool,
   recordScene,

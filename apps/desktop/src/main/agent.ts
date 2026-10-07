@@ -9,6 +9,7 @@ import { Studio, studioTools, systemPrompt } from "@kiframe/studio"
 import type { Browser } from "playwright"
 import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
 import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.ts"
+import { resolveAppAddress } from "./app-address.ts"
 import { errorMessage } from "../shared/util.ts"
 import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
@@ -43,7 +44,7 @@ export const MAX_TURNS = 80
 /** Assistant text repainted at most this often (tool steps and requests at once). */
 const TEXT_MS = 100
 /** Tools whose result changes the project (the scene strip is refreshed after them). */
-const PROJECT_TOOLS = new Set(["save_scene", "record_scene"])
+const PROJECT_TOOLS = new Set(["save_scene", "record_scene", "add_app"])
 
 export interface AgentHostOptions {
   project: OpenedProject
@@ -279,6 +280,8 @@ export class AgentHost {
       browser,
       ...(this.#options.afterRecord !== undefined && { afterRecord: this.#options.afterRecord }),
       requestUser: (request, signal) => this.#ask(request, signal),
+      // A site the agent adds: where its address really lands (as a new project's).
+      resolveAddress: (url) => resolveAppAddress(url),
       // Secrets (when the app has its vault): names for the agent, values for granted uses only,
       // every value known to the scrubber and the blur; an ungranted use asks the user.
       ...(secrets !== undefined && {

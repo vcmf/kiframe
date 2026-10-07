@@ -54,6 +54,20 @@ export type ChatRequest =
   | { kind: "question"; question: string }
   | { kind: "approve-risky"; scene: string; step: string; action: string }
   /**
+   * Add a site to the project's apps (the studio's `AppCard`): built in main from the address that
+   * would be written; `why` is the agent's words (cleaned to one plain line).
+   */
+  | {
+      kind: "approve-app"
+      name: string
+      url: string
+      host: string
+      plain: boolean
+      lookalike: boolean
+      local: boolean
+      why: string
+    }
+  /**
    * A secret typed where no approval covers it yet (§3 A3), built from the live page only (never
    * the agent's words): the element, the page, the step, and the page as it is with the element
    * outlined. The shot goes once the request is answered or closed.
