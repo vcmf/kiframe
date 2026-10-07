@@ -13,6 +13,7 @@ const project: ProjectView = {
   name: "Demo",
   dir: "/tmp/demo.kiframe",
   url: "https://app.test",
+  apps: [{ name: "app", origin: "https://app.test" }],
   scenes: [],
   problems: [],
 }

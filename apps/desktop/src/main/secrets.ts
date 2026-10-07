@@ -77,11 +77,11 @@ export class Secrets {
     this.#values = values
   }
 
-  /** The secrets usable on `origin` (the project's app), as the window shows them. */
-  list(origin: string | null): SecretView[] {
+  /** The secrets usable on `origin` (an app's exact origin), as the window shows them. */
+  list(origin: string): SecretView[] {
     return this.#vault
       .list()
-      .filter((s) => origin !== null && s.origins.includes(origin))
+      .filter((s) => s.origins.includes(origin))
       .map((s) => ({
         name: s.name,
         kind: s.kind,
@@ -129,10 +129,10 @@ export class Secrets {
   }
 
   /**
-   * The studio's: the secrets usable on the project's app, and whether each has a value (a
+   * The studio's: the secrets usable on an app's exact origin, and whether each has a value (a
    * removed one's value is still known, never usable).
    */
-  names(origin: string | null): { name: string; provided: boolean }[] {
+  names(origin: string): { name: string; provided: boolean }[] {
     return this.list(origin).map(({ name, provided }) => ({ name, provided }))
   }
 

@@ -120,7 +120,27 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
     name: project.name,
     dir: opened.dir,
     url: firstApp(project).app.url,
+    apps: Object.entries(project.apps).map(([name, app]) => ({
+      name,
+      origin: new URL(app.url).origin,
+    })),
     scenes: views,
     problems: problems.map((p) => `${p.sceneId}: ${p.message}`),
   }
+}
+
+/**
+ * The exact origin of one of the open project's apps, for the window's request made in its opening
+ * `session` (the window names an app, never an origin; a request from before another project
+ * opened is refused): why not, in words, otherwise.
+ */
+export function appOriginOf(
+  view: Pick<ProjectView, "session" | "apps"> | undefined,
+  session: string,
+  app: string,
+): { origin: string } | { why: string } {
+  if (view === undefined) return { why: "open a project first" }
+  if (view.session !== session) return { why: "the project changed meanwhile: try again" }
+  const found = view.apps.find((a) => a.name === app)
+  return found === undefined ? { why: `"${app}" isn't one of the project's apps` } : found
 }

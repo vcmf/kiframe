@@ -14,7 +14,7 @@ Scenario format (YAML, version 1):
 version: 1
 setup:        # off camera, runs first: navigation, login, making the app ready
   - { preset: <name> }                       # a project preset (see below)
-  - { action: goto, url: /path }             # relative to the app
+  - { action: goto, url: /path }             # relative to the scene's start app
 steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id (a caption on the ones that matter)
   - { id: open-new, action: click, target: <locator>, caption: "Short caption for the video" }
   - { id: send, action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays the demo shows (the user approves)
@@ -72,5 +72,23 @@ Rules:
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.
 Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
-App: ${studio.scrub(firstApp(config).app.url)}`
+${appsPart(studio)}`
+}
+
+/** The project's apps: one app said as before; several, with the rule a step on another app follows. */
+function appsPart(studio: Studio): string {
+  const apps = Object.entries(studio.options.config.apps)
+  if (apps.length === 1) return `App: ${studio.scrub(firstApp(studio.options.config).app.url)}`
+  const list = apps
+    .map(([name, app], i) => `  ${name}: ${studio.scrub(app.url)}${i === 0 ? " (the first)" : ""}`)
+    .join("\n")
+  return `Apps of the project (a scene may use several; never any other site):
+${list}
+- A scene starts in the first app unless it says another at the top level, next to version:
+  \`app: <name>\`. Pass the same as \`start_app\` to run_step and run_steps while you ground it.
+- A step without an app means the scene's start app, NEVER the app the page went to (a link, a
+  redirect). Every step on another app names it: \`{ action: goto, app: <name>, url: /path }\`, and a URL
+  condition \`{ action: waitFor, until: { url: /path, app: <name> } }\` (same in expect's \`that\`).
+  Only goto and URL conditions take an app (never a click).
+- Where a step leaves the page says its app: \`url: docs: /install\`.`
 }

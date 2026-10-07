@@ -1,6 +1,7 @@
 // The window's top: the wordmark, the project menu, the app it films.
 import { CaretDown, Export, FolderSimple, Globe, Key } from "@phosphor-icons/react"
 import { useCallback, useEffect, useState } from "react"
+import type { ProjectView } from "../../../shared/ipc.ts"
 import { api } from "../api.ts"
 import { useApp } from "../store.ts"
 import { SecretsPanel } from "./secrets-panel.tsx"
@@ -19,11 +20,18 @@ export function TitleBar() {
           <div className="titlebar-sep" />
           <ProjectMenu name={project.name} />
           <div className="spacer" />
-          <span className="chip" title={project.url}>
+          <span
+            className="chip"
+            title={
+              project.apps.length > 1
+                ? project.apps.map((a) => `${a.name}: ${a.origin}`).join("\n")
+                : project.url
+            }
+          >
             <Globe size={13} />
             {hostOf(project.url)}
           </span>
-          <SecretsButton key={project.session} origin={new URL(project.url).origin} />
+          <SecretsButton key={project.session} project={project} />
           <button
             type="button"
             className="btn btn-ghost"
@@ -39,7 +47,7 @@ export function TitleBar() {
   )
 }
 
-function SecretsButton({ origin }: { origin: string }) {
+function SecretsButton({ project }: { project: Pick<ProjectView, "session" | "apps"> }) {
   const [open, setOpen] = useState(false)
   const close = useCallback(() => setOpen(false), [])
   return (
@@ -48,7 +56,7 @@ function SecretsButton({ origin }: { origin: string }) {
         <Key size={16} />
         Secrets
       </button>
-      {open && <SecretsPanel origin={origin} onClose={close} />}
+      {open && <SecretsPanel project={project} onClose={close} />}
     </>
   )
 }

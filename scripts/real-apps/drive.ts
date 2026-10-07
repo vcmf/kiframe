@@ -5,16 +5,29 @@
 //
 // Usage: node scripts/real-apps/drive.ts --app minmux|calcom|excalidraw [--minutes 20] [--brief "…"]
 //    or: node scripts/real-apps/drive.ts --url https://… --brief "…" [--minutes 20]
-// Add --export demo.mp4 to export the recorded scene (the take as the app reads it, then the exporter).
+// Add --export demo.mp4 to export the recorded scene (the take as the app reads it, then the exporter),
+// --also repo=https://github.com to give the project another app.
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { TakeStore } from "@kiframe/project"
 import { _electron as electron } from "playwright"
 import { loadDotEnv } from "../lib/secrets.ts"
+
+/** The window's API (the preload's), as far as this script calls it. */
+interface Kiframe {
+  kiframe: { invoke: (channel: string) => Promise<unknown> }
+}
 
 interface AppRun {
   name: string
@@ -68,6 +81,8 @@ const { values } = parseArgs({
     url: { type: "string" },
     // The recorded scene exported to a video file (.mp4 or .webm), through the exporter.
     export: { type: "string" },
+    // Another app of the project, `name=https://…` (written to project.json, as add_app will).
+    also: { type: "string" },
   },
 })
 function usage(why: string): never {
@@ -253,6 +268,23 @@ try {
   await page.getByRole("button", { name: "Create project…" }).click()
   await page.getByRole("region", { name: "Scenes" }).waitFor({ timeout: 30_000 })
   log("project created")
+
+  // Another app: the project closed, its file given the app, opened again (the agent sees both).
+  if (values.also !== undefined) {
+    const [name, url] = values.also.split(/=(.*)/s)
+    if (name === undefined || url === undefined) throw new Error("--also name=https://…")
+    await page.evaluate(() => (window as unknown as Kiframe).kiframe.invoke("project:close"))
+    const file = join(dir, "project.json")
+    const project = JSON.parse(readFileSync(file, "utf8")) as { apps: Record<string, unknown> }
+    project.apps[name] = { kind: "web", url }
+    writeFileSync(file, JSON.stringify(project, null, 2) + "\n")
+    await app.evaluate(({ dialog }, picked) => {
+      dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [picked] })
+    }, dir)
+    await page.evaluate(() => (window as unknown as Kiframe).kiframe.invoke("project:open"))
+    await page.getByRole("region", { name: "Scenes" }).waitFor({ timeout: 30_000 })
+    log(`app ${name} added`)
+  }
 
   for (const secret of run.secrets) {
     const value = process.env[secret.env]

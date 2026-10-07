@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
-import { createProject, openProject, TakeStore } from "@kiframe/project"
+import { createProject, openProject, saveScene, TakeStore } from "@kiframe/project"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { type Browser, chromium } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -680,7 +680,7 @@ steps: [{ id: a, action: pause, ms: 1 }]
 
   it("says which of the project's apps a page is on (B2)", () => {
     const apps = { app: { url: "https://app.example" }, docs: { url: "https://docs.example" } }
-    expect(whereOf("https://app.example/x", apps)).toBe("/x")
+    expect(whereOf("https://app.example/x", apps)).toBe("app: /x")
     expect(whereOf("https://docs.example/install", apps)).toBe("docs: /install")
     expect(whereOf("https://www.docs.example/i", apps)).toBe(
       "docs: /i (on https://www.docs.example, the app's site: secrets are typed on https://docs.example only)",
@@ -978,7 +978,7 @@ steps: [{ id: a, action: pause, ms: 1 }]
       never,
     )) as string
     expect(offSite.split("\n")).toEqual([
-      "step 1 left the app's site",
+      "step 1 left the project's apps",
       expect.stringMatching(/^1\. ok\. url: \/ \(on localhost/) as unknown,
       "stopped there: the 1 after it didn't run",
     ])
@@ -1002,4 +1002,153 @@ steps: [{ id: a, action: pause, ms: 1 }]
     )
     await studio.close()
   }, 60_000)
+})
+
+describe("a project with several apps (B3)", () => {
+  const twoApps = () => {
+    const docs = new URL(server.url)
+    docs.hostname = "localhost"
+    return {
+      docs,
+      config: parseProjectYaml(`version: 2
+apps:
+  app: { kind: web, url: "${server.url}", viewport: { width: 800, height: 600 } }
+  docs: { kind: web, url: "${docs.origin}", viewport: { width: 800, height: 600 } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`),
+    }
+  }
+
+  it("tells the agent the apps and the rule; a one-app project's prompt says just its app", () => {
+    const { config } = twoApps()
+    const several = systemPrompt(makeStudio(undefined, { config }).studio)
+    expect(several).toMatch(/Apps of the project/)
+    expect(several).toMatch(/docs: http:\/\/localhost/)
+    expect(several).toMatch(/start_app/)
+    expect(several).toMatch(/NEVER the app the page went to/)
+    const one = systemPrompt(makeStudio().studio)
+    expect(one).not.toMatch(/Apps of the project|start_app/)
+    expect(one).toMatch(/^App: http:\/\/127\.0\.0\.1/m)
+  })
+
+  it("grounds a step as the scene means it: its start app, kept for the scene's next steps", async () => {
+    const { config, docs } = twoApps()
+    const { studio } = makeStudio(undefined, { config })
+    const goto = (scene: string, extra = {}) =>
+      tool("run_step").run(
+        { scene, step: { id: "go", action: "goto", url: "/login" }, ...extra },
+        studio,
+        never,
+      )
+    expect(await goto("tour", { start_app: "docs" })).toMatch(/^ok\. url: docs: \/login/)
+    // Its next step, without saying it again: still docs.
+    expect(await goto("tour")).toMatch(/^ok\. url: docs: \/login/)
+    // Another scene starts in the first app.
+    expect(await goto("other")).toMatch(/^ok\. url: app: \/login/)
+    expect(await goto("tour", { start_app: "nope" })).toMatchObject({
+      error: expect.stringMatching(
+        /start_app: "nope" isn't one of the project's apps \(app, docs\)/,
+      ) as unknown,
+    })
+    expect(docs.hostname).toBe("localhost")
+    await studio.close()
+  }, 30_000)
+
+  it("says when a scene is saved with another start app than it was grounded in", async () => {
+    const { config } = twoApps()
+    const { studio } = makeStudio(undefined, { config })
+    await tool("run_step").run(
+      { scene: "tour", step: { id: "go", action: "goto", url: "/" }, start_app: "docs" },
+      studio,
+      never,
+    )
+    // The scene doesn't say `app: docs`: it starts in the first app.
+    expect(
+      await tool("save_scene").run({ id: "tour", title: "Tour", yaml: SCENE }, studio, never),
+    ).toMatch(/^saved.*grounded it with start_app "docs" but it starts in "app"/)
+    await studio.close()
+  }, 30_000)
+
+  it("starts a scene's steps in its saved app when none is said, and never keeps one that didn't run", async () => {
+    const { config } = twoApps()
+    const { studio } = makeStudio(undefined, { config })
+    const goto = (scene: string, extra = {}) =>
+      tool("run_step").run(
+        { scene, step: { id: "go", action: "goto", url: "/login" }, ...extra },
+        studio,
+        never,
+      )
+    // Saved with `app: docs` (a scene from an earlier session): its steps mean docs.
+    saveScene(
+      studio.project,
+      {
+        version: 1,
+        id: "saved",
+        title: "Saved",
+        source: { kind: "recording" },
+        duration: { mode: "auto" },
+      },
+      {
+        scenario: parseScenarioYaml(
+          "version: 1\napp: docs\nsteps: [{ id: a, action: pause, ms: 1 }]\n",
+        ),
+      },
+    )
+    expect(await goto("saved")).toMatch(/^ok\. url: docs: \/login/)
+    // A call that didn't run (an invalid step) never changes the scene's start app.
+    await tool("run_step").run(
+      { scene: "fresh", step: { id: "x", action: "nope" }, start_app: "docs" },
+      studio,
+      never,
+    )
+    expect(await goto("fresh")).toMatch(/^ok\. url: app: \/login/)
+    await studio.close()
+  }, 30_000)
+
+  it("says when a scene grounded in the first app is saved starting in another", async () => {
+    const { config } = twoApps()
+    const { studio } = makeStudio(undefined, { config })
+    await tool("run_step").run(
+      { scene: "tour", step: { id: "go", action: "goto", url: "/" } },
+      studio,
+      never,
+    )
+    expect(
+      await tool("save_scene").run(
+        {
+          id: "tour",
+          title: "Tour",
+          yaml: `version: 1\napp: docs\n${SCENE.replace("version: 1\n", "")}`,
+        },
+        studio,
+        never,
+      ),
+    ).toMatch(/^saved.*grounded it with start_app "app" but it starts in "docs"/)
+    // Saved so: its next steps mean docs.
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { id: "go", action: "goto", url: "/login" } },
+        studio,
+        never,
+      ),
+    ).toMatch(/^ok\. url: docs: \/login/)
+    await studio.close()
+  }, 30_000)
+
+  it("lists each secret with its app (names only), never a secret of another site", async () => {
+    const { config, docs } = twoApps()
+    const byOrigin: Record<string, { name: string; provided: boolean }[]> = {
+      [new URL(server.url).origin]: [{ name: "acme.password", provided: true }],
+      [docs.origin]: [{ name: "docs.token", provided: false }],
+      "https://elsewhere.test": [{ name: "other.key", provided: true }],
+    }
+    const { studio } = makeStudio(undefined, {
+      config,
+      secrets: (origin: string) => byOrigin[origin] ?? [],
+    })
+    expect(await tool("list_secrets").run({}, studio, never)).toBe(
+      "acme.password (app), docs.token (docs, missing)",
+    )
+    await studio.close()
+  })
 })

@@ -174,6 +174,7 @@ describe("the preview", () => {
       name: "Demo",
       dir: "/tmp/demo",
       url: "https://app.example",
+      apps: [{ name: "app", origin: "https://app.example" }],
       problems: [],
       scenes: [
         { id: "intro", title: "Intro", status: "grounded" },
@@ -215,6 +216,7 @@ describe("the preview", () => {
       name: "Demo",
       dir: "/tmp/demo",
       url: "https://app.example",
+      apps: [{ name: "app", origin: "https://app.example" }],
       problems: [],
       scenes: [
         { id: "intro", title: "Intro", status: "recorded", take: "k0" },
