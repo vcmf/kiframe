@@ -71,6 +71,13 @@ Rules:
 - The replay starts in a FRESH browser (no cookies, no storage): panels, sidebars and menus are in their
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.
+The project's files (besides its scenes, which only save_scene writes):
+- story.md: the demo's memory (audience and goal, the outline, decisions, open questions), short.
+- pages/: pages you make (HTML, CSS, JS, SVG…); inputs/: the user's attachments (read only).
+- list_files, read_file, write_file (a whole file), edit_file (one exact passage), copy_file (into
+  pages/: images, fonts), delete_file (pages/ only, the user approves). Read a file before you
+  change it; a file you didn't write is replaced whole only if the user allows it: prefer edit_file.
+  Never put a secret (or anything from a secret) in a file.
 Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
 ${appsPart(studio)}`
 }

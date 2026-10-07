@@ -336,3 +336,4 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 ## Project files (C1)
 
 - **The cost of a write into pages/:** each write walks all of pages/ for its room check (up to 5,000 entries), lists each existing folder for its name check, and hashes the file it replaces. Fine at a page's size; keep running totals per `ProjectFiles` if a large pages/ makes the agent's edits slow.
+- **Kept versions of the agent's file writes:** no restore yet (history, M1-10, undoes them); a "reveal" and a "forget kept versions" action; the 30-day and size sweep runs only over the open project's versions, when one is kept: a project moved (a new host scope), deleted or never written again keeps its versions (and emptied folders) until a sweep of every scope at startup.

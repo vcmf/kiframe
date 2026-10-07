@@ -58,6 +58,8 @@ export interface ProjectView {
 export type ChatRequest =
   | { kind: "question"; question: string }
   | { kind: "approve-risky"; scene: string; step: string; action: string }
+  /** Delete a page's file, or replace a whole file the agent didn't write (the file tools). */
+  | { kind: "approve-file"; action: "delete" | "replace"; path: string }
   /**
    * Add a site to the project's apps (the studio's `AppCard`): built in main from the address that
    * would be written; `why` is the agent's words (cleaned to one plain line).

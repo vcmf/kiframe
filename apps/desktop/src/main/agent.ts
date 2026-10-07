@@ -5,11 +5,12 @@ import type { LlmClient, LlmMessage } from "@kiframe/agent"
 import { runAgent } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
 import { resolveProjectConfig } from "@kiframe/schema"
-import { Studio, studioTools, systemPrompt } from "@kiframe/studio"
+import { type FileNote, Studio, studioTools, systemPrompt } from "@kiframe/studio"
 import type { Browser } from "playwright"
 import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
 import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.ts"
 import { resolveAppAddress } from "./app-address.ts"
+import type { FileVersions } from "./file-versions.ts"
 import { errorMessage } from "../shared/util.ts"
 import { ChatLog, oneLine } from "./chat-log.ts"
 import { LiveView } from "./live.ts"
@@ -69,6 +70,8 @@ export interface AgentHostOptions {
   frame: (frame: LiveFrame) => void
   /** A tool changed the project (a scene saved, a take recorded). */
   projectChanged: () => void
+  /** Where the files the agent replaces or deletes are kept first (none: not kept). */
+  versions?: FileVersions
 }
 
 interface Pending {
@@ -121,6 +124,8 @@ export class AgentHost {
   readonly #trace = AgentTrace.fromEnv(process.env.KIFRAME_TRACE)
   #history: LlmMessage[] = []
   #studio: Studio | undefined
+  /** What the agent read of the project's files (`StudioOptions.fileReads`), for this project. */
+  readonly #fileReads = new Map<string, FileNote>()
   /** The studio was made with the app's secrets. */
   #withSecrets = false
   /** The scene of each key the studio was given (a prompt names the scene). */
@@ -290,6 +295,15 @@ export class AgentHost {
       browser,
       ...(this.#options.afterRecord !== undefined && { afterRecord: this.#options.afterRecord }),
       requestUser: (request, signal) => this.#ask(request, signal),
+      // What the agent read of the project's files: this host's (outlives a studio remade).
+      fileReads: this.#fileReads,
+      ...(this.#options.versions !== undefined && {
+        keepVersion: (path: string, bytes: Uint8Array) => this.#options.versions?.keep(path, bytes),
+      }),
+      stopRun: (why: string) => {
+        this.#log.stopReason = why
+        this.stop()
+      },
       // A site the agent adds: where its address really lands (as a new project's).
       resolveAddress: (url) => resolveAppAddress(url),
       // Secrets (when the app has its vault): names for the agent, values for granted uses only,

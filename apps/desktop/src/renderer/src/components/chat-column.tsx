@@ -8,6 +8,7 @@ import {
   CheckCircle,
   CircleNotch,
   CursorClick,
+  FileText,
   Globe,
   HandPointing,
   Key,
@@ -384,6 +385,43 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
     )
   }
   if (request.kind === "approve-app") return <AppCardView item={item} request={request} />
+  if (request.kind === "approve-file") {
+    const deleting = request.action === "delete"
+    return (
+      <div className="request-card" aria-label={deleting ? "Delete a file?" : "Replace a file?"}>
+        <div className="request-title">
+          <FileText size={17} />
+          {deleting ? "Delete a file?" : "Replace a file?"}
+        </div>
+        <p>
+          The agent wants to {deleting ? "delete" : "replace the whole of"}{" "}
+          <span className="mono">{request.path}</span>
+          {deleting ? "" : ", which it didn’t write"}. Its current version is kept in Kiframe’s
+          data.
+        </p>
+        {open ? (
+          <div className="request-actions">
+            <button type="button" className="btn btn-ghost" onClick={() => answer(item.id, false)}>
+              Keep it
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => answer(item.id, true)}>
+              {deleting ? "Delete it" : "Replace it"}
+            </button>
+          </div>
+        ) : (
+          <div className="request-state">
+            {item.state === "closed"
+              ? "Closed: the run stopped."
+              : item.answer === true
+                ? deleting
+                  ? "Allowed to delete it."
+                  : "Allowed to replace it."
+                : "Kept."}
+          </div>
+        )}
+      </div>
+    )
+  }
   if (request.kind !== "question") {
     // A request this window doesn't know: never answered by accident, only declined.
     return (

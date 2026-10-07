@@ -1,6 +1,7 @@
 import { generate } from "@kiframe/generators"
 import {
   type OpenedProject,
+  ProjectFiles,
   projectChangedOnDisk,
   saveProject,
   scenesNaming,
@@ -73,6 +74,20 @@ export type UserRequest =
   | { kind: "approve-risky"; scene: string; step: string; action: string }
   /** Add a site to the project's apps (`add_app`): the card is built from what would be written. */
   | ({ kind: "approve-app" } & AppCard)
+  /** Delete a page's file, or replace a whole file the agent didn't write (the file tools). */
+  | { kind: "approve-file"; action: "delete" | "replace"; path: string }
+
+/** The shortest secret value checked in what the agent writes (`Studio.secretTest`). */
+const MIN_CHECKED = 4
+
+/** What the agent knows of one of the project's files (`StudioOptions.fileReads`). */
+export interface FileNote {
+  hash: string
+  /** It saw the whole file in one read, nothing scrubbed out (a replace: this, or `mine`). */
+  full: boolean
+  /** The agent made these bytes this session (it knows them: replacing them asks no one). */
+  mine: boolean
+}
 
 /**
  * A site the agent asks to add, as the user approves it: the address as the browser will use it
@@ -125,6 +140,19 @@ export interface StudioOptions {
   /** Where a site's address really lands (its www. or https form), as a project's first app's. */
   resolveAddress?: (url: string) => Promise<string>
   /**
+   * What the agent read of the project's files (canonical path → its hash, whether it saw the whole
+   * file unscrubbed, whether the agent itself wrote it): the host's, so it outlives a studio remade
+   * when its browser dies, gone with the project.
+   */
+  fileReads?: Map<string, FileNote>
+  /** Keeps a file's bytes before the agent replaces or deletes it (until history: M1-10). */
+  keepVersion?: (path: string, bytes: Uint8Array) => void
+  /**
+   * Ends the run, said in the chat: the agent wrote a secret's value itself (a guess at it: one per
+   * run, never a guessing game). Every host gives it.
+   */
+  stopRun: (why: string) => void
+  /**
    * Asks the user to approve a secret's use (the vault's approval: A3), in the app; rejects when
    * `signal` aborts (a stop closes the dialog: the secret is never typed after it).
    */
@@ -167,6 +195,9 @@ export class Studio {
   readonly #lifetime = new AbortController()
   /** The app the live page opens at: the project's first. */
   readonly #start: App
+  #files: ProjectFiles | undefined
+  #fileReads: Map<string, FileNote> | undefined
+
   /** Each scene's start app its steps last ran in (by scene id): its next steps mean it too. */
   readonly #sceneApps = new Map<string, string>()
 
@@ -347,6 +378,37 @@ export class Studio {
   /** One text scrubbed (`scrubber`). */
   scrub(text: string): string {
     return this.scrubber()(text)
+  }
+
+  /**
+   * A test for text the agent wrote: whether it holds a known secret's value of 4 characters or
+   * more (any encoding the scrubber knows). Shorter values are scrubbed from what it reads but
+   * never refuse what it writes (they'd match ordinary text: a residual, stated). Built once.
+   */
+  secretTest(): (text: string) => boolean {
+    const values = new Set(this.options.knownValues?.() ?? [])
+    if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
+    const scrub = secretScrubber([...values].filter((v) => [...v].length >= MIN_CHECKED))
+    return (text) => scrub(text) !== text
+  }
+
+  /** One text tested (`secretTest`). */
+  holdsSecret(text: string): boolean {
+    return this.secretTest()(text)
+  }
+
+  /** The project's files the agent may touch (C1's confined access), made once. */
+  get files(): ProjectFiles {
+    this.#files ??= new ProjectFiles(this.project.dir, {
+      ...(this.options.keepVersion !== undefined && { keep: this.options.keepVersion }),
+    })
+    return this.#files
+  }
+
+  /** What the agent read of the project's files (`StudioOptions.fileReads`). */
+  get fileReads(): Map<string, FileNote> {
+    this.#fileReads ??= this.options.fileReads ?? new Map()
+    return this.#fileReads
   }
 
   /** Aborted once the studio is closed. */
