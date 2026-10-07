@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
-import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { firstApp, parseProjectYaml, parseScenarioYaml, startAppOf } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { sceneIdOf } from "./lib/scenes.ts"
 import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
@@ -34,15 +34,20 @@ if (!values.project || !values.scenario || !values.out) {
   process.exit(2)
 }
 loadDotEnv()
-const resolveSecret = envSecretResolver(values.secrets.split(",").filter(Boolean))
 const timeoutMs = Number(values.timeout)
 if (!Number.isFinite(timeoutMs) || timeoutMs < 1) {
   console.error(`--timeout takes milliseconds, got ${values.timeout}`)
   process.exit(2)
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
-/** The app every scene starts in (the project's first). */
-const start = firstApp(project).app
+const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
+/** The app the scene starts in: filmed at its size. */
+const start = startAppOf(scenario, project).app
+// The `.env` secrets are the first app's (its login, as a preset without an app runs there).
+const resolveSecret = envSecretResolver(
+  values.secrets.split(",").filter(Boolean),
+  firstApp(project).app.url,
+)
 // A high DPR only helps headed (headless frames stay at CSS resolution, F1): the project's DPR
 // headed, 1 headless, unless --dpr says otherwise.
 const dpr = Number(values.dpr ?? (values.headed ? start.viewport.deviceScaleFactor : 1))
@@ -50,7 +55,6 @@ if (!Number.isFinite(dpr) || dpr <= 0 || dpr > 3) {
   console.error(`--dpr must be a number in (0, 3], got ${values.dpr}`)
   process.exit(2)
 }
-const scenario = parseScenarioYaml(readFileSync(values.scenario, "utf8"))
 const browser = await chromium.launch({ headless: !values.headed })
 try {
   // Headed on a high-DPI screen: frames at device resolution (Phase 0 finding F2).

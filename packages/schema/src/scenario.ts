@@ -12,7 +12,14 @@ import {
   withoutCredentials,
 } from "./common.ts"
 import { guarded } from "./guards.ts"
-import { CAMERA_SCALE, MAX_SPEED, PacingShape, RuleName, ViewportShape } from "./settings.ts"
+import {
+  AppName,
+  CAMERA_SCALE,
+  MAX_SPEED,
+  PacingShape,
+  RuleName,
+  ViewportShape,
+} from "./settings.ts"
 
 // ─── Locators and targets (docs/OBJECT-MODEL.md §2, APPROACHES §7.1) ─────────
 // Black box: locators use roles, labels and text. `css` is a last resort.
@@ -127,7 +134,8 @@ export const Condition = z.union([
   z.strictObject({ visible: Locator }),
   z.strictObject({ hidden: Locator }),
   z.strictObject({ text: z.string().min(1) }),
-  z.strictObject({ url: withoutCredentials(z.string().min(1)) }),
+  /** Relative to `app` (a project's app by name), else to the scene's start app (a preset's: its app). */
+  z.strictObject({ url: withoutCredentials(z.string().min(1)), app: AppName.optional() }),
   z.strictObject({ networkIdle: z.literal(true) }),
 ])
 export type Condition = z.infer<typeof Condition>
@@ -185,9 +193,14 @@ const presentation = {
 const Goto = z.strictObject({
   action: z.literal("goto"),
   /**
-   * Relative to the environment's URL: `goto` never leaves the target app. No whitespace or control
+   * The project's app to go to, by name (OBJECT-MODEL §0.9); without it, the scene's start app (a
+   * preset's: its app). Never the app a page went to: each step on another app names it.
+   */
+  app: AppName.optional(),
+  /**
+   * Relative to the app's URL: `goto` never leaves the project's apps. No whitespace or control
    * characters (the URL parser would silently drop them). Credentials are impossible: a relative
-   * URL stays on the environment's origin, which has none.
+   * URL stays on the app's origin, which has none.
    */
   url: z
     .string()
@@ -196,7 +209,7 @@ const Goto = z.strictObject({
       message: "goto URL can't contain spaces or control characters",
     })
     .refine(isRelativeUrl, {
-      message: "goto URL must be relative to the environment (e.g. `/projects`)",
+      message: "goto URL must be relative to the app (e.g. `/projects`; another app: `app: docs`)",
     }),
 })
 /**
@@ -447,6 +460,8 @@ function cameraUntil(step: Step): string | undefined {
 const ScenarioBase = z
   .strictObject({
     version: z.literal(1),
+    /** The project's app the scene starts in, by name (default: the first). Never written for it. */
+    app: AppName.optional(),
     overrides: ScenarioOverrides.optional(),
     setup: z.array(SetupItem).optional(),
     steps: z.array(Step).min(1),

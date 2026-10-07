@@ -61,6 +61,17 @@ export function firstApp(project: { apps: Apps }): { name: string; app: App } {
   return { name, app }
 }
 
+/** The app a scene starts in: the one it names, else the first (one it names but isn't listed: refused). */
+export function startAppOf(
+  scenario: { app?: string | undefined },
+  project: { apps: Apps },
+): { name: string; app: App } {
+  if (scenario.app === undefined) return firstApp(project)
+  const app = appOf(project, scenario.app)
+  if (app === undefined) throw new Error(`app "${scenario.app}" isn't one of the project's apps`)
+  return { name: scenario.app, app }
+}
+
 /** An app by its name (undefined: not listed; never a key every object has). */
 export function appOf(project: { apps: Apps }, name: string): App | undefined {
   return Object.hasOwn(project.apps, name) ? project.apps[name] : undefined
@@ -68,6 +79,8 @@ export function appOf(project: { apps: Apps }, name: string): App | undefined {
 
 /** A shared off-camera setup. Presets are flat: they can't reference other presets (no recursion). */
 export const Preset = z.strictObject({
+  /** The app its steps start in, by name (default: the project's first). */
+  app: AppName.optional(),
   /** Run once per recording batch, then reuse its browser session (login presets). */
   session: z.boolean().default(false),
   steps: z
@@ -132,9 +145,45 @@ export const ProjectConfig = guarded(ProjectConfigBase, [
 ])
 export type ProjectConfig = z.infer<typeof ProjectConfigBase>
 
+/**
+ * The apps a scene would use that the project doesn't list: the scene's start app, its gotos and
+ * URL conditions, those of the presets it uses. (Not the interrupt rules': an org's apply to every
+ * project; a rule's goto to an app a project doesn't list fails where it runs.)
+ * Human-readable, one per name (empty = OK).
+ */
+export function unknownApps(scenario: Scenario, project: ProjectConfig): string[] {
+  const named = new Set<string>()
+  const add = (name: unknown) => {
+    if (typeof name === "string") named.add(name)
+  }
+  const visit = (item: object) => {
+    const i = item as { action?: unknown; app?: unknown; until?: unknown; that?: unknown }
+    if (i.action === "goto") add(i.app)
+    // A `waitFor`'s or an `expect`'s URL condition (a scroll's `until` is a target: no URL).
+    for (const condition of [i.until, i.that]) {
+      if (typeof condition === "object" && condition !== null && "url" in condition) {
+        add((condition as { app?: unknown }).app)
+      }
+    }
+  }
+  add(scenario.app)
+  for (const item of [...(scenario.setup ?? []), ...scenario.steps, ...(scenario.teardown ?? [])]) {
+    visit(item)
+  }
+  for (const name of presetRefs(scenario)) {
+    const preset = Object.hasOwn(project.presets, name) ? project.presets[name] : undefined
+    if (preset === undefined) continue
+    add(preset.app)
+    preset.steps.forEach(visit)
+  }
+  return [...named]
+    .filter((name) => appOf(project, name) === undefined)
+    .map((name) => `uses app "${name}", which the project doesn't list`)
+}
+
 /** Cross-file checks a single schema can't do. Returns human-readable problems (empty = OK). */
 export function checkScenarioAgainstProject(scenario: Scenario, project: ProjectConfig): string[] {
-  const problems: string[] = []
+  const problems: string[] = [...unknownApps(scenario, project)]
   const scenarioIds = new Set(
     idsOf([...(scenario.setup ?? []), ...scenario.steps, ...(scenario.teardown ?? [])]),
   )

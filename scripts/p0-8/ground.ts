@@ -135,7 +135,7 @@ if (!Number.isInteger(maxTurns) || maxTurns < 1) {
 
 // ─── Secrets: names for the model, values only for the runner ────────────────
 const secretNames = values.secrets.split(",").filter(Boolean)
-const resolveSecret = envSecretResolver(secretNames)
+const resolveSecret = envSecretResolver(secretNames, start.url)
 const provided = providedSecrets(secretNames)
 const secretValues = provided.map((s) => s.value)
 /** Every string the model sees goes through this. */

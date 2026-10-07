@@ -1,4 +1,4 @@
-import type { ProjectConfig } from "@kiframe/schema"
+import { firstApp, type ProjectConfig } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import {
@@ -180,7 +180,15 @@ export async function handleInterrupts(ctx: Ctx, step: StepRef): Promise<void> {
       if (rule.do.risky === true) {
         await requireApproval(ctx, ref, "risky step needs approval")
       }
-      await ctx.perform(rule.do, ref)
+      // A rule fires on any page, mid-anything: its goto means the first app, always (the scene's
+      // app is back after it).
+      const scene = ctx.app
+      ctx.app = firstApp({ apps: ctx.apps }).name
+      try {
+        await ctx.perform(rule.do, ref)
+      } finally {
+        ctx.app = scene
+      }
       await guard(ref, () => settle(ctx, false))
       // Best effort, inside the cut: a dialog fading out is gone before the step is filmed. One
       // that fades in place (opacity 0) never counts as hidden: the wait just ends.
