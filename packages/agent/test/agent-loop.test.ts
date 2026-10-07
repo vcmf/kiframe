@@ -7,6 +7,8 @@ import {
   type LlmMessage,
   type LlmTurn,
   runAgent,
+  withImages,
+  withoutOldImages,
 } from "../src/index.ts"
 
 // A model that plays back scripted turns, and records what it was sent.
@@ -215,6 +217,59 @@ describe("runAgent: the live context (C3)", () => {
       role: "user",
       content: "make the intro",
     })
+  })
+})
+
+describe("runAgent: a tool's images", () => {
+  const look = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+    name: "look",
+    description: "A screenshot",
+    parameters: z.object({}),
+    run: (_args, ctx) => {
+      ctx.log.push("look")
+      return Promise.resolve(
+        withImages("the page", [{ url: `data:image/png;base64,${ctx.log.length}` }]),
+      )
+    },
+  })
+
+  it("sends them in one message after the turn's tool messages; the tool message holds its text", async () => {
+    const { llm, seen } = scripted([{ kind: "tool_calls", calls: [call("c1", "look", {})] }])
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [look], llm, context: { log: [] } }),
+    )
+    const second = seen[1] ?? []
+    expect(second.slice(-2)).toEqual([
+      { role: "tool", toolCallId: "c1", toolName: "look", content: '"the page"' },
+      expect.objectContaining({
+        role: "user",
+        fromTool: "look",
+        images: [{ url: "data:image/png;base64,1" }],
+      }),
+    ])
+    // The UI gets the text only; the stored history keeps the images.
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ result: "the page" })
+    const done = events.at(-1)
+    expect(
+      done?.type === "done" &&
+        done.messages.some((m) => m.role === "user" && m.images?.length === 1),
+    ).toBe(true)
+  })
+
+  it("sends only the last two as images: older ones in words, never empty", async () => {
+    const { llm, seen } = scripted([
+      { kind: "tool_calls", calls: [call("c1", "look", {})] },
+      { kind: "tool_calls", calls: [call("c2", "look", {})] },
+      { kind: "tool_calls", calls: [call("c3", "look", {})] },
+    ])
+    await collect(runAgent({ userMessage: "go", tools: [look], llm, context: { log: [] } }))
+    const last = seen.at(-1) ?? []
+    const imaged = last.filter((m) => m.role === "user" && m.fromTool !== undefined)
+    expect(imaged.map((m) => (m.role === "user" ? (m.images?.length ?? 0) : -1))).toEqual([0, 1, 1])
+    expect(imaged[0]?.content).toMatch(/no longer shown/)
+    // What a host keeps: the same (a long chat never holds every screenshot).
+    const kept = withoutOldImages(last)
+    expect(kept.filter((m) => m.role === "user" && (m.images?.length ?? 0) > 0)).toHaveLength(2)
   })
 })
 

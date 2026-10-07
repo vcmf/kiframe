@@ -800,6 +800,8 @@ line2</textarea></label>`,
   // port nothing listens on (the page fails to load).
   "/bounce": `<!doctype html><title>Bounce</title><p>Leaving</p>
     <script>setTimeout(() => { const u = new URL(location.href); u.hostname = "127.0.0.1"; u.pathname = "/login"; location.href = u.href }, 300)</script>`,
+  // look: another site's page in a frame, showing a value.
+  "/look-frame": `<!doctype html><p>hello bob@acme.com</p>`,
   "/dead-link": `<!doctype html><title>Dead link</title><a href="http://127.0.0.1:1/">Nowhere</a>`,
   // The page's own width (the viewport a scene is filmed at).
   "/size": `<!doctype html><title>Size</title><p id="w"></p><script>document.getElementById("w").textContent = "w=" + innerWidth</script>`,

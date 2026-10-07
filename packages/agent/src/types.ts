@@ -9,9 +9,36 @@ export type LlmToolCall = { id: string; name: string; arguments: string }
 /** An image attached to a user turn: a `data:` URL (or a remote URL). */
 export type LlmImage = { url: string }
 
+/**
+ * A tool's result with images (a screenshot): the result reaches the model as any tool's, and the
+ * images in one message after the turn's tool messages (a tool message holds text only).
+ */
+export interface WithImages {
+  readonly [WITH_IMAGES]: true
+  result: unknown
+  images: LlmImage[]
+}
+
+const WITH_IMAGES = Symbol.for("kiframe.agent.withImages")
+
+/** A tool's result with images (`WithImages`). */
+export function withImages(result: unknown, images: LlmImage[]): WithImages {
+  return { [WITH_IMAGES]: true, result, images }
+}
+
+export function isWithImages(value: unknown): value is WithImages {
+  return typeof value === "object" && value !== null && WITH_IMAGES in value
+}
+
 export type LlmMessage =
   | { role: "system"; content: string }
-  | { role: "user"; content: string; images?: LlmImage[] | undefined }
+  | {
+      role: "user"
+      content: string
+      images?: LlmImage[] | undefined
+      /** Made by the loop (a tool's images), not the user's words. */
+      fromTool?: string | undefined
+    }
   | {
       role: "assistant"
       content: string

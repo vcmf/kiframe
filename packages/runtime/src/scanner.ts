@@ -1,4 +1,3 @@
-import { PNG } from "pngjs"
 import type { JSHandle, Page } from "playwright"
 import type { Box } from "./motion.ts"
 
@@ -218,39 +217,4 @@ export async function scanSecretText(page: Page, values: Iterable<string>): Prom
   const boxes = await scanSecretTextPartly(page, values)
   if (boxes.some((b) => b === null)) throw new Error("the page changed during the scan")
   return boxes as Box[]
-}
-
-/**
- * A screenshot of the viewport for the model (APPROACHES §7.4, leak path 8): every visible secret
- * value painted over, in Node, before it leaves the runtime. Scanned before and after the
- * screenshot, and the union covered (the page may change in between). Throws if the page can't be
- * scanned: no screenshot rather than an unchecked one.
- */
-export async function screenshotForModel(page: Page, values: Iterable<string>): Promise<Buffer> {
-  const list = [...values]
-  const before = await scanSecretText(page, list)
-  const shot = await page.screenshot({ type: "png" })
-  const after = await scanSecretText(page, list)
-  const boxes = [...before, ...after]
-  if (boxes.length === 0) return shot
-  const png = PNG.sync.read(shot)
-  // Screenshot pixels per CSS pixel (the device scale factor).
-  const scale = png.width / (await page.evaluate(() => innerWidth))
-  for (const box of boxes) {
-    // Grown by 2 CSS px: anti-aliased glyph edges stay covered.
-    const x1 = Math.max(0, Math.floor((box.x - 2) * scale))
-    const y1 = Math.max(0, Math.floor((box.y - 2) * scale))
-    const x2 = Math.min(png.width, Math.ceil((box.x + box.width + 2) * scale))
-    const y2 = Math.min(png.height, Math.ceil((box.y + box.height + 2) * scale))
-    for (let y = y1; y < y2; y++) {
-      for (let x = x1; x < x2; x++) {
-        const i = (y * png.width + x) * 4
-        png.data[i] = 40
-        png.data[i + 1] = 40
-        png.data[i + 2] = 40
-        png.data[i + 3] = 255
-      }
-    }
-  }
-  return PNG.sync.write(png)
 }

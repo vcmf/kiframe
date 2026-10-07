@@ -109,6 +109,9 @@ describe("the secrets panel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
     const panel = screen.getByRole("dialog", { name: "Secrets" })
     expect(panel.textContent).toMatch(/https:\/\/app\.test/)
+    // The limits said plainly: a throwaway account; what can't be hidden.
+    expect(panel.textContent).toMatch(/Use a throwaway demo account/)
+    expect(panel.textContent).toMatch(/drawn in an image or a canvas\s+can’t be hidden/)
     expect(await within(panel).findByText("No secrets yet.")).toBeTruthy()
     fireEvent.change(within(panel).getByLabelText("Name"), { target: { value: "acme.password" } })
     fireEvent.change(within(panel).getByLabelText("Value"), { target: { value: "hunter2-secret" } })

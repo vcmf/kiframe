@@ -118,6 +118,11 @@ export function SecretsPanel({
           . It only ever sees their names: values stay in your system’s keychain, and are blurred in
           every take.
         </p>
+        <p className="dialog-text dialog-note">
+          Use a throwaway demo account. The agent sees the page as text and screenshots, with your
+          secrets hidden where the page shows them as text; a value drawn in an image or a canvas
+          can’t be hidden.
+        </p>
         {groups === null ? null : groups.every((g) => g.secrets.length === 0) ? (
           <p className="dialog-empty">No secrets yet.</p>
         ) : (
