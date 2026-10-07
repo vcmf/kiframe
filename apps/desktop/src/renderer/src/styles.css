@@ -1403,3 +1403,31 @@ ul.strip-cards {
   font-weight: 400;
   color: var(--muted);
 }
+
+/* add_app's card: the site first, its notes, the agent's words last. */
+.app-card-host {
+  margin: 6px 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.app-card-notes {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.app-card-warn {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.app-card-why {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.app-card-label {
+  font-style: italic;
+}

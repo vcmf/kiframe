@@ -25,6 +25,8 @@ export type StepErrorReason =
   | "secret-declined"
   | "action-failed"
   | "invalid-setup"
+  /** A step ended on a page that isn't one of the project's apps (OBJECT-MODEL §0.9). */
+  | "off-app"
   /** The run's signal was aborted (the user stopped it): nothing more ran. */
   | "stopped"
   /**

@@ -163,6 +163,8 @@ export async function recordBatch(
         "secret-refused",
         "secret-declined",
         "risky-not-approved",
+        // A page off the apps: the scene's doing, never the session's.
+        "off-app",
         "stopped",
       ]
       if (reuse && error instanceof StepError && !notSession.includes(error.reason)) {

@@ -109,6 +109,11 @@ export interface RunOptions {
    * new one, even if the agent reuses its ids): the approval keys of the scene's own steps.
    */
   sceneId?: string
+  /**
+   * A step ending on a page that isn't one of the project's apps fails (`off-app`): on by default
+   * (a replay, a recording); off for a step grounded on the live page, which says where it went.
+   */
+  confineToApps?: boolean
   /** The org interrupt rules this run's config kept from the org (their approvals are the org's). */
   orgInterrupts?: { orgId: string; ruleIds: readonly string[] }
   /** Resolves an `upload` step's project asset (`<sha256>.<ext>`) to a file path. */

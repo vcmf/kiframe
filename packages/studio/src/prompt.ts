@@ -75,10 +75,18 @@ Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
 ${appsPart(studio)}`
 }
 
-/** The project's apps: one app said as before; several, with the rule a step on another app follows. */
+/**
+ * The project's apps: one app said as before; several, with the rule a step on another app follows.
+ * Either way, how a site the scene needs is added (add_app, the user approves).
+ */
 function appsPart(studio: Studio): string {
   const apps = Object.entries(studio.options.config.apps)
-  if (apps.length === 1) return `App: ${studio.scrub(firstApp(studio.options.config).app.url)}`
+  const adding = `- A site the scene needs that isn't one of the project's apps (its docs, a login on another
+  host: an identity provider is its own app): add it with \`add_app\` (the user approves; one line why).
+  A step that ends on any other site fails in the replay. Never add a site to get around a refusal.`
+  if (apps.length === 1) {
+    return `App: ${studio.scrub(firstApp(studio.options.config).app.url)}\n${adding}`
+  }
   const list = apps
     .map(([name, app], i) => `  ${name}: ${studio.scrub(app.url)}${i === 0 ? " (the first)" : ""}`)
     .join("\n")
@@ -90,5 +98,6 @@ ${list}
   redirect). Every step on another app names it: \`{ action: goto, app: <name>, url: /path }\`, and a URL
   condition \`{ action: waitFor, until: { url: /path, app: <name> } }\` (same in expect's \`that\`).
   Only goto and URL conditions take an app (never a click).
-- Where a step leaves the page says its app: \`url: docs: /install\`.`
+- Where a step leaves the page says its app: \`url: docs: /install\`.
+${adding}`
 }

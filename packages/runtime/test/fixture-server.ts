@@ -789,10 +789,18 @@ line2</textarea></label>`,
   // and a password field.
   "/swap-host": `<!doctype html><title>Swap host</title><a id="o" href="#">Other host</a>
     <script>const u = new URL(location.href); u.hostname = u.hostname === "localhost" ? "127.0.0.1" : "localhost"; u.pathname = new URLSearchParams(location.search).get("to") ?? "/projects"; u.search = ""; document.getElementById("o").href = u.href</script>`,
+  // The same link opening a new tab (blank at first, then the other host).
+  "/swap-tab": `<!doctype html><title>Swap tab</title><a id="o" href="#" target="_blank">Other host</a>
+    <script>const u = new URL(location.href); u.hostname = u.hostname === "localhost" ? "127.0.0.1" : "localhost"; u.pathname = "/login"; u.search = ""; document.getElementById("o").href = u.href</script>`,
   "/pw": `<!doctype html><title>Password</title><label>Password <input type="password"></label>`,
   // A leftover kept per site (localStorage: each origin its own), and its cleanup.
   "/item": `<!doctype html><title>Item</title><p id="d"></p><script>if (localStorage.getItem("draft") !== "gone") document.getElementById("d").textContent = "Draft"</script>`,
   "/clean": `<!doctype html><title>Clean</title><p>Clean</p><script>localStorage.setItem("draft", "gone")</script>`,
+  // B4: a page that sends the browser back to 127.0.0.1 (the app) after 300 ms, and a link to a
+  // port nothing listens on (the page fails to load).
+  "/bounce": `<!doctype html><title>Bounce</title><p>Leaving</p>
+    <script>setTimeout(() => { const u = new URL(location.href); u.hostname = "127.0.0.1"; u.pathname = "/login"; location.href = u.href }, 300)</script>`,
+  "/dead-link": `<!doctype html><title>Dead link</title><a href="http://127.0.0.1:1/">Nowhere</a>`,
   // The page's own width (the viewport a scene is filmed at).
   "/size": `<!doctype html><title>Size</title><p id="w"></p><script>document.getElementById("w").textContent = "w=" + innerWidth</script>`,
   "/covered": `<!doctype html><title>Covered</title>

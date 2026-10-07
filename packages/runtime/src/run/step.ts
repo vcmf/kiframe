@@ -3,6 +3,7 @@ import { perform } from "./actions.ts"
 import { type AnyAction, type Ctx, guard } from "./context.ts"
 import { handleInterrupts } from "./interrupts.ts"
 import { syncPage } from "./pages.ts"
+import { confine } from "./apps.ts"
 import { requireApproval } from "./risky.ts"
 import { followSecretFields, followSecretText } from "./secrets.ts"
 import { settle } from "./settle.ts"
@@ -47,6 +48,8 @@ export async function runOne(
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
   await syncPage(ctx, step)
+  // Where the step ended (the page it left driven: a popup, the opener back): one of the apps.
+  if (ctx.options.confineToApps !== false) await confine(ctx, step)
   if (ctx.options.recording === true) {
     await followSecretFields(ctx, step)
     // The page as the step left it: not a scan that started earlier in the step.

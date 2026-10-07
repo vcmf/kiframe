@@ -116,6 +116,15 @@ describe("recordBatch", () => {
     expect(results.map((r) => r.ok)).toEqual([true, false, true])
     expect(logins).toBe(2)
   })
+
+  it("keeps the session after a scene that left the project's apps (its doing, not the session's)", async () => {
+    // A link to localhost: another site than the project's (127.0.0.1).
+    const away = `  - { id: go, action: goto, url: "/swap-host?to=/login" }
+  - { id: away, action: click, target: { by: role, role: link, name: Other host } }\n`
+    const { results, logins } = await run([signedIn, away, signedIn])
+    expect(results.map((r) => r.ok)).toEqual([true, false, true])
+    expect(logins).toBe(1)
+  }, 30_000)
 })
 
 describe("recordBatch and secret approvals", () => {

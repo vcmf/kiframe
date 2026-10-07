@@ -87,6 +87,17 @@ function readKnown(dir: string, disk: Map<string, string>, rel: string): string 
 }
 
 /** Refuses to touch a file that changed since this handle last saw it. */
+/** Whether project.json changed on disk since this handle read or wrote it (a save would refuse). */
+export function projectChangedOnDisk(opened: OpenedProject): boolean {
+  try {
+    assertUnchanged(opened, PROJECT_FILE)
+    return false
+  } catch (error) {
+    if (error instanceof ProjectChangedError) return true
+    throw error
+  }
+}
+
 function assertUnchanged(opened: OpenedProject, rel: string): void {
   const path = join(opened.dir, rel)
   const now = existsSync(path) ? readFileSync(path, "utf8") : undefined

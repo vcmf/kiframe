@@ -1,4 +1,5 @@
-import { type App, type Apps, appOf } from "@kiframe/schema"
+import { type App, type Apps, appOf, sameApp } from "@kiframe/schema"
+import type { Ctx } from "./context.ts"
 import { StepError, type StepRef } from "../errors.ts"
 
 // The project's apps a scene moves between (OBJECT-MODEL §0.9). Which app a step means is read
@@ -22,4 +23,52 @@ export function appAtOrigin(apps: Apps, url: string): string | undefined {
   const origin = URL.parse(url)?.origin
   if (origin === undefined || origin === "null") return undefined
   return Object.entries(apps).find(([, app]) => new URL(app.url).origin === origin)?.[0]
+}
+
+/** How long a page off the apps may take to come back (a redirect still in flight: an SSO bounce). */
+const BACK_MS = 2500
+
+/** Whether `url` is one of the apps' pages: their site (`sameApp`, a blob: by its creator's origin). */
+export function onApps(apps: Apps, url: string): boolean {
+  const parsed = URL.parse(url)
+  if (parsed === null || !["http:", "https:", "blob:"].includes(parsed.protocol)) return false
+  return Object.values(apps).some((app) => sameApp(parsed, app.url))
+}
+
+/**
+ * Where a step left the driven page, allowed: one of the apps' pages (`onApps`), or a blank page (a
+ * tab a step opened is followed once its first page loaded, `syncPage`: what it loads is checked).
+ * Anything else fails: another site (`off-app`), a page that failed to load, file:, data:… (an
+ * allow-list: what isn't the apps is never filmed). A page still on its way back (a redirect) gets
+ * a moment first; a stop ends the wait as a stop.
+ */
+export async function confine(ctx: Ctx, step: StepRef): Promise<void> {
+  const until = Date.now() + BACK_MS
+  for (;;) {
+    const now = ctx.page.url()
+    if (onApps(ctx.apps, now)) return
+    if (now === "about:blank") return
+    const url = URL.parse(now)
+    // Chromium's error page: the load failed (not another site), said at once.
+    if (url?.protocol === "chrome-error:") {
+      throw new StepError(step, "action-failed", "the page failed to load")
+    }
+    if (ctx.options.signal?.aborted === true) {
+      throw new StepError(step, "stopped", "the run was stopped")
+    }
+    if (Date.now() >= until || ctx.page.isClosed()) {
+      const where =
+        url === null
+          ? "an unreadable address"
+          : url.host === ""
+            ? `a ${url.protocol} page`
+            : url.host
+      throw new StepError(
+        step,
+        "off-app",
+        `the page is on ${where}, not one of the project's apps (${Object.keys(ctx.apps).join(", ")}): add it as an app, or keep the scene on them`,
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
 }

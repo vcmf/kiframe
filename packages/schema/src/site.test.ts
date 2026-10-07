@@ -8,6 +8,9 @@ describe("when a page is on the app", () => {
     expect(sameApp("https://minmux.dev/", "https://www.minmux.dev")).toBe(true)
     expect(sameApp("https://app.test/", "http://app.test")).toBe(true)
     expect(sameApp("http://localhost:4000/x", "http://localhost:4000")).toBe(true)
+    // A trailing dot names the same host.
+    expect(sameApp("https://minmux.dev./x", "https://minmux.dev")).toBe(true)
+    expect(sameApp("https://minmux.dev.:8443/", "https://minmux.dev:8443")).toBe(true)
   })
 
   it("never another host, port, a downgrade, or a page without an origin", () => {

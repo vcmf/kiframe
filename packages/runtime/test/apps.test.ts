@@ -239,7 +239,13 @@ describe("a secret across the project's apps", () => {
 apps: { app: { kind: web, url: "${app.origin}" } }
 defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
 `)
-    const blind = { resolveSecret: () => "hunter2-secret", scope: "p", sceneId: "s" }
+    // The secret check alone (a step leaving the apps fails before it, `confine`: off here).
+    const blind = {
+      resolveSecret: () => "hunter2-secret",
+      scope: "p",
+      sceneId: "s",
+      confineToApps: false,
+    }
     const error = await runScenario(
       page,
       scene(`setup: [{ action: goto, url: "/swap-host?to=/pw" }]
@@ -384,6 +390,92 @@ steps: [{ id: s, action: pause, ms: 1 }]`).setup ?? [],
       "app /p",
       "docs /c",
       "docs /d",
+    ])
+  })
+})
+
+describe("a step off the project's apps (B4)", () => {
+  // The project lists `app` (127.0.0.1) only: localhost is another site.
+  const one = () =>
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${app.origin}" } }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+  const leave = `setup: [{ action: goto, url: "/swap-host?to=/login" }]
+steps:
+  - { id: away, action: click, target: { by: role, role: link, name: Other host } }
+  - { id: after, action: pause, ms: 1 }
+`
+
+  it("fails the step that ended on another site, naming it", async () => {
+    const error = await runScenario(page, scene(leave), one()).catch((e: unknown) => e)
+    expect(error instanceof StepError && [error.reason, error.step.stepId]).toEqual([
+      "off-app",
+      "away",
+    ])
+    expect((error as StepError).message).toContain(docs.host)
+  })
+
+  it("lets a step grounded on the live page go there (it says where it went)", async () => {
+    await runScenario(page, scene(leave), one(), { confineToApps: false })
+    expect(host()).toBe(docs.host)
+  })
+
+  it("passes a step whose redirect comes back to the app in a moment", async () => {
+    // /nav-back: a page on the other site that sends the browser back to the app after 300 ms.
+    await runScenario(
+      page,
+      scene(`setup: [{ action: goto, url: "/swap-host?to=/bounce" }]
+steps: [{ id: away, action: click, target: { by: role, role: link, name: Other host } }]
+`),
+      one(),
+    )
+    expect(host()).toBe(app.host)
+  })
+
+  it("checks what a tab a step opened loads (never passing it while it's still blank)", async () => {
+    const error = await runScenario(
+      page,
+      scene(`setup: [{ action: goto, url: /swap-tab }]
+steps:
+  - { id: tab, action: click, target: { by: role, role: link, name: Other host } }
+`),
+      one(),
+    ).catch((e: unknown) => e)
+    expect(error instanceof StepError && [error.reason, error.step.stepId]).toEqual([
+      "off-app",
+      "tab",
+    ])
+  })
+
+  it("ends a wait for the page to come back as a stop when the run is stopped", async () => {
+    const controller = new AbortController()
+    const run = runScenario(page, scene(leave), one(), {
+      signal: controller.signal,
+      onEvent: (e) => {
+        if (e.kind === "step_start" && e.step.stepId === "away") {
+          setTimeout(() => controller.abort(), 400)
+        }
+      },
+    }).catch((e: unknown) => e)
+    const started = Date.now()
+    const error = await run
+    expect(error instanceof StepError && error.reason).toBe("stopped")
+    // Ended by the stop, not by the wait running out (2.5 s).
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
+  it("fails a step that ends on a page that didn't load (never passing it as on the app)", async () => {
+    const error = await runScenario(
+      page,
+      scene(`setup: [{ action: goto, url: /dead-link }]
+steps: [{ id: dead, action: click, target: { by: role, role: link, name: Nowhere } }]
+`),
+      one(),
+    ).catch((e: unknown) => e)
+    expect(error instanceof StepError && [error.reason, error.message]).toEqual([
+      "action-failed",
+      expect.stringContaining("the page failed to load") as unknown,
     ])
   })
 })

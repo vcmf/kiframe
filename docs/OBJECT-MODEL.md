@@ -192,7 +192,7 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **The live page isn't fresh.** It's one browser session for as long as the project is open, shared by every scene: it keeps what the agent did (signed in, scrolled, a setting changed). The replay in phase 2 is what catches a scene that only works because of that state. Refs never reach the YAML (a ref becomes a locator that finds that element alone).
 
-### 0.9 Apps a demo shows (designed 2026-10-05; format, runtime and agent built 2026-10-06/07, B1–B3)
+### 0.9 Apps a demo shows (designed 2026-10-05; format, runtime, agent and add_app built 2026-10-06/07, B1–B4)
 
 **Today** a project has one `target`: `{ kind: web, url, viewport }`, and a scene never leaves that site (its address redirected to `www.` or `https` counts as it: `sameApp`). That's too narrow: Kiframe also targets **Electron** apps (v0.1) and **Tauri** (later, partial), and one demo can go from a web app to its docs site or its desktop app.
 
@@ -249,6 +249,12 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 - **The user**: the Secrets panel lists secrets app by app and adds one for the app picked. The window names an app, never an origin: main finds the app's exact origin in the project (`appOriginOf`), refusing a request from an earlier opening of a project (`session`). `ProjectView.apps` carries each app's origin from main.
 - The vault never grants a secret on an origin it isn't for.
 - Not yet (stated, BACKLOG): the live page keeps the first app's size (resizing it would leave refs and popups at the old size, and rebuilding its context per app would sign it out); the replay, at the filmed size, catches a difference.
+
+**Built (B4, 2026-10-07):** the agent adds a site with the user's approval; a step off the apps fails.
+- **`add_app({ name, url, why })`** (web only): the address resolved as a first app's; refused without asking (the cheap checks before any fetch) when 3 cards were already shown this session, the name is taken, the address isn't http(s) or carries credentials, the user declined that site this session (in any form: its www., a path), the site is already an app (`sameApp`, a trailing dot ignored), or project.json changed on disk; the whole project checked before asking. A new app gets the first app's viewport (the size grounding uses). **The card** is built from what would be written: the host as the browser reaches it (punycode, port), "not encrypted" on http, a lookalike warning on a punycode label, "on your computer or local network", "every page on this site", "scenes may open it; no secret is shared with it"; then the agent's reason, cleaned to one plain line and said as its words (pages it read can influence it). Allowed: written to project.json, the studio's apps updated at once, the window refreshed; the tool tells the agent how to use it (its instructions are fixed for the run). A save that fails (project.json changed on disk) is said.
+- **A step that ends off the project's apps fails** (`off-app`), on by default: replays, recordings, batches; off for a step grounded on the live page (it says where it went: the moment to add the site). An allow-list: a listed app's site, a blank page (a tab a step opened is checked once its first page loaded), a listed app's blob:; Chromium's error page fails as "the page failed to load"; anything else (another site, file:, data:) fails, after up to 2.5 s for a redirect still coming back.
+- An unknown request kind shows "unsupported" with Decline only (never the question form).
+- Not yet (BACKLOG): the registrable domain bolded on the card, apps the agent added marked in the panel; removing an app (B5).
 
 **Implementation notes (design review, 2026-10-05):**
 - **Format and migration**: `project` goes to version 2 with a registered `target → apps.app` migration (schema `versioning.ts`). Converted in memory on open, **written at the next save** (never a silent rewrite at open). Every app has its URL (`apps.*.url` required: environments no longer give URLs); a v1 project with an environment and no `target.url` gets a clear error, never a guess. Scenarios aren't touched (no `app:` added: their hash, and so their takes, stay as they are).

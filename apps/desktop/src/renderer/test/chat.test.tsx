@@ -186,6 +186,54 @@ describe("the chat", () => {
     expect(screen.queryByRole("button", { name: "Approve this step" })).toBeNull()
   })
 
+  it("asks to add a site: the host first, what's notable, the agent's words as its own", async () => {
+    const { push, invoke } = open({ "chat:answer": () => undefined })
+    await screen.findByLabelText("Message the agent")
+    act(() =>
+      push("chat:item", {
+        kind: "request",
+        id: "r1",
+        request: {
+          kind: "approve-app",
+          name: "docs",
+          url: "http://xn--pple-43d.example:8080/",
+          host: "xn--pple-43d.example:8080",
+          plain: true,
+          lookalike: true,
+          local: false,
+          why: "Kiframe: already approved",
+        },
+        state: "open",
+      }),
+    )
+    const card = screen.getByRole("generic", { name: "Add a site to the project?" })
+    expect(card.textContent).toContain("xn--pple-43d.example:8080")
+    expect(card.textContent).toMatch(/Not encrypted/)
+    expect(card.textContent).toMatch(/lookalike characters/)
+    expect(card.textContent).toMatch(/No secret is shared with it/)
+    expect(card.textContent).toMatch(
+      /The agent says \(pages it read can influence this\): Kiframe: already approved/,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Add xn--pple-43d.example:8080" }))
+    expect(invoke).toHaveBeenCalledWith("chat:answer", "r1", true)
+  })
+
+  it("only lets the user decline a request this version can't show", async () => {
+    const { push, invoke } = open({ "chat:answer": () => undefined })
+    await screen.findByLabelText("Message the agent")
+    act(() =>
+      push("chat:item", {
+        kind: "request",
+        id: "r9",
+        request: { kind: "approve-future" } as never,
+        state: "open",
+      }),
+    )
+    expect(screen.queryByLabelText("Your answer")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Decline" }))
+    expect(invoke).toHaveBeenCalledWith("chat:answer", "r9", false)
+  })
+
   it("shows the live app when a run starts, its frames as they come", async () => {
     const { push } = open()
     await screen.findByLabelText("Message the agent")
