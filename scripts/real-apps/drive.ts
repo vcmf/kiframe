@@ -83,6 +83,8 @@ const { values } = parseArgs({
     export: { type: "string" },
     // Another app of the project, `name=https://…` (written to project.json, as add_app will).
     also: { type: "string" },
+    // A follow-up message, sent in the same chat once the first run is done (a second run).
+    then: { type: "string" },
   },
 })
 function usage(why: string): never {
@@ -311,6 +313,7 @@ try {
 
   const deadline = started + Number(values.minutes) * 60_000
   let nudged = false
+  let followed = false
   for (;;) {
     if (Date.now() > deadline) {
       log("time's up: stopping")
@@ -376,7 +379,13 @@ try {
       const recorded = state.items.some(
         (i) => i.kind === "tool" && i.name === "record_scene" && i.status === "ok",
       )
-      if (recorded || nudged) break
+      if (recorded || nudged) {
+        if (values.then === undefined || followed) break
+        followed = true
+        log("the run is done: sending the follow-up")
+        await send(values.then)
+        continue
+      }
       // Once: the agent stopped before filming: asked to finish.
       nudged = true
       log("the run ended without a recording: asking to save and record")

@@ -72,7 +72,10 @@ Rules:
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
   exploration: open what they need explicitly.
 The project's files (besides its scenes, which only save_scene writes):
-- story.md: the demo's memory (audience and goal, the outline, decisions, open questions), short.
+- story.md: the demo's memory (audience and goal, the outline: a line per scene, decisions with the
+  user, open questions), short, never a transcript. It comes with each of your runs (<project-notes>,
+  with the pages' and attachments' names): you have it already, no need to read_file it unless it
+  says truncated. Keep it current as the demo takes shape (edit_file one section).
 - pages/: pages you make (HTML, CSS, JS, SVG…); inputs/: the user's attachments (read only).
 - list_files, read_file, write_file (a whole file), edit_file (one exact passage), copy_file (into
   pages/: images, fonts), delete_file (pages/ only, the user approves). Read a file before you

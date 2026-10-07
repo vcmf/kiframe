@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { LlmClient, LlmMessage, LlmTurn } from "@kiframe/agent"
@@ -90,7 +90,7 @@ function host(
       await new Promise((r) => setTimeout(r, 25))
     }
   }
-  return { agent, shown, running, frames, until, sends, changed: () => changed }
+  return { agent, shown, running, frames, until, sends, changed: () => changed, dir }
 }
 
 describe("the agent in the app", () => {
@@ -457,6 +457,40 @@ steps:
       .map((t) => (t.kind === "tool" ? t.result : ""))
     expect(results).toEqual(["none", "acme.password"])
     expect(JSON.stringify(seen)).not.toContain("pw-x")
+    await made.agent.close()
+  }, 60_000)
+
+  it("gives each run story.md as it is then, scrubbed, never kept in the chat's history", async () => {
+    const vault = new Secrets(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    await vault.add(
+      { name: "acme.password", kind: "password", value: "pw-story-1" },
+      new URL(server.url).origin,
+    )
+    const { llm, seen } = script([
+      { kind: "text", text: "a" },
+      { kind: "text", text: "b" },
+    ])
+    const made = host(llm, undefined, undefined, vault)
+    writeFileSync(join(made.dir, "story.md"), "# Demo v1\nlogin pw-story-1")
+    made.agent.send("first")
+    await made.until(() => made.running.at(-1) === false)
+    writeFileSync(join(made.dir, "story.md"), "# Demo v2")
+    made.agent.send("second")
+    await made.until(() => made.running.length === 4)
+    const userText = (messages: LlmMessage[]) =>
+      messages.filter((m) => m.role === "user").map((m) => m.content)
+    expect(userText(seen[0] ?? [])).toEqual([
+      expect.stringMatching(/# Demo v1\nlogin \[secret\][\s\S]*\n\nfirst$/),
+    ])
+    // The next run: the story as it is now; the first run's message as the user wrote it.
+    expect(userText(seen[1] ?? [])).toEqual([
+      "first",
+      expect.stringMatching(/# Demo v2[\s\S]*\n\nsecond$/),
+    ])
+    expect(JSON.stringify(seen)).not.toContain("pw-story-1")
     await made.agent.close()
   }, 60_000)
 

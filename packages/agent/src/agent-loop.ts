@@ -126,6 +126,11 @@ export type RunAgentOptions<C> = {
   history?: LlmMessage[]
   /** Images attached to this turn's user message (never stored in history). */
   images?: LlmImage[]
+  /**
+   * A block sent before this run's message on every turn, never stored (the history keeps the
+   * user's text alone: stale copies never pile up). Called each turn (the host re-scrubs it).
+   */
+  liveContext?: () => string
   maxTurns?: number
   /**
    * Cancels the run: the model call and the running tool get it (both heed it: the SDK aborts its
@@ -163,11 +168,23 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
   const prior: LlmMessage[] = []
   if (opts.system !== undefined) prior.push({ role: "system", content: opts.system })
   if (opts.history !== undefined) prior.push(...opts.history)
-  // Images are sent with this turn only (the stored message has none).
-  const live: LlmMessage = {
-    role: "user",
-    content: opts.userMessage,
-    ...(opts.images !== undefined && opts.images.length > 0 && { images: opts.images }),
+  // Images and the live context are sent with this run only (the stored message has neither).
+  const liveMessage = (): LlmMessage => {
+    // A context that can't be made: this turn goes without it (never the run's end mid-turn).
+    let context: string | undefined
+    try {
+      context = opts.liveContext?.()
+    } catch {
+      context = undefined
+    }
+    return {
+      role: "user",
+      content:
+        context === undefined || context === ""
+          ? opts.userMessage
+          : `${context}\n\n${opts.userMessage}`,
+      ...(opts.images !== undefined && opts.images.length > 0 && { images: opts.images }),
+    }
   }
   const keepFullNames = new Set(opts.tools.filter((t) => t.keepFullResult).map((t) => t.name))
   const metaOf = (m: Extract<LlmMessage, { role: "tool" }>): ToolMsgMeta => ({
@@ -188,7 +205,7 @@ async function* run<C>(opts: RunAgentOptions<C>, added: LlmMessage[]): AsyncGene
       yield { type: "aborted", messages: added }
       return
     }
-    const log = [...prior, live, ...added.slice(1)]
+    const log = [...prior, liveMessage(), ...added.slice(1)]
     const modelMessages = buildModelMessages(log, metaOf, shownBulky)
     let result: LlmTurn
     try {

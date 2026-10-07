@@ -113,6 +113,17 @@ describe("scrubSecrets", () => {
     // Short values aren't matched across whitespace (they'd eat ordinary words).
     expect(scrubSecrets("a b c", ["abc"])).toBe("a b c")
   })
+
+  it('scrubs text scrubbed already the same (a value in the word "secret" never shows)', () => {
+    for (const value of ["Secret", "sec", "cre", "secret]"]) {
+      const once = scrubSecrets(`pw: ${value}!`, [value])
+      expect(once).toBe("pw: [secret]!")
+      expect(scrubSecrets(once, [value])).toBe(once)
+      expect(scrubSecrets(scrubSecrets(once, [value]), [value])).toBe(once)
+    }
+    // A page's own "[SECRET]" (any case) is never taken for a value.
+    expect(scrubSecrets("Label: [SECRET] [Secret]", ["hunter2pw"])).toBe("Label: [SECRET] [Secret]")
+  })
 })
 
 describe("recording", () => {

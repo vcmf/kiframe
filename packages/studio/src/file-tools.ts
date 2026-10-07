@@ -17,6 +17,20 @@ function refused(error: unknown): { error: string } {
   throw error
 }
 
+/**
+ * What a read tells of a file (read_file's, and the run notes' story.md): its hash; seen whole (this
+ * read, or an earlier one of these very bytes: parts never add up); made by the agent (these bytes).
+ */
+export function noteRead(studio: Studio, path: string, hash: string, seenWhole: boolean): void {
+  const was = studio.fileReads.get(path)
+  const same = was?.hash === hash
+  studio.fileReads.set(path, {
+    hash,
+    full: seenWhole || (same && was.full),
+    mine: same && was.mine,
+  })
+}
+
 /** A file's canonical path, or the refusal of the path. */
 function canonical(studio: Studio, path: string): string | { error: string } {
   try {
@@ -28,8 +42,17 @@ function canonical(studio: Studio, path: string): string | { error: string } {
 
 /** A file's hash now (undefined: there's none), or the refusal of reading it. */
 function hashNow(studio: Studio, path: string): string | undefined | { error: string } {
+  const now = statNow(studio, path)
+  return now === undefined || "error" in now ? now : now.hash
+}
+
+/** A file's hash and whether it's blank now (undefined: there's none), or the refusal. */
+function statNow(
+  studio: Studio,
+  path: string,
+): { hash: string; blank: boolean } | undefined | { error: string } {
   try {
-    return studio.files.stat(path).hash
+    return studio.files.stat(path)
   } catch (error) {
     if (error instanceof FileRefusal && error.code === "not-found") return undefined
     return refused(error)
@@ -101,30 +124,21 @@ const readFile = defineTool({
           (error.code === "not-text" || error.code === "too-large")
         ) {
           const stat = studio.files.stat(args.path)
-          const was = studio.fileReads.get(stat.path)
-          studio.fileReads.set(stat.path, {
-            hash: stat.hash,
-            full: false,
-            mine: was?.hash === stat.hash && was.mine,
-          })
+          noteRead(studio, stat.path, stat.hash, false)
           return Promise.resolve(
             `${error.message} (${stat.size} bytes): it can't be read, but it can be deleted (then copied anew)`,
           )
         }
         throw error
       }
-      const was = studio.fileReads.get(read.path)
-      const same = was?.hash === read.hash
       if (read.kind === "image") {
         // Its hash noted all the same (a copy over it, a delete); its bytes never sent.
-        studio.fileReads.set(read.path, { hash: read.hash, full: true, mine: same && was.mine })
+        noteRead(studio, read.path, read.hash, true)
         return Promise.resolve(
           `${read.path}: an image (${read.mime}, ${read.bytes.length} bytes). You can't see images yet; copy it into a page with copy_file.`,
         )
       }
-      // Seen whole: this read, or an earlier one of these very bytes (never parts put together).
-      const full = (!read.partial && !read.scrubbed) || (same && was.full)
-      studio.fileReads.set(read.path, { hash: read.hash, full, mine: same && was.mine })
+      noteRead(studio, read.path, read.hash, !read.partial && !read.scrubbed)
       const said = read.partial
         ? `${read.path} (lines ${range?.from ?? 1}… of ${read.lines}; part of it: read the rest by lines)`
         : `${read.path} (${read.lines} lines)`
@@ -152,18 +166,20 @@ const writeFile = defineTool({
     }
     const at = canonical(studio, args.path)
     if (typeof at !== "string") return at
-    const now = hashNow(studio, at)
-    if (typeof now === "object") return now
+    const now = statNow(studio, at)
+    if (now === undefined || "error" in now) return now ?? { error: `${at} doesn't exist` }
     const note = studio.fileReads.get(at)
     if (note === undefined) return { error: `${at} exists: read it first` }
-    if (note.hash !== now) return { error: `${at} changed since you read it: read it again` }
-    if (!note.full && !note.mine) {
+    if (note.hash !== now.hash) return { error: `${at} changed since you read it: read it again` }
+    // A blank file (no bytes, a byte-order mark alone) loses nothing: written as a new one.
+    const empty = now.blank
+    if (!note.full && !note.mine && !empty) {
       return {
         error: `${at}: you didn't see all of it (a part, or a secret scrubbed out): change it with edit_file, or read it all at once`,
       }
     }
     // A file the user made (not the agent this session): replacing it whole is theirs to allow.
-    if (!note.mine && !(await replaceAllowed(studio, at, signal))) {
+    if (!note.mine && !empty && !(await replaceAllowed(studio, at, signal))) {
       return { error: `the user kept ${at} as it is: edit it instead` }
     }
     try {
