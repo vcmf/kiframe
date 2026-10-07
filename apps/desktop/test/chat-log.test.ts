@@ -156,6 +156,19 @@ describe("the chat, folded from the agent's events", () => {
   })
 })
 
+describe("a run the host stopped", () => {
+  it("ends with why (a secret's value refused in a file), and the next message clears it", () => {
+    const log = new ChatLog()
+    log.user("make a page")
+    log.stopReason =
+      "the agent tried to write a secret's value into pages/a.html: refused, and the run stopped"
+    const [end] = log.event({ type: "aborted", messages: [] }).slice(-1)
+    expect(end).toMatchObject({ kind: "end", outcome: "stopped", message: log.stopReason })
+    log.user("again")
+    expect(log.stopReason).toBeUndefined()
+  })
+})
+
 describe("a tool's line", () => {
   it("says what a call acts on", () => {
     expect(toolDetail({ scene: "s", step: { action: "goto", url: "/projects" } })).toBe(
@@ -163,6 +176,13 @@ describe("a tool's line", () => {
     )
     expect(toolDetail({ scene: "s", step: { preset: "login" } })).toBe("preset login")
     expect(toolDetail({ id: "tour", title: "Tour", yaml: "…" })).toBe("tour")
+    // A file tool: the file it acts on; a copy, from → to.
+    expect(toolDetail({ path: "pages/intro/index.html", content: "<p>…</p>" })).toBe(
+      "pages/intro/index.html",
+    )
+    expect(toolDetail({ from: "inputs/logo.png", to: "pages/logo.png" })).toBe(
+      "inputs/logo.png → pages/logo.png",
+    )
     expect(toolDetail({ question: "Which\naccount?" })).toBe("Which account?")
     expect(toolDetail(null)).toBe("")
     expect(toolDetail({ step: { action: "click", target: { name: { nested: 1 } } } })).toBe("click")

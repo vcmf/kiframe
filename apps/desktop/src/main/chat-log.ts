@@ -33,6 +33,9 @@ export function toolDetail(args: unknown): string {
     ]
     return oneLine(what.filter((w) => w !== "").join(" "))
   }
+  // A file tool: the file it acts on (a copy: from → to).
+  if (typeof a.from === "string" && typeof a.to === "string") return oneLine(`${a.from} → ${a.to}`)
+  if (typeof a.path === "string") return oneLine(a.path)
   if (Array.isArray(a.steps)) return `${a.steps.length} steps`
   if (typeof a.steps === "string") return "steps"
   for (const key of ["id", "question", "scene"]) {
@@ -94,8 +97,12 @@ export class ChatLog {
     return item
   }
 
+  /** Why the host stopped the run (said with its end), not the user: cleared at the next message. */
+  stopReason: string | undefined
+
   user(text: string): ChatItem {
     this.#assistant = undefined
+    this.stopReason = undefined
     return this.#put({ kind: "user", id: this.#id("user"), text })
   }
 
@@ -205,13 +212,15 @@ export class ChatLog {
               ? "turn_limit"
               : event.type
         const message =
-          event.type === "error"
-            ? oneLine(event.message)
-            : event.type === "turn_limit"
-              ? `stopped after ${event.maxTurns} turns`
-              : event.type === "done" && event.truncated === true
-                ? "the answer was cut short (the model's length limit)"
-                : undefined
+          event.type === "aborted" && this.stopReason !== undefined
+            ? this.stopReason
+            : event.type === "error"
+              ? oneLine(event.message)
+              : event.type === "turn_limit"
+                ? `stopped after ${event.maxTurns} turns`
+                : event.type === "done" && event.truncated === true
+                  ? "the answer was cut short (the model's length limit)"
+                  : undefined
         changed.push(
           this.#put({
             kind: "end",

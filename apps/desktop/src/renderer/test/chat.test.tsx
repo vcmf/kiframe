@@ -243,6 +243,39 @@ describe("the chat", () => {
     expect(invoke).toHaveBeenCalledWith("chat:answer", "r1", true)
   })
 
+  it("asks before deleting a file, or replacing one the agent didn't write", async () => {
+    const { push, invoke } = open({ "chat:answer": () => undefined })
+    await screen.findByLabelText("Message the agent")
+    act(() =>
+      push("chat:item", {
+        kind: "request",
+        id: "f1",
+        request: { kind: "approve-file", action: "replace", path: "pages/intro/index.html" },
+        state: "open",
+      }),
+    )
+    const card = screen.getByRole("generic", { name: "Replace a file?" })
+    expect(card.textContent).toMatch(
+      /replace the whole of pages\/intro\/index\.html, which it didn’t write/,
+    )
+    expect(card.textContent).toMatch(/current version is kept/)
+    fireEvent.click(screen.getByRole("button", { name: "Keep it" }))
+    expect(invoke).toHaveBeenCalledWith("chat:answer", "f1", false)
+    // Settled: what the user said, never what happened after (the tool's row says that).
+    act(() =>
+      push("chat:item", {
+        kind: "request",
+        id: "f1",
+        request: { kind: "approve-file", action: "replace", path: "pages/intro/index.html" },
+        state: "answered",
+        answer: true,
+      }),
+    )
+    expect(screen.getByRole("generic", { name: "Replace a file?" }).textContent).toMatch(
+      /Allowed to replace it\./,
+    )
+  })
+
   it("only lets the user decline a request this version can't show", async () => {
     const { push, invoke } = open({ "chat:answer": () => undefined })
     await screen.findByLabelText("Message the agent")

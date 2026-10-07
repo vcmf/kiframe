@@ -9,6 +9,7 @@ import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
+import { FileVersions } from "./file-versions.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { DEFAULT_MODEL, modelConfig } from "./model.ts"
@@ -210,19 +211,22 @@ function start(): void {
         // known again at the next opening
       }
       const current = () => workspace.agent === host
+      const scope = registry.scope(opened.dir)
       const host: AgentHost = new AgentHost({
         project: opened,
         afterRecord: () =>
           void keeper
             ?.evict()
             .catch((e: unknown) => say(`couldn't tidy old recordings: ${message(e)}`)),
-        scope: registry.scope(opened.dir),
+        scope,
         sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
         takes,
         browser: launch,
         llm: model,
         model: DEFAULT_MODEL,
         secrets: vaultOrNull,
+        // The files the agent replaces or deletes, kept first (by the host's scope for the folder).
+        versions: new FileVersions(join(app.getPath("userData"), "versions", scope)),
         item: (item) => current() && emit(window, "chat:item", item),
         running: (running) => current() && emit(window, "chat:running", running),
         frame: (frame) => current() && emit(window, "live:frame", frame),

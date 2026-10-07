@@ -2,6 +2,7 @@ import { defineTool, type Tool } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { AppName, firstApp, SceneId } from "@kiframe/schema"
 import { z } from "zod"
+import { fileTools } from "./file-tools.ts"
 import { isCyclic } from "./refs.ts"
 import { asObject, type ScenarioPart, type StepResult, type Studio } from "./studio.ts"
 
@@ -276,12 +277,23 @@ const recordScene = defineTool({
 
 /**
  * A tool whose result and error are scrubbed on their way to the model: once, here, for every path
- * (this tool's and any added later; a user's answer quoting a value too).
+ * (this tool's and any added later; a user's answer quoting a value too). And its arguments
+ * checked by the same scrubber: the agent never knows a value, so one in what it wrote is a guess
+ * (written, typed, a path, then read back as "[secret]" would confirm it): refused, and the run
+ * ends (one guess per run, never a guessing game).
  */
 function scrubbed(tool: Tool<Studio>): Tool<Studio> {
   return {
     ...tool,
     run: async (args, studio, signal) => {
+      if (holdsValue(args, studio.secretTest())) {
+        studio.options.stopRun(
+          `the agent wrote a secret's value itself (${tool.name}): refused, and the run stopped`,
+        )
+        return {
+          error: "refused: that holds a secret's value (you never write one); the run stops",
+        }
+      }
       let result: unknown
       try {
         // The run's signal, and the studio's: closing it stops every tool and dialog.
@@ -297,6 +309,16 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
       return scrubDeep(result, studio.scrubber())
     },
   }
+}
+
+/** Whether any string in a tool's arguments holds a known secret's value. */
+function holdsValue(value: unknown, holds: (text: string) => boolean): boolean {
+  if (typeof value === "string") return holds(value)
+  if (Array.isArray(value)) return value.some((v) => holdsValue(v, holds))
+  if (typeof value === "object" && value !== null) {
+    return Object.entries(value).some(([k, v]) => holds(k) || holdsValue(v, holds))
+  }
+  return false
 }
 
 function scrubDeep(value: unknown, scrub: (text: string) => string): unknown {
@@ -319,4 +341,5 @@ export const studioTools: Tool<Studio>[] = [
   askUser,
   saveSceneTool,
   recordScene,
+  ...fileTools,
 ].map(scrubbed)

@@ -572,3 +572,127 @@ describe("what review round 3 found", () => {
     expect(readFileSync(join(dir, "pages", "a.txt"))[0]).toBe(0xef)
   })
 })
+
+describe("editing, checking and keeping (C2)", () => {
+  it("replaces one exact passage of the whole file, the rest byte for byte (a long page, CRLF, a BOM)", () => {
+    const long = `\uFEFF<p>start</p>\r\n${"<p>filler</p>\r\n".repeat(20_000)}<p>end</p>\r\n`
+    const { dir, files } = project({ "pages/a.html": long })
+    const read = files.read("pages/a.html")
+    const result = files.edit("pages/a.html", "<p>end</p>", "<p>fin</p>", { ifHash: read.hash })
+    const after = readFileSync(join(dir, "pages", "a.html"), "utf8")
+    expect(after).toBe(long.replace("<p>end</p>", "<p>fin</p>"))
+    expect(Buffer.byteLength(after)).toBeGreaterThan(FILE_LIMITS.textReturnBytes)
+    expect(result.line).toBe(20_002)
+  })
+
+  it("refuses a passage that isn't there, or is there more than once, or a stale hash", () => {
+    const { files } = project({ "pages/a.html": "<p>x</p><p>x</p>" })
+    const { hash } = files.read("pages/a.html")
+    expect(refusal(() => files.edit("pages/a.html", "<p>y</p>", "z", { ifHash: hash })).code).toBe(
+      "no-match",
+    )
+    expect(
+      refusal(() => files.edit("pages/a.html", "<p>x</p>", "z", { ifHash: hash })).message,
+    ).toMatch(/2 times/)
+    expect(
+      refusal(() => files.edit("pages/a.html", "<p>x</p><p>x", "z", { ifHash: "0".repeat(64) }))
+        .code,
+    ).toBe("changed")
+  })
+
+  it("lets the caller's check refuse the whole result (an edit or a text copy), writing nothing", () => {
+    const { dir, files } = project({
+      "pages/a.html": "<p>hello</p>",
+      "inputs/notes.txt": "key: hunter2-secret",
+    })
+    const check = (text: string) => (text.includes("hunter2") ? "holds a secret" : undefined)
+    const { hash } = files.read("pages/a.html")
+    // The value only appears once both pieces are there: the whole result is checked.
+    files.edit("pages/a.html", "hello", "hunter", { ifHash: hash, check })
+    const next = files.read("pages/a.html").hash
+    expect(
+      refusal(() => files.edit("pages/a.html", "hunter", "hunter2", { ifHash: next, check })).code,
+    ).toBe("refused")
+    expect(readFileSync(join(dir, "pages", "a.html"), "utf8")).toBe("<p>hunter</p>")
+    expect(
+      refusal(() => files.copy("inputs/notes.txt", "pages/notes.txt", { ifHash: null, check }))
+        .code,
+    ).toBe("refused")
+    // Text under an image's name is checked all the same.
+    expect(
+      refusal(() => files.copy("inputs/notes.txt", "pages/notes.png", { ifHash: null, check }))
+        .code,
+    ).toBe("refused")
+  })
+
+  it("lets the caller's guard refuse an edit before the passage is looked for", () => {
+    const { files } = project({ "pages/a.html": "<p>pw: hunter2-secret</p>" })
+    const guard = (text: string) => (text.includes("hunter2") ? "holds a secret" : undefined)
+    const { hash } = files.read("pages/a.html")
+    // The same answer whether the passage is in it or not: never an answer about its content.
+    for (const old of ["pw: h", "pw: z"]) {
+      expect(
+        refusal(() => files.edit("pages/a.html", old, old, { ifHash: hash, guard })).code,
+      ).toBe("guarded")
+    }
+  })
+
+  it("says a file's hash and size without its bytes, and a path's canonical form", () => {
+    const { files } = project({ "pages/font.woff": "\u0000\u0001binary" })
+    const stat = files.stat("Pages/font.woff")
+    expect(stat).toMatchObject({ path: "pages/font.woff", size: 8 })
+    expect(stat.hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(files.canonical("PAGES/x/y.html")).toBe("pages/x/y.html")
+    expect(refusal(() => files.canonical("project.json")).code).toBe("not-allowed")
+  })
+
+  it("scrubs the whole file before a part is cut (a value across lines, or across the cut)", () => {
+    const { files } = project({ "story.md": "a\ncorrect horse\nbattery staple\nb" })
+    const scrub = (t: string) => t.replace(/correct horse\s*battery staple/g, "[secret]")
+    // Line by line, neither half of the value shows.
+    for (const from of [2, 3]) {
+      const part = files.read("story.md", { from, lines: 1 }, scrub)
+      expect(part).toMatchObject({ kind: "text", scrubbed: true })
+      expect(part.kind === "text" && part.text).not.toMatch(/horse|battery/)
+    }
+    expect(files.read("story.md", undefined, scrub)).toMatchObject({ text: "a\n[secret]\nb" })
+  })
+
+  it("refuses an edit whose passage is in the file twice, overlapping", () => {
+    const { files } = project({ "pages/a.html": "<b>aaa</b>" })
+    const { hash } = files.read("pages/a.html")
+    expect(refusal(() => files.edit("pages/a.html", "aa", "x", { ifHash: hash })).message).toMatch(
+      /2 times/,
+    )
+  })
+
+  it("keeps a file's bytes before replacing or deleting it, and changes nothing if they can't be kept", () => {
+    const kept: [string, string][] = []
+    const dir = project({ "pages/a.html": "v1" }).dir
+    const files = new ProjectFiles(dir, {
+      keep: (path, bytes) => kept.push([path, Buffer.from(bytes).toString("utf8")]),
+    })
+    files.write("pages/a.html", "v2", { ifHash: files.read("pages/a.html").hash })
+    files.delete("pages/a.html", { ifHash: files.read("pages/a.html").hash })
+    expect(kept).toEqual([
+      ["pages/a.html", "v1"],
+      ["pages/a.html", "v2"],
+    ])
+    files.write("pages/b.html", "b", { ifHash: null })
+    const failing = new ProjectFiles(dir, {
+      keep: () => {
+        throw Object.assign(
+          new Error("ENOSPC: no space left on device, open '/Users/someone/Library/Kiframe/v.bin'"),
+          { code: "ENOSPC" },
+        )
+      },
+    })
+    const said = refusal(() =>
+      failing.delete("pages/b.html", { ifHash: failing.read("pages/b.html").hash }),
+    ).message
+    expect(said).toMatch(/couldn't be kept first \(ENOSPC\).*nothing changed/)
+    // Its code only: never a path in the app's data (the user's name) to the model.
+    expect(said).not.toContain("/Users/")
+    expect(readFileSync(join(dir, "pages", "b.html"), "utf8")).toBe("b")
+  })
+})

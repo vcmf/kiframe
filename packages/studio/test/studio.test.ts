@@ -57,6 +57,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
       asked.push(request)
       return answer(request, signal)
     },
+    stopRun: () => undefined,
     ...extra,
   })
   return { studio, asked, dir }

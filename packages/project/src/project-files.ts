@@ -49,6 +49,12 @@ export type FileRefusalCode =
   | "exists"
   | "not-found"
   | "collision"
+  /** An edit's passage isn't in the file, or is more than once. */
+  | "no-match"
+  /** The content was refused by the caller's check (a secret's value in it). */
+  | "refused"
+  /** An edit of a file the caller's guard keeps from edits (one holding a secret's value). */
+  | "guarded"
   | "io"
 
 export class FileRefusal extends Error {
@@ -78,8 +84,17 @@ export type FileRead =
       lines: number
       /** Only part of the file was returned (`range`, or the return cap). */
       partial: boolean
+      /** The caller's `scrub` changed the file (said of the whole file, whatever part is returned). */
+      scrubbed: boolean
     }
   | { kind: "image"; path: string; bytes: Uint8Array; mime: string; hash: string }
+
+/** An edit's conditions: the hash read, a guard on the file before, a check on the result. */
+export interface EditOptions {
+  ifHash: string
+  guard?: (before: string) => string | undefined
+  check?: (result: string) => string | undefined
+}
 
 /** The limits (OBJECT-MODEL §0.13, design review 2026-10-06). */
 export const FILE_LIMITS = {
@@ -189,6 +204,8 @@ export class ProjectFiles {
   readonly #dev: number
   /** Tests only: runs right before each open (a folder swapped for a link, a FIFO, at that moment). */
   readonly #beforeOpen: ((abs: string) => void) | undefined
+  /** Keeps a file's bytes before it's replaced or deleted (throwing: nothing is replaced). */
+  readonly #keep: ((path: string, bytes: Uint8Array) => void) | undefined
 
   /**
    * `projectDir`: the project's folder (its real path is taken: links above it are the user's).
@@ -196,12 +213,17 @@ export class ProjectFiles {
    */
   constructor(
     projectDir: string,
-    options: { templates?: string; beforeOpen?: (abs: string) => void } = {},
+    options: {
+      templates?: string
+      beforeOpen?: (abs: string) => void
+      keep?: (path: string, bytes: Uint8Array) => void
+    } = {},
   ) {
     this.#root = realpathSync(projectDir)
     this.#templates = options.templates === undefined ? undefined : realpathSync(options.templates)
     this.#dev = lstatSync(this.#root).dev
     this.#beforeOpen = options.beforeOpen
+    this.#keep = options.keep
     // Checked now; without it, the project opens and each file call is refused (never followed).
     try {
       noFollowAny()
@@ -340,10 +362,36 @@ export class ProjectFiles {
 
   /**
    * A file the agent may read: text (UTF-8; a line range of a long one), or an image as bytes.
-   * Every read gives the file's hash: what a later write is checked against.
+   * Every read gives the file's hash: what a later write is checked against. `scrub` is applied to
+   * the whole text before a part is cut from it (a value split across the cut, or across lines, is
+   * scrubbed as it is whole).
    */
-  read(path: string, range?: { from: number; lines: number }): FileRead {
-    return safe("read", path, () => this.#readUnsafe(path, range))
+  read(
+    path: string,
+    range?: { from: number; lines: number },
+    scrub?: (text: string) => string,
+  ): FileRead {
+    return safe("read", path, () => this.#readUnsafe(path, range, scrub))
+  }
+
+  /**
+   * A file's canonical path, its hash and size: any file the agent may see (a font, a file too
+   * large to read), for a delete or a copy over it. Never its bytes.
+   */
+  stat(path: string): { path: string; hash: string; size: number } {
+    return safe("read", path, () => {
+      const r = this.#resolve(path)
+      if (r.rest.length === 0 && r.area !== "story") {
+        throw new FileRefusal("not-a-file", `${r.canonical} is a folder: list it`)
+      }
+      const { bytes, hash } = this.#readAll(r, FILE_LIMITS.imageBytes)
+      return { path: r.canonical, hash, size: bytes.length }
+    })
+  }
+
+  /** A path's canonical form (its area as on disk), from the path alone (a bad one: refused). */
+  canonical(path: string): string {
+    return this.#resolve(path).canonical
   }
 
   /** A folder's entries the agent may see (never a dot-name: hidden files, our temporary ones). */
@@ -367,8 +415,27 @@ export class ProjectFiles {
    * Copies a file into pages/ (from inputs/, pages/ or the templates): how an image or a font gets
    * into a page (the model never writes binary). Only types a page uses (never one that runs).
    */
-  copy(from: string, to: string, opts: { ifHash: string | null }): { path: string; hash: string } {
+  copy(
+    from: string,
+    to: string,
+    opts: { ifHash: string | null; check?: (text: string) => string | undefined },
+  ): { path: string; hash: string } {
     return safe("copy into", to, () => this.#copyUnsafe(from, to, opts))
+  }
+
+  /**
+   * Replaces one exact passage of a whole text file (`old`: once, never 0 or several times), the
+   * rest byte for byte as it was (a byte-order mark, CRLF line ends); `ifHash`: the hash the caller
+   * read. `guard` sees the file before the passage is looked for (a refusal, "guarded": the answer
+   * never depends on what's in it); `check` sees the whole result before anything is written.
+   */
+  edit(
+    path: string,
+    old: string,
+    replacement: string,
+    opts: EditOptions,
+  ): { path: string; hash: string; line: number } {
+    return safe("edit", path, () => this.#editUnsafe(path, old, replacement, opts))
   }
 
   /** Deletes a file in pages/ (its emptied folders with it, never pages/ itself). */
@@ -416,7 +483,11 @@ export class ProjectFiles {
   }
 
   /** `read`, its file-system errors said by `safe`. */
-  #readUnsafe(path: string, range?: { from: number; lines: number }): FileRead {
+  #readUnsafe(
+    path: string,
+    range?: { from: number; lines: number },
+    scrub?: (text: string) => string,
+  ): FileRead {
     const r = this.#resolve(path)
     if (r.rest.length === 0 && r.area !== "story") {
       throw new FileRefusal("not-a-file", `${r.canonical} is a folder: list it`)
@@ -428,12 +499,13 @@ export class ProjectFiles {
       return { kind: "image", path: r.canonical, bytes, mime, hash }
     }
     const { bytes, hash } = this.#readAll(r, FILE_LIMITS.textReadBytes)
-    let text: string
+    let raw: string
     try {
-      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)
+      raw = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)
     } catch {
       throw new FileRefusal("not-text", `${r.canonical} isn't text (UTF-8)`)
     }
+    const text = scrub === undefined ? raw : scrub(raw)
     // A final newline ends the last line (no empty line after it); a read that reaches the end
     // gives it back.
     const all = text.split("\n")
@@ -476,7 +548,15 @@ export class ProjectFiles {
       chosen = chosen.slice(0, end)
       partial = true
     }
-    return { kind: "text", path: r.canonical, text: chosen, hash, lines: all.length, partial }
+    return {
+      kind: "text",
+      path: r.canonical,
+      text: chosen,
+      hash,
+      lines: all.length,
+      partial,
+      scrubbed: text !== raw,
+    }
   }
 
   /** `list`, its file-system errors said by `safe`. */
@@ -554,7 +634,7 @@ export class ProjectFiles {
   #copyUnsafe(
     from: string,
     to: string,
-    { ifHash }: { ifHash: string | null },
+    { ifHash, check }: { ifHash: string | null; check?: (text: string) => string | undefined },
   ): { path: string; hash: string } {
     const source = this.#resolve(from)
     const target = this.#resolve(to)
@@ -574,7 +654,81 @@ export class ProjectFiles {
       ? FILE_LIMITS.pageFileBytes
       : FILE_LIMITS.imageBytes
     const { bytes } = this.#readAll(source, cap, true)
+    // Checked whatever its name (a text file copied as an image is text all the same): its bytes
+    // as text, a secret's value in an attached file, say.
+    if (check !== undefined) {
+      const refused = check(Buffer.from(bytes).toString("utf8"))
+      if (refused !== undefined) throw new FileRefusal("refused", refused)
+    }
     return this.#put(target, Buffer.from(bytes), ifHash)
+  }
+
+  /** The bytes a replace or a delete is about to lose, kept (a failure: nothing is replaced). */
+  #kept(r: Resolved, bytes: Uint8Array | undefined): void {
+    if (this.#keep === undefined || bytes === undefined) return
+    try {
+      this.#keep(r.canonical, bytes)
+    } catch (error) {
+      throw new FileRefusal(
+        "io",
+        // Its code only: the keeper's message names a path in the app's data (the user's name).
+        `${r.canonical}: its current version couldn't be kept first (${(error as NodeJS.ErrnoException).code ?? "an error"}): nothing changed`,
+      )
+    }
+  }
+
+  /** `edit`, its file-system errors said by `safe`. */
+  #editUnsafe(
+    path: string,
+    old: string,
+    replacement: string,
+    { ifHash, guard, check }: EditOptions,
+  ): { path: string; hash: string; line: number } {
+    const r = this.#resolve(path)
+    this.#writable(r, "edit")
+    if (r.area !== "story" && !TEXT_WRITE.has(extension(r))) {
+      throw new FileRefusal("not-allowed", `${r.canonical} isn't a text file: it isn't edited`)
+    }
+    if (old === "") throw new FileRefusal("no-match", "the passage to replace is empty")
+    // The whole file (never the return-capped read), as text, kept byte for byte.
+    const { bytes, hash } = this.#readAll(r, FILE_LIMITS.pageFileBytes)
+    if (hash !== ifHash) throw changed(r)
+    let text: string
+    try {
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes)
+    } catch {
+      throw new FileRefusal("not-text", `${r.canonical} isn't text (UTF-8)`)
+    }
+    const guarded = guard?.(text)
+    if (guarded !== undefined) throw new FileRefusal("guarded", guarded)
+    const at = text.indexOf(old)
+    if (at < 0) {
+      throw new FileRefusal("no-match", `${r.canonical}: the passage isn't in it (read it again)`)
+    }
+    // Overlapping ones too ("aa" in "aaa": twice).
+    let count = 0
+    for (let i = at; i >= 0; i = text.indexOf(old, i + 1)) count++
+    if (count > 1) {
+      throw new FileRefusal(
+        "no-match",
+        `${r.canonical}: the passage is in it ${count} times: give more around it, so it's once`,
+      )
+    }
+    const result = text.slice(0, at) + replacement + text.slice(at + old.length)
+    const refused = check?.(result)
+    if (refused !== undefined) throw new FileRefusal("refused", refused)
+    if (r.area === "story" && [...result].length > FILE_LIMITS.storyChars) {
+      throw new FileRefusal(
+        "too-large",
+        `story.md is at most ${FILE_LIMITS.storyChars} characters: keep it short`,
+      )
+    }
+    const out = Buffer.from(result, "utf8")
+    if (r.area === "pages" && out.length > FILE_LIMITS.pageFileBytes) {
+      throw new FileRefusal("too-large", `${r.canonical}: a page's file is at most 512 KB`)
+    }
+    const written = this.#put(r, out, ifHash)
+    return { ...written, line: text.slice(0, at).split("\n").length }
   }
 
   /** `delete`, its file-system errors said by `safe`. */
@@ -583,9 +737,10 @@ export class ProjectFiles {
     if (r.area !== "pages" || r.rest.length === 0) {
       throw new FileRefusal("read-only", `${r.canonical}: only a file in pages/ is deleted`)
     }
-    const { hash } = this.#readCurrent(r)
+    const { hash, bytes } = this.#readCurrent(r)
     if (hash === undefined) throw new FileRefusal("not-found", `${r.canonical} doesn't exist`)
     if (hash !== ifHash) throw changed(r)
+    this.#kept(r, bytes)
     try {
       unlinkSync(this.#absolute(r))
     } catch (error) {
@@ -618,7 +773,7 @@ export class ProjectFiles {
   }
 
   /** The current hash of a file (undefined: it doesn't exist), read through a descriptor. */
-  #readCurrent(r: Resolved): { hash: string | undefined } {
+  #readCurrent(r: Resolved): { hash: string | undefined; bytes?: Uint8Array } {
     if (this.#walk(r, "absent-ok") === undefined) return { hash: undefined }
     const fd = this.#open(this.#absolute(r), r, constants.O_RDONLY)
     try {
@@ -631,6 +786,8 @@ export class ProjectFiles {
       }
       const hash = createHash("sha256")
       const chunk = Buffer.alloc(64 * 1024)
+      // Its bytes too, when they're kept before a replace or a delete.
+      const parts: Buffer[] = []
       let total = 0
       for (
         let n = readSync(fd, chunk, 0, chunk.length, null);
@@ -641,8 +798,12 @@ export class ProjectFiles {
         if (total > FILE_LIMITS.imageBytes)
           throw new FileRefusal("too-large", `${r.canonical} is too large`)
         hash.update(chunk.subarray(0, n))
+        if (this.#keep !== undefined) parts.push(Buffer.from(chunk.subarray(0, n)))
       }
-      return { hash: hash.digest("hex") }
+      return {
+        hash: hash.digest("hex"),
+        ...(this.#keep !== undefined && { bytes: new Uint8Array(Buffer.concat(parts)) }),
+      }
     } finally {
       closeSync(fd)
     }
@@ -716,7 +877,7 @@ export class ProjectFiles {
             }
           }
         } else {
-          const { hash } = this.#readCurrent(r)
+          const { hash, bytes: was } = this.#readCurrent(r)
           if (hash === undefined) {
             throw new FileRefusal(
               "not-found",
@@ -724,6 +885,7 @@ export class ProjectFiles {
             )
           }
           if (hash !== ifHash) throw changed(r)
+          this.#kept(r, was)
           // (APFS keeps the existing entry's name: `Logo.svg` replaced as `LOGO.svg` stays `Logo.svg`.)
           renameSync(tmp, target)
         }
