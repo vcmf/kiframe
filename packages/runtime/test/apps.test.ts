@@ -118,121 +118,6 @@ steps:
     }
   })
 
-  it("cleans up in the app the scene started in, wherever its steps went", async () => {
-    const seen: string[] = []
-    page.on("framenavigated", (f) => {
-      if (f === page.mainFrame()) seen.push(f.url())
-    })
-    await run(`setup: [{ action: goto, url: / }]
-steps: [{ id: docs, action: goto, app: docs, url: /projects }]
-teardown: [{ action: goto, url: /login }]
-`)
-    expect(seen.at(-1)).toBe(`${app.origin}/login`)
-  })
-
-  it("means the scene's start app for a teardown's plain goto, after a failed one to another app", async () => {
-    await run(
-      `setup: [{ action: goto, url: / }]
-steps: [{ id: a, action: pause, ms: 1 }]
-teardown:
-  - { action: goto, app: docs, url: "/login?delay=2000" }
-  - { action: goto, url: /projects }
-`,
-      { navigationTimeoutMs: 300 },
-    ).catch(() => undefined)
-    expect(host()).toBe(app.host)
-    expect(new URL(page.url()).pathname).toBe("/projects")
-  })
-
-  it("replays the setup after an ensure's cleanup in the apps it meant", async () => {
-    const withSeed = parseProjectYaml(`version: 2
-apps:
-  app: { kind: web, url: "${app.origin}" }
-  docs: { kind: web, url: "${docs.origin}" }
-defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
-presets:
-  seed: { app: docs, steps: [{ action: goto, url: /item }] }
-`)
-    // The leftover is on docs; the teardown cleans it there, then ends on app: going back, the
-    // preset's goto must mean docs again (on app the leftover would still show).
-    await runScenario(
-      page,
-      scene(`setup:
-  - { preset: seed }
-  - ensure: { absent: { by: text, text: Draft } }
-steps: [{ id: a, action: pause, ms: 1 }]
-teardown:
-  - { action: goto, app: docs, url: /clean }
-  - { action: goto, app: app, url: /login }
-`),
-      withSeed,
-    )
-  })
-
-  it("starts an ensure's cleanup at the scene's start app, wherever the setup is", async () => {
-    // The scene starts in docs; its setup reaches docs' leftover from app (a link), so the setup's
-    // app is "app" at the ensure. The cleanup is written for the start app: docs.
-    await run(`app: docs
-setup:
-  - { action: goto, app: app, url: "/swap-host?to=/item" }
-  - { action: click, target: { by: role, role: link, name: Other host } }
-  - ensure: { absent: { by: text, text: Draft } }
-steps: [{ id: a, action: pause, ms: 1 }]
-teardown: [{ action: goto, url: /clean }]
-`)
-  })
-
-  it("cleans up for an ensure in a preset at the scene's start app, not the preset's", async () => {
-    const withSeed = parseProjectYaml(`version: 2
-apps:
-  app: { kind: web, url: "${app.origin}" }
-  docs: { kind: web, url: "${docs.origin}" }
-defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
-presets:
-  seed:
-    app: docs
-    steps:
-      - { action: goto, app: app, url: /item }
-      - ensure: { absent: { by: text, text: Draft } }
-`)
-    // The scene's teardown is written for its start app (app), where the leftover is.
-    await runScenario(
-      page,
-      scene(`setup: [{ preset: seed }]
-steps: [{ id: a, action: pause, ms: 1 }]
-teardown: [{ action: goto, url: /clean }]
-`),
-      withSeed,
-    )
-  })
-
-  it("cleans up in the scene's start app after a setup failing inside a preset on another app", async () => {
-    const withLogin = parseProjectYaml(`version: 2
-apps:
-  app: { kind: web, url: "${app.origin}" }
-  docs: { kind: web, url: "${docs.origin}" }
-defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
-presets:
-  login:
-    app: docs
-    steps:
-      - { action: goto, url: /login }
-      - { action: click, target: { by: role, role: button, name: Nothing here } }
-`)
-    const error = await runScenario(
-      page,
-      scene(`setup: [{ preset: login }]
-steps: [{ id: a, action: pause, ms: 1 }]
-teardown: [{ action: goto, url: /projects }]
-`),
-      withLogin,
-      { timeoutMs: 300 },
-    ).catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(StepError)
-    expect(host()).toBe(app.host)
-    expect(new URL(page.url()).pathname).toBe("/projects")
-  })
-
   it("refuses a secret on a blank page as off the project's apps", async () => {
     // about:blank with a password field (its origin is opaque: "null").
     await page.setContent(`<label>Password <input type="password"></label>`)
@@ -488,11 +373,7 @@ steps: [{ id: s, action: pause, ms: 1 }]`).setup ?? [],
     )
     expect(
       entries.flatMap((e) =>
-        e.kind === "action" && e.action.action === "goto"
-          ? [`${e.app} ${e.action.url}`]
-          : e.kind === "ensure"
-            ? ["ensure"]
-            : [],
+        e.kind === "action" && e.action.action === "goto" ? [`${e.app} ${e.action.url}`] : [],
       ),
     ).toEqual([
       "docs /a",
@@ -503,7 +384,6 @@ steps: [{ id: s, action: pause, ms: 1 }]`).setup ?? [],
       "app /p",
       "docs /c",
       "docs /d",
-      "ensure",
     ])
   })
 })

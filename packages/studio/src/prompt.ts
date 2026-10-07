@@ -15,14 +15,12 @@ version: 1
 setup:        # off camera, runs first: navigation, login, making the app ready
   - { preset: <name> }                       # a project preset (see below)
   - { action: goto, url: /path }             # relative to the app
-  - ensure: { absent: <locator> }            # must not exist before filming (else the teardown runs first)
 steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id (a caption on the ones that matter)
   - { id: open-new, action: click, target: <locator>, caption: "Short caption for the video" }
-teardown:     # off camera, after filming: remove what the steps created, so the scene can be replayed
-  - { action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays (the user approves)
+  - { id: send, action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays the demo shows (the user approves)
 
 Every action and its forms, then the fields steps take (never guess fields that aren't here).
-Setup and teardown items are the same actions with only id and risky (no caption, hold…); their id is
+Setup items are the same actions with only id and risky (no caption, hold…); their id is
 optional, EXCEPT on a step typing a secret (always an id: its approval is keyed by it):
 ${stepReference()}
 
@@ -52,9 +50,11 @@ Rules:
 - No conditions or loops in steps. Wait on conditions (waitFor), never fixed sleeps (pause is only a beat).
 - Captions: short, marketing tone, on the steps that matter (not every step).
 - Ask the user (\`ask_user\`) only for real blockers (a missing secret, an ambiguous goal).
-- run_step runs steps on the live page in order: after the steps, clean up with the teardown actions too
-  (run them with run_step as well) so the app is back to its initial state before you save. Give run_step
-  the part each item is for (\`part: setup\` / \`teardown\`; steps by default).
+- run_step runs steps on the live page in order. Give run_step the part each item is for (\`part: setup\`;
+  steps by default).
+- Nothing is cleaned up after a scene: what it creates stays in the app (the user is told). Prefer scenes
+  that also work when they run again (a name that can exist twice, opening what's already there), and
+  never add steps that only undo the scene's work.
 - A long page's snapshot is cut: to reach something further down (a section, a paragraph), snapshot with
   \`find\` (text it mentions): you get its elements and refs, then scroll to one (\`scroll\` with \`to\`).
 - To point at a sentence on camera (or act on it next: an editor's Bold), select it: \`selectText\` on the
@@ -63,7 +63,7 @@ Rules:
   into a block selection (Notion): select within one block there.
 - Explore with snapshot and run_step; once you know the locators, run the rest with run_steps (several
   steps in one call) to save turns.
-- As soon as every step and the teardown ran ok once, call save_scene. Don't start over by hand to re-check:
+- As soon as every step ran ok once, call save_scene. Don't start over by hand to re-check:
   save_scene replays the whole scene from scratch in a fresh browser, at the recording's pace (a person's
   typing and pointer), and tells you what fails.
 - A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.

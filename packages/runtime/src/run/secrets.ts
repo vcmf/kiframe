@@ -621,7 +621,7 @@ export function followSecretField(
   secret: string,
   target: Locator,
 ): { id: string; field: Ctx["secretFields"][number] | undefined } {
-  // Unique per write (an `ensure` replays several steps under one index): one region per field.
+  // Unique per write (an interrupt rule types under its step's index too): one region per field.
   const id = `secret:${secret}:${step.phase}:${step.index}${step.interrupt === undefined ? "" : `:${step.interrupt}`}:${ctx.secretFieldCount++}`
   if (ctx.options.recording !== true) return { id, field: undefined }
   const field: Ctx["secretFields"][number] = {
@@ -675,7 +675,7 @@ function approvalKeyOf(
       `secret "${secret}": the host's scene id "${sceneId}" isn't a scene id (kebab-case)`,
     )
   }
-  return { scope, stepKey: `scene:${sceneId}/${step.keyPhase ?? step.phase}/${step.stepId ?? ""}` }
+  return { scope, stepKey: `scene:${sceneId}/${step.phase}/${step.stepId ?? ""}` }
 }
 
 /**

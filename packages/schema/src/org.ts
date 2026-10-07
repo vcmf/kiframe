@@ -19,7 +19,7 @@ export const Environment = z
     url: withoutCredentials(z.url({ protocol: /^https?$/ })),
     /** Demo or staging data that may be changed and reset. */
     sandbox: z.boolean().default(false),
-    /** Risky teardown steps run without asking (sandbox only). */
+    /** Unused since cleanups were removed (2026-10-07): every risky step asks. Read for older files. */
     preApproveTeardown: z.boolean().default(false),
     /** Secret names each member fills in on their own machine (values are never synced). */
     requiredSecrets: z.array(SecretName).default([]),

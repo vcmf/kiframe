@@ -20,7 +20,7 @@ import {
   type Scenario,
 } from "@kiframe/schema"
 import type { Page } from "playwright"
-import { StepError, type StepRef } from "./errors.ts"
+import { type StepRef } from "./errors.ts"
 import type { Box } from "./motion.ts"
 import { Regions } from "./regions.ts"
 import type { ReadTimes, RegionReport } from "./run/context.ts"
@@ -60,8 +60,6 @@ export interface Take {
   cursor: CursorSample[]
   /** Records that couldn't be written (also saved as warnings.json). */
   warnings: string[]
-  /** Teardown (off camera) failed after every step ran: the take is complete, the app state isn't clean. */
-  teardownError?: StepError
 }
 
 /** Records a scenario into a take directory. Rethrows the runner's error after writing what was captured. */
@@ -311,7 +309,7 @@ export async function recordScenario(
               ...(e.secret !== undefined && { secret: e.secret }),
             })
           } else if (e.step.phase === "steps") {
-            // Off camera (setup, teardown), nothing is filmed: no box there is expected.
+            // Off camera (setup), nothing is filmed: no box there is expected.
             warnings.push(`no box for the ${kind} of ${keyOf(e.step)}: typing not logged`)
           }
           // A field filled from the vault is sensitive: the compositor blurs it. Without a box, the
@@ -354,11 +352,6 @@ export async function recordScenario(
           push({ ...base(e.step), t: from, kind: "interrupt", rule: e.rule, until: at() })
           break
         }
-        case "teardown_failed":
-          // Only the first teardown failure is thrown (Take.teardownError); every other one is
-          // a warning of the take, never silent.
-          warnings.push(`teardown: ${firstLine(e.error)}`)
-          break
         case "warning":
           if (!warnings.includes(e.message)) warnings.push(e.message)
           break
@@ -391,14 +384,6 @@ export async function recordScenario(
       })
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
-    }
-    // Every step ran (teardown runs after them, off camera): the take is complete. The dirty state
-    // is the caller's to handle, from `teardownError`.
-    let teardownError: StepError | undefined
-    if (failure instanceof StepError && failure.step.phase === "teardown") {
-      teardownError = failure
-      warnings.push(`teardown failed: ${firstLine(failure)}`)
-      failure = undefined
     }
     stopped = true
     await capturing.screencast.stop().catch(() => undefined)
@@ -542,7 +527,6 @@ export async function recordScenario(
       events,
       cursor,
       warnings,
-      ...(teardownError !== undefined && { teardownError }),
     }
   } finally {
     if (!placed) rmSync(outDir, { recursive: true, force: true })

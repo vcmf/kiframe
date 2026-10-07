@@ -57,7 +57,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Click event before dispatch:** the click event is logged just before `locator.click` (no trial click: Playwright's trial really presses the mouse). If the click then fails, the step and the take fail, so the logged click is never in a usable take.
 - **Follow the typed element, not the locator:** a secret field is re-found through its locator (`visible`, `nth`), so a new matching field above it can take the blur; a field hidden (tab switch) ends its blur and is unblurred when shown again until the step ends. Keep the element handle (and handle navigation as "gone"), sample per frame.
 - **Gone fields keep being measured:** each secret field costs a round trip or two after every later step, even once gone; stop after a navigation, or shorter timeout.
-- **One scrub point for take writers:** scrubbing happens at the runner's exits (navigate, errors, teardown_failed); the recorder's writers (events, warnings) don't scrub. Expose a scrub function to the recorder and apply it to every record.
+- **One scrub point for take writers:** scrubbing happens at the runner's exits (navigate, errors); the recorder's writers (events, warnings) don't scrub. Expose a scrub function to the recorder and apply it to every record.
 - **scrubError loses the error class:** a non-StepError is rebuilt as a plain Error (name kept) when a secret was resolved; `instanceof TimeoutError` differs with/without the vault.
 - **Scrubber regex per call:** `scrubSecrets` rebuilds the variants and the alternation on every navigation / error; cache it on the context when a secret is resolved.
 
@@ -85,11 +85,7 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 
 ## @kiframe/runtime state (P0-9)
 - **Off-screen matches count as visible:** an item of a collapsed sidebar (translated off screen) is "visible" to Playwright, so it makes a locator ambiguous (FAILURE-CATALOGUE #1). Treat elements entirely outside the viewport and not scrollable into it as hidden in `visibleOnly`.
-- **`ensure` re-check replays the whole setup before it:** fine for `goto`-style setups; a setup with side effects (creating data) before an `ensure` would run them twice. Validate that only navigation/waits precede an `ensure`, or re-run a declared "context" part only.
 - **Session presets saved at the end of a run:** the harness carries the whole profile after each run (app data included). For login presets, v0's batch runner should save right after `preset_done` and create every scene's context from that.
-- **`ensure` settles on its own:** it settles (up to 3 s of network/DOM activity) even right after a step that just settled; on busy pages that's dead time off camera. Skip the settle when the previous entry settled.
-- **`ensure: absent` always waits its 1 s grace:** the clean case pays the full grace (the wait only ends early when something appears). Use `count()` after settle, and the grace only after a declared late list (`waitFor` on it, FAILURE-CATALOGUE #6).
-- **Harness dirty runs have no teardown at all:** their `ensure` can't clean an unexpected leftover. Skip only the final teardown (a runner option) or create the leftover with a separate scene.
 - **Pre-approval per environment:** the harness approves every risky step (sandbox). v0 needs the per-environment pre-approval list (APPROACHES §7.2).
 
 ## Grounding (P0-8)
@@ -196,7 +192,6 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Typed keys follow focus:** `type` sends its keys through the keyboard, so if the app moves focus mid-typing they reach whatever has it (a space on a focused button presses it). Checking focus before every key would cost a page call per character.
 - **The save replay doesn't move the pointer:** it types and settles at the recording's pace, but the pointer jumps (its travel is most of a recording's time): a hover effect the recording's cursor path triggers (a menu opening over the next target) fails only in the recording.
 ## @kiframe/runtime interrupts and hide (M1-3)
-- **`ensure` and interrupts:** an `ensure` check doesn't run the interrupt check first; a banner over the list can hide what `ensure: absent` looks for (it then passes). Run the check at the start of `ensure` too.
 - **Stacked interrupts:** rules are tried in config order, not stacking order. A cookie banner (rule 1) under a "What's new" modal (rule 2) fails the step: rule 1's button is covered. Try the next matching rule when a `do` fails, then come back to the first.
 - **Interrupt check cost:** one locator count per rule, before every step and on every covered click. For a long org rule bank, one combined `or()` count for the common no-match case, then find the rule.
 - **Hide under a strict CSP:** a `style-src` without inline styles blocks the injected style (a take warning says so). Use a constructable stylesheet (`adoptedStyleSheets`) or the context's `bypassCSP` where Kiframe creates the context.
@@ -214,14 +209,12 @@ Non-severe review findings deferred on purpose (see the review-round rule: only 
 - **Session across batches:** the saved session lives in memory for one batch; every batch logs in again. Keeping it (encrypted, keychain) between batches would cut logins further (M1-7/M1-8 decide where secrets at rest live).
 - **Session validation:** a stale saved session is noticed only when a scene fails (the next one logs in again, the failed one isn't retried). A scene that signs out on camera revokes the server session behind the saved state, so the next scene fails too. A cheap check after the context is created (the preset's last `waitFor`, say) would catch it before filming.
 - **Several session presets:** a scene reuses the saved state only if it holds every session preset it uses; a scene logging in from scratch replaces it (the others log in again later). Two accounts of one app in one batch aren't supported.
-- **Scoped sandbox pre-approvals:** a sandbox pre-approves teardowns and `ensure` cleanups only. Pre-approving named destructive actions in the scene itself ("may delete projects named *Q4 Launch*", APPROACHES §7.2) needs the approval UI (M2-4).
 - **Session landing URL:** a skipped login goes back to the path and query it ended on; a query carrying a one-time token would be replayed (and appear in navigate events until M1-6 scrubs navigate URLs).
 - **Which failures drop the session:** any step failure on a reused session (but a setup error) drops it, a stale selector included: a batch of scenes with broken selectors logs in again after each. Telling a signed-out page apart (the login page's URL) would keep it.
 - **Refresh-token rotation:** every scene restores the snapshot taken after the login; an app rotating refresh tokens (Supabase, Auth0) rejects it once a scene refreshed. Saving the state again at the end of a successful scene would follow the rotation (at the cost of carrying what the scene did).
 - **Setup indexes of skipped presets:** a skipped session preset becomes one `goto`, so later setup indexes differ between a fresh-login take and a reused one. Keep the preset's indexes reserved.
 - **Session preset lookup:** `sessionPresetsOf` (batch) and `expandSetup` (run/setup.ts) both decide what a session preset is; export one helper.
 - **Sessions in sessionStorage:** Playwright's storage state carries cookies, localStorage and IndexedDB, not sessionStorage. An app keeping its token there arrives signed out on every reused scene (and the batch logs in again after each failure). Carry sessionStorage with an init script, or detect it and turn reuse off for the project.
-- **`ensure` replay after a fresh login:** it replays the login preset's `goto`s (the login page, signed in), not the page the login ended on; after a reused login it goes to that page. Replay the landing in both cases.
 - **One snapshot per scene:** each session preset that finishes saves the full state (IndexedDB included); with two in one scene the first is thrown away. Save once, after the scene's last session preset.
 
 ## @kiframe/vault storage and resolver (M1-5)

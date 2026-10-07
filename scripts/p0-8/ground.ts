@@ -152,7 +152,6 @@ version: 1
 setup:        # off camera, runs first: navigation, login, making the app ready
   - { preset: <name> }                       # a project preset (see below)
   - { action: goto, url: /path }             # relative to the app
-  - ensure: { absent: <locator> }            # must not exist before filming (else the teardown runs first)
 steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id
   - { id: open-new, action: click, target: <locator>, caption: "Short caption for the video" }
   - { id: name, action: type, target: <locator>, value: "Text", clear: true, submit: false }
@@ -162,8 +161,7 @@ steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id
   - { id: more, action: scroll, by: { y: 400 } }
   - { id: menu, action: hover, target: <locator> }
   - { id: beat, action: pause, ms: 800 }
-teardown:     # off camera, after filming: remove what the steps created, so the scene can be replayed
-  - { action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays
+  - { id: send, action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays the demo shows
 
 Locators (prefer in this order; they must match exactly ONE visible element):
   { by: role, role: button, name: "Save", exact: true }   # roles from the snapshot (button, link, textbox, heading…)
@@ -180,9 +178,8 @@ Rules:
 - No conditions or loops in steps. Wait on conditions (waitFor), never fixed sleeps (pause is only a beat).
 - Captions: short, marketing tone, on the steps that matter (not every step).
 - Ask the user (\`ask_user\`) only for real blockers (a missing secret, an ambiguous goal). Questions are counted.
-- run_step runs steps on the live page in order: after the steps, clean up with the teardown actions too
-  (run them with run_step as well) so the app is back to its initial state before you call finish.
-- As soon as every step and the teardown ran ok once, call finish. Don't start over by hand to re-check:
+- run_step runs steps on the live page in order. Nothing is cleaned up after a scene.
+- As soon as every step ran ok once, call finish. Don't start over by hand to re-check:
   finish itself replays the whole scene from scratch in a fresh browser and tells you what fails.
 - A target reported "off screen" is inside a collapsed panel: open the panel first, or use a visible element.
 - The replay starts in a FRESH browser (no cookies, no storage): panels, sidebars and menus are in their
@@ -365,7 +362,7 @@ const tools: ChatCompletionTool[] = [
     function: {
       name: "run_step",
       description:
-        "Run ONE step on the live page (a steps item, or a setup/teardown action given an id). Returns ok or why it failed.",
+        "Run ONE step on the live page (a steps item, or a setup action given an id). Returns ok or why it failed.",
       parameters: {
         type: "object",
         properties: {

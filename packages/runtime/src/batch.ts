@@ -3,12 +3,11 @@ import {
   startAppOf,
   unknownApps,
   type ProjectConfig,
-  type ResolvedEnvironment,
   type Scenario,
   SceneId,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
-import { StepError, type StepRef } from "./errors.ts"
+import { StepError } from "./errors.ts"
 import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
 import { appAtOrigin } from "./run/apps.ts"
 import type { SessionLanding } from "./run/context.ts"
@@ -18,22 +17,6 @@ import { secretsOf } from "./secret-state.ts"
 // gets a fresh browser context (nothing leaks from one take to the next but the session), and
 // session presets (logins) run once: the context's state is saved when they're done and the next
 // scenes using them start from it, skipping them.
-
-/**
- * The approval policy of an environment: a risky cleanup (a teardown step, or the teardown an
- * `ensure` runs: `StepRef.cleanup`) is pre-approved where the org allows it (a sandbox's
- * `preApproveTeardown`); everything else goes to `ask`, and without `ask` it's refused.
- */
-export function approvalPolicy(
-  environment: Pick<ResolvedEnvironment, "sandbox" | "preApproveTeardown">,
-  ask?: (step: StepRef) => boolean | Promise<boolean>,
-): (step: StepRef) => boolean | Promise<boolean> {
-  const teardownApproved = environment.sandbox && environment.preApproveTeardown
-  return (step) => {
-    if (teardownApproved && step.cleanup === true && step.interrupt === undefined) return true
-    return ask?.(step) ?? false
-  }
-}
 
 export interface BatchScene {
   scenario: Scenario
@@ -47,11 +30,6 @@ export interface BatchOptions extends Omit<
   RecordOptions,
   "outDir" | "skipSessionPresets" | "onSessionReady" | "sessionLandings" | "sceneId"
 > {
-  /**
-   * The environment the batch runs against: risky steps go through its `approvalPolicy`, with
-   * `approveRisky` as the way to ask.
-   */
-  environment?: Pick<ResolvedEnvironment, "sandbox" | "preApproveTeardown">
   /** For every scene's context. Default: the project's viewport and device scale factor. */
   context?: Omit<BrowserContextOptions, "storageState">
   /** Called with each scene's result, as soon as it's known. Must not throw. */
@@ -81,16 +59,13 @@ export async function recordBatch(
   project: ProjectConfig,
   options: BatchOptions = {},
 ): Promise<BatchResult[]> {
-  const { context: contextOptions, onScene, environment, ...record } = options
+  const { context: contextOptions, onScene, ...record } = options
   // Each scene's own approval keys (§3 A1): a scene with an invalid id, or an earlier scene's, fails.
   const ids = new Set<string>()
   // Never clipboard access for the page (SECRETS-DESIGN §3 A5).
   const clipboard = (contextOptions?.permissions ?? []).filter((p) => p.startsWith("clipboard"))
   if (clipboard.length > 0) {
     throw new Error(`recording contexts never get clipboard permissions (${clipboard.join(", ")})`)
-  }
-  if (environment !== undefined) {
-    record.approveRisky = approvalPolicy(environment, options.approveRisky)
   }
   let state: BrowserContextOptions["storageState"]
   // The session presets the saved state holds, and the page each one ended on (in which app).

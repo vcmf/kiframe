@@ -5,12 +5,7 @@ import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium, type Browser } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { memoryBackend, Vault } from "@kiframe/vault"
-import {
-  approvalPolicy,
-  type ApprovalRequest,
-  recordBatch,
-  type RunnerEvent,
-} from "../src/index.ts"
+import { type ApprovalRequest, recordBatch, type RunnerEvent } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
 
 let server: Awaited<ReturnType<typeof startFixtureServer>>
@@ -224,38 +219,5 @@ describe("recordBatch contexts", () => {
     await expect(
       recordBatch(browser, [], project(), { context: { permissions: ["clipboard-read"] } }),
     ).rejects.toThrow(/never get clipboard permissions/)
-  })
-})
-
-describe("approvalPolicy", () => {
-  const teardown = { phase: "teardown" as const, index: 0, action: "click", cleanup: true as const }
-  const cleanup = {
-    phase: "setup" as const,
-    index: 2,
-    action: "ensure: click",
-    cleanup: true as const,
-  }
-  const step = { phase: "steps" as const, index: 0, action: "click" }
-  const interrupt = { ...teardown, interrupt: "cookies" }
-
-  it("pre-approves teardowns and ensure cleanups on a sandbox that allows it", async () => {
-    const policy = approvalPolicy({ sandbox: true, preApproveTeardown: true })
-    expect(await policy(teardown)).toBe(true)
-    expect(await policy(cleanup)).toBe(true)
-    expect(await policy(step)).toBe(false)
-    expect(await policy(interrupt)).toBe(false)
-    // `ensure` going back through the setup isn't a cleanup: a risky setup step still asks.
-    expect(await policy({ phase: "setup", index: 2, action: "ensure (back): click" })).toBe(false)
-  })
-
-  it("asks for everything elsewhere, and refuses without a way to ask", async () => {
-    const asked: string[] = []
-    const policy = approvalPolicy({ sandbox: true, preApproveTeardown: false }, (s) => {
-      asked.push(s.phase)
-      return true
-    })
-    expect(await policy(teardown)).toBe(true)
-    expect(asked).toEqual(["teardown"])
-    expect(await approvalPolicy({ sandbox: false, preApproveTeardown: true })(teardown)).toBe(false)
   })
 })

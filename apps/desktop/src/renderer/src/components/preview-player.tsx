@@ -1,7 +1,9 @@
 // A recorded scene played as it exports: the compositor's own player on a canvas (captions,
 // cursor, zoom, blurred secrets), with play/pause and a scrubber. A scene that can't play says why.
+// Once it has played to its end, a line says that what the demo did stays in the app (Kiframe
+// doesn't clean up after a scene).
 import { flatten, Player } from "@kiframe/compositor"
-import { Pause, Play, WarningCircle } from "@phosphor-icons/react"
+import { Info, Pause, Play, WarningCircle } from "@phosphor-icons/react"
 import { useEffect, useRef, useState } from "react"
 import { api } from "../api.ts"
 import { loadBackground } from "../backgrounds.ts"
@@ -89,6 +91,24 @@ export function PreviewPlayer(props: {
   useEffect(() => {
     if (!active) player?.pause()
   }, [active, player])
+  // Played to its end once (this load: playing, then stopped at the end; never a scrub there): the
+  // note stays, whatever is played after.
+  const [ended, setEnded] = useState(false)
+  const played = useRef(false)
+  useEffect(() => {
+    setEnded(false)
+    played.current = false
+  }, [want])
+  if (player?.playing === true) played.current = true
+  const atEnd =
+    played.current &&
+    player !== undefined &&
+    !player.playing &&
+    player.duration > 0 &&
+    player.time >= player.duration - 1
+  useEffect(() => {
+    if (atEnd) setEnded(true)
+  }, [atEnd])
   return (
     <div className="player" hidden={!active}>
       <canvas
@@ -129,6 +149,12 @@ export function PreviewPlayer(props: {
             {clock(player.time)} / {clock(player.duration)}
           </span>
         </div>
+      )}
+      {player !== undefined && ended && (
+        <p className="player-aftermath" role="note">
+          <Info size={14} />
+          This demo’s actions stay in your app: what it created or changed isn’t undone.
+        </p>
       )}
     </div>
   )

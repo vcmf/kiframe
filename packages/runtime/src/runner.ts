@@ -1,11 +1,16 @@
-import { type ProjectConfig, type Scenario, startAppOf, unknownApps } from "@kiframe/schema"
+import {
+  presetRefs,
+  type ProjectConfig,
+  type Scenario,
+  startAppOf,
+  unknownApps,
+} from "@kiframe/schema"
 import type { Frame, Page } from "playwright"
 import { StepError, type StepRef } from "./errors.ts"
 import { NetworkTracker } from "./network.ts"
 import { SAFE_SELECTOR_RULES, secretsOf } from "./secret-state.ts"
 import { type Ctx, firstLine, MIN_TIMEOUT_MS, type RunOptions } from "./run/context.ts"
 import { applyHide, hideCss } from "./run/interrupts.ts"
-import { switchPage } from "./run/pages.ts"
 import {
   followSecretFields,
   followSecretText,
@@ -20,18 +25,12 @@ import { runOne } from "./run/step.ts"
 import { now } from "./clock.ts"
 
 // Runs one scene's scenario against a live page (docs/OBJECT-MODEL.md §2–2b): setup (presets
-// expanded, session presets skipped when the page already has their state, `ensure`), steps,
-// teardown.
+// expanded, session presets skipped when the page already has their state), then the steps.
 
 /** Hide rules already reported as skipped, per context (one warning each). */
 const warnedHideOf = new WeakMap<object, Set<string>>()
 
-/**
- * Runs a scenario. Throws a `StepError` naming the failing step. Teardown always runs, best effort:
- * every teardown step is attempted even if some fail. The error thrown is the first step failure,
- * else the first teardown failure; every other teardown failure is reported as a `teardown_failed`
- * event.
- */
+/** Runs a scenario. Throws a `StepError` naming the failing step. */
 export async function runScenario(
   page: Page,
   scenario: Scenario,
@@ -39,8 +38,7 @@ export async function runScenario(
   options: RunOptions = {},
 ): Promise<void> {
   // Static config errors (unknown preset, unknown app) fail BEFORE anything runs or is attached to
-  // the page, and don't trigger teardown: nothing was created, and teardown could delete
-  // pre-existing data.
+  // the page.
   const unknown = unknownApps(scenario, project)
   if (unknown.length > 0) {
     throw new StepError(
@@ -183,6 +181,14 @@ export async function runScenario(
     })
   }
 
+  // A scene's `teardown` and `ensure` (from before they were removed, OBJECT-MODEL §0.4) never run:
+  // a demo's actions stay in the app.
+  for (const part of ignoredParts(scenario, project)) {
+    options.onEvent?.({
+      kind: "warning",
+      message: `${part} is skipped: Kiframe no longer cleans up after a demo (its actions stay in the app)`,
+    })
+  }
   await applyHide(ctx, page)
   // While recording, secrets shown as text are looked for between steps and during them.
   const scan =
@@ -202,9 +208,7 @@ export async function runScenario(
   try {
     let failure: Error | undefined
     try {
-      for (const [position, entry] of setup.entries()) {
-        await runSetupEntry(ctx, scenario, setup, position, entry)
-      }
+      for (const entry of setup) await runSetupEntry(ctx, entry)
       for (const [index, step] of scenario.steps.entries()) {
         await runOne(
           ctx,
@@ -214,111 +218,25 @@ export async function runScenario(
         )
       }
     } catch (error) {
-      // The step's own error is the one reported: don't let a pending listener error from the same
-      // step resurface later and cut teardown short.
+      // The step's own error is the one reported: never a pending listener error from the same step.
       ctx.clearListenerError()
       failure =
         error instanceof StepError || current === undefined
           ? (error as Error)
           : new StepError(current, "action-failed", firstLine(error), { cause: error })
     }
-    // Stopped: a stop, whatever failed with it (a dialog it closed), and nothing more runs, even
-    // after the last step (the scene's next `ensure` cleans what this run left).
-    const stopped = options.signal?.aborted === true
-    if (stopped && !(failure instanceof StepError && failure.reason === "stopped")) {
-      const at =
-        failure instanceof StepError
-          ? failure.step
-          : (current ?? { phase: "teardown" as const, index: 0, action: "teardown" })
-      failure = new StepError(at, "stopped", "the run was stopped", { cause: failure })
-    }
-    // Teardown is best effort: every step runs (cleanup must go as far as it can), each failure is
-    // reported, and the first one is thrown if nothing failed before. Not after an `ensure`
-    // failure: no scene step ran, so what the teardown would delete wasn't created by this run.
-    const noTeardown = stopped || (failure instanceof StepError && failure.step.action === "ensure")
-    // The teardown cleans the app where the scene started, not a tab or popup it followed, and
-    // never follows a page the scene opened late.
-    ctx.opened.length = 0
-    let returnFailure: StepError | undefined
-    const root = ctx.openers[0]
+    let thrown = failure ?? listenerError
+    // Stopped: a stop, whatever failed with it (a dialog it closed). A stop landing once every step
+    // is done stops nothing (there's nothing after them): the run is complete.
     if (
-      !noTeardown &&
-      root !== undefined &&
-      !root.isClosed() &&
-      (scenario.teardown ?? []).length > 0
-    ) {
-      const ref: StepRef = { phase: "teardown", index: 0, action: "return to the start page" }
-      ctx.openers.length = 0
-      try {
-        await switchPage(ctx, root, ref)
-      } catch (error) {
-        // Best effort like the teardown itself, but never silent (the capture may be off).
-        const stepError =
-          error instanceof StepError
-            ? error
-            : new StepError(ref, "action-failed", firstLine(error), { cause: error })
-        // The first teardown failure is thrown when nothing failed before; later ones are events.
-        if (failure === undefined) returnFailure = stepError
-        else {
-          try {
-            options.onEvent?.({
-              kind: "teardown_failed",
-              error: scrubError(stepError, secretValues) as StepError,
-            })
-          } catch {
-            // reporting must never stop the cleanup
-          }
-        }
-      }
-    }
-    let teardownFailure: StepError | undefined = returnFailure
-    for (const [index, action] of (noTeardown ? [] : (scenario.teardown ?? [])).entries()) {
-      const ref: StepRef = {
-        phase: "teardown",
-        index,
-        stepId: action.id,
-        action: action.action,
-        cleanup: true,
-      }
-      try {
-        // A teardown means the scene's start app, wherever the setup or the steps stopped.
-        await runOne(ctx, action, ref, ctx.startApp)
-      } catch (error) {
-        ctx.clearListenerError()
-        // Stopped during the teardown: the rest of it doesn't run.
-        if (options.signal?.aborted === true) {
-          teardownFailure ??= new StepError(ref, "stopped", "the run was stopped", { cause: error })
-          break
-        }
-        const stepError =
-          error instanceof StepError
-            ? error
-            : new StepError(ref, "action-failed", firstLine(error), { cause: error })
-        // The first teardown failure is thrown when nothing failed before: it isn't also reported
-        // as an event. Every other one is (it would be lost otherwise).
-        if (failure === undefined && teardownFailure === undefined) teardownFailure = stepError
-        else {
-          try {
-            options.onEvent?.({
-              kind: "teardown_failed",
-              error: scrubError(stepError, secretValues) as StepError,
-            })
-          } catch {
-            // reporting must never stop the remaining cleanup
-          }
-        }
-      }
-    }
-    let thrown = failure ?? teardownFailure ?? listenerError
-    // Stopped by then (in the teardown, after a failure): a stop, whatever failed first.
-    if (
+      thrown !== undefined &&
       options.signal?.aborted === true &&
       !(thrown instanceof StepError && thrown.reason === "stopped")
     ) {
       const at =
         thrown instanceof StepError
           ? thrown.step
-          : (current ?? { phase: "teardown" as const, index: 0, action: "teardown" })
+          : (current ?? { phase: "steps" as const, index: 0, action: "stop" })
       thrown = new StepError(at, "stopped", "the run was stopped", { cause: thrown })
     }
     // Errors leave the runner scrubbed of every secret value (a Playwright message can quote a URL
@@ -341,3 +259,15 @@ export type { RunnerEvent, RunOptions } from "./run/context.ts"
 export { firstLine } from "./run/context.ts"
 export { urlMatches } from "./run/conditions.ts"
 export { pathOnly, scrubSecrets, secretScrubber } from "./run/secrets.ts"
+
+/** The parts of a scene that never run any more: its `teardown`, its `ensure`s and its presets'. */
+function ignoredParts(scenario: Scenario, project: ProjectConfig): string[] {
+  const parts: string[] = []
+  if ((scenario.teardown ?? []).length > 0) parts.push("the scene's teardown")
+  if ((scenario.setup ?? []).some((item) => "ensure" in item)) parts.push("the scene's ensure")
+  for (const name of presetRefs(scenario)) {
+    const preset = Object.hasOwn(project.presets, name) ? project.presets[name] : undefined
+    if (preset?.steps.some((s) => "ensure" in s) === true) parts.push(`preset "${name}"'s ensure`)
+  }
+  return [...new Set(parts)]
+}

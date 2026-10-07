@@ -116,6 +116,29 @@ describe("studio tools", () => {
     await studio.close()
   }, 30_000)
 
+  it("never saves or runs a cleanup: no teardown, no ensure (a demo's actions stay in the app)", async () => {
+    const { studio } = makeStudio()
+    for (const yaml of [
+      `${SCENE}teardown: [{ action: goto, url: / }]\n`,
+      SCENE.replace(
+        "setup: [{ action: goto, url: / }]",
+        "setup:\n  - { action: goto, url: / }\n  - ensure: { absent: { by: text, text: Q4 } }",
+      ),
+    ]) {
+      expect(
+        await tool("save_scene").run({ id: "tour", title: "Tour", yaml }, studio, never),
+      ).toMatchObject({ error: expect.stringMatching(/no teardown and no ensure/) as unknown })
+    }
+    expect(
+      await tool("run_step").run(
+        { scene: "tour", step: { ensure: { absent: { by: "text", text: "Q4" } } }, part: "setup" },
+        studio,
+        never,
+      ),
+    ).toMatchObject({ error: expect.stringMatching(/no teardown and no ensure/) as unknown })
+    await studio.close()
+  }, 30_000)
+
   it("saves a scene only once its replay passes, then records it with its composition", async () => {
     let tidied = 0
     const { studio, dir } = makeStudio(undefined, { afterRecord: () => (tidied += 1) })
@@ -477,20 +500,6 @@ presets:
     expect(await tool("snapshot").run({}, studio, never)).toMatch(/^url: \/opener/)
     await studio.close()
   }, 60_000)
-
-  it("runs a teardown action as the teardown's (its approval is that part's)", async () => {
-    const { studio, asked } = makeStudio(() => Promise.resolve(true))
-    const risky = {
-      action: "click",
-      target: { by: "role", role: "link", name: "Projects" },
-      risky: true,
-    }
-    expect(
-      await tool("run_step").run({ scene: "s", step: risky, part: "teardown" }, studio, never),
-    ).toMatch(/^ok/)
-    expect(asked[0]).toMatchObject({ kind: "approve-risky", step: "teardown[0]" })
-    await studio.close()
-  }, 30_000)
 
   it("never encodes a recording that stops (the take store drops its video)", async () => {
     // What the store is given to settle: a failed take with or without its video.

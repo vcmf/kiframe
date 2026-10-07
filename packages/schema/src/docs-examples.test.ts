@@ -31,8 +31,10 @@ describe("docs/OBJECT-MODEL.md examples", () => {
       "remove-old",
       "done",
     ])
-    expect(scenario.setup).toHaveLength(3)
-    expect(scenario.teardown?.[1]?.risky).toBe(true)
+    expect(scenario.setup).toHaveLength(2)
+    // No cleanup in a scene (OBJECT-MODEL §0.4).
+    expect(scenario.teardown).toBeUndefined()
+    expect(scenario.steps.find((st) => st.id === "remove-old")?.risky).toBe(true)
   })
 
   it("interrupts example (§2b) is valid inside a project config", () => {

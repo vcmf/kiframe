@@ -1380,3 +1380,14 @@ ul.strip-cards {
   gap: 6px;
   color: var(--muted);
 }
+
+/* After a scene played to its end: discreet, never in the video. */
+.player-aftermath {
+  width: min(100%, 760px);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}

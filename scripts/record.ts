@@ -19,7 +19,7 @@ const { values } = parseArgs({
     dpr: { type: "string" },
     /** Secret names the scene may use (`a.b` is read from env `A_B`, e.g. from a git-ignored .env). */
     secrets: { type: "string", default: "" },
-    /** Pre-approve risky steps (a sandbox account's teardown deletes). */
+    /** Pre-approve the scene's risky steps (a throwaway account you watch). */
     "approve-risky": { type: "boolean", default: false },
     /** The project's assets folder, for `upload` steps (`<sha256>.<ext>` files). */
     assets: { type: "string" },

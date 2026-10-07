@@ -24,7 +24,6 @@ import {
   actionReference,
   Action,
   checkScenarioAgainstProject,
-  Ensure,
   Locator,
   parseScenarioYaml,
   PresetRef,
@@ -460,7 +459,7 @@ export class Studio {
 
   /**
    * One item on the live page, through the real runner: an on-camera step (with its id), or a setup
-   * or teardown item (an action without id, `{ preset: … }`, `{ ensure: … }`). Its refs become
+   * item (an action without id, `{ preset: … }`). Its refs become
    * lasting locators first, the page as it is right now, and a result that worked says the item as
    * it's written in the YAML.
    */
@@ -473,6 +472,8 @@ export class Studio {
     const raw = asObject(input)
     if (isCyclic(raw))
       return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
+    // Before any of its refs is looked at: it never runs anyway.
+    if (typeof raw === "object" && raw !== null && "ensure" in raw) return failed(NO_CLEANUP)
     const refs = refsAt(raw)
     if (refs.length === 0) {
       this.#checked = undefined
@@ -554,34 +555,23 @@ export class Studio {
     }
     // Run in the part it's for: its approvals are keyed there, as the replay's will be (A1).
     const step = part === "steps" ? Step.safeParse(raw) : { success: false as const }
-    // In the steps, only a preset or an ensure runs as the setup (they're setup-only).
-    const setupOnly = "preset" in raw || "ensure" in raw
+    // In the steps, only a preset runs as the setup (it's setup-only).
     const setupItem =
-      step.success || part === "teardown" || (part === "steps" && !setupOnly)
+      step.success || (part === "steps" && !("preset" in raw))
         ? undefined
         : SetupItem.safeParse(raw)
-    const teardownItem = part === "teardown" ? Action.safeParse(raw) : undefined
-    if (teardownItem !== undefined && !teardownItem.success) {
-      return failed(
-        `invalid teardown action: ${formatIssue(teardownItem.error.issues[0])}${shapeOf(raw)}`,
-      )
-    }
-    if (teardownItem === undefined && !step.success && setupItem?.success !== true) {
+    if (!step.success && setupItem?.success !== true) {
       const r = raw as Record<string, unknown>
       if (part === "steps" && !("id" in r) && Action.safeParse(raw).success) {
-        return failed(
-          "invalid step: an on-camera step needs an id (a setup or teardown action: give its part)",
-        )
+        return failed("invalid step: an on-camera step needs an id (a setup action: give its part)")
       }
       // Parsed against the shape the agent meant (a union's error only says "Invalid input").
       const [what, schema] =
         "preset" in r
           ? (["preset", PresetRef] as const)
-          : "ensure" in r
-            ? (["ensure", Ensure] as const)
-            : "id" in r && part === "steps"
-              ? (["step", Step] as const)
-              : (["setup action", Action] as const)
+          : "id" in r && part === "steps"
+            ? (["step", Step] as const)
+            : (["setup action", Action] as const)
       const result = schema.safeParse(raw)
       // The issue, then the forms of the action it meant (never a guess at the field names).
       return failed(
@@ -589,11 +579,9 @@ export class Studio {
       )
     }
     const scenario: Scenario =
-      teardownItem?.success === true
-        ? { version: 1, steps: [], teardown: [teardownItem.data] }
-        : step.success || setupItem?.data === undefined
-          ? { version: 1, steps: step.success ? [step.data] : [] }
-          : { version: 1, setup: [setupItem.data], steps: [] }
+      step.success || setupItem?.data === undefined
+        ? { version: 1, steps: step.success ? [step.data] : [] }
+        : { version: 1, setup: [setupItem.data], steps: [] }
     const page = await this.livePage()
     try {
       await runScenario(page, scenario, this.#quick, {
@@ -618,18 +606,13 @@ export class Studio {
       const back =
         error instanceof StepError && error.reason === "page-closed" ? this.#backPage() : undefined
       if (back !== undefined) {
-        return step.success || !("preset" in raw || "ensure" in raw)
+        return step.success || !("preset" in raw)
           ? this.#landed(back.url(), "ok (the page closed itself: back on the page that opened it)")
           : failed(
               `failed (page-closed): ${(error as StepError).message}; the rest of it didn't run (back on the page that opened it, url: ${this.#where(back.url())}): run its remaining steps one by one`,
             )
       }
-      // An ensure checked alone doesn't know the scene's teardown or setup: said so.
-      const alone =
-        "ensure" in (raw as Record<string, unknown>)
-          ? " (ensure checked alone: your teardown and setup aren't known here; save_scene's replay runs them)"
-          : ""
-      return failed(failure(error) + alone)
+      return failed(failure(error))
     }
   }
 
@@ -648,6 +631,10 @@ export class Studio {
         }
       }
       return { error: `invalid scenario: ${String(error).slice(0, 1500)}` }
+    }
+    // Older scenes keep theirs (skipped when they run); a new one never cleans up.
+    if ((scenario.teardown ?? []).length > 0 || (scenario.setup ?? []).some((i) => "ensure" in i)) {
+      return { error: `invalid scenario: ${NO_CLEANUP}` }
     }
     const issues = checkScenarioAgainstProject(scenario, this.options.config)
     if (issues.length > 0) return { error: `invalid scenario: ${issues.join("; ")}` }
@@ -826,13 +813,17 @@ async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<
   return open()
 }
 
+/** Why a scene never has a teardown or an `ensure` (OBJECT-MODEL §0.4). */
+const NO_CLEANUP =
+  "no teardown and no ensure: Kiframe doesn't clean up after a scene (what it creates stays in the app, the user is told); remove them"
+
 const isStopped = (error: unknown) => error instanceof StepError && error.reason === "stopped"
 
 /** The forms of the action an item meant (its `action`), for a refusal: empty if it isn't one. */
 function shapeOf(raw: object): string {
   const kind = (raw as { action?: unknown }).action
-  // A preset or an ensure isn't an action: its own error is the whole answer.
-  if ("preset" in raw || "ensure" in raw) return ""
+  // A preset isn't an action: its own error is the whole answer.
+  if ("preset" in raw) return ""
   if (typeof kind !== "string" || !Object.hasOwn(ACTION_REFERENCE, kind)) {
     return `\nactions: ${Object.keys(ACTION_REFERENCE).join(", ")}`
   }
@@ -922,7 +913,7 @@ export function whereOf(url: string, apps: AppsArg, site = siteOf(url, apps)): s
 }
 
 /** Where in a scenario an item runs. */
-export type ScenarioPart = "setup" | "steps" | "teardown"
+export type ScenarioPart = "setup" | "steps"
 
 /** A ref's element as the page has it now, and its lasting locator (or why none). */
 async function lastingOfRef(
@@ -976,7 +967,7 @@ function takesRow(item: unknown, path: (string | number)[], part: ScenarioPart):
 /** The paths of an item's schema issues, under the schema of the part it's for (as it'll run). */
 function issuePaths(item: unknown, part: ScenarioPart): PropertyKey[][] {
   const r = item as Record<string, unknown>
-  const schema = part === "teardown" ? Action : part === "steps" && "id" in r ? Step : SetupItem
+  const schema = part === "steps" && "id" in r ? Step : SetupItem
   return schema.safeParse(item).error?.issues.map((i) => i.path) ?? []
 }
 
