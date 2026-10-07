@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
   AppName,
+  requiredSecrets,
+  resolveProjectConfig,
   appOf,
   checkScenarioAgainstProject,
   parseScenarioYaml,
@@ -196,7 +198,7 @@ steps:
     expect(config.presets.login?.app).toBe("docs")
   })
 
-  it("lists every app it uses that the project doesn't (start, gotos, conditions, presets; not the rules', an org's apply to every project)", () => {
+  it("lists every app it uses that the project doesn't (start, gotos, conditions, presets; not the rules', an org's apply to every project, nor an older teardown's, never run)", () => {
     const withRule = ProjectConfig.parse({
       ...config,
       presets: { login: { app: "sso", steps: [{ action: "goto", app: "auth", url: "/" }] } },
@@ -214,7 +216,7 @@ teardown: [{ action: goto, app: down, url: / }]
       unknownApps(s, withRule)
         .map((p) => /"(.+)"/.exec(p)?.[1])
         .sort(),
-    ).toEqual(["auth", "cond", "down", "nope", "setup-app", "sso"].sort())
+    ).toEqual(["auth", "cond", "nope", "setup-app", "sso"].sort())
     expect(checkScenarioAgainstProject(s, withRule)).toContain(
       `uses app "nope", which the project doesn't list`,
     )
@@ -235,6 +237,20 @@ steps:
     ).toBe(
       '{"version":1,"setup":[{"action":"goto","url":"/"}],"steps":[{"action":"waitFor","until":{"url":"/x"},"id":"w"},{"action":"expect","that":{"url":"/y"},"id":"e"}]}',
     )
+  })
+
+  it("never counts what an older scene's teardown names: it never runs (no app, no secret)", () => {
+    const s = scene(`steps: [{ id: a, action: pause, ms: 1 }]
+teardown:
+  - { action: goto, app: gone, url: / }
+  - { id: pw, action: type, target: { by: label, name: Password }, value: "{{secrets.admin.password}}" }
+`)
+    expect(unknownApps(s, config)).toEqual([])
+    const { environment } = resolveProjectConfig(
+      Project.parse({ version: 2, id: "p", orgId: "o", name: "P", apps: config.apps }),
+      undefined,
+    )
+    expect(requiredSecrets(config, environment, [s])).toEqual([])
   })
 
   it("starts in the app it names, else the first", () => {

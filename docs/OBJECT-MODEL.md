@@ -28,9 +28,9 @@ There are **no edges** between scenes. The order lives in a list (`sequence`). T
 
 ### 0.4 Scenes are self-contained
 **No scene depends on the scene before it** for app state:
-- Each scene has its own **off-camera `setup`**: navigate there, and create or check the data it needs with `ensure` (§2). Common setup is shared as **presets**.
+- Each scene has its own **off-camera `setup`**: navigate there, and get the app ready (a preset logs in, a goto opens the page). Common setup is shared as **presets**.
 - **Login is not repeated per scene.** A preset marked `session: true` (for example `login-as-manager`) runs **once per recording batch**. Its `storageState` is then reused for every scene of the batch (APPROACHES §7.2).
-- Each scene can have an off-camera **`teardown`** that removes what it created. It's pre-approved on sandbox environments. A stopped run doesn't run it: the scene's next `ensure` cleans what it left (APPROACHES §0).
+- **Nothing is cleaned up after a scene** (decided by the user, 2026-10-07): what a demo creates or changes stays in the app, and the window says so under the preview once a scene has played to its end. Kiframe can't see how an app stores its data (black box), so a cleanup would be a second, fragile scene of deletes: the `teardown` and `ensure` that did it are removed. Scenes written before keep them in their file (they still read, their hash and takes unchanged), skipped with a warning when they run; a new scene can't have them. A scene that creates something is best written so it also works when run again (a name that can exist twice), or recorded on an account the user resets.
 - Benefits: you can **reorder freely**, **re-record or heal one scene alone**, and reuse a scene in several outputs.
 - Cost: recordings take longer because setup is repeated off-camera. That's acceptable, since it's invisible and needs no LLM.
 - Joins between scenes are handled by **transitions** (cut, fade, slide), set in the Sequence view.
@@ -186,8 +186,8 @@ Why outside the folder: takes are **heavy**, and they're **sensitive**, since ra
 
 One scene, three phases. The agent's own instructions say the same (`packages/studio/src/prompt.ts`).
 
-1. **Explore and ground, on the live page.** The agent reads the page with `snapshot` (roles, labels, text, each element's ref) and tries actions with `run_step` / `run_steps`: each really runs on the page and says whether it worked and where the page ended. Nothing is written yet: every step is proven on the real app first ("ground every step"). It ends with the scene's teardown, run the same way, so the app is back as it was.
-2. **Write the scene.** `save_scene` takes the whole `scenario.yaml` (setup, on-camera steps, teardown), checks it, and **replays it from scratch in a fresh browser** (no cookies, no storage). Saved only if the replay passes; otherwise the failure comes back and the agent fixes the YAML.
+1. **Explore and ground, on the live page.** The agent reads the page with `snapshot` (roles, labels, text, each element's ref) and tries actions with `run_step` / `run_steps`: each really runs on the page and says whether it worked and where the page ended. Nothing is written yet: every step is proven on the real app first ("ground every step"). What the steps create stays in the app (no cleanup, §0.4).
+2. **Write the scene.** `save_scene` takes the whole `scenario.yaml` (setup, on-camera steps), checks it, and **replays it from scratch in a fresh browser** (no cookies, no storage). Saved only if the replay passes; otherwise the failure comes back and the agent fixes the YAML.
 3. **Record.** `record_scene` films the saved scenario at human pace in another fresh browser; the composition (camera, cursor, captions) is generated from the take.
 
 **The live page isn't fresh.** It's one browser session for as long as the project is open, shared by every scene: it keeps what the agent did (signed in, scrolled, a setting changed). The replay in phase 2 is what catches a scene that only works because of that state. Refs never reach the YAML (a ref becomes a locator that finds that element alone).
@@ -238,7 +238,7 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **Built (B2, 2026-10-06):** scenes move between the listed apps (the agent is told in B3).
 - A scenario's `app` (where it starts), `goto { app, url }`, a URL condition's `app`, a preset's `app`: all optional, by name; a scene naming no app keeps its hash (and its takes). An app the scene or its presets name but the project doesn't list: refused before anything runs (`unknownApps`; an interrupt rule's goto to one fails where it runs: an org's rules apply to every project).
-- **Which app a step means** is read from its own text, never from where the page went or what ran before it (a reviewed redesign: following the page, then carrying the app from step to step, made a teardown delete on whichever app the scene stopped in, and a step grounded alone mean another app than in the replay): the app it names (`goto { app }`, a URL condition's `app`), else its scene's start app (its `app`, else the first), its preset's inside a preset (else the first), the first app for an interrupt rule. A teardown and an `ensure`'s cleanup mean the scene's start app. Links, redirects and popups never change it. So every step on another app names it (the agent is told so in B3).
+- **Which app a step means** is read from its own text, never from where the page went or what ran before it (a reviewed redesign: following the page, then carrying the app from step to step, made a teardown delete on whichever app the scene stopped in, and a step grounded alone mean another app than in the replay): the app it names (`goto { app }`, a URL condition's `app`), else its scene's start app (its `app`, else the first), its preset's inside a preset (else the first), the first app for an interrupt rule. Links, redirects and popups never change it. So every step on another app names it (the agent is told so in B3).
 - **Secrets**: the runtime types one only on a listed app's exact origin (never a `www.` alias, never an unlisted site such as an SSO host); which app's secret goes where is the resolver's to refuse (`resolveSecret`'s contract): the vault checks the secret's own origin, so a secret added for `app` is never typed on `docs`; the scripts' `.env` resolver is bound to one origin. The agent's secret names and the Secrets panel stay the first app's (B3).
 - A take is filmed at its **start app's** viewport (batch, studio replay and record); its meta names that app. A saved session's landing is kept with its app (`{ app, url }`) and replayed there.
 - `whereOf` names the app (`docs: /install`) when the project has several; a page off them is "NOT one of the project's apps".
@@ -459,8 +459,6 @@ setup:                           # off camera, like VHS `Hide`. Makes the scene 
   - preset: login-as-manager     # session preset → skipped if the batch is already logged in
   - action: goto
     url: /projects
-  - ensure:                      # the ONLY idempotency primitive: declarative, not a condition
-      absent: { by: role, role: link, name: "Q4 Launch" }   # if present → run this scene's teardown, then re-check
 steps:
   - id: open-new                               # stable ID: everything downstream anchors to it
     action: click
@@ -490,12 +488,6 @@ steps:
     until: { text: "Project created" }
     caption: "Your project is ready."
     hold: 1500                                 # presentation beat (never sped up)
-teardown:                        # off camera, after recording (and when `ensure` needs it)
-  - action: click
-    target: { by: role, role: link, name: "Q4 Launch" }
-  - action: click
-    target: { by: role, role: button, name: "Delete project" }
-    risky: true                  # needs confirmation, unless pre-approved on a sandbox environment
 ```
 
 The scene's title, notes, duration and transition live in `scene.json` (§0.6). The scenario is only about **what happens in the app**.
@@ -505,7 +497,6 @@ Principles:
 - **A target keeps both the intent and the grounded locator.** The intent is used to heal the locator when it breaks.
 - **Wait on a condition**, never a fixed sleep. `hold` and `pause` are presentation choices, not synchronization tools.
 - **`caption` ≠ `instruction`:** the same step, told two ways (to watch vs to follow).
-- **`ensure` is the only thing that resembles a condition,** and it's declarative ("this must be true before filming"). If the runtime can't make it true, the scene fails with a clear message.
 
 ## 2b. Step vocabulary: app actions and camera directives
 
@@ -521,7 +512,7 @@ Principles:
 | **Playwright** API | The base vocabulary (`click`, `fill`/`pressSequentially`, `press`, `hover`, `selectOption`, `setInputFiles`, `dragTo`, `mouse.wheel`, `waitFor`) |
 | **Maestro** (mobile tests as YAML flows) | The closest to a readable YAML: `tapOn`, `inputText`, **`scrollUntilVisible`**, **`runFlow`** (= our presets), `assertVisible` |
 | **Selenium IDE** / **demo-machine** | Command lists that proved sufficient in practice |
-| **VHS** | `Hide/Show` (= our `setup`/`teardown`), `Wait` on a condition, `Sleep` as a presentation beat |
+| **VHS** | `Hide/Show` (= our off-camera `setup`), `Wait` on a condition, `Sleep` as a presentation beat |
 | **Screen Studio / Cap / OpenScreen / Screenize** | Camera: `Auto` vs `Manual{x,y}`, follow-cursor with dead zone, spring easing |
 | **Arcade / Supademo** (documented features) | Per step: a **hotspot** on the target + a **callout** + **pan & zoom** onto a region |
 
@@ -542,7 +533,7 @@ Principles:
 | `pause` | `ms` | **A presentation beat**: let the viewer look. Never sped up |
 | `expect` | same conditions as `waitFor` | **Off-camera check** of the state. Used by grounding and **health checks** (drift → `stale`) |
 
-Setup/teardown-only directives: `preset`, `ensure` (§2).
+Setup-only directive: `preset` (§2).
 
 A `risky: true` flag goes on any step that deletes, sends, pays or invites. It needs confirmation unless pre-approved on a sandbox environment (APPROACHES §7.2–7.3). The agent sets it, and the runtime also detects obvious cases (Delete/Remove/Send/Pay/Invite…) **at the press point, at press time** (after hover): it reads everything the control under the cursor is called (its text, hidden text included, and every aria-label / labelledby / title / alt / submit value inside it). This detection is a safety net that **fails closed**: if any of it mentions such a word, the click needs approval; `risky: false` on the step opts out. Clicking a card's title isn't judged by a Delete button elsewhere in the card, but a press that would land on that button is.
 
@@ -560,7 +551,7 @@ A `risky: true` flag goes on any step that deletes, sends, pays or invites. It n
 **Common fields on every step:** `id`, `action`, `target?`, `caption?`, `instruction?`, `camera?`, `emphasis?`, `hold?`, `cursor?: "show" | "hide"`, `speed?`, `keystrokes?`, `risky?`.
 
 ### Decisions: no conditions in steps; interruptions handled at project level (2026-09-26)
-**No `if` / `repeat` in steps.** A demo must be **deterministic**: the same scenario gives the same film. Conditions make scenarios harder to read, harder to heal, and produce different videos from run to run. If something needs repeating, the agent writes out the steps. (`ensure` in setup is the one declarative exception, §2.)
+**No `if` / `repeat` in steps.** A demo must be **deterministic**: the same scenario gives the same film. Conditions make scenarios harder to read, harder to heal, and produce different videos from run to run. If something needs repeating, the agent writes out the steps.
 
 The real need behind `if` is **unpredictable interruptions**: cookie banners, "What's new" modals, chat widgets, NPS surveys. Two project-level mechanisms, both off camera:
 
@@ -853,7 +844,7 @@ take frames.webm ──demux (Mediabunny)──▶ VideoDecoder (WebCodecs) ─�
 5. **Exports are traceable:** each export writes `exports/<id>.json` (commit + output + take keys + renderer version), and **pins** its takes. So "which version is this video?" always has an answer, and re-export is exact while the takes stay pinned.
 6. **Git-friendly files:** one scene per file, stable IDs, sorted keys, pretty-printed JSON/YAML.
 
-**Limit to state clearly:** reverting history restores **objects**, not the live app. If the agent's last turn **created data in the app** (grounding runs steps), a revert doesn't delete it. The UI warns when a revert crosses app actions ("this won't undo what was created in Staging"), and the scene's `teardown` / `ensure` handles the cleanup.
+**Limit to state clearly:** reverting history restores **objects**, not the live app. If the agent's last turn **created data in the app** (grounding runs steps), a revert doesn't delete it. The UI warns when a revert crosses app actions ("this won't undo what was created in Staging"); nothing cleans it up (§0.4).
 
 ### What the user sees
 - **Everyone:** a **History** panel (a timeline of checkpoints with readable labels, grouped by session), "Restore this version", and named versions ("v1 sent to marketing"). **Compare** (side by side) comes later and needs pinned takes on both sides.

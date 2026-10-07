@@ -90,6 +90,39 @@ describe("the preview", () => {
     await waitFor(() => expect(screen.getByText("0:06 / 0:12")).toBeTruthy())
   })
 
+  it("says the demo's actions stay in the app once it has played to its end, not before", async () => {
+    fake.player.time = 0
+    fake.player.playing = false
+    stubApi({ "preview:open": () => ready })
+    render(<PreviewPlayer sceneId="tour" take="k1" version="v1" />)
+    // Scrubbed to the end without playing: not said.
+    await screen.findByRole("button", { name: "Play" })
+    await act(async () => {
+      await fake.player.seek(12_000)
+    })
+    expect(screen.queryByRole("note")).toBeNull()
+    await act(async () => {
+      await fake.player.seek(0)
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Play" }))
+    await act(async () => {
+      await fake.player.seek(6000)
+    })
+    expect(screen.queryByRole("note")).toBeNull()
+    // The end: the player stops there.
+    await act(async () => {
+      await fake.player.seek(12_000)
+      fake.player.pause()
+    })
+    expect((await screen.findByRole("note")).textContent).toMatch(/actions stay in your app/)
+    // Played again from the start: it stays said.
+    await act(async () => {
+      await fake.player.seek(0)
+    })
+    expect(screen.getByRole("note")).toBeTruthy()
+    fake.player.time = 0
+  })
+
   it("draws the scene's background image, or none without a background", async () => {
     fake.load.mockClear()
     stubApi({ "preview:open": () => ready })

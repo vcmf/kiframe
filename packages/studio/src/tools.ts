@@ -62,7 +62,7 @@ const snapshot = defineTool({
 const runStep = defineTool({
   name: "run_step",
   description:
-    "Run ONE step on the live page (a steps item, or a setup/teardown action). Returns ok or why it failed.",
+    "Run ONE step on the live page (a steps item, or a setup action). Returns ok or why it failed.",
   parameters: z.object({
     scene: SceneId.describe("the id you'll save this scene under (its approvals are that scene's)"),
     step: z
@@ -71,7 +71,7 @@ const runStep = defineTool({
         "The step, same fields as in the YAML; where it takes a locator, { ref: e12 } from the last snapshot works too",
       ),
     part: z
-      .enum(["setup", "steps", "teardown"])
+      .enum(["setup", "steps"])
       .default("steps")
       .describe("the part of the scene it's for (its approvals are that part's)"),
   }),
@@ -90,7 +90,7 @@ const runSteps = defineTool({
       .describe(
         "The steps, same fields as in the YAML (a list); refs of the last snapshot work too",
       ),
-    part: z.enum(["setup", "steps", "teardown"]).default("steps").describe("the part they're for"),
+    part: z.enum(["setup", "steps"]).default("steps").describe("the part they're for"),
   }),
   run: async ({ scene, steps, part }, studio: Studio, signal) => {
     // A list sent as YAML or JSON text (FAILURE-CATALOGUE #11) is read as the list it says.

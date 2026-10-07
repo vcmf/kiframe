@@ -441,7 +441,7 @@ async function drag(
     emit(nudge, true)
     const to = dest === undefined ? planned : await dropPoint()
     const path = planPath(nudge, to, {
-      // Off camera (an offset drag in setup / teardown): instant, like any off-camera move.
+      // Off camera (an offset drag in setup): instant, like any off-camera move.
       pacing: onCamera ? ctx.pacing.cursor : "instant",
       targetWidth: 40,
       viewport,

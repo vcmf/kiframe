@@ -1,18 +1,14 @@
 /** Where in the scenario something happened. */
 export interface StepRef {
-  phase: "setup" | "steps" | "teardown"
+  phase: "setup" | "steps"
   /** Index in the phase's list (after preset expansion for setup). */
   index: number
   stepId?: string | undefined
   action: string
-  /** A cleanup: a teardown step, or the teardown an `ensure` runs (what a sandbox may pre-approve). */
-  cleanup?: true | undefined
   /** Set on the action of an interrupt rule's `do`, run within this step (the rule's id). */
   interrupt?: string | undefined
   /** The preset this action comes from (its secret approvals are the preset's, §3 A1). */
   preset?: string | undefined
-  /** The list this action is written in, when not `phase` (an `ensure` runs teardown steps). */
-  keyPhase?: "setup" | "steps" | "teardown" | undefined
 }
 
 export type StepErrorReason =
@@ -29,8 +25,7 @@ export type StepErrorReason =
   | "secret-declined"
   | "action-failed"
   | "invalid-setup"
-  | "ensure-failed"
-  /** The run's signal was aborted (the user stopped it): nothing more ran, not even the teardown. */
+  /** The run's signal was aborted (the user stopped it): nothing more ran. */
   | "stopped"
   /**
    * A step closed the page it ran on and the run knows no page to return to (a popup a new run

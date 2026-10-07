@@ -217,7 +217,6 @@ async function waitGone(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): Pr
   await pollLocator(ctx.page, whenLocator(rule), {
     timeout: Math.min(ctx.timeoutMs, 1000),
     visible: false,
-    negative: false,
     bestEffort: true,
     failed: () => new Error("still there"),
   }).catch(() => undefined)

@@ -18,16 +18,14 @@ import {
 /** The environment a project runs against, after resolution. */
 export interface ResolvedEnvironment {
   url: string
-  sandbox: boolean
-  preApproveTeardown: boolean
   requiredSecrets: string[]
 }
 
 /**
  * The runtime config of a project: its apps, and the org's rule bank before the project's rules (a
  * project rule with the same id replaces the org's, in its place). A project has no environment
- * since v2 (each app has its own URL, OBJECT-MODEL §0.9): never a sandbox, so nothing risky is
- * pre-approved (an environment's flags would otherwise cover whatever URL the apps name).
+ * since v2 (each app has its own URL, OBJECT-MODEL §0.9), and nothing risky is ever pre-approved
+ * (every risky step asks the user).
  */
 export function resolveProjectConfig(
   project: Project,
@@ -64,8 +62,6 @@ export function resolveProjectConfig(
     orgInterrupts: orgRules.filter((r) => !own.has(r.id)).map((r) => r.id),
     environment: {
       url: firstApp(config).app.url,
-      sandbox: false,
-      preApproveTeardown: false,
       requiredSecrets: [],
     },
   }
@@ -115,7 +111,8 @@ export function requiredSecrets(
   }
   for (const preset of Object.values(config.presets)) preset.steps.forEach(typed)
   for (const rule of config.interrupts) typed(rule.do)
-  for (const s of scenarios) [...(s.setup ?? []), ...s.steps, ...(s.teardown ?? [])].forEach(typed)
+  // (Not an older scene's teardown: it never runs, so it never types.)
+  for (const s of scenarios) [...(s.setup ?? []), ...s.steps].forEach(typed)
   return [...names]
 }
 

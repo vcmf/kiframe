@@ -5,7 +5,7 @@ import { StepError, type StepRef } from "../errors.ts"
 // from its own text, never from where the page went or what ran before it: the app it names
 // (`goto { app }`, a URL condition's `app`), else its scene's start app (`ctx.app`), its preset's
 // inside a preset, the first app for an interrupt rule. So a step grounded alone on the live page
-// means what it means in the replay, and a teardown cleans the app it was written for.
+// means what it means in the replay.
 
 /** An app by name; one the project doesn't list is refused (a step error naming it). */
 export function appNamed(apps: Apps, name: string, step: StepRef): App {

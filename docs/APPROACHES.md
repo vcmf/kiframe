@@ -16,7 +16,7 @@
 | Targets | **v0: web apps.** v0.1: Electron. Later: Tauri (see §6b, partial support only) | 2026-09-26 |
 | Electron attach | **`--remote-debugging-port=0` + `connectOverCDP`** by default: works on hardened packaged apps, where `_electron.launch` doesn't (§6b, PHASE0-FINDINGS F4) | 2026-09-27 |
 | Access to the app | **Black box**: no test IDs or seed hooks required in the customer's app. When the agent is blocked, it asks the user | 2026-09-25 |
-| App state | ICP requires a **resettable demo/staging account**. One login per recording batch (session reuse). Pre-approved `teardown` per environment. One idempotency primitive, `ensure` (§7.2) | 2026-09-26 |
+| App state | ICP requires a **resettable demo/staging account**. One login per recording batch (session reuse). ~~Pre-approved `teardown` per environment. One idempotency primitive, `ensure`~~ (superseded 2026-10-07: no cleanups, below) (§7.2) | 2026-09-26 |
 | Where it runs | **Locally, as a desktop app (Electron).** Agent, automation, capture and rendering run on the user's machine | 2026-09-26 |
 | Why desktop | Reach **localhost / VPN / internal apps**, keep **recordings and secrets on the machine**. *Not* a margin argument (§10.1) | 2026-09-26 |
 | LLM access | **BYOK** (user's own API key) *or* **Kiframe account** (our server proxies LLM calls = the paid product) | 2026-09-25 |
@@ -46,7 +46,8 @@
 | Branches | **Epics:** `epic/<name>` branches collect a milestone's PRs (CI and review on each), then merge into `main` | 2026-09-30 |
 | Test apps (v0) | **minmux.dev** (ours: a content site, the easy baseline), **Cal.com** (third party: login, slow hydration, forms, secrets; the throwaway account) and **Excalidraw** (third party: a canvas app, drags, few accessible names, data in the browser). Each feature is tried on them through the desktop app with the real model, not only on fixtures. Replaces Phase 0's app.dim0.net and smterm | 2026-10-03 |
 | Secret approval's screenshot | **The page as it is**, unmasked: the user's own screen shown to the user only (in memory, dropped once answered; never to the agent, a take or a file). Masking typed values in it proved fragile (layout moving between the shot and the boxes, iframe offsets, stuck frames); a crop safe enough would show nothing useful. The step has brought the field into view, so its outline is in the shot | 2026-10-02 |
-| Stop | **A stop runs nothing more**, not even the teardown (nor the cleanup an `ensure` runs): what the run left is cleaned by the scene's `ensure` at its next run. Any failure once the run's signal aborted is a stop (a dialog it closed). A scene without an `ensure` keeps what a stopped run made | 2026-09-30 |
+| Stop | **A stop runs nothing more.** Any failure once the run's signal aborted is a stop (a dialog it closed). (What it left stays in the app, like any run's since 2026-10-07.) | 2026-09-30 |
+| No cleanups | **A demo's actions stay in the app.** `teardown` and `ensure` are removed (decided by the user): the app is a black box, so a cleanup is a second scene of guessed deletes (doubling the agent's work, the riskiest thing Kiframe ran). Older scenes keep them in their file, skipped with a warning; a new one can't have them. The window says so under the preview once a scene has played to its end. A scene that creates something is written to work when run again, or recorded on an account the user resets (§7.2) | 2026-10-07 |
 
 ---
 
@@ -192,9 +193,7 @@ Because the product must work on apps it doesn't control, the agent behaves like
 ### 7.2 App state without seed hooks
 Recording creates data on the app ("Q4 Launch" is created on camera), and **every** re-record, including the first one after grounding, would create it again. Rules:
 - **ICP requirement:** a **dedicated demo/staging account that the user can reset**. It's a hard requirement in v0, stated during onboarding.
-- **Environments** (org-level, §10c) carry a **`sandbox`** flag. On a sandbox environment, the user **pre-approves** destructive actions once (for example "Kiframe may delete projects named *Q4 Launch*"). On other environments, every risky action asks.
-- **`teardown`** block per scene (off-camera, runs after recording): deletes what the scene created. It's pre-approved on sandbox environments, so replays and CI can run unattended.
-- **`ensure`**: the **only** idempotency primitive, and it's declarative, not a condition: `ensure: { absent: <locator> }` or `ensure: { present: <locator> }` in `setup`. The runtime makes the state true (running the scene's teardown if needed) or fails with a clear message. No `if` anywhere else (OBJECT-MODEL §2b).
+- ~~**Environments** with a **`sandbox`** flag pre-approving destructive actions, a **`teardown`** block per scene deleting what it created, and **`ensure`** making the state true before filming~~: removed 2026-10-07 (§0 "No cleanups"; projects have no environment since v2). Every risky action asks; what a scene creates stays in the app, and the user is told under the preview.
 - **One login per recording batch:** log in once through the vault, then reuse the Playwright `storageState` (encrypted, in memory or keychain) for all scenes of the batch. v0 (M1-4, `recordBatch`): saved in memory when the session preset is done (not at the end of the scene), a fresh context per scene, and a fresh login after a scene that reused the session failed. Logging in again in every scene would trigger rate limits, "new device" emails and 2FA prompts.
 - The user can also just say "the account is already in the right state". The agent checks it with `expect` during grounding.
 

@@ -78,9 +78,8 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
 /**
  * Brings the driven page in line with the browser, at a step boundary (the one place pages change):
  * 1. the driven page closed (a popup's "Done", an OAuth window): back to the nearest open opener;
- * 2. setup and scene steps only: the LAST page opened, if it's still open once loaded, is driven
- *    from now on (and settled). If it closed already, the run stays where it is: an earlier tab is
- *    never picked instead. The teardown never follows new pages (it cleans up where it runs).
+ * 2. the LAST page opened, if it's still open once loaded, is driven from now on (and settled). If
+ *    it closed already, the run stays where it is: an earlier tab is never picked instead.
  */
 export async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
   if (ctx.page.isClosed()) {
@@ -101,7 +100,7 @@ export async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
     await guard(step, () => settle(ctx, step.phase === "steps"))
   }
   const next = ctx.opened.splice(0).at(-1)
-  if (step.phase === "teardown" || next === undefined || next.isClosed()) return
+  if (next === undefined || next.isClosed()) return
   try {
     await next.waitForLoadState("domcontentloaded", { timeout: ctx.navigationTimeoutMs })
   } catch (error) {

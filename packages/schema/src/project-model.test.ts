@@ -213,8 +213,8 @@ describe("settings layers", () => {
     expect(config.apps.app?.url).toBe("https://app.example.com")
     expect(config.interrupts.map((r) => r.do.action)).toEqual(["press"])
     expect(config.hide).toEqual([".intercom-launcher", ".beta-banner"])
-    // The org's sandbox environment never pre-approves anything on the project's apps.
-    expect(environment).toMatchObject({ sandbox: false, preApproveTeardown: false })
+    // The org's sandbox environment gives the project nothing (no flag: nothing is pre-approved).
+    expect(environment).toEqual({ url: "https://app.example.com", requiredSecrets: [] })
   })
 
   it("keeps an overridden org rule in its place (rules are tried in order)", () => {
@@ -295,7 +295,7 @@ describe("settings layers", () => {
   it("works without org settings", () => {
     const { config, environment } = resolveProjectConfig(Project.parse(project()), undefined)
     expect(config.apps.app?.url).toBe("https://app.example.com")
-    expect(environment).toMatchObject({ sandbox: false, requiredSecrets: [] })
+    expect(environment).toMatchObject({ requiredSecrets: [] })
   })
 
   it("layers styles field by field: defaults, org, project, output", () => {

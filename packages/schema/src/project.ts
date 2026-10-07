@@ -167,9 +167,8 @@ export function unknownApps(scenario: Scenario, project: ProjectConfig): string[
     }
   }
   add(scenario.app)
-  for (const item of [...(scenario.setup ?? []), ...scenario.steps, ...(scenario.teardown ?? [])]) {
-    visit(item)
-  }
+  // (Not an older scene's teardown: it never runs.)
+  for (const item of [...(scenario.setup ?? []), ...scenario.steps]) visit(item)
   for (const name of presetRefs(scenario)) {
     const preset = Object.hasOwn(project.presets, name) ? project.presets[name] : undefined
     if (preset === undefined) continue

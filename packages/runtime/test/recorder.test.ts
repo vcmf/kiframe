@@ -671,26 +671,6 @@ steps:
     expect(Date.now() - started).toBeLessThan(15_000)
   })
 
-  it("keeps a complete take when only the teardown fails", async () => {
-    const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
-    const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-    const page = await context.newPage()
-    const take = await recordScenario(
-      page,
-      parseScenarioYaml(`version: 1
-steps: [{ id: open, action: goto, url: /projects }]
-teardown: [{ action: click, target: { by: css, selector: "#missing" } }]
-`),
-      project(),
-      { outDir, timeoutMs: 500 },
-    )
-    await context.close()
-    expect(take.meta.outcome.status).toBe("complete")
-    expect(take.teardownError?.step.phase).toBe("teardown")
-    expect(take.warnings.some((w) => w.startsWith("teardown failed"))).toBe(true)
-    expect(existsSync(join(outDir, "meta.json"))).toBe(true)
-  })
-
   it("keeps a storyboard shot for a first step that starts before any frame", async () => {
     const outDir = join(mkdtempSync(join(tmpdir(), "kiframe-take-")), "take")
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } })

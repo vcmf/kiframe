@@ -184,7 +184,7 @@ const presentation = {
   cursor: z.enum(["show", "hide"]).optional(),
   speed: z.number().positive().max(MAX_SPEED).optional(),
   keystrokes: z.enum(["show", "hide"]).optional(),
-  /** Deletes, sends, pays or invites: needs confirmation unless pre-approved on a sandbox environment. */
+  /** Deletes, sends, pays or invites: needs the user's confirmation. */
   risky: z.boolean().optional(),
 }
 
@@ -404,11 +404,15 @@ export const Step = z
   .refine(secretTargetIsExact, secretTargetError)
 export type Step = z.infer<typeof Step>
 
-// ─── Setup / teardown items ───────────────────────────────────────────────────
+// ─── Setup items ──────────────────────────────────────────────────────────────
 
 /** Run a shared preset. Session presets run once per recording batch. */
 export const PresetRef = z.strictObject({ preset: RuleName })
-/** The only idempotency primitive: declarative, not a condition (§2). */
+/**
+ * Read only, from scenes written before cleanups were removed (OBJECT-MODEL §0.4): never run, and
+ * never accepted in a new scene (the studio refuses it). Kept so those files still read, their hash
+ * (and takes) unchanged.
+ */
 export const Ensure = z.strictObject({
   ensure: z.union([z.strictObject({ absent: Locator }), z.strictObject({ present: Locator })]),
 })
@@ -465,6 +469,7 @@ const ScenarioBase = z
     overrides: ScenarioOverrides.optional(),
     setup: z.array(SetupItem).optional(),
     steps: z.array(Step).min(1),
+    /** Read only, like `Ensure`: an older scene's cleanup, never run. */
     teardown: z.array(Action).optional(),
   })
   .superRefine((s, ctx) => {

@@ -72,8 +72,6 @@ export type RunnerEvent =
   | { kind: "cursor"; step: StepRef; x: number; y: number; pressed: boolean }
   /** A fallback locator was used: the primary one no longer matches (a signal for self-healing). */
   | { kind: "target_fallback"; step: StepRef; fallbackIndex: number }
-  /** Teardown failed after a step had already failed: the step's error is the one thrown. */
-  | { kind: "teardown_failed"; error: StepError }
   /** Something the take should mention (it didn't stop the run). */
   | { kind: "warning"; message: string }
   /** An interrupt rule matched before a step (or when a step failed) and is being handled. */
@@ -86,8 +84,8 @@ export type RunnerEvent =
 export interface RunOptions {
   /**
    * Stops the run at its next step (the step running finishes, or its dialog closes): nothing
-   * more runs, not even the teardown (the scene's next `ensure` cleans what it left). A
-   * `StepError` with reason `stopped`.
+   * more runs, a `StepError` with reason `stopped` (a stop once every step is done changes
+   * nothing: the run is complete).
    */
   signal?: AbortSignal
   /**
@@ -122,7 +120,7 @@ export interface RunOptions {
   onPageSwitch?: (page: Page) => void | Promise<void>
   /** Called for every runner event. Must not throw. */
   onEvent?: (event: RunnerEvent) => void
-  /** Risky steps (delete, send, pay…) run only if this returns true (approval / sandbox, §7.2). */
+  /** Risky steps (delete, send, pay…) run only if this returns true (the user's approval, §7.2). */
   approveRisky?: (step: StepRef) => boolean | Promise<boolean>
   /** Per-step timeout for finding targets and waiting on conditions. Default 5000 ms. */
   timeoutMs?: number

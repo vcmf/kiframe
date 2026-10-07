@@ -108,7 +108,7 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
 }
 
 /**
- * Fields steps take besides their action's own. `offCamera`: also in setup and teardown (only `id`
+ * Fields steps take besides their action's own. `offCamera`: also in setup (only `id`
  * and `risky` are; the presentation fields are on camera only). The `id` rule: every on-camera
  * step has one; off camera it's optional, except on a step typing a secret (its approval is keyed
  * by it). Each example is checked against the schema of where it goes.
@@ -157,7 +157,7 @@ export function actionReference(kind: ActionKind): string {
 export function stepReference(): string {
   return [
     ...(Object.keys(ACTION_REFERENCE) as ActionKind[]).map(actionReference),
-    "fields steps take (setup and teardown items: only id and risky):",
+    "fields steps take (setup items: only id and risky):",
     ...COMMON_FIELDS.map((c) => `  - ${c.field}`),
   ].join("\n")
 }

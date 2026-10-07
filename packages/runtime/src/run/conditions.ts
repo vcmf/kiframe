@@ -7,7 +7,7 @@ import { countUnderRule, describeLocator, documentOf } from "../targets.ts"
 import { appNamed } from "./apps.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
-// Conditions for `waitFor` / `expect` / `ensure`, and URL matching.
+// Conditions for `waitFor` / `expect`, and URL matching.
 
 /** Signals a condition that timed out without a Playwright TimeoutError (network idle). */
 class ConditionTimeout extends Error {}
@@ -18,8 +18,6 @@ export async function waitForCondition(
   timeout: number,
   step: StepRef,
   reason: "condition-timeout" | "expectation-failed",
-  /** The check is for an absence (`ensure: absent` asks "does it appear?" expecting no). */
-  negative = false,
 ) {
   const { page } = ctx
   const what = describeCondition(condition)
@@ -36,7 +34,6 @@ export async function waitForCondition(
       await pollLocator(page, locator, {
         timeout,
         visible: !("hidden" in condition),
-        negative,
         failed: (why, waited) =>
           why === "blocked-exact"
             ? new StepError(
@@ -44,19 +41,11 @@ export async function waitForCondition(
                 "secret-refused",
                 `couldn't check the absence of ${describeLocator(locator)} by a partial name${EXACT_NAMES_HINT}`,
               )
-            : why === "blocked-unreadable"
-              ? // Nothing to do with secrets, and never the timeout reason: `ensure: absent` would
-                // read a timeout as "not there".
-                new StepError(
-                  step,
-                  "action-failed",
-                  `couldn't confirm the absence of ${describeLocator(locator)}: the page kept changing (after ${waited} ms)`,
-                )
-              : new StepError(
-                  step,
-                  reason,
-                  `${what} (after ${waited} ms)${why === "timeout-exact" ? EXACT_NAMES_HINT : ""}`,
-                ),
+            : new StepError(
+                step,
+                reason,
+                `${what} (after ${waited} ms)${why === "timeout-exact" ? EXACT_NAMES_HINT : ""}`,
+              ),
       })
     } else if ("url" in condition) {
       // Relative to the app it names, else the one its step means.
@@ -126,16 +115,13 @@ function pathMatches(actual: string, expected: string): boolean {
 type Poll = "seen" | "clear" | "blocked-exact" | "blocked-unreadable"
 
 /**
- * Polls a locator until it's visible (`visible`) or gone (not `visible`), or, for a `negative`
- * check (`ensure: absent` asks "does it appear?"), until it appears or the grace ends.
+ * Polls a locator until it's visible (`visible`) or gone (not `visible`).
  *
  * Each poll (`countUnderRule`) is `seen` (a match: real even under exact names), `clear` (none,
  * exact names off, the page readable) or blocked (none under exact names for a partial name, or a
  * page that can't be read). An absence passes only on two `clear` polls in a row on the same
- * document (`performance.timeOrigin`: mid-navigation a count reads 0); a negative check concludes
- * "absent" only on that too. At the deadline: blocked by exact names, refused (`blocked-exact`);
- * unreadable, `blocked-unreadable` (a negative check never times out into "absent"). A negative
- * check's time runs from the first poll that wasn't blocked (bounded to twice the timeout).
+ * document (`performance.timeOrigin`: mid-navigation a count reads 0). At the deadline: blocked by
+ * exact names, refused (`blocked-exact`); else a timeout.
  */
 export async function pollLocator(
   page: Page,
@@ -143,19 +129,14 @@ export async function pollLocator(
   o: {
     timeout: number
     visible: boolean
-    negative: boolean
     /** Stop at once, without concluding, when a poll is blocked by exact names (a wait, not a check). */
     bestEffort?: boolean
-    failed: (
-      why: "timeout" | "timeout-exact" | "blocked-exact" | "blocked-unreadable",
-      waited: number,
-    ) => Error
+    failed: (why: "timeout" | "timeout-exact" | "blocked-exact", waited: number) => Error
   },
 ): Promise<void> {
-  const absence = o.negative || !o.visible
+  const absence = !o.visible
   const started = Date.now()
-  let deadline = started + o.timeout
-  let looked = false
+  const deadline = started + o.timeout
   let exactSeen = false
   let last: Poll
   // Consecutive clear polls on one document (its timeOrigin).
@@ -175,26 +156,19 @@ export async function pollLocator(
           : r.count === undefined || r.unsure || (absence && doc === undefined)
             ? "blocked-unreadable"
             : "clear"
-    if (last === "seen" && (o.visible || o.negative)) return
+    if (last === "seen" && o.visible) return
     if (o.bestEffort === true && last === "blocked-exact") return
     if (last === "clear" && absence) {
       clears = clearOn !== undefined && clearOn === doc ? clears + 1 : 1
       clearOn = doc
-      if (clears >= 2 && !o.negative) return
+      if (clears >= 2) return
     } else {
       clears = 0
       clearOn = undefined
     }
-    if (absence && !looked && (last === "clear" || last === "seen")) {
-      looked = true
-      if (o.negative)
-        deadline = Math.min(Math.max(deadline, Date.now() + o.timeout), started + 2 * o.timeout)
-    }
     if (Date.now() >= deadline) {
       const waited = Date.now() - started
       if (absence && last === "blocked-exact") throw o.failed("blocked-exact", waited)
-      // A negative check concludes "absent" (a timeout) only on two clear polls on one document.
-      if (o.negative && clears < 2) throw o.failed("blocked-unreadable", waited)
       throw o.failed(exactSeen ? "timeout-exact" : "timeout", waited)
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
