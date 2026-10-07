@@ -9,6 +9,32 @@
 
 import type { LlmMessage } from "./types.ts"
 
+/** A tool's images (a screenshot) sent as images: the most recent this many messages holding them;
+ *  older ones are said in words only (each costs ~1.5k tokens a turn). */
+export const KEEP_RECENT_TOOL_IMAGES = 2
+
+/** What an older tool image message says instead of its images. */
+export const clearedImagesText = (tools: string): string =>
+  `[images from ${tools} shown earlier, no longer shown: call it again to see the page now]`
+
+/**
+ * The messages with a tool's images kept on the latest {@link KEEP_RECENT_TOOL_IMAGES} messages
+ * only; older ones said in words (never an empty message). The model's view, and what a host keeps
+ * (a stored history never holds every screenshot of a long chat).
+ */
+export function withoutOldImages(messages: LlmMessage[]): LlmMessage[] {
+  const imaged = messages.filter(
+    (m) => m.role === "user" && m.fromTool !== undefined && (m.images?.length ?? 0) > 0,
+  )
+  if (imaged.length <= KEEP_RECENT_TOOL_IMAGES) return messages
+  const recent = new Set(imaged.slice(-KEEP_RECENT_TOOL_IMAGES))
+  return messages.map((m) =>
+    m.role === "user" && m.fromTool !== undefined && (m.images?.length ?? 0) > 0 && !recent.has(m)
+      ? { role: "user", content: clearedImagesText(m.fromTool), fromTool: m.fromTool }
+      : m,
+  )
+}
+
 /** Keep this many of the most recent BULKY tool results in full; older bulky ones
  *  are elided (once they've been shown at least once — see `shownBulky`). Claude
  *  Code keeps 5. */
@@ -114,7 +140,7 @@ export function buildModelMessages(
   }
   const recentBulky = new Set(bulkyIds.slice(-KEEP_RECENT_TOOL_RESULTS))
 
-  return messages.map((m) => {
+  return withoutOldImages(messages).map((m) => {
     if (m.role !== "tool") return m
     const { meta, bulky } = cache.get(m.toolCallId)!
     const ceiling = meta.keepFull ? SKILL_CEILING_CHARS : RESULT_CEILING_CHARS

@@ -1,4 +1,4 @@
-import { defineTool, type Tool } from "@kiframe/agent"
+import { defineTool, isWithImages, type Tool, withImages } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { AppName, firstApp, SceneId } from "@kiframe/schema"
 import { z } from "zod"
@@ -58,6 +58,23 @@ const snapshot = defineTool({
       ),
   }),
   run: async ({ within, find }, studio: Studio) => said(await studio.snapshot(within, find)),
+})
+
+const look = defineTool({
+  name: "look",
+  description:
+    "See the live page as an image (secrets painted over): where the snapshot can't see (a canvas, a chart, a map, an image) and to check what a step did on screen. With `ref` (of the last snapshot), the image is that element: an `at` fraction on it is a position in the image.",
+  parameters: z.object({
+    ref: z
+      .string()
+      .optional()
+      .describe("an element of the last snapshot (e.g. the drawing canvas): only it is shown"),
+  }),
+  run: async ({ ref }, studio: Studio, signal) => {
+    const seen = await studio.look(ref, signal)
+    if ("error" in seen) return seen
+    return withImages(seen.text, [{ url: seen.image }])
+  },
 })
 
 /** A run_step's scene start app (by name; checked against the project's apps in the studio). */
@@ -306,6 +323,11 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
         if (error instanceof Error) scrubbed.name = error.name
         throw scrubbed
       }
+      // A tool's images (a screenshot) are masked where they're made: only its text is scrubbed
+      // here (scrubbing an image's bytes would break it, and never hide anything in its pixels).
+      if (isWithImages(result)) {
+        return withImages(scrubDeep(result.result, studio.scrubber()), result.images)
+      }
       return scrubDeep(result, studio.scrubber())
     },
   }
@@ -334,6 +356,7 @@ function scrubDeep(value: unknown, scrub: (text: string) => string): unknown {
 export const studioTools: Tool<Studio>[] = [
   listScenes,
   snapshot,
+  look,
   runStep,
   runSteps,
   listSecrets,

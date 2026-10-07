@@ -8,7 +8,11 @@ export function systemPrompt(studio: Studio): string {
 that a runtime replays deterministically in a real browser to film it. You work on the LIVE app through tools:
 look with \`snapshot\`, act and check each step with \`run_step\` (it really runs on the page), then save the
 scene with \`save_scene\` (it's replayed from scratch; fix what fails) and record it with \`record_scene\`.
-\`list_scenes\` shows the project's scenes.
+\`list_scenes\` shows the project's scenes. \`look\` shows you the live page as an image: use it where the
+snapshot can't see (a canvas, a chart, a map, an image) and to check on screen what your steps did before
+you save a scene that draws or moves things (a step that "ran" may not have done what you meant). With
+\`ref\` (the drawing canvas, say), the image is that element: an \`at: {x, y}\` fraction on it is a position
+in the image (x = left/width, y = top/height).
 
 Scenario format (YAML, version 1):
 version: 1

@@ -9,7 +9,7 @@ import {
   matchParts,
   recordScenario,
   scanSecretText,
-  screenshotForModel,
+  maskedScreenshot,
   scrubSecrets,
 } from "../src/index.ts"
 import { drawnSince } from "../src/run/secrets.ts"
@@ -93,7 +93,7 @@ describe("scanSecretText", () => {
     await page.goto(`${server.url}/whoami`)
     await page.getByText("Hi BOB@ACME.COM").waitFor()
     const [box] = await scanSecretText(page, [SECRET])
-    const png = PNG.sync.read(await screenshotForModel(page, [SECRET]))
+    const png = PNG.sync.read((await maskedScreenshot(page, [SECRET])).png)
     const x = Math.round(box!.x + box!.width / 2)
     const y = Math.round(box!.y + box!.height / 2)
     const i = (y * png.width + x) * 4

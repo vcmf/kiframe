@@ -2,7 +2,7 @@
 // requests (a question, a risky step's approval) bridged to the window by id. Electron-free: main
 // gives it the browser, the model and where to send things (tested with a scripted model).
 import type { LlmClient, LlmMessage } from "@kiframe/agent"
-import { runAgent } from "@kiframe/agent"
+import { runAgent, withoutOldImages } from "@kiframe/agent"
 import type { OpenedProject, TakeStore } from "@kiframe/project"
 import { resolveProjectConfig } from "@kiframe/schema"
 import {
@@ -239,7 +239,10 @@ export class AgentHost {
       })) {
         this.#trace?.event(event)
         // The run's turns, kept as they come.
-        if ("messages" in event) this.#history = [...this.#history, ...event.messages]
+        // Older screenshots kept in words only (a long chat never holds them all).
+        if ("messages" in event) {
+          this.#history = withoutOldImages([...this.#history, ...event.messages])
+        }
         // Only the answer's text is throttled (a thinking row that ends with it goes at once).
         for (const item of this.#log.event(event)) this.#emit(item, item.kind === "assistant")
         if (event.type === "tool_result" && PROJECT_TOOLS.has(event.toolName)) {

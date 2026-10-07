@@ -10,11 +10,14 @@ import {
 } from "@kiframe/project"
 import {
   locatorFor,
+  LookRefusal,
+  maskedScreenshot,
   recordScenario,
   runScenario,
   secretScrubber,
   type SecretUse,
   type ApprovalRequest,
+  type Box,
   knownValuesOf,
   StepError,
   type StepRef,
@@ -370,9 +373,88 @@ export class Studio {
    * page's, as they are now). Built once for a whole result (the tools' boundary).
    */
   scrubber(): (text: string) => string {
+    return secretScrubber(this.#knownValues())
+  }
+
+  /** Every secret value known now: the host's, and the live page's. */
+  #knownValues(): Set<string> {
     const values = new Set(this.options.knownValues?.() ?? [])
     if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
-    return secretScrubber(values)
+    return values
+  }
+
+  /**
+   * The live page as an image (the agent's `look`): the viewport, or one element of the last
+   * snapshot (`ref`: the image is its box, so an `at` fraction on it is a position in the image).
+   * Every place a secret value may show is painted over first (`maskedScreenshot`); no image
+   * rather than an unchecked one.
+   */
+  async look(
+    ref?: string,
+    signal?: AbortSignal,
+  ): Promise<{ text: string; image: string } | { error: string }> {
+    const page = await this.livePage()
+    // A ref's box, measured in both scans around the capture (it must not move); the image is its
+    // part on screen (an `at` fraction maps onto the image only when it's whole). Never scrolled
+    // to: a look changes nothing on the page (a replay would never see that scroll).
+    let measure: (() => Promise<Box | null>) | undefined
+    let whole: Box | undefined
+    if (ref !== undefined) {
+      const refused = this.#refusedNow([{ path: [], ref, extra: [] }])
+      if (refused !== undefined) return { error: refused }
+      // A ref holds only in the document it was given in (a new one may number another element so).
+      const doc = await documentOf(page)
+      if (doc === undefined || doc !== this.#snapshot?.doc) {
+        return {
+          error: `ref ${ref}: the page loaded a new document since the snapshot: take a new snapshot`,
+        }
+      }
+      const target = page.locator(`aria-ref=${ref}`)
+      if ((await target.boundingBox({ timeout: 2000 }).catch(() => null)) === null) {
+        return { error: `ref ${ref}: it isn't on the page anymore: take a new snapshot` }
+      }
+      measure = async () => {
+        const box = await target.boundingBox({ timeout: 2000 }).catch(() => null)
+        const view = page.viewportSize()
+        if (box === null || view === null) return null
+        whole = box
+        const x1 = Math.max(0, box.x)
+        const y1 = Math.max(0, box.y)
+        const x2 = Math.min(view.width, box.x + box.width)
+        const y2 = Math.min(view.height, box.y + box.height)
+        return x2 <= x1 || y2 <= y1 ? null : { x: x1, y: y1, width: x2 - x1, height: y2 - y1 }
+      }
+    }
+    try {
+      const shot = await maskedScreenshot(page, this.#knownValues(), {
+        selectors: this.options.config.redaction.selectors,
+        ...(measure !== undefined && { measure }),
+        ...(signal !== undefined && { signal }),
+      })
+      let what = `the viewport, ${shot.width}×${shot.height}`
+      if (whole !== undefined) {
+        const box = whole
+        const range = (from: number, size: number, total: number) =>
+          `${(Math.max(0, -from) / size).toFixed(2)}–${(Math.min(size, total - from) / size).toFixed(2)}`
+        const view = page.viewportSize() ?? { width: shot.width, height: shot.height }
+        const all = shot.width >= Math.floor(box.width) && shot.height >= Math.floor(box.height)
+        what = all
+          ? `ref ${ref}, ${Math.round(box.width)}×${Math.round(box.height)}: an \`at\` fraction on it is a position in this image`
+          : `ref ${ref}, only its part on screen: this image shows x ${range(box.x, box.width, view.width)} and y ${range(box.y, box.height, view.height)} of it (an \`at\` fraction is of the whole element)`
+      }
+      const masked = shot.masked > 0.5 ? " Most of it is masked (it shows secrets)." : ""
+      return {
+        text: `The live page (url: ${this.#where(page.url())}), ${what}.${masked}`,
+        image: `data:image/png;base64,${shot.png.toString("base64")}`,
+      }
+    } catch (error) {
+      // Stopped: thrown as such (the loop says aborted, never "try again").
+      if (signal?.aborted === true) throw error
+      // Said when it's how the look was asked (it won't change); else never why (a retry's reason
+      // could tell what changed on the page).
+      if (error instanceof LookRefusal) return { error: `couldn't look: ${error.message}` }
+      return { error: "couldn't look at the page now: try again in a moment" }
+    }
   }
 
   /** One text scrubbed (`scrubber`). */
@@ -386,8 +468,7 @@ export class Studio {
    * never refuse what it writes (they'd match ordinary text: a residual, stated). Built once.
    */
   secretTest(): (text: string) => boolean {
-    const values = new Set(this.options.knownValues?.() ?? [])
-    if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
+    const values = this.#knownValues()
     const scrub = secretScrubber([...values].filter((v) => [...v].length >= MIN_CHECKED))
     return (text) => scrub(text) !== text
   }

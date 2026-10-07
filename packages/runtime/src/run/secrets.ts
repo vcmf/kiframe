@@ -483,6 +483,30 @@ const PLACEHOLDER_SOURCE = "\\[secret\\]"
 
 /** `scrubSecrets` for many texts: the values' variants and their pattern built once. */
 export function secretScrubber(values: Iterable<string>): (text: string) => string {
+  const sources = secretSources(values)
+  if (sources.length === 0) return (text) => text
+  // One pass over one alternation of every pattern, longest first: a secret that contains another
+  // ("bob@acme.com", "bob"), even split by whitespace, is replaced whole, and a replacement is never
+  // re-scanned (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and
+  // over-scrubbing is safe. A "[secret]" already there (any case) is matched first and kept as it
+  // is: text scrubbed twice is scrubbed once ("Secret" would make "[[[secret]]]", telling the
+  // value), and a page's own "[SECRET]" is never taken for a value.
+  const pattern = new RegExp([PLACEHOLDER_SOURCE, ...sources].join("|"), "giu")
+  const placeholder = /^\[secret\]$/i
+  return (text) => text.replace(pattern, (m) => (placeholder.test(m) ? m : "[secret]"))
+}
+
+/**
+ * What the scrubber matches, as one pattern (global, case-insensitive): what a screenshot for the
+ * model masks at least (the image never shows what the text hides). Undefined: nothing to match.
+ */
+export function secretMatcher(values: Iterable<string>): RegExp | undefined {
+  const sources = secretSources(values)
+  return sources.length === 0 ? undefined : new RegExp(sources.join("|"), "giu")
+}
+
+/** The scrubber's patterns: every value's variants and its whitespace-split form, longest first. */
+function secretSources(values: Iterable<string>): string[] {
   const list = [...values]
   const variants = new Set<string>()
   const encode = (f: (s: string) => string, s: string): string | undefined => {
@@ -522,7 +546,7 @@ export function secretScrubber(values: Iterable<string>): (text: string) => stri
       if (v !== undefined && v !== "") variants.add(v)
     }
   }
-  if (variants.size === 0) return (text) => text
+  if (variants.size === 0) return []
   // Patterns with the length of the text they can match (a split value: its characters, at least).
   const patterns: { source: string; length: number }[] = [...variants].map((v) => ({
     source: escapeRegExp(v),
@@ -535,19 +559,7 @@ export function secretScrubber(values: Iterable<string>): (text: string) => stri
     if (chars.length >= 4)
       patterns.push({ source: chars.map(escapeRegExp).join("\\s*"), length: v.length })
   }
-  // One pass over one alternation of every pattern, longest first: a secret that contains another
-  // ("bob@acme.com", "bob"), even split by whitespace, is replaced whole, and a replacement is never
-  // re-scanned (no "[[sec]ret]"). Case-insensitive: percent-encodings are (%2F = %2f), and
-  // over-scrubbing is safe. A "[secret]" already there (any case) is matched first and kept as it
-  // is: text scrubbed twice is scrubbed once ("Secret" would make "[[[secret]]]", telling the
-  // value), and a page's own "[SECRET]" is never taken for a value.
-  const alternation = [
-    PLACEHOLDER_SOURCE,
-    ...patterns.sort((a, b) => b.length - a.length).map((p) => p.source),
-  ].join("|")
-  const pattern = new RegExp(alternation, "giu")
-  const placeholder = /^\[secret\]$/i
-  return (text) => text.replace(pattern, (m) => (placeholder.test(m) ? m : "[secret]"))
+  return patterns.sort((a, b) => b.length - a.length).map((p) => p.source)
 }
 
 function htmlEscape(value: string, apostrophe: string): string {

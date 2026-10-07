@@ -1198,6 +1198,11 @@ ul.strip-cards > li {
   color: var(--muted);
 }
 
+.dialog-note {
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .dialog-empty {
   margin: 0;
   color: var(--dim);

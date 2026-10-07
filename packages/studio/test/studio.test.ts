@@ -1,9 +1,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { type AgentEvent, type LlmClient, type LlmTurn, runAgent } from "@kiframe/agent"
+import {
+  type AgentEvent,
+  isWithImages,
+  type LlmClient,
+  type LlmTurn,
+  runAgent,
+} from "@kiframe/agent"
 import { createProject, openProject, saveScene, TakeStore } from "@kiframe/project"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { PNG } from "pngjs"
 import { type Browser, chromium } from "playwright"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../runtime/test/fixture-server.ts"
@@ -1415,4 +1422,94 @@ steps: [{ id: away, action: click, target: { by: role, role: link, name: Other h
     ).toMatch(/NOT the app's site/)
     await studio.close()
   }, 30_000)
+})
+
+describe("look: the live page as an image", () => {
+  it("shows the page with a secret painted over, one element alone, and its image intact through the boundary", async () => {
+    const known = new Set<string>(["bob@acme.com"])
+    const { studio } = makeStudio(undefined, { knownValues: () => known })
+    const page = await studio.livePage()
+    await page.setContent(
+      `<p style="font-size:40px">Logged in as bob@acme.com</p><canvas id="c" role="img" aria-label="Drawing canvas" style="width:300px;height:120px;background:#eee"></canvas>`,
+    )
+    const seen = await studio.look()
+    if ("error" in seen) throw new Error(seen.error)
+    const png = PNG.sync.read(Buffer.from(seen.image.split(",")[1] ?? "", "base64"))
+    expect([png.width, png.height]).toEqual([800, 600])
+    // The value's text painted over.
+    const box = await page.evaluate(() => {
+      const p = document.querySelector("p")!
+      const t = p.firstChild!
+      const r = document.createRange()
+      r.setStart(t, 13)
+      r.setEnd(t, 25)
+      const b = r.getBoundingClientRect()
+      return { x: b.x, y: b.y, width: b.width, height: b.height }
+    })
+    const mid =
+      (Math.round(box.y + box.height / 2) * png.width + Math.round(box.x + box.width / 2)) * 4
+    expect([png.data[mid], png.data[mid + 1], png.data[mid + 2]]).toEqual([40, 40, 40])
+    expect(seen.text).toMatch(/the viewport, 800×600/)
+
+    // One element: the image is its box.
+    const snap = await studio.snapshot()
+    const ref = /Drawing canvas[^\n]*\[ref=(e\d+)\]/.exec(snap.ok ? snap.text : "")?.[1]
+    expect(ref).toBeDefined()
+    const one = await studio.look(ref)
+    if ("error" in one) throw new Error(one.error)
+    const cut = PNG.sync.read(Buffer.from(one.image.split(",")[1] ?? "", "base64"))
+    expect([cut.width, cut.height]).toEqual([300, 120])
+
+    // An element larger than the viewport: the part shown said in fractions of it.
+    await page.evaluate(() => {
+      document.getElementById("c")!.style.width = "1600px"
+    })
+    const snap2 = await studio.snapshot()
+    const ref2 = /Drawing canvas[^\n]*\[ref=(e\d+)\]/.exec(snap2.ok ? snap2.text : "")?.[1]
+    const part = await studio.look(ref2)
+    expect("text" in part && part.text).toMatch(
+      /only its part on screen: this image shows x 0\.\d\d–0\.\d\d and y 0\.00–1\.00 of it/,
+    )
+    // A redaction selector that can't be used: said (it won't change), not "try again".
+    studio.options.config.redaction.selectors.push("[[[")
+    expect(await studio.look()).toEqual({
+      error: expect.stringMatching(/redaction selector "\[\[\[" can't be used/) as unknown,
+    })
+    studio.options.config.redaction.selectors.pop()
+
+    // Never scrolled to: an element below the fold isn't on screen (the page stays where it was).
+    await page.evaluate(() => {
+      document.body.insertAdjacentHTML(
+        "beforeend",
+        `<div style="height:2000px"></div><button aria-label="Far away">far</button>`,
+      )
+    })
+    const snap3 = await studio.snapshot()
+    const far = /Far away[^\n]*\[ref=(e\d+)\]/.exec(snap3.ok ? snap3.text : "")?.[1]
+    expect(await studio.look(far)).toEqual({ error: "couldn't look: the element isn't on screen" })
+    expect(await page.evaluate(() => scrollY)).toBe(0)
+    // A ref of another document: refused (a new one may number another element so).
+    await page.goto(`${server.url}/`)
+    expect(await studio.look(far)).toEqual({
+      error: expect.stringMatching(/new document since the snapshot/) as unknown,
+    })
+    // Stopped: thrown as such (never "try again" in the history).
+    const stopped = new AbortController()
+    stopped.abort()
+    await expect(studio.look(undefined, stopped.signal)).rejects.toThrow()
+    await page.setContent(
+      `<p style="font-size:40px">Logged in as bob@acme.com</p><canvas id="c" role="img" aria-label="Drawing canvas" style="width:300px;height:120px"></canvas>`,
+    )
+
+    // Through the tools' boundary: a value that happens to be in the image's base64 never breaks it.
+    const b64 = seen.image.split(",")[1] ?? ""
+    known.add(b64.slice(200, 212))
+    const look = studioTools.find((t) => t.name === "look")!
+    const out = await look.run({}, studio, new AbortController().signal)
+    expect(isWithImages(out)).toBe(true)
+    if (!isWithImages(out)) return
+    const image = out.images[0]?.url.split(",")[1] ?? ""
+    expect(() => PNG.sync.read(Buffer.from(image, "base64"))).not.toThrow()
+    expect(image).not.toContain("[secret]")
+  }, 60_000)
 })

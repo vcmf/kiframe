@@ -10,7 +10,7 @@ import {
   type ApprovalRequest,
   recordScenario,
   runScenario,
-  screenshotForModel,
+  maskedScreenshot,
   StepError,
 } from "../src/index.ts"
 import { startFixtureServer } from "./fixture-server.ts"
@@ -121,7 +121,7 @@ describe("exfiltration", () => {
       const r = range.getBoundingClientRect()
       return { x: r.x, y: r.y, width: r.width, height: r.height }
     })
-    const png = PNG.sync.read(await screenshotForModel(page, [SECRET]))
+    const png = PNG.sync.read((await maskedScreenshot(page, [SECRET])).png)
     // Every pixel of the secret's box is painted over.
     for (let y = Math.ceil(echo.y); y < Math.floor(echo.y + echo.height); y++) {
       for (let x = Math.ceil(echo.x); x < Math.floor(echo.x + echo.width); x++) {
@@ -168,7 +168,7 @@ describe("exfiltration", () => {
       knownSecretValues: ["bob@acme.com"],
       timeoutMs: 1500,
     })
-    await screenshotForModel(page, [SECRET, "bob@acme.com"])
+    await maskedScreenshot(page, [SECRET, "bob@acme.com"])
     const seen = await page.evaluate(() => (window as unknown as { __seen: string[] }).__seen)
     expect(seen.length).toBeGreaterThan(0)
     for (const s of seen) {
