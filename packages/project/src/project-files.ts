@@ -843,6 +843,8 @@ export class ProjectFiles {
     const { name, ext } = type
     const stem = name.slice(0, name.length - ext.length - 1)
     const copy = Buffer.from(bytes)
+    // Once, whatever name it takes (the folder walked once, never per name tried).
+    this.#checkInputsRoom(copy.length)
     for (let n = 1; n <= ATTACH_TRIES; n++) {
       const candidate = n === 1 ? name : `${stem}-${n}.${ext}`
       try {
@@ -945,7 +947,6 @@ export class ProjectFiles {
   #put(r: Resolved, bytes: Buffer, ifHash: string | null): { path: string; hash: string } {
     this.#walk(r, "absent-ok")
     if (r.area === "pages") this.#checkPagesRoom(r, bytes.length)
-    if (r.area === "inputs") this.#checkInputsRoom(bytes.length)
     const made: string[] = []
     try {
       const folder = this.#ensureFolders(r, made)
