@@ -19,7 +19,6 @@ import {
   PaperPlaneRight,
   Question,
   Record,
-  Sparkle,
   Stop,
   StopCircle,
   Wrench,
@@ -37,6 +36,7 @@ import {
 } from "react"
 import type { ChatItem } from "../../../shared/ipc.ts"
 import { useChat } from "../chat-store.ts"
+import { KifMark } from "./kif-mark.tsx"
 import { AgentText } from "./markdown.tsx"
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>
@@ -113,6 +113,7 @@ export function newNeedUser(items: readonly ChatItem[], seen: Set<string>): bool
 
 export function ChatColumn() {
   const items = useChat((s) => s.items)
+  const running = useChat((s) => s.running)
   const connect = useChat((s) => s.connect)
   const body = useRef<HTMLDivElement>(null)
   useEffect(() => connect(), [connect])
@@ -142,11 +143,15 @@ export function ChatColumn() {
               </p>
             </div>
           ) : (
-            turns(items).map((turn) =>
+            turns(items).map((turn, i, all) =>
               turn.kind === "user" ? (
                 <Item key={turn.item.id} item={turn.item} />
               ) : (
-                <AgentTurn key={turn.id} blocks={turn.blocks} />
+                <AgentTurn
+                  key={turn.id}
+                  blocks={turn.blocks}
+                  working={running && i === all.length - 1}
+                />
               ),
             )
           )}
@@ -157,8 +162,8 @@ export function ChatColumn() {
   )
 }
 
-/** One agent turn: its mark above, then all it did at the column's full width. */
-function AgentTurn({ blocks: parts }: { blocks: Block[] }) {
+/** One agent turn: Kif's mark above (moving while the turn is written), then all it did. */
+function AgentTurn({ blocks: parts, working }: { blocks: Block[]; working: boolean }) {
   // A run that ended quietly (done, nothing said): no turn, no lone mark.
   const silent = parts.every(
     (b) =>
@@ -171,7 +176,7 @@ function AgentTurn({ blocks: parts }: { blocks: Block[] }) {
   return (
     <div className="agent-turn">
       <span className="agent-mark" aria-hidden="true">
-        <Sparkle size={20} weight="fill" />
+        <KifMark working={working} />
       </span>
       {parts.map((block) =>
         block.kind === "steps" ? (

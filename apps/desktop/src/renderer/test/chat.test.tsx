@@ -65,6 +65,23 @@ describe("the chat", () => {
     expect(log.querySelectorAll(".agent-turn")).toHaveLength(0)
   })
 
+  it("marks each agent turn with Kif, moving only on the turn being written", async () => {
+    const { push } = open()
+    await screen.findByLabelText("Message the agent")
+    act(() => {
+      push("chat:item", { kind: "user", id: "u1", text: "open projects" })
+      push("chat:item", { kind: "assistant", id: "a1", text: "Opened." })
+      push("chat:item", { kind: "user", id: "u2", text: "now invoices" })
+      push("chat:item", { kind: "assistant", id: "a2", text: "Opening invoices." })
+      push("chat:running", true)
+    })
+    const log = screen.getByRole("log", { name: "Messages" })
+    const marks = () => [...log.querySelectorAll(".agent-turn .kif-mark")]
+    expect(marks().map((m) => m.classList.contains("working"))).toEqual([false, true])
+    act(() => push("chat:running", false))
+    expect(marks().map((m) => m.classList.contains("working"))).toEqual([false, false])
+  })
+
   it("shows what main folds: messages, steps (grouped), the run's end", async () => {
     const { push } = open()
     await screen.findByLabelText("Message the agent")
