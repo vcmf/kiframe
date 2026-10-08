@@ -83,6 +83,13 @@ export function expandSetup(
         : undefined
       if (preset === undefined) throw invalid(`unknown preset "${item.preset}"`)
       const from = { name: item.preset, session: preset.session }
+      // Its steps run in its app (the first by default): a desktop app has its own driver (next).
+      const runsIn = preset.app ?? firstApp(project).name
+      if (appOf(project, runsIn)?.kind !== "web") {
+        throw invalid(
+          `preset "${item.preset}" runs in "${runsIn}", a desktop app: Kiframe can't run steps in desktop apps yet (give the preset a web app: \`app:\`)`,
+        )
+      }
       if (preset.session && skip.includes(item.preset)) {
         // Its state is kept, not its page: back where it ended (a setup may rely on that page),
         // then its own last checks, which say the session still holds (else: expired).
@@ -101,7 +108,7 @@ export function expandSetup(
             probe: true,
           })
           // The checks under the landing's index: a setup's indexes stay those of the file.
-          const own = preset.app ?? firstApp(project).name
+          const own = runsIn
           for (const check of sessionChecks(preset.steps)) {
             out.push({
               kind: "action",
@@ -117,7 +124,7 @@ export function expandSetup(
         }
         continue
       }
-      const own = preset.app ?? firstApp(project).name
+      const own = runsIn
       for (const s of preset.steps) {
         if ("ensure" in s) n++
         else out.push({ kind: "action", index: n++, action: s, app: own, preset: from })
@@ -146,7 +153,8 @@ export function openingGoto(
   const first = setup.find((e) => e.kind === "action")?.action ?? steps[0]
   if (first?.action === "goto") return undefined
   const app = appOf(project, start)
-  if (app === undefined) return undefined
+  // A desktop app opens on its own window: nothing to go to.
+  if (app === undefined || app.kind !== "web") return undefined
   const url = new URL(app.url)
   const goto = Action.safeParse({ action: "goto", url: `${url.pathname}${url.search}` })
   return goto.success ? goto.data : undefined

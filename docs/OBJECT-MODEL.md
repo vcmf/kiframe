@@ -223,6 +223,13 @@ One scene, three phases. The agent's own instructions say the same (`packages/st
 
 **Desktop apps.** The same `apps` entry with `kind: electron` (launched and attached over its debugging port: `--remote-debugging-port` + `connectOverCDP`, measured working on a hardened packaged app in Phase 0, F4) or `kind: tauri` (WebKit on macOS: no CDP, partial support, APPROACHES §6b). The format is ready for them; driving them is v0.1 work.
 
+**Electron apps (designed 2026-10-08, design reviewed; moved into v0).** `{ kind: "electron", bundleId, args?, origins?, viewport }`:
+- **Named by bundle id, never a path or a program** (a project may come from someone else): the desktop app finds the bundle on each machine and keeps the user's approval in its own settings (bundle id, real path, signing team); only `.app` bundles holding `Electron Framework.framework`; App Store (sandboxed) apps refused. `args` are positional only (no switches). `origins`: the https sites a wrapper app (Slack, Notion) shows as its own.
+- **No address**: a goto or a URL condition on it is refused; a scene starting in it opens on its first window; it takes no secrets in v0 (the user signs in by hand: the handover).
+- **Each run launches it sandboxed** (its own HOME, `CFFIXED_USER_HOME`, XDG and temp folders, `--user-data-dir`; an allowlisted environment, never Kiframe's), attached with `--remote-debugging-port=0` + `connectOverCDP`; the viewport is emulated (a spike measured frames and clicks with the window covered, off-screen, minimized or hidden: a run never needs the user's screen; the window itself can't be moved over CDP). Isolation is verified when the app is added: after a trial launch its state must be inside the sandbox, else refused. Its process group killed after each run, leftovers swept.
+- **Stated limits:** native dialogs and menus are unreachable; links open in the user's real browser; a sign-in through the browser with an app-scheme callback isn't supported in v0; the keychain is the user's (an app reading its own item signs in as them); a window built from several views films one view.
+- **Built in steps** (epic `epic/electron-targets`): the format (2026-10-08), the launcher and target, the desktop approval and trial, the studio and batch on it, a real pass on a sandboxed minmux.
+
 **Existing projects convert** on open: `target` becomes `apps.app` (the rest unchanged).
 
 **Settled with the user (2026-10-05):**

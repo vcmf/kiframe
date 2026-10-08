@@ -41,7 +41,6 @@ import {
 import {
   ACTION_REFERENCE,
   type ActionKind,
-  App,
   appOf,
   actionReference,
   Action,
@@ -60,6 +59,8 @@ import {
   SetupItem,
   Step,
   sameApp,
+  WebApp,
+  webAppsOf,
   firstApp,
   startAppOf,
 } from "@kiframe/schema"
@@ -269,8 +270,13 @@ export class Studio {
   #checked: Map<string, SnapshotNode> | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
-  /** The app the live page opens at: the project's first. */
-  readonly #start: App
+  /**
+   * Where the live page opens: the first web app, as the project's apps are now (a desktop app has
+   * its own driver, next).
+   */
+  get #start(): WebApp | undefined {
+    return Object.values(this.options.config.apps).find((a): a is WebApp => a.kind === "web")
+  }
   #files: ProjectFiles | undefined
   #fileReads: Map<string, FileNote> | undefined
 
@@ -307,7 +313,7 @@ export class Studio {
     if (appOf(config, input.name) !== undefined) {
       return { error: `there is already an app named "${input.name}": pick another name` }
     }
-    const typed = App.shape.url.safeParse(input.url)
+    const typed = WebApp.shape.url.safeParse(input.url)
     if (!typed.success) {
       return {
         error: `url: ${typed.error.issues[0]?.message ?? "not an address"} (http(s), no credentials)`,
@@ -323,7 +329,7 @@ export class Studio {
     if (declined(card.url)) {
       return { error: `the user declined ${card.host} for this project: go on without it` }
     }
-    const same = Object.entries(config.apps).find(
+    const same = Object.entries(webAppsOf(config.apps)).find(
       ([, app]) => sameApp(card.url, app.url) || sameApp(app.url, card.url),
     )
     if (same !== undefined) {
@@ -337,7 +343,11 @@ export class Studio {
       ...project.project,
       apps: {
         ...project.project.apps,
-        [card.name]: { kind: "web", url: card.url, viewport: firstApp(config).app.viewport },
+        [card.name]: {
+          kind: "web",
+          url: card.url,
+          viewport: (this.#start ?? firstApp(config).app).viewport,
+        },
       },
     })
     if (!next.success) {
@@ -405,7 +415,6 @@ export class Studio {
 
   constructor(options: StudioOptions) {
     this.options = options
-    this.#start = firstApp(options.config).app
   }
 
   get project(): OpenedProject {
@@ -548,11 +557,6 @@ export class Studio {
       viewport: { width: viewport.width, height: viewport.height },
       deviceScaleFactor: viewport.deviceScaleFactor,
     }
-  }
-
-  #viewport() {
-    const { width, height } = this.#start.viewport
-    return { width, height }
   }
 
   /**
@@ -780,7 +784,7 @@ export class Studio {
           ...(ask.doneWhen !== undefined &&
             ask.doneWhen.trim() !== "" && { doneWhen: ask.doneWhen }),
           origin,
-          onApp: siteOf(page.url(), this.options.config.apps) === "app",
+          onApp: siteOf(page.url(), webAppsOf(this.options.config.apps)) === "app",
           where: ask.where,
           ...(ask.scene !== undefined && { scene: ask.scene }),
         },
@@ -871,10 +875,16 @@ export class Studio {
     if (this.#live !== undefined) await this.#settled()
     await this.#live?.context.close().catch(() => undefined)
     this.#live = undefined
-    const context = await this.options.browser.newContext({ viewport: this.#viewport() })
+    // A desktop app has its own driver (the Electron target, next): never a page here.
+    const start = this.#start
+    if (start === undefined) {
+      throw new Error("desktop apps can't be grounded yet: the Electron target comes next")
+    }
+    const { width, height } = start.viewport
+    const context = await this.options.browser.newContext({ viewport: { width, height } })
     try {
       const page = await context.newPage()
-      await page.goto(this.#start.url)
+      await page.goto(start.url)
       // Closed meanwhile: never kept (nothing would close it).
       if (this.#lifetime.signal.aborted) throw new Error("the studio was closed")
       // Kept only once it's at the app (a failed first visit is tried again next time).
@@ -897,12 +907,14 @@ export class Studio {
   }
 
   #where(url: string, site?: Site): string {
-    return whereOf(url, this.options.config.apps, site)
+    // Named whenever the project has several apps (a desktop one too: the prompt lists them all).
+    const { apps } = this.options.config
+    return whereOf(url, webAppsOf(apps), site, Object.keys(apps).length > 1)
   }
 
   /** A step done, and where its page is: a page that failed to load makes it a failure. */
   #landed(url: string, said: string): StepResult {
-    const site = siteOf(url, this.options.config.apps)
+    const site = siteOf(url, webAppsOf(this.options.config.apps))
     if (site === "unloaded") {
       return {
         ok: false,
@@ -1137,9 +1149,15 @@ export class Studio {
         ? saved
         : undefined) ??
       firstApp(this.options.config).name
-    if (appOf(this.options.config, app) === undefined) {
+    const starts = appOf(this.options.config, app)
+    if (starts === undefined) {
       return failed(
         `start_app: "${app}" isn't one of the project's apps (${Object.keys(this.options.config.apps).join(", ")})`,
+      )
+    }
+    if (starts.kind !== "web") {
+      return failed(
+        `start_app: "${app}" is a desktop app: desktop apps can't be grounded yet (the Electron target comes next)`,
       )
     }
     const raw = asObject(input)
@@ -1631,7 +1649,12 @@ export interface StepResult {
  * app's name when the project has several, and what its site is when it
  * isn't a listed app's own origin (`siteOf`).
  */
-export function whereOf(url: string, apps: AppsArg, site = siteOf(url, apps)): string {
+export function whereOf(
+  url: string,
+  apps: AppsArg,
+  site = siteOf(url, apps),
+  several = listed(apps).length > 1,
+): string {
   if (site === "unloaded") return "(the page failed to load: try again)"
   let page: URL
   try {
@@ -1646,7 +1669,7 @@ export function whereOf(url: string, apps: AppsArg, site = siteOf(url, apps)): s
   if (on !== undefined) {
     const [name, app] = on
     // Several apps: always named (the agent tells "back on app" from "still on docs").
-    const path = all.length > 1 ? `${name}: ${page.pathname}` : page.pathname
+    const path = several ? `${name}: ${page.pathname}` : page.pathname
     // The app's site under another address (redirected to www. or https): its steps work, its
     // secrets don't (typed on their exact origin only): said, so a refused secret step has a why.
     return page.origin === app.origin

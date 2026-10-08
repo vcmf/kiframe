@@ -10,8 +10,7 @@ const project: ProjectView = {
   session: "s1",
   name: "Acme Billing demo",
   dir: "/tmp/demo.kiframe",
-  url: "https://app.acme.example",
-  apps: [{ name: "app", origin: "https://app.acme.example" }],
+  apps: [{ name: "app", kind: "web", origin: "https://app.acme.example" }],
   scenes: [
     { id: "intro", title: "Intro", status: "card" },
     {

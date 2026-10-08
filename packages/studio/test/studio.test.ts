@@ -1225,7 +1225,7 @@ describe("add_app (B4)", () => {
         why: "the install guide",
       }),
     ])
-    expect(openProject(dir).project.apps.docs?.url).toBe(docs().origin)
+    expect(openProject(dir).project.apps.docs).toMatchObject({ url: docs().origin })
     expect(
       await tool("run_step").run(
         { scene: "tour", step: { id: "go", action: "goto", app: "docs", url: "/login" } },
@@ -1737,7 +1737,10 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 20 
     const never = new AbortController().signal
     expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
     const { apps } = studio.options.config
-    studio.setApps({ ...apps, other: { ...apps.app!, url: "https://other.test" } })
+    studio.setApps({
+      ...apps,
+      other: { kind: "web", viewport: apps.app!.viewport, url: "https://other.test" },
+    })
     expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
     expect(asks()).toBe(2)
   }, 60_000)

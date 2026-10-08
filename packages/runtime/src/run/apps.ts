@@ -1,4 +1,4 @@
-import { type App, type Apps, appOf, sameApp } from "@kiframe/schema"
+import { type App, type Apps, appOf, sameApp, type WebApp, webAppsOf } from "@kiframe/schema"
 import type { Ctx } from "./context.ts"
 import { StepError, type StepRef } from "../errors.ts"
 
@@ -17,12 +17,28 @@ export function appNamed(apps: Apps, name: string, step: StepRef): App {
   return app
 }
 
+/**
+ * A web app by its name, for what needs an address (a goto, a URL condition): a desktop app has
+ * none (it starts where it opens: steps move in it by clicking), refused saying so.
+ */
+export function webAppNamed(apps: Apps, name: string, step: StepRef, what: string): WebApp {
+  const app = appNamed(apps, name, step)
+  if (app.kind !== "web") {
+    throw new StepError(
+      step,
+      "invalid-setup",
+      `${what} needs a web app: "${name}" is a desktop app (it opens on its own window: move in it by clicking)`,
+    )
+  }
+  return app
+}
+
 /** The listed app whose exact origin `url` (a URL, or an origin) is on (its name), if any. */
 export function appAtOrigin(apps: Apps, url: string): string | undefined {
   // An opaque origin ("null": about:blank, data:, a sandboxed page) is no app's.
   const origin = URL.parse(url)?.origin
   if (origin === undefined || origin === "null") return undefined
-  return Object.entries(apps).find(([, app]) => new URL(app.url).origin === origin)?.[0]
+  return Object.entries(webAppsOf(apps)).find(([, app]) => new URL(app.url).origin === origin)?.[0]
 }
 
 /** How long a page off the apps may take to come back (a redirect still in flight: an SSO bounce). */
@@ -32,7 +48,7 @@ const BACK_MS = 2500
 export function onApps(apps: Apps, url: string): boolean {
   const parsed = URL.parse(url)
   if (parsed === null || !["http:", "https:", "blob:"].includes(parsed.protocol)) return false
-  return Object.values(apps).some((app) => sameApp(parsed, app.url))
+  return Object.values(webAppsOf(apps)).some((app) => sameApp(parsed, app.url))
 }
 
 /**

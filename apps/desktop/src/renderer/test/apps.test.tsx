@@ -12,10 +12,9 @@ const project: ProjectView = {
   session: "s1",
   name: "Demo",
   dir: "/tmp/demo.kiframe",
-  url: "https://app.test/",
   apps: [
-    { name: "app", origin: "https://app.test" },
-    { name: "docs", origin: "https://docs.test" },
+    { name: "app", kind: "web", origin: "https://app.test" },
+    { name: "docs", kind: "web", origin: "https://docs.test" },
   ],
   scenes: [
     { id: "install", title: "Install", status: "recorded", take: "k1", removedApps: ["auth"] },
@@ -50,7 +49,7 @@ describe("the project's apps", () => {
     expect(invoke).toHaveBeenCalledWith("apps:remove", {
       session: "s1",
       name: "docs",
-      origin: "https://docs.test",
+      identity: "https://docs.test",
     })
   })
 

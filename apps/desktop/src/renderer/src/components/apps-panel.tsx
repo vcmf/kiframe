@@ -2,7 +2,7 @@
 // first: where scenes start). Main asks before removing, naming the scenes that use it.
 import { Globe, WarningCircle, X } from "@phosphor-icons/react"
 import { useEffect, useRef, useState } from "react"
-import type { ProjectView } from "../../../shared/ipc.ts"
+import { appViewIdentity, type ProjectView } from "../../../shared/ipc.ts"
 import { api } from "../api.ts"
 import { useChat } from "../chat-store.ts"
 
@@ -26,11 +26,11 @@ export function AppsPanel({
     return () => document.removeEventListener("keydown", onKey)
   }, [])
 
-  const remove = async (name: string, origin: string) => {
+  const remove = async (name: string, identity: string) => {
     if (busy) return
     setBusy(true)
     const refused = await api()
-      .invoke("apps:remove", { session: project.session, name, origin })
+      .invoke("apps:remove", { session: project.session, name, identity })
       .catch((e: unknown) => String(e))
     setBusy(false)
     setError(refused)
@@ -54,7 +54,7 @@ export function AppsPanel({
             <li key={app.name}>
               <Globe size={15} />
               <span className="mono">{app.name}</span>
-              <span className="mono app-origin">{app.origin}</span>
+              <span className="mono app-origin">{appViewIdentity(app)}</span>
               <div className="spacer" />
               {i === 0 ? (
                 <span className="app-first">Where scenes start</span>
@@ -64,7 +64,7 @@ export function AppsPanel({
                   className="btn btn-ghost"
                   disabled={busy || running}
                   title={running ? "Kif is working: stop it first" : undefined}
-                  onClick={() => void remove(app.name, app.origin)}
+                  onClick={() => void remove(app.name, appViewIdentity(app))}
                 >
                   Remove {app.name}
                 </button>

@@ -20,7 +20,7 @@ import {
   toPlaywright,
   viewportOf,
 } from "../targets.ts"
-import { appNamed } from "./apps.ts"
+import { webAppNamed } from "./apps.ts"
 import { waitForCondition } from "./conditions.ts"
 import {
   type AnyAction,
@@ -66,7 +66,7 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
   switch (action.action) {
     case "goto": {
       // The app it names, else the one its step means (its scene's or its preset's).
-      const base = new URL(appNamed(ctx.apps, action.app ?? ctx.app, step).url)
+      const base = new URL(webAppNamed(ctx.apps, action.app ?? ctx.app, step, "a goto").url)
       const url = new URL(action.url, base)
       // Enforced here too (not only by the schema): a goto never leaves its app.
       if (url.origin !== base.origin) {
