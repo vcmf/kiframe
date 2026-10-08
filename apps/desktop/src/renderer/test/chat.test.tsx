@@ -67,7 +67,7 @@ describe("the chat", () => {
 
   it("marks each agent turn with Kif, moving only on the turn being written", async () => {
     const { push } = open()
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:item", { kind: "user", id: "u1", text: "open projects" })
       push("chat:item", { kind: "assistant", id: "a1", text: "Opened." })
