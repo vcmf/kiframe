@@ -1,6 +1,7 @@
 import type { Action, Apps, ProjectConfig, Step } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
 import { type ApprovalRequest, type SecretUse, StepError, type StepRef } from "../errors.ts"
+import type { HandoverRequest } from "./handover.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
 import type { NetworkTracker } from "../network.ts"
 import { ProbeRefusal } from "../secret-state.ts"
@@ -102,6 +103,18 @@ export interface RunOptions {
    * Headless runs don't pass it: an ungranted use fails.
    */
   requestApproval?: (request: ApprovalRequest) => boolean | Promise<boolean>
+  /**
+   * A handover step: the user takes the page for a moment; resolves once they're done (or
+   * couldn't). Unattended runs don't pass it: a handover fails (`needs-user`).
+   */
+  requestHandover?: (
+    request: HandoverRequest,
+  ) => Promise<{ outcome: "done" | "declined"; note?: string }>
+  /**
+   * Around a handover (the recorder's): "start" before the user is asked, "end" after the step's
+   * end scans (its capture stops and starts again: nothing the user does is filmed).
+   */
+  onHandover?: (phase: "start" | "end", page: Page) => Promise<void>
   /** The host's id of the project folder: the scope of its approvals. Never read from project.json. */
   scope?: string
   /**
@@ -207,6 +220,8 @@ export interface Ctx {
   interruptsDone: WeakMap<Page, Set<string>>
   /** True while a rule's `do` runs: its own actions never start another interrupt check. */
   inInterrupt: boolean
+  /** A handover step's capture paused (its "end" is due after the step's end scans). */
+  handingOver: boolean
   setCurrent: (step: StepRef | undefined) => void
   /** Secret values resolved during this run (memory only): anything reported is scrubbed of them. */
   secretValues: Set<string>

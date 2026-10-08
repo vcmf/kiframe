@@ -14,6 +14,8 @@ import {
   Step,
   TakeEvent,
   TakeMeta,
+  isOffCameraOnly,
+  OFF_CAMERA_ONLY,
 } from "./index.ts"
 
 // Regression tests for the P0-2 review round 1 findings.
@@ -921,9 +923,13 @@ describe("on-camera and off-camera actions stay in sync", () => {
   it("Action and Step accept the same action kinds", () => {
     const kinds = (u: { options: readonly { shape: { action: { value: string } } }[] }) =>
       u.options.map((o) => o.shape.action.value).sort()
-    expect(kinds(Step)).toEqual(kinds(Action))
-    // hover (P0-9) makes 9; select, drag, upload (M1-2) make 12; selectText 13.
+    // The same, but the off-camera-only kinds (a handover: an Action's, never a Step's).
+    expect(kinds(Step)).toEqual(kinds(Action).filter((k) => !isOffCameraOnly(k)))
+    for (const k of OFF_CAMERA_ONLY) expect(kinds(Action)).toContain(k)
+    // hover (P0-9) makes 9; select, drag, upload (M1-2) make 12; selectText 13; handover (off
+    // camera) 14.
     expect(kinds(Step)).toHaveLength(13)
+    expect(kinds(Action)).toHaveLength(14)
   })
 })
 

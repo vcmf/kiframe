@@ -60,7 +60,16 @@ export type ChatRequest =
    * The user takes the live browser for a moment: the agent's task beside the page's own origin
    * (main's: never the agent's words alone), `onApp` when it's one of the project's apps.
    */
-  | { kind: "handover"; task: string; doneWhen?: string; origin: string; onApp: boolean }
+  | {
+      kind: "handover"
+      task: string
+      doneWhen?: string
+      origin: string
+      onApp: boolean
+      /** The live app, a scene being checked (a replay), or recorded (never filmed meanwhile). */
+      where: "live" | "check" | "record"
+      scene?: string
+    }
   | { kind: "question"; question: string }
   | { kind: "approve-risky"; scene: string; step: string; action: string }
   /** Delete a page's file, or replace a whole file the agent didn't write (the file tools). */

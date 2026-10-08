@@ -298,6 +298,17 @@ const WaitFor = z.strictObject({
   timeout: Ms.optional(),
 })
 const Pause = z.strictObject({ action: z.literal("pause"), ms: Ms })
+/**
+ * The user takes the browser for a moment (a code at sign-in, a CAPTCHA): off camera only (a
+ * setup or a preset), never filmed; the run waits for them (never in an unattended one).
+ */
+const Handover = z.strictObject({
+  action: z.literal("handover"),
+  /** What the user should do, in a sentence they can act on. */
+  task: z.string().trim().min(1).max(200),
+  /** How they'll know it's done. */
+  done_when: z.string().trim().min(1).max(200).optional(),
+})
 const Expect = z.strictObject({
   action: z.literal("expect"),
   that: Condition,
@@ -375,10 +386,24 @@ export const Action = z
     WaitFor.extend(offCamera),
     Pause.extend(offCamera),
     Expect.extend(offCamera),
+    Handover.extend(offCamera),
   ])
   .refine(scrollHasExactlyOneMode, scrollModeError)
   .refine(secretTargetIsExact, secretTargetError)
 export type Action = z.infer<typeof Action>
+
+/** Action kinds only off camera (a setup, a preset): never a step's (they're filmed). */
+export const OFF_CAMERA_ONLY = ["handover"] as const satisfies readonly Action["action"][]
+
+/** Whether an action kind is off camera only (`OFF_CAMERA_ONLY`). */
+export const isOffCameraOnly = (kind: string): boolean =>
+  (OFF_CAMERA_ONLY as readonly string[]).includes(kind)
+
+/** A refinement for lists that run between filmed steps (teardowns, interrupts): none of those. */
+export const notOffCameraOnly = (a: { action: string }) => !isOffCameraOnly(a.action)
+/** What a refused off-camera-only action is told (a string: zod rewrites the params object it's given). */
+export const OFF_CAMERA_MESSAGE =
+  "a handover goes in the setup or a preset (never between on-camera steps, yet)"
 
 /** On-camera fields: a stable ID plus presentation directives. */
 const onCamera = { id: StepId, ...presentation }
@@ -470,7 +495,7 @@ const ScenarioBase = z
     setup: z.array(SetupItem).optional(),
     steps: z.array(Step).min(1),
     /** Read only, like `Ensure`: an older scene's cleanup, never run. */
-    teardown: z.array(Action).optional(),
+    teardown: z.array(Action.refine(notOffCameraOnly, { message: OFF_CAMERA_MESSAGE })).optional(),
   })
   .superRefine((s, ctx) => {
     // Off-camera steps typing a secret need an id too: approvals are keyed by it (§3 A1).

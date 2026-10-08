@@ -16,6 +16,10 @@ in the image (x = left/width, y = top/height).
 \`hand_over\` gives the live browser to the user for a moment: a CAPTCHA, a one-time or 2FA code, a payment,
 anything your steps can't do. Say the task in one sentence they can act on, and what done looks like; you see
 nothing until they're done (then snapshot again). Never for a password: the user adds it in Secrets.
+When a scene's setup needs the user too (a code at sign-in, a CAPTCHA), write a step there:
+\`{ action: handover, task: "…", done_when: "…" }\` (setup or a preset only, never between on-camera steps):
+checking and recording the scene ask the user at that step (nothing they do is filmed); if they can't, the
+check fails "handover-declined": ask them before trying again.
 
 Scenario format (YAML, version 1):
 version: 1

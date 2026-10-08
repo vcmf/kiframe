@@ -1,5 +1,6 @@
 // The live app as the window shows it: the screencast of the studio's live page (and the page the
 // runner switched to), view only, a few frames a second. Frames go to the window, never the model.
+import { watchScreencast } from "@kiframe/runtime"
 import type { Page } from "playwright"
 import type { LiveFrame } from "../shared/ipc.ts"
 
@@ -22,6 +23,7 @@ export class LiveView {
   #latest: { page: Page; data: Buffer } | undefined
   #pending: ReturnType<typeof setTimeout> | undefined
   #switching: Promise<void> = Promise.resolve()
+  #unwatch: (() => Promise<void>) | undefined
   #gen = 0
 
   constructor(page: () => Page | undefined, send: (frame: LiveFrame) => void) {
@@ -37,6 +39,12 @@ export class LiveView {
   /** Which page the frames show now (a new one per page followed): input on an older one drops. */
   get gen(): number {
     return this.#gen
+  }
+
+  /** Follows the page it should now, at once, and waits until it does (its screencast moved). */
+  async sync(): Promise<void> {
+    if (this.#timer !== undefined) this.#follow()
+    await this.#switching
   }
 
   /** Follows the live page until `stop`. */
@@ -87,27 +95,28 @@ export class LiveView {
 
   async #switch(page: Page | undefined): Promise<void> {
     if (page === this.#followed) return
-    const old = this.#followed
     this.#followed = page
     this.#gen = ++gens
-    await old?.screencast.stop().catch(() => undefined)
+    // Through the shared screencast: a recording films the same page during a handover.
+    await this.#unwatch?.().catch(() => undefined)
+    this.#unwatch = undefined
     if (page === undefined) return
     // At the page's own size, capped (sharp on the stage, without full-size frames over IPC
     // several times a second): unsized, Playwright scales every frame down to 800×500.
     const size = frameSize(page.viewportSize())
-    await page.screencast
-      .start({
-        quality: QUALITY,
-        size,
-        onFrame: ({ data }) => {
-          if (page !== this.#followed) return
-          // At most every FRAME_MS, and never the last of a burst dropped: the latest one waits
-          // for its turn (the page may then stay still, the screencast sends nothing more).
-          this.#latest = { page, data }
-          if (this.#pending !== undefined) return
-          const wait = Math.max(0, this.#lastSent + FRAME_MS - Date.now())
-          this.#pending = setTimeout(() => this.#flush(), wait)
-        },
+    await watchScreencast(page, { size, quality: QUALITY, current: true }, ({ data }) => {
+      if (page !== this.#followed) return
+      // At most every FRAME_MS, and never the last of a burst dropped: the latest one waits for
+      // its turn (the page may then stay still, the screencast sends nothing more).
+      this.#latest = { page, data }
+      if (this.#pending !== undefined) return
+      const wait = Math.max(0, this.#lastSent + FRAME_MS - Date.now())
+      this.#pending = setTimeout(() => this.#flush(), wait)
+    })
+      .then((unwatch) => {
+        // Left meanwhile: never kept.
+        if (this.#followed === page) this.#unwatch = unwatch
+        else void unwatch()
       })
       .catch(() => {
         // A page closing as it's followed, or one the screencast refuses: never tried again (the

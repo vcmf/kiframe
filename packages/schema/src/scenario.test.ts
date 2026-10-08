@@ -5,6 +5,7 @@ import {
   GroundedTarget,
   isGrounded,
   NRect,
+  parseProjectYaml,
   parseScenarioYaml,
   RectTuple,
   SchemaError,
@@ -168,5 +169,44 @@ describe("Take and Composition", () => {
       },
     }
     expect(Composition.safeParse(bad).success).toBe(false)
+  })
+})
+
+describe("a handover step", () => {
+  const scene = (yaml: string) => () => parseScenarioYaml(`version: 1\n${yaml}`)
+  it("goes in a setup or a preset, never between on-camera steps, in an interrupt or a teardown", () => {
+    expect(
+      scene(`setup:
+  - { action: handover, task: "Enter the code", done_when: "the dashboard shows" }
+steps:
+  - { id: a, action: pause, ms: 100 }`),
+    ).not.toThrow()
+    expect(
+      scene(`steps:
+  - { id: a, action: handover, task: "Enter the code" }`),
+    ).toThrow()
+    expect(
+      scene(`teardown:
+  - { action: handover, task: "Enter the code" }
+steps:
+  - { id: a, action: pause, ms: 100 }`),
+    ).toThrow(/a handover goes in the setup/)
+    const project = (rules: string) => () =>
+      parseProjectYaml(
+        `version: 2\napps: { app: { kind: web, url: "https://app.test" } }\n${rules}`,
+      )
+    expect(
+      project(`presets:
+  login:
+    session: true
+    steps:
+      - { action: handover, task: "Enter the code" }`),
+    ).not.toThrow()
+    expect(
+      project(`interrupts:
+  - id: code
+    when: { text: "Enter your code" }
+    do: { action: handover, task: "Enter the code" }`),
+    ).toThrow(/a handover goes in the setup/)
   })
 })

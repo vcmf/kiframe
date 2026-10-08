@@ -18,6 +18,7 @@ import {
   type SecretUse,
   type ApprovalRequest,
   type Box,
+  type HandoverRequest,
   knownValuesOf,
   addKnownValues,
   StepError,
@@ -37,6 +38,8 @@ import {
   appOf,
   actionReference,
   Action,
+  isOffCameraOnly,
+  OFF_CAMERA_MESSAGE,
   checkScenarioAgainstProject,
   Locator,
   parseScenarioYaml,
@@ -84,7 +87,16 @@ export type UserRequest =
    * The user takes the live browser for a moment (`hand_over`): `task` is the agent's words, so the
    * card shows the page's own origin beside it (`onApp`: one of the project's apps), never only them.
    */
-  | { kind: "handover"; task: string; doneWhen?: string; origin: string; onApp: boolean }
+  | {
+      kind: "handover"
+      task: string
+      doneWhen?: string
+      origin: string
+      onApp: boolean
+      /** Where: the live app (the agent's), a scene being checked (a replay), or being recorded. */
+      where: "live" | "check" | "record"
+      scene?: string
+    }
 
 /** The user's answer to a handover: done or not, and a note for the agent (scrubbed). */
 export interface HandoverAnswer {
@@ -96,6 +108,9 @@ export interface HandoverAnswer {
 
 /** What a request is answered with: text, a yes or no, a handover's end. */
 export type UserAnswer = string | boolean | HandoverAnswer
+
+/** At most this long a run's context waits for a handover's end before it closes. */
+const SETTLE_HANDOVER_MS = 8000
 
 /** The shortest secret value checked in what the agent writes (`Studio.secretTest`). */
 const MIN_CHECKED = 4
@@ -168,6 +183,11 @@ export interface StudioOptions {
   /** Keeps a file's bytes before the agent replaces or deletes it (until history: M1-10). */
   keepVersion?: (path: string, bytes: Uint8Array) => void
   /**
+   * Every handover's end settled (what the user typed read and made known): a check's or a
+   * recording's context closes only after it (a stop mid-handover reads its fields first).
+   */
+  handoversSettled?: () => Promise<void>
+  /**
    * Ends the run, said in the chat: the agent wrote a secret's value itself (a guess at it: one per
    * run, never a guessing game). Every host gives it.
    */
@@ -197,6 +217,10 @@ export const SNAPSHOT_MAX = 20_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
+  /** What the user typed during handovers (made known for the studio's life: never stored). */
+  readonly #typed = new Set<string>()
+  /** The page a check's or a recording's handover gave the user (the live view follows it). */
+  #handoverPage: Page | undefined
   /** The last snapshot: its page, and what it said of each ref (any new snapshot replaces it). */
   #snapshot:
     | {
@@ -395,7 +419,7 @@ export class Studio {
 
   /** Every secret value known now: the host's, and the live page's. */
   #knownValues(): Set<string> {
-    const values = new Set(this.options.knownValues?.() ?? [])
+    const values = new Set([...(this.options.knownValues?.() ?? []), ...this.#typed])
     if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
     return values
   }
@@ -490,48 +514,22 @@ export class Studio {
     | { outcome: "done" | "declined"; note?: string; url: string; title: string; took_s: number }
     | { error: string }
   > {
-    const page = await this.livePage()
+    await this.livePage()
     const live = this.#live
     if (live === undefined) return { error: "there's no live page to hand over" }
-    let origin = ""
-    try {
-      // An opaque origin (about:blank, data:) is "null": said as none.
-      const own = new URL(page.url()).origin
-      origin = own === "null" ? "" : own
-    } catch {
-      // a page with no address yet: said as none
-    }
     const started = Date.now()
-    // A page the user opens becomes the live page (the live view follows it); closed, back. Only
-    // during the handover (its handlers go with it).
-    const closers: { page: Page; back: () => void }[] = []
-    const onPage = (opened: Page) => {
-      const before = live.page
-      live.page = opened
-      const back = () => {
-        if (live.page === opened) {
-          live.page = before.isClosed() ? (this.#backPage() ?? before) : before
-        }
-      }
-      opened.once("close", back)
-      closers.push({ page: opened, back })
-    }
-    live.context.on("page", onPage)
     let answer: UserAnswer
     try {
-      answer = await this.options.requestUser(
-        {
-          kind: "handover",
-          task,
-          ...(doneWhen !== undefined && doneWhen.trim() !== "" && { doneWhen }),
-          origin,
-          onApp: siteOf(page.url(), this.options.config.apps) === "app",
+      answer = await this.#handOver(
+        { task, doneWhen, where: "live" },
+        live.context,
+        () => live.page,
+        (page) => {
+          live.page = page
         },
         signal,
       )
     } finally {
-      live.context.off("page", onPage)
-      for (const { page: opened, back } of closers) opened.off("close", back)
       // Its refs are gone, stopped too (the page may be another): a new snapshot gives new ones.
       this.#snapshot = undefined
       this.#checked = undefined
@@ -550,12 +548,90 @@ export class Studio {
     }
   }
 
+  /** The host's handovers settled, at most a few seconds (a closing context never waits for good). */
+  async #settled(): Promise<void> {
+    const settled = this.options.handoversSettled?.()
+    if (settled === undefined) return
+    await Promise.race([settled, new Promise((r) => setTimeout(r, SETTLE_HANDOVER_MS))])
+  }
+
+  /** The page handed over to the user in a check or a recording (the live view follows it), if any. */
+  get handoverPage(): Page | undefined {
+    const page = this.#handoverPage
+    return page !== undefined && !page.isClosed() ? page : undefined
+  }
+
+  /**
+   * The user takes a page for a moment (the tool's, on the live app; a step's, on its run's): the
+   * card says what and where (the page's own origin beside the agent's words). A page the user
+   * opens there becomes the one handed over (the live view follows it); closed, back. Only during
+   * the handover (its handlers go with it).
+   */
+  async #handOver(
+    ask: {
+      task: string
+      doneWhen: string | undefined
+      where: "live" | "check" | "record"
+      scene?: string
+    },
+    context: BrowserContext,
+    current: () => Page,
+    follow: (page: Page) => void,
+    signal: AbortSignal,
+  ): Promise<UserAnswer> {
+    const page = current()
+    let origin = ""
+    try {
+      // An opaque origin (about:blank, data:) is "null": said as none.
+      const own = new URL(page.url()).origin
+      origin = own === "null" ? "" : own
+    } catch {
+      // a page with no address yet: said as none
+    }
+    const closers: { page: Page; back: () => void }[] = []
+    const onPage = (opened: Page) => {
+      const before = current()
+      follow(opened)
+      const back = () => {
+        if (current() !== opened) return
+        follow(before.isClosed() ? (latestOpen(context) ?? before) : before)
+      }
+      opened.once("close", back)
+      closers.push({ page: opened, back })
+    }
+    context.on("page", onPage)
+    try {
+      return await this.options.requestUser(
+        {
+          kind: "handover",
+          task: ask.task,
+          ...(ask.doneWhen !== undefined &&
+            ask.doneWhen.trim() !== "" && { doneWhen: ask.doneWhen }),
+          origin,
+          onApp: siteOf(page.url(), this.options.config.apps) === "app",
+          where: ask.where,
+          ...(ask.scene !== undefined && { scene: ask.scene }),
+        },
+        signal,
+      )
+    } finally {
+      context.off("page", onPage)
+      for (const { page: opened, back } of closers) opened.off("close", back)
+    }
+  }
+
   /**
    * What the user typed during a handover, known to the live context from now on (scrubbed from
    * every read, masked in every look), whatever page is open.
    */
   knowTyped(values: string[]): void {
-    if (this.#live !== undefined && values.length > 0) addKnownValues(this.#live.context, values)
+    if (values.length === 0) return
+    // For the studio's life (a check's or a recording's context closes; the next run must still
+    // scrub and blur them), on the live context, and on the page handed over's (its run goes on).
+    for (const v of values) this.#typed.add(v)
+    if (this.#live !== undefined) addKnownValues(this.#live.context, values)
+    const handed = this.handoverPage
+    if (handed !== undefined) addKnownValues(handed.context(), values)
   }
 
   /** One text scrubbed (`scrubber`). */
@@ -619,6 +695,8 @@ export class Studio {
   }
 
   async #open(): Promise<Page> {
+    // A handover on it still reading its fields: done first (what the user typed made known).
+    if (this.#live !== undefined) await this.#settled()
     await this.#live?.context.close().catch(() => undefined)
     this.#live = undefined
     const context = await this.options.browser.newContext({ viewport: this.#viewport() })
@@ -641,10 +719,7 @@ export class Studio {
    * it, most likely is), made the live page; undefined when none is.
    */
   #backPage(): Page | undefined {
-    const back = this.#live?.context
-      .pages()
-      .filter((p) => !p.isClosed())
-      .at(-1)
+    const back = this.#live === undefined ? undefined : latestOpen(this.#live.context)
     if (this.#live !== undefined && back !== undefined) this.#live.page = back
     return back
   }
@@ -993,6 +1068,10 @@ export class Studio {
         : SetupItem.safeParse(raw)
     if (!step.success && setupItem?.success !== true) {
       const r = raw as Record<string, unknown>
+      // An off-camera-only kind (a handover) on camera: said as such (an id would never do).
+      if (part === "steps" && typeof r.action === "string" && isOffCameraOnly(r.action)) {
+        return failed(`invalid step: ${OFF_CAMERA_MESSAGE}: give its part (setup)`)
+      }
       if (part === "steps" && !("id" in r) && Action.safeParse(raw).success) {
         return failed("invalid step: an on-camera step needs an id (a setup action: give its part)")
       }
@@ -1107,13 +1186,14 @@ export class Studio {
         await context.newPage(),
         paced,
         this.options.config,
-        this.#run(scene, signal),
+        this.#run(scene, signal, "check"),
       )
       return "ok"
     } catch (error) {
       if (isStopped(error)) throw error
       return `replay failed: ${failure(error)}`
     } finally {
+      await this.#settled()
       await context.close().catch(() => undefined)
     }
   }
@@ -1146,7 +1226,7 @@ export class Studio {
     let stopped: StepError | undefined
     try {
       recorded = await recordScenario(await context.newPage(), scenario, config, {
-        ...this.#run(sceneId, signal),
+        ...this.#run(sceneId, signal, "record"),
         outDir: dir,
         // A failed take's video is dropped as it settles: never encoded.
         encodeFailed: false,
@@ -1155,6 +1235,7 @@ export class Studio {
       if (isStopped(error)) stopped = error as StepError
       why = failure(error)
     } finally {
+      await this.#settled()
       await context.close().catch(() => undefined)
     }
     let take: Awaited<ReturnType<TakeStore["settle"]>>
@@ -1205,7 +1286,7 @@ export class Studio {
     this.#live = undefined
   }
 
-  #run(sceneId: string, signal: AbortSignal) {
+  #run(sceneId: string, signal: AbortSignal, where: "live" | "check" | "record" = "live") {
     const { resolveSecret, requestUser, requestApproval, scope, sceneKey, knownValues } =
       this.options
     const key = sceneKey(sceneId)
@@ -1219,7 +1300,36 @@ export class Studio {
       signal,
       timeoutMs: STEP_TIMEOUT_MS,
       // Every value the scene can use: blurred on screen and scrubbed even when not typed (R6).
-      knownSecretValues: [...(knownValues?.() ?? [])],
+      knownSecretValues: [...(knownValues?.() ?? []), ...this.#typed],
+      // A handover step: the user does a part themselves, on this run's page (the live view
+      // follows it), never filmed.
+      requestHandover: async (request: HandoverRequest) => {
+        const context = request.page.context()
+        this.#handoverPage = request.page
+        const answer = await ask(signal, () =>
+          this.#handOver(
+            {
+              task: request.task,
+              doneWhen: request.doneWhen,
+              where,
+              ...(where !== "live" && { scene: sceneId }),
+            },
+            context,
+            () => this.#handoverPage ?? request.page,
+            (page) => {
+              this.#handoverPage = page
+            },
+            signal,
+          ),
+        ).finally(() => {
+          this.#handoverPage = undefined
+        })
+        const handed = typeof answer === "object" ? answer : undefined
+        return {
+          outcome: handed?.outcome ?? "declined",
+          ...(handed !== undefined && handed.note.trim() !== "" && { note: handed.note }),
+        }
+      },
       ...(resolveSecret !== undefined && { resolveSecret }),
       // Dialogs close at the stop, and never open after it.
       ...(requestApproval !== undefined && {
@@ -1238,6 +1348,14 @@ export class Studio {
       },
     }
   }
+}
+
+/** A context's latest page still open (the one a closed popup's opener most likely is). */
+function latestOpen(context: BrowserContext): Page | undefined {
+  return context
+    .pages()
+    .filter((p) => !p.isClosed())
+    .at(-1)
 }
 
 /**

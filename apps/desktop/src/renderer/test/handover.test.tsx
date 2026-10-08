@@ -35,6 +35,7 @@ const request = (onApp: boolean, state: "open" | "answered" = "open") => ({
     task: "Enter the code from your phone",
     origin: onApp ? "https://app.test" : "https://app-test.evil",
     onApp,
+    where: "live" as const,
   },
   state,
 })

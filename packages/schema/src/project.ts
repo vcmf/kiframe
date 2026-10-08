@@ -8,6 +8,8 @@ import {
   CameraDefault,
   Ensure,
   Locator,
+  OFF_CAMERA_MESSAGE,
+  notOffCameraOnly,
   presetRefs,
   type Scenario,
   requireSecretStepIds,
@@ -99,7 +101,7 @@ export const InterruptRule = z.strictObject({
   /** No `id` on the action: interrupt events are identified by the rule id, not a step id. */
   do: Action.refine((action) => !("id" in action) || action.id === undefined, {
     message: "interrupt actions can't have an id (the rule id identifies them)",
-  }),
+  }).refine(notOffCameraOnly, { message: OFF_CAMERA_MESSAGE }),
 })
 export type InterruptRule = z.infer<typeof InterruptRule>
 

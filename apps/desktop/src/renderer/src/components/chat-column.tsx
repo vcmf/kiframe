@@ -340,6 +340,10 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
           {request.doneWhen !== undefined && <> (done when {request.doneWhen})</>}
         </p>
         <p className="request-origin">
+          {request.where === "check" && <>Checking scene {request.scene}: </>}
+          {request.where === "record" && (
+            <>Recording scene {request.scene} (this part isn’t filmed): </>
+          )}
           On <span className="mono">{request.origin || "a blank page"}</span>
           {!request.onApp && (
             <span className="request-warn">

@@ -600,6 +600,38 @@ steps:
     await made.agent.close()
   }, 60_000)
 
+  it("keeps the user's choice not to hide what they typed when they click Done and then Stop", async () => {
+    const { llm } = script([
+      call("hand_over", { task: "Search for invoices" }),
+      call("write_file", { path: "story.md", content: "searched invoices-term" }, "c2"),
+      { kind: "text", text: "done" },
+    ])
+    const made = host(llm)
+    made.agent.send("go")
+    await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
+    await made.until(() => made.frames.length > 0)
+    const request = made.shown().find((i) => i.kind === "request")!
+    for (let i = 0; i < 150; i++) {
+      made.agent.input(request.id, made.frames.at(-1)!.gen, {
+        kind: "mouse",
+        type: "move",
+        x: (i % 10) / 10,
+        y: 0.5,
+        button: "left",
+        clickCount: 0,
+      })
+    }
+    made.agent.input(request.id, made.frames.at(-1)!.gen, { kind: "text", text: "invoices-term" })
+    made.agent.answer(request.id, { outcome: "done", note: "", hide: false })
+    made.agent.stop()
+    await made.until(() => made.running.at(-1) === false)
+    made.agent.send("again")
+    await made.until(() => made.running.length === 4)
+    const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
+    expect(write).toMatchObject({ status: "ok" })
+    await made.agent.close()
+  }, 60_000)
+
   it("waits for what was typed when the user clicks Done and then Stop at once", async () => {
     const { llm } = script([
       call("hand_over", { task: "Enter the code" }),
@@ -630,6 +662,55 @@ steps:
     await made.until(() => made.running.length === 4)
     const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
     expect(JSON.stringify(write)).toMatch(/holds a secret's value/)
+    await made.agent.close()
+  }, 60_000)
+
+  it("shows a check's and a recording's page in the live view during their handovers, the take whole", async () => {
+    const yaml = [
+      "version: 1",
+      "setup:",
+      "  - { action: goto, url: /projects }",
+      '  - { action: handover, task: "Enter the code" }',
+      "steps:",
+      ...["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 50 }`),
+    ].join("\n")
+    const { llm } = script([
+      call("snapshot", {}),
+      call("save_scene", { id: "with-code", title: "With a code", yaml }, "c2"),
+      call("record_scene", { id: "with-code" }, "c3"),
+      { kind: "text", text: "recorded" },
+    ])
+    const made = host(llm)
+    made.agent.send("go")
+    await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
+    const request = made.shown().find((i) => i.kind === "request")!
+    expect(request).toMatchObject({
+      request: { kind: "handover", where: "check", scene: "with-code" },
+    })
+    // The live view follows the check's page (the live app is at /).
+    await made.until(() => made.frames.at(-1)?.path === "/projects")
+    made.agent.answer(request.id, { outcome: "done", note: "", hide: true })
+    // The recording asks again (no reuse yet): the recorder's capture handed to the live view and
+    // taken back (one screencast per page), the take whole.
+    await made.until(() =>
+      made
+        .shown()
+        .some((i) => i.kind === "request" && i.state === "open" && i.request.kind === "handover"),
+    )
+    const again = made
+      .shown()
+      .filter((i) => i.kind === "request")
+      .at(-1)!
+    expect(again).toMatchObject({ request: { where: "record", scene: "with-code" } })
+    await made.until(() => made.frames.at(-1)?.path === "/projects")
+    made.agent.answer(again.id, { outcome: "done", note: "", hide: true })
+    await made.until(() => made.running.at(-1) === false)
+    expect(made.shown().find((i) => i.kind === "tool" && i.name === "save_scene")).toMatchObject({
+      status: "ok",
+    })
+    expect(made.shown().find((i) => i.kind === "tool" && i.name === "record_scene")).toMatchObject({
+      status: "ok",
+    })
     await made.agent.close()
   }, 60_000)
 
