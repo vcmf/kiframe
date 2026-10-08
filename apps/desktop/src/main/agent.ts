@@ -53,9 +53,10 @@ function untilStopped<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 
 /**
  * Model turns per message: grounding a real app (a login, then each step tried) takes more than
- * the loop's default (Cal.com and Excalidraw went past 30, 2026-10-03).
+ * the loop's default (Cal.com and Excalidraw went past 30, 2026-10-03); a scene of up to 50 steps,
+ * looked at and fixed before it's saved, more again (2026-10-08).
  */
-export const MAX_TURNS = 80
+export const MAX_TURNS = 150
 
 /** Assistant text repainted at most this often (tool steps and requests at once). */
 const TEXT_MS = 100
