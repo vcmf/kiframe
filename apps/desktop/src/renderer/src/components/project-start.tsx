@@ -23,7 +23,7 @@ export function ProjectStart() {
           <FilmSlate size={21} />
         </div>
         <h1>Start a demo</h1>
-        <p>A project films one web app. Name it and give the address the agent should open.</p>
+        <p>A project films one web app. Name it and give the address Kif should open.</p>
         <div className="field">
           <label htmlFor="name">Project name</label>
           <input
@@ -47,7 +47,7 @@ export function ProjectStart() {
             onChange={(e) => setUrl(e.target.value)}
           />
           <span className="field-hint">
-            Use a staging or demo account: the agent clicks through it for real.
+            Use a staging or demo account: Kif clicks through it for real.
           </span>
         </div>
         <ErrorNote error={error} />

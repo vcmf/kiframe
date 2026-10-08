@@ -137,8 +137,8 @@ export function ChatColumn() {
               <ChatCircleDots size={28} />
               <h2>Describe your demo</h2>
               <p>
-                Say what the video should show, and the agent splits it into scenes, tries each step
-                on your app and films it.
+                Say what the video should show. Kif, Kiframe’s agent, splits it into scenes, tries
+                each step on your app and films it.
               </p>
             </div>
           ) : (
@@ -204,8 +204,8 @@ function Item({ item }: { item: ChatItem }) {
             {item.outcome === "stopped"
               ? "Stopped. Nothing more ran."
               : item.outcome === "turn_limit"
-                ? `The agent ${item.message ?? "stopped"}: say how to go on.`
-                : (item.message ?? "The agent failed.")}
+                ? `Kif ${item.message ?? "stopped"}: say how to go on.`
+                : (item.message ?? "Kif failed.")}
           </span>
         </div>
       )
@@ -336,7 +336,7 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
           Take over the browser
         </div>
         <p>
-          The agent asks: <b>{request.task}</b>
+          Kif asks: <b>{request.task}</b>
           {request.doneWhen !== undefined && <> (done when {request.doneWhen})</>}
         </p>
         <p className="request-origin">
@@ -354,21 +354,21 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
         {open ? (
           <>
             <p className="request-hint">
-              Act in the Live app: the agent sees nothing until you’re done, and nothing is filmed.
-              For a password, use Secrets. Clear anything sensitive you leave on the page before
-              Done: the agent reads the page after. Dialogs and file pickers don’t show here yet.
+              Act in the Live app: Kif sees nothing until you’re done, and nothing is filmed. For a
+              password, use Secrets. Clear anything sensitive you leave on the page before Done: Kif
+              reads the page after. Dialogs and file pickers don’t show here yet.
             </p>
             <textarea
               className="request-note"
-              aria-label="A note for the agent"
-              placeholder="A note for the agent (optional)"
+              aria-label="A note for Kif"
+              placeholder="A note for Kif (optional)"
               value={reply}
               maxLength={2000}
               onChange={(e) => setReply(e.target.value)}
             />
             <label className="request-check">
               <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
-              Hide what I typed from the agent
+              Hide what I typed from Kif
             </label>
             <div className="request-actions">
               <button
@@ -392,8 +392,8 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
             {item.state === "closed"
               ? "Closed: the run stopped."
               : handed?.outcome === "done"
-                ? "Done: back to the agent."
-                : "Couldn’t do it: back to the agent."}
+                ? "Done: back to Kif."
+                : "Couldn’t do it: back to Kif."}
           </div>
         )}
       </div>
@@ -407,7 +407,7 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
           Approve a risky step?
         </div>
         <p>
-          The agent wants to run <b>{request.action}</b> in the live app. It may change real data (a
+          Kif wants to run <b>{request.action}</b> in the live app. It may change real data (a
           delete, a send).
         </p>
         <div className="request-meta mono">
@@ -469,7 +469,7 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
           {deleting ? "Delete a file?" : "Replace a file?"}
         </div>
         <p>
-          The agent wants to {deleting ? "delete" : "replace the whole of"}{" "}
+          Kif wants to {deleting ? "delete" : "replace the whole of"}{" "}
           <span className="mono">{request.path}</span>
           {deleting ? "" : ", which it didn’t write"}. Its current version is kept in Kiframe’s
           data.
@@ -501,7 +501,7 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
     // A request this window doesn't know: never answered by accident, only declined.
     return (
       <div className="request-card" aria-label="A request this version can't show">
-        <p>The agent asked for something this version of Kiframe can’t show.</p>
+        <p>Kif asked for something this version of Kiframe can’t show.</p>
         {open && (
           <div className="request-actions">
             <button type="button" className="btn btn-ghost" onClick={() => answer(item.id, false)}>
@@ -513,10 +513,10 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
     )
   }
   return (
-    <div className="request-card" aria-label="The agent asks">
+    <div className="request-card" aria-label="Kif asks">
       <div className="request-title">
         <Question size={17} />
-        The agent asks
+        Kif asks
       </div>
       <p>{request.question}</p>
       {open ? (
@@ -594,7 +594,7 @@ function Composer() {
             </span>
             {/* Only the status is announced (never the chip and Stop with each step). */}
             <div className="working-text" role="status">
-              <span className="working-title">The agent is working</span>
+              <span className="working-title">Kif is working</span>
               <span className="working-sub">
                 {waiting
                   ? "waiting for your answer"
@@ -607,7 +607,7 @@ function Composer() {
         ) : (
           <>
             <label htmlFor="ask" className="sr-only">
-              Message the agent
+              Message Kif
             </label>
             <textarea
               id="ask"
@@ -699,7 +699,7 @@ function AppCardView({
       </ul>
       {request.why !== "" && (
         <p className="app-card-why">
-          <span className="app-card-label">The agent says (pages it read can influence this):</span>{" "}
+          <span className="app-card-label">Kif says (pages it read can influence this):</span>{" "}
           {request.why}
         </p>
       )}

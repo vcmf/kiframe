@@ -24,7 +24,7 @@ export function KeySetup() {
         </div>
         <h1>Connect a model</h1>
         <p>
-          Kiframe’s agent runs on OpenRouter. Paste your API key: it’s kept in your system’s
+          Kif, Kiframe’s agent, runs on OpenRouter. Paste your API key: it’s kept in your system’s
           keychain and never shown again.
         </p>
         <div className="field">

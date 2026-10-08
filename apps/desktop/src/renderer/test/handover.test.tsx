@@ -48,7 +48,7 @@ describe("a handover in the window", () => {
       "live:input": () => undefined,
     })
     render(<App />)
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:running", true)
       push("chat:item", request(false))
@@ -58,11 +58,11 @@ describe("a handover in the window", () => {
     expect(card.textContent).toMatch(/https:\/\/app-test\.evil/)
     expect(card.textContent).toMatch(/not one of this project’s apps/)
     expect(card.textContent).toMatch(/For a password, use Secrets/)
-    fireEvent.change(screen.getByLabelText("A note for the agent"), {
+    fireEvent.change(screen.getByLabelText("A note for Kif"), {
       target: { value: "used a backup code" },
     })
     // Hiding what was typed: the user's call (on by default).
-    fireEvent.click(screen.getByLabelText("Hide what I typed from the agent"))
+    fireEvent.click(screen.getByLabelText("Hide what I typed from Kif"))
     fireEvent.click(screen.getByRole("button", { name: "Done" }))
     expect(invoke).toHaveBeenCalledWith("chat:answer", "h1", {
       outcome: "done",
@@ -77,7 +77,7 @@ describe("a handover in the window", () => {
       "live:input": () => undefined,
     })
     render(<App />)
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:running", true)
       push("live:frame", { jpeg: "AAAA", path: "/login", gen: 7 })

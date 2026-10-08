@@ -41,7 +41,7 @@ export function SceneStrip(props: {
       {scenes.length === 0 ? (
         <div className="strip-empty">
           <Plus size={16} />
-          The agent adds scenes as you describe the demo
+          Kif adds scenes as you describe the demo
         </div>
       ) : (
         <ul className="strip-cards">
@@ -79,7 +79,7 @@ export function SceneStrip(props: {
                     type="button"
                     className="btn btn-ghost scene-rework"
                     disabled={running}
-                    title={running ? "The agent is working" : undefined}
+                    title={running ? "Kif is working" : undefined}
                     onClick={() =>
                       void send(
                         `Rework the scene “${scene.title}” (${scene.id}) without the app${removed.length > 1 ? "s" : ""} ${removed.map((a) => `"${a}"`).join(", ")}: the project no longer lists it. Keep it on the project's apps, or ask to add the site back with add_app if the scene needs it.`,

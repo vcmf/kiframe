@@ -351,7 +351,7 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
     run: async (args, studio, signal) => {
       if (holdsValue(args, studio.secretTest())) {
         studio.options.stopRun(
-          `the agent wrote a secret's value itself (${tool.name}): refused, and the run stopped`,
+          `Kif wrote a secret's value itself (${tool.name}): refused, and the run stopped`,
         )
         return {
           error: "refused: that holds a secret's value (you never write one); the run stops",

@@ -79,7 +79,7 @@ export function Stage({ project }: { project: ProjectView }) {
         {tab === "live" && running && handover === undefined && (
           <span className="chip">
             <HandPointing size={13} />
-            Agent driving
+            Kif is driving
           </span>
         )}
         {tab === "live" && handover !== undefined && (
@@ -125,8 +125,8 @@ export function Stage({ project }: { project: ProjectView }) {
               </>
             ) : (
               <>
-                <h2>The agent’s browser</h2>
-                <p>While the agent works on {project.url}, you watch it here.</p>
+                <h2>Kif’s browser</h2>
+                <p>While Kif works on {project.url}, you watch it here.</p>
               </>
             )}
           </>
