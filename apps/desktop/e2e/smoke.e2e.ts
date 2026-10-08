@@ -587,7 +587,7 @@ describe("the desktop app", () => {
     // and none fails (a face the CSP refuses ends in "error").
     const faces = await page.evaluate(async () => {
       const text = "Tiếng Việt Ѐѐ abc"
-      for (const family of ["JetBrains Mono", "Instrument Sans"]) {
+      for (const family of ["JetBrains Mono", "Hanken Grotesk"]) {
         for (const weight of [400, 500, 600]) {
           await document.fonts.load(`${weight} 16px "${family}"`, text).catch(() => [])
         }
