@@ -12,7 +12,7 @@ import { AgentHost } from "./agent.ts"
 import { FileVersions } from "./file-versions.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
-import { DEFAULT_MODEL, modelConfig } from "./model.ts"
+import { DEFAULT_MODEL, imageInput, modelConfig } from "./model.ts"
 import {
   appOriginOf,
   appRemovalRefused,
@@ -138,6 +138,12 @@ function start(): void {
   const testModel = dev ? process.env.KIFRAME_TEST_MODEL : undefined
   // One script for the app's whole run: its turns go on from one message to the next.
   const scripted = testModel !== undefined ? scriptedModel(testModel) : undefined
+  // Whether the model takes images: OpenRouter asked once (a scripted model: no network, it does).
+  const takesImages = imageInput()
+  const seesImages = (): Promise<boolean> =>
+    scripted !== undefined ? Promise.resolve(true) : takesImages(DEFAULT_MODEL)
+  // Asked at start: the answer is there before the agent's first look.
+  void seesImages()
   const model = async (): Promise<LlmClient> => {
     if (scripted !== undefined) return scripted
     const apiKey = await keys.key()
@@ -225,6 +231,7 @@ function start(): void {
         browser: launch,
         llm: model,
         model: DEFAULT_MODEL,
+        seesImages,
         secrets: vaultOrNull,
         // The files the agent replaces or deletes, kept first (by the host's scope for the folder).
         versions: new FileVersions(join(app.getPath("userData"), "versions", scope)),

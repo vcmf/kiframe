@@ -44,6 +44,7 @@ function host(
   launch: () => Promise<Browser> = () => Promise.resolve(browser),
   failShowing?: () => void,
   secrets?: Secrets | (() => Secrets | undefined),
+  seesImages?: boolean,
 ) {
   const llm = typeof model === "function" ? model : () => Promise.resolve(model)
   const dir = join(mkdtempSync(join(tmpdir(), "kiframe-agent-")), "demo.kiframe")
@@ -67,6 +68,7 @@ function host(
     browser: launch,
     llm,
     model: "test/model",
+    ...(seesImages !== undefined && { seesImages: () => Promise.resolve(seesImages) }),
     ...(secrets !== undefined && {
       secrets: typeof secrets === "function" ? secrets : () => secrets,
     }),
@@ -94,6 +96,17 @@ function host(
 }
 
 describe("the agent in the app", () => {
+  it("sends no image to a model that takes none (look says so)", async () => {
+    const { llm, seen } = script([call("look", {}), { kind: "text", text: "ok" }])
+    const { agent, running, until } = host(llm, undefined, undefined, undefined, false)
+    expect(agent.send("look at the page")).toBeNull()
+    await until(() => running.at(-1) === false)
+    const last = seen.at(-1) ?? []
+    expect(JSON.stringify(last)).toContain("the model doesn't take images")
+    expect(last.some((m) => m.role === "user" && (m.images?.length ?? 0) > 0)).toBe(false)
+    await agent.close()
+  })
+
   it("runs a message through the tools, shows each step, and carries the chat to the next run", async () => {
     const { llm, seen } = script([
       call("list_scenes", {}),

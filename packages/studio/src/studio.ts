@@ -34,6 +34,9 @@ import {
   type Lasting,
   lastingLocator,
   viewOf,
+  fitImage,
+  type FittedImage,
+  ImageRefusal,
 } from "@kiframe/runtime"
 import {
   ACTION_REFERENCE,
@@ -208,6 +211,11 @@ export interface StudioOptions {
    * run, never a guessing game). Every host gives it.
    */
   stopRun: (why: string) => void
+  /**
+   * Whether the model takes images (the host asks its provider; a model picker may change it). None:
+   * it does (tests, scripts). When it doesn't, no tool sends one: `look` and an image's read refuse.
+   */
+  seesImages?: () => Promise<boolean>
   /**
    * Asks the user to approve a secret's use (the vault's approval: A3), in the app; rejects when
    * `signal` aborts (a stop closes the dialog: the secret is never typed after it).
@@ -560,6 +568,32 @@ export class Studio {
     const values = new Set([...(this.options.knownValues?.() ?? []), ...this.#typed])
     if (this.#live !== undefined) for (const v of knownValuesOf(this.#live.context)) values.add(v)
     return values
+  }
+
+  /** Refused when the model takes no images (said with its reason); else nothing. */
+  async refusedImages(): Promise<{ error: string } | undefined> {
+    if ((await this.options.seesImages?.()) ?? true) return undefined
+    return { error: "the model doesn't take images: you can't see one" }
+  }
+
+  /**
+   * An image file for the model: its pixels made again (never its bytes: no metadata; a file that
+   * isn't an image refused), at most 2,000 px on its long side; refused when the model takes none.
+   */
+  async imageForModel(
+    bytes: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<FittedImage | { error: string }> {
+    const refused = await this.refusedImages()
+    if (refused !== undefined) return refused
+    try {
+      return await fitImage(this.options.browser, bytes, signal)
+    } catch (error) {
+      if (error instanceof ImageRefusal) return { error: error.message }
+      // A stop is a stop; anything else (the renderer crashed, the browser went away): refused.
+      if (signal?.aborted === true) throw error
+      return { error: "it couldn't be decoded (the browser failed): try again" }
+    }
   }
 
   /**

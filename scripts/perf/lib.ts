@@ -161,7 +161,7 @@ export async function openProject(
 
 /** Sends the agent a message. */
 export async function send(page: Page, text: string): Promise<void> {
-  const box = page.getByLabel("Message the agent")
+  const box = page.getByLabel("Message Kif")
   await box.fill(text)
   await box.press("Enter")
 }

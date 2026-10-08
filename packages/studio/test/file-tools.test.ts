@@ -3,8 +3,10 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createProject, TakeStore } from "@kiframe/project"
 import { parseProjectYaml } from "@kiframe/schema"
-import type { Browser } from "playwright"
-import { describe, expect, it } from "vitest"
+import { isWithImages, type WithImages } from "@kiframe/agent"
+import { chromium, type Browser } from "playwright"
+import { PNG } from "pngjs"
+import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { type FileNote, Studio, studioTools, type UserRequest } from "../src/index.ts"
 
 // C2 (OBJECT-MODEL §0.13): the agent's file tools over the project's files it may see.
@@ -23,6 +25,8 @@ function studioWith(
     answers?: boolean[]
     secrets?: string[]
     fileReads?: Map<string, FileNote>
+    browser?: Browser
+    seesImages?: boolean
   } = {},
 ) {
   const dir = join(mkdtempSync(join(tmpdir(), "kiframe-files-tools-")), "demo.kiframe")
@@ -41,7 +45,10 @@ function studioWith(
     sceneKey: (id) => `host-${id}`,
     config: parseProjectYaml(`version: 2\napps: { app: { kind: web, url: "https://app.test" } }\n`),
     takes: new TakeStore(mkdtempSync(join(tmpdir(), "kiframe-files-data-"))),
-    browser: {} as Browser,
+    browser: options.browser ?? ({} as Browser),
+    ...(options.seesImages !== undefined && {
+      seesImages: () => Promise.resolve(options.seesImages ?? true),
+    }),
     requestUser: (request) => {
       asked.push(request)
       return Promise.resolve(answers.shift() ?? false)
@@ -76,8 +83,9 @@ describe("the file tools", () => {
       "Edited pages/a.html (at line 1)",
     )
     expect(readFileSync(join(dir, "pages", "a.html"), "utf8")).toBe("<p>hi</p>")
-    const image = (await run("read_file", { path: "inputs/logo.png" })) as string
-    expect(image).toMatch(/^inputs\/logo\.png: an image \(image\/png, \d+ bytes\)/)
+    // Not a real PNG: never shown (its header says no image), its hash noted all the same.
+    const image = JSON.stringify(await run("read_file", { path: "inputs/logo.png" }))
+    expect(image).toMatch(/inputs\/logo\.png: it can't be decoded as an image/)
     expect(await run("copy_file", { from: "inputs/logo.png", to: "pages/logo.png" })).toBe(
       "Copied inputs/logo.png to pages/logo.png",
     )
@@ -344,5 +352,91 @@ describe("the file tools", () => {
     expect(
       await tool("edit_file").run({ path: "pages/a.html", old: "a", new: "b" }, again, never),
     ).toMatch(/^Edited/)
+  })
+})
+
+describe("an image read (E1: OBJECT-MODEL §0.12)", { timeout: 30_000 }, () => {
+  let browser: Browser
+  beforeAll(async () => {
+    browser = await chromium.launch()
+  })
+  afterAll(async () => {
+    await browser.close()
+  })
+  const png = (width: number, height: number) => {
+    const image = new PNG({ width, height })
+    image.data.fill(255)
+    return PNG.sync.write(image)
+  }
+  const withFiles = (files: Record<string, Buffer>, seesImages?: boolean) => {
+    const made = studioWith({ browser, ...(seesImages !== undefined && { seesImages }) })
+    for (const [path, bytes] of Object.entries(files)) {
+      mkdirSync(join(made.dir, path, ".."), { recursive: true })
+      writeFileSync(join(made.dir, path), bytes)
+    }
+    return made
+  }
+
+  it("shows the agent an image: its pixels made again, its size said", async () => {
+    const { run } = withFiles({ "inputs/logo.png": png(3000, 1000) })
+    const read = await run("read_file", { path: "inputs/logo.png" })
+    expect(isWithImages(read)).toBe(true)
+    const { result, images } = read as WithImages
+    expect(result).toBe(
+      "inputs/logo.png: an image (PNG, 3000×1000 px, shown at 2000×667), shown below",
+    )
+    expect(images).toHaveLength(1)
+    expect(images[0]?.url).toMatch(/^data:image\/png;base64,/)
+    expect(JSON.stringify(read)).not.toMatch(HASH)
+  })
+
+  it("refuses an image when the model takes none, and look too: nothing sent", async () => {
+    const { run, studio } = withFiles({ "inputs/logo.png": png(10, 10) }, false)
+    const read = await run("read_file", { path: "inputs/logo.png" })
+    expect(isWithImages(read)).toBe(false)
+    expect(read).toEqual({
+      error:
+        "inputs/logo.png: the model doesn't take images: you can't see one; copy it into a page with copy_file",
+    })
+    expect(await tool("look").run({}, studio, never)).toEqual({
+      error: "the model doesn't take images: you can't see one",
+    })
+    // The read is noted all the same: it can be copied over, deleted.
+    expect(studio.fileReads.has("inputs/logo.png")).toBe(true)
+  })
+
+  it("never lets a refused image read count as seen whole (no replace of what wasn't seen)", async () => {
+    const { run, asked } = withFiles({ "pages/notes.png": Buffer.from("not an image") })
+    expect(await run("read_file", { path: "pages/notes.png" })).toMatchObject({
+      error: expect.stringMatching(/can't be decoded/) as unknown,
+    })
+    await run("copy_file", { from: "pages/notes.png", to: "pages/other.png" })
+    expect(await run("copy_file", { from: "pages/other.png", to: "pages/notes.png" })).toEqual({
+      error: "pages/notes.png: you didn't see all of it: read it all at once first",
+    })
+    expect(asked).toEqual([])
+  })
+
+  it("says a browser that fails as a refusal, never a thrown error", async () => {
+    const broken = {
+      newContext: () => Promise.reject(new Error("Target crashed")),
+    } as unknown as Browser
+    const made = studioWith({ browser: broken })
+    mkdirSync(join(made.dir, "inputs"), { recursive: true })
+    writeFileSync(join(made.dir, "inputs/logo.png"), png(10, 10))
+    expect(await made.run("read_file", { path: "inputs/logo.png" })).toEqual({
+      error:
+        "inputs/logo.png: it couldn't be decoded (the browser failed): try again; copy it into a page with copy_file",
+    })
+  })
+
+  it("never shows text under an image's name (a page the agent wrote, copied in as .png)", async () => {
+    const { run } = withFiles({ "inputs/notes.png": Buffer.from("<svg><text>hi</text></svg>") })
+    const read = await run("read_file", { path: "inputs/notes.png" })
+    expect(isWithImages(read)).toBe(false)
+    expect(read).toEqual({
+      error:
+        "inputs/notes.png: it can't be decoded as an image (PNG, JPEG, GIF, WebP); copy it into a page with copy_file",
+    })
   })
 })

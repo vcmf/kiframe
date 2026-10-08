@@ -10,6 +10,7 @@
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import { TakeStore } from "@kiframe/project"
 import { _electron as electron } from "playwright"
@@ -87,6 +88,8 @@ const { values } = parseArgs({
     also: { type: "string" },
     // A follow-up message, sent in the same chat once the first run is done (a second run).
     then: { type: "string" },
+    // A file copied into the project's inputs/ (as an attachment would be), once it's created.
+    input: { type: "string", multiple: true },
   },
 })
 function usage(why: string): never {
@@ -272,6 +275,11 @@ try {
   await page.getByRole("button", { name: "Create project…" }).click()
   await page.getByRole("region", { name: "Scenes" }).waitFor({ timeout: 30_000 })
   log("project created")
+  for (const file of values.input ?? []) {
+    mkdirSync(join(dir, "inputs"), { recursive: true })
+    copyFileSync(file, join(dir, "inputs", basename(file)))
+    log(`input ${basename(file)} added`)
+  }
 
   // Another app: the project closed, its file given the app, opened again (the agent sees both).
   if (values.also !== undefined) {
@@ -305,7 +313,7 @@ try {
   }
 
   const send = async (text: string) => {
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     await box.fill(text)
     await box.press("Enter")
     await page.getByRole("button", { name: "Stop" }).waitFor({ timeout: 30_000 })

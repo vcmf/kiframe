@@ -9,13 +9,13 @@
 
 import type { LlmMessage } from "./types.ts"
 
-/** A tool's images (a screenshot) sent as images: the most recent this many messages holding them;
+/** A tool's images (a screenshot, an image file) sent as images: the most recent this many messages holding them;
  *  older ones are said in words only (each costs ~1.5k tokens a turn). */
 export const KEEP_RECENT_TOOL_IMAGES = 2
 
 /** What an older tool image message says instead of its images. */
 export const clearedImagesText = (tools: string): string =>
-  `[images from ${tools} shown earlier, no longer shown: call it again to see the page now]`
+  `[images from ${tools} shown earlier, no longer shown: call it again to see it now]`
 
 /**
  * The messages with a tool's images kept on the latest {@link KEEP_RECENT_TOOL_IMAGES} messages
