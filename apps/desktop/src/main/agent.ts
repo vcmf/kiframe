@@ -1,12 +1,14 @@
 // The agent for the open project: one run at a time, its events folded into the chat, its
 // requests (a question, a risky step's approval) bridged to the window by id. Electron-free: main
 // gives it the browser, the model and where to send things (tested with a scripted model).
-import type { LlmClient, LlmMessage } from "@kiframe/agent"
+import type { LlmClient, LlmImage, LlmMessage } from "@kiframe/agent"
 import { runAgent, withoutOldImages } from "@kiframe/agent"
-import type { OpenedProject, TakeStore } from "@kiframe/project"
+import { type OpenedProject, ProjectFiles, type TakeStore } from "@kiframe/project"
 import { resolveProjectConfig } from "@kiframe/schema"
 import {
+  type Attached,
   type FileNote,
+  imageSaid,
   notesBlock,
   runNotes,
   Studio,
@@ -16,6 +18,7 @@ import {
 import type { Browser, BrowserContext, Page } from "playwright"
 import { type ApprovalRequest, formValues, type SecretUse } from "@kiframe/runtime"
 import type {
+  AttachedFile,
   ChatAnswer,
   ChatItem,
   ChatRequest,
@@ -23,6 +26,12 @@ import type {
   LiveFrame,
   LiveInput,
 } from "../shared/ipc.ts"
+import {
+  checkAttachments,
+  storedMessage,
+  type WrittenFile,
+  writeAttachments,
+} from "./attachments.ts"
 import { Handover } from "./handover.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import type { FileVersions } from "./file-versions.ts"
@@ -90,6 +99,13 @@ export interface AgentHostOptions {
   projectChanged: () => void
   /** Where the files the agent replaces or deletes are kept first (none: not kept). */
   versions?: FileVersions
+}
+
+/** A message as sent: its text as the user wrote it, as the history keeps it, its files. */
+interface Message {
+  text: string
+  stored: string
+  attached: WrittenFile[]
 }
 
 interface Pending {
@@ -166,6 +182,10 @@ export class AgentHost {
   /** The streaming text item: sent, and its newer version (if any) waiting for the timer. */
   #text: { item: ChatItem; newer: boolean; timer: ReturnType<typeof setTimeout> } | undefined
   #closed = false
+  /** A message's files being checked and written: its run starts after (never two at once). */
+  #sending = false
+  /** The project's files as the host writes them (the user's attachments): never the agent's. */
+  #files: ProjectFiles | undefined
   /** The last run's live view stopping (its last frame): a next run starts it after. */
   #liveStopped: Promise<void> = Promise.resolve()
 
@@ -175,7 +195,7 @@ export class AgentHost {
 
   /** A run is going (the project's apps can't change meanwhile: an add_app card may be open). */
   get running(): boolean {
-    return this.#run !== undefined
+    return this.#run !== undefined || this.#sending
   }
 
   /** The project's apps changed (the user removed one): the studio, if any, takes them. */
@@ -186,19 +206,52 @@ export class AgentHost {
   state(): ChatState {
     return {
       items: [...this.#log.items],
-      running: this.#run !== undefined,
+      running: this.running,
       model: this.#options.model,
       frame: this.#frame,
     }
   }
 
-  /** Starts a run: null, or why it didn't start. */
-  send(text: string): string | null {
-    if (this.#closed) return "the project is closed"
-    if (this.#run !== undefined) return "Kif is still working: stop it first"
+  /**
+   * Starts a run: null, or why it didn't start. Files the user attached are checked, then written
+   * into inputs/ (none when one is refused), before it starts; refused before anything is written
+   * when no run could start.
+   */
+  async send(text: string, files: readonly AttachedFile[] = []): Promise<string | null> {
+    const busy = () =>
+      this.#closed
+        ? "the project is closed"
+        : this.#run !== undefined || this.#sending
+          ? "Kif is still working: stop it first"
+          : undefined
+    const refused = busy()
+    if (refused !== undefined) return refused
+    if (files.length === 0) {
+      this.#start({ text, stored: text, attached: [] })
+      return null
+    }
+    this.#sending = true
+    try {
+      const checked = await checkAttachments(
+        files,
+        this.#options.seesImages ?? (() => Promise.resolve(true)),
+      )
+      if (typeof checked === "string") return checked
+      // Closed meanwhile (another send can't start: this one is sending).
+      if (this.#closed) return "the project is closed"
+      this.#files ??= new ProjectFiles(this.#options.project.dir)
+      const written = writeAttachments(this.#files, checked)
+      if (typeof written === "string") return written
+      this.#start({ text, stored: storedMessage(text, written), attached: written })
+      return null
+    } finally {
+      this.#sending = false
+    }
+  }
+
+  #start(message: Message): void {
     const controller = new AbortController()
-    this.#run = { controller, done: this.#go(text, controller.signal) }
-    return null
+    this.#run = { controller, done: this.#go(message, controller.signal) }
   }
 
   /** Stops the run: its model call and tool, and every open request with it. */
@@ -302,9 +355,15 @@ export class AgentHost {
     await this.#studio?.close()
   }
 
-  async #go(text: string, signal: AbortSignal): Promise<void> {
+  async #go(message: Message, signal: AbortSignal): Promise<void> {
+    const text = message.stored
     this.#notify("running", true)
-    this.#emit(this.#log.user(text))
+    this.#emit(
+      this.#log.user(
+        message.text,
+        message.attached.map((a) => a.path),
+      ),
+    )
     try {
       const studio = await untilStopped(this.#ensureStudio(), signal)
       // Every run: a value the keychain didn't give before (a dismissed prompt) is read again.
@@ -324,9 +383,12 @@ export class AgentHost {
       await untilStopped(this.#typedKnown, signal)
       // story.md and the files' names, given with this run's message (never stored): built once
       // the vault is read (every value known to the scrubber), scrubbed again each turn.
-      const notes = runNotes(studio)
+      // The files attached to this message: images shown with it, texts in the notes (this run only).
+      const shown = await untilStopped(this.#shown(studio, message.attached, signal), signal)
+      const notes = runNotes(studio, shown.attached)
       for await (const event of runAgent({
         userMessage: text,
+        images: shown.images,
         tools: studioTools,
         llm,
         context: studio,
@@ -370,6 +432,52 @@ export class AgentHost {
       this.#liveStopped = this.#live?.stop() ?? Promise.resolve()
       await this.#liveStopped
     }
+  }
+
+  /**
+   * The attached files as this run shows them: each image's pixels (E1: made again, refused when the
+   * model takes none: said instead), each text read into the notes.
+   */
+  async #shown(
+    studio: Studio,
+    attached: readonly WrittenFile[],
+    signal: AbortSignal,
+  ): Promise<{ attached: Attached[]; images: LlmImage[] }> {
+    // Each image decoded at once (each its own context), said in the files' order.
+    const shown = await Promise.all(
+      attached.map(async (file): Promise<{ at: Attached; url?: string }> => {
+        if (file.kind === "text") return { at: { path: file.path } }
+        try {
+          const read = studio.files.read(file.path)
+          const seen =
+            read.kind === "image"
+              ? await studio.imageForModel(read.bytes, signal)
+              : { error: "it isn't an image" }
+          return "error" in seen
+            ? {
+                at: {
+                  path: file.path,
+                  image: `couldn't be shown (${seen.error}): read_file it to try again`,
+                },
+              }
+            : {
+                at: { path: file.path, image: `${imageSaid(seen)}, shown with this message` },
+                url: seen.url,
+              }
+        } catch (error) {
+          if (signal.aborted) throw error
+          return {
+            at: {
+              path: file.path,
+              image: `couldn't be shown (${errorMessage(error)}): read_file it to try again`,
+            },
+          }
+        }
+      }),
+    )
+    const images: LlmImage[] = shown.flatMap((s) => (s.url === undefined ? [] : [{ url: s.url }]))
+    const out = shown.map((s) => s.at)
+    return { attached: out, images }
   }
 
   async #ensureStudio(): Promise<Studio> {

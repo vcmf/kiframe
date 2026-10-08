@@ -323,7 +323,7 @@ demo.kiframe/
 - **Cards convert explicitly**, not as a format migration (a migration can't write a page): after open, a card scene's page, scenario and app are written (checked against changes on disk) and a notice says so. No real card scenes exist yet: last and small.
 - A page's default background (none) needs the start app's kind when the style is resolved.
 
-### 0.12 Attachments: material for the agent (designed 2026-10-05; images from tools built 2026-10-08)
+### 0.12 Attachments: material for the agent (designed 2026-10-05; images from tools and attaching built 2026-10-08)
 
 The user can attach files in the chat (a button, a drop, a pasted image): **images** (a screenshot, a design, a logo, a "make it look like this"), **text** (`.md`, `.txt`: a script, a spec, release notes, copy) and **HTML** (an existing mock-up). Decided by the user.
 
@@ -350,6 +350,19 @@ The user can attach files in the chat (a button, a drop, a pasted image): **imag
   An image in `pages/` may be bytes the agent wrote (text copied in under an image's name):
   harmless, checked for secrets as written. **No tool ever puts an unmasked capture (a
   screenshot, a recording's frame) into `pages/` or `inputs/`**: a read would show it unmasked.
+- **E2, built 2026-10-08 (design reviewed):** the composer's paperclip, a drop on the chat, a
+  pasted image; up to 5 files a message, as chips (name, size: nothing attached is rendered).
+  Main takes their **bytes** (never a path it would read), checks every file **by its content**
+  before any is written (an image's header says its extension's format; text is UTF-8 without
+  NUL; sizes: images 10 MB, .md/.txt 1 MB, .svg/.html 512 KB, as a page's file, so `copy_file`
+  can adopt it; an image refused when the model takes none), then writes them with
+  `ProjectFiles.attach` (the host's only: a safe name, never over another file: `logo-2.png`;
+  inputs/ at most 200 MB, 1,000 files; a batch that fails partway removes what it wrote).
+  The history keeps the text and a line naming the files; that run alone gets each image (E1) and
+  each text up to 20,000 characters inside the run notes' block (scrubbed, its tag this run's own),
+  a longer one named for `read_file`. The agent notes each new file in `story.md`. A name in another
+  script becomes `attachment` (stated). Attached images are sent on every turn of their run (a
+  stable prefix the provider can cache), at most 5.
 
 ### 0.13 The agent's file tools (designed 2026-10-05; the confined access built 2026-10-06, the tools 2026-10-07)
 

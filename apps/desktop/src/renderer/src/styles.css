@@ -1203,6 +1203,83 @@ ul.strip-cards > li {
   font-weight: 700;
 }
 
+/* ── attachments ── */
+.chat.dropping .composer {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.attach-btn {
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.attach-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.pending-files,
+.msg-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.msg-files {
+  margin-top: 8px;
+}
+
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-size {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.file-remove {
+  display: inline-flex;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.file-remove:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
 .composer-refused {
   font-size: 12.5px;
   color: var(--danger);

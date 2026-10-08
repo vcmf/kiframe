@@ -440,3 +440,12 @@ describe("an image read (E1: OBJECT-MODEL §0.12)", { timeout: 30_000 }, () => {
     })
   })
 })
+
+describe("the user's attachments stay the user's", () => {
+  it("no agent tool writes or removes one (attach and unattach are the host's)", () => {
+    for (const file of ["file-tools.ts", "tools.ts", "studio.ts", "run-notes.ts"]) {
+      const source = readFileSync(join(import.meta.dirname, "../src", file), "utf8")
+      expect(source, file).not.toMatch(/\.(un)?attach\(/)
+    }
+  })
+})

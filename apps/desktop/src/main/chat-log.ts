@@ -100,10 +100,15 @@ export class ChatLog {
   /** Why the host stopped the run (said with its end), not the user: cleared at the next message. */
   stopReason: string | undefined
 
-  user(text: string): ChatItem {
+  user(text: string, attachments: readonly string[] = []): ChatItem {
     this.#assistant = undefined
     this.stopReason = undefined
-    return this.#put({ kind: "user", id: this.#id("user"), text })
+    return this.#put({
+      kind: "user",
+      id: this.#id("user"),
+      text,
+      ...(attachments.length > 0 && { attachments: [...attachments] }),
+    })
   }
 
   /** A request the agent made: open until answered or closed. */

@@ -115,6 +115,9 @@ export const FILE_LIMITS = {
   textReturnBytes: 100 * 1024,
   rangeLines: 2000,
   imageBytes: 10 * 1024 * 1024,
+  /** All of inputs/ (the user's attachments). */
+  inputsBytes: 200 * 1024 * 1024,
+  inputsFiles: 1000,
   listEntries: 1000,
   /** A folder walk (sizes): deeper or wider is refused. */
   walkDepth: 16,
@@ -124,6 +127,73 @@ export const FILE_LIMITS = {
 } as const
 
 const TEXT_WRITE = new Set(["html", "htm", "css", "js", "mjs", "json", "svg", "md", "txt"])
+/**
+ * What the user may attach, and its size at most: images; text read whole (md, txt); a page's
+ * types as large as a page's file (an HTML mock-up or an SVG copied into pages/ as it is).
+ */
+export const ATTACHMENT_TYPES: Readonly<Record<string, number>> = {
+  png: FILE_LIMITS.imageBytes,
+  jpg: FILE_LIMITS.imageBytes,
+  jpeg: FILE_LIMITS.imageBytes,
+  gif: FILE_LIMITS.imageBytes,
+  webp: FILE_LIMITS.imageBytes,
+  md: FILE_LIMITS.textReadBytes,
+  txt: FILE_LIMITS.textReadBytes,
+  svg: FILE_LIMITS.pageFileBytes,
+  html: FILE_LIMITS.pageFileBytes,
+  htm: FILE_LIMITS.pageFileBytes,
+}
+/**
+ * A file the user may attach: its safe name, extension and kind (an image shown as one; a text
+ * file, an SVG or an HTML page read as text); else why not. One check for the host's pre-check
+ * and `attach` itself.
+ */
+export function attachmentType(
+  raw: string,
+  size: number,
+): { name: string; ext: string; kind: "image" | "text" } | FileRefusal {
+  const name = attachmentName(raw)
+  const dot = name.lastIndexOf(".")
+  const ext = dot < 0 ? "" : name.slice(dot + 1)
+  const cap = Object.hasOwn(ATTACHMENT_TYPES, ext) ? ATTACHMENT_TYPES[ext] : undefined
+  if (cap === undefined) {
+    return new FileRefusal(
+      "not-allowed",
+      `${name}: attach images (PNG, JPEG, GIF, WebP), SVG, text (.md, .txt) or HTML`,
+    )
+  }
+  if (size > cap) return new FileRefusal("too-large", `${name} is over ${cap / (1024 * 1024)} MB`)
+  return { name, ext, kind: IMAGE_EXTS.has(ext) ? "image" : "text" }
+}
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp"])
+
+/** An attachment's name tried with -2 … -99 when taken. */
+const ATTACH_TRIES = 99
+
+/**
+ * A safe name for a file the user attaches: its last part, characters other than letters, digits,
+ * `.`, `_` and `-` made `-` (a name in another script becomes `attachment`), the stem at most 72
+ * characters (room for `-99`), the extension lowercased; no stem: `attachment`.
+ */
+export function attachmentName(raw: string): string {
+  const base = raw.normalize("NFC").split(/[\\/]/).pop() ?? ""
+  const dot = base.lastIndexOf(".")
+  const ext =
+    dot < 0
+      ? ""
+      : base
+          .slice(dot + 1)
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, "")
+  const stem =
+    (dot < 0 ? base : base.slice(0, dot))
+      .replace(/[^A-Za-z0-9._-]+/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^[.-]+/, "")
+      .slice(0, 72)
+      .replace(/[.-]+$/, "") || "attachment"
+  return ext === "" ? stem : `${stem}.${ext}`
+}
 const COPY_TO = new Set([
   ...TEXT_WRITE,
   "png",
@@ -211,7 +281,7 @@ export class ProjectFiles {
 
   /**
    * `projectDir`: the project's folder (its real path is taken: links above it are the user's).
-   * Our own temporary files left in pages/ by an interrupted write are swept.
+   * Our own temporary files left in pages/ or inputs/ by an interrupted write are swept.
    */
   constructor(
     projectDir: string,
@@ -232,12 +302,14 @@ export class ProjectFiles {
     } catch {
       // said by each call
     }
-    try {
-      if (lstatSync(join(this.#root, "pages")).isDirectory()) {
-        removeStrayTemps(join(this.#root, "pages"), true)
+    for (const area of ["pages", "inputs"]) {
+      try {
+        if (lstatSync(join(this.#root, area)).isDirectory()) {
+          removeStrayTemps(join(this.#root, area), true)
+        }
+      } catch {
+        // not made yet
       }
-    } catch {
-      // no pages/ yet
     }
   }
 
@@ -443,6 +515,31 @@ export class ProjectFiles {
     opts: EditOptions,
   ): { path: string; hash: string; line: number } {
     return safe("edit", path, () => this.#editUnsafe(path, old, replacement, opts))
+  }
+
+  /**
+   * A file the user attached, written into inputs/ (the host's: no agent tool calls it), never over
+   * another: `logo.png`, else `logo-2.png`… Its name made safe (`attachmentName`); only the types
+   * and sizes the user may attach; inputs/ within its limits. Whole or not at all.
+   */
+  attach(name: string, bytes: Uint8Array): { path: string; hash: string } {
+    return safe("attach", name, () => this.#attachUnsafe(name, bytes))
+  }
+
+  /**
+   * Removes a file `attach` just wrote (a batch that failed further on), only if it's still those
+   * bytes. The host's only: the user's attachments are never the agent's to remove.
+   */
+  unattach(path: string, hash: string): void {
+    safe("remove", path, () => {
+      const r = this.#resolve(path)
+      if (r.area !== "inputs" || r.rest.length !== 1) {
+        throw new FileRefusal("not-allowed", `${r.canonical}: not an attachment`)
+      }
+      if (this.#readCurrent(r).hash !== hash) return
+      unlinkSync(this.#absolute(r))
+      syncFolder(join(this.#root, "inputs"))
+    })
   }
 
   /** Deletes a file in pages/ (its emptied folders with it, never pages/ itself). */
@@ -739,6 +836,29 @@ export class ProjectFiles {
     return { ...written, line: text.slice(0, at).split("\n").length }
   }
 
+  /** `attach`, its file-system errors said by `safe`. */
+  #attachUnsafe(raw: string, bytes: Uint8Array): { path: string; hash: string } {
+    const type = attachmentType(raw, bytes.length)
+    if (type instanceof FileRefusal) throw type
+    const { name, ext } = type
+    const stem = name.slice(0, name.length - ext.length - 1)
+    const copy = Buffer.from(bytes)
+    // Once, whatever name it takes (the folder walked once, never per name tried).
+    this.#checkInputsRoom(copy.length)
+    for (let n = 1; n <= ATTACH_TRIES; n++) {
+      const candidate = n === 1 ? name : `${stem}-${n}.${ext}`
+      try {
+        return this.#put(this.#resolve(`inputs/${candidate}`), copy, null)
+      } catch (error) {
+        // Taken (or a name the disk takes for another's): the next one.
+        if (!(error instanceof FileRefusal) || !["exists", "collision"].includes(error.code)) {
+          throw error
+        }
+      }
+    }
+    throw new FileRefusal("exists", `${name}: too many files of that name in inputs/`)
+  }
+
   /** `delete`, its file-system errors said by `safe`. */
   #deleteUnsafe(path: string, { ifHash }: { ifHash: string }): { path: string } {
     const r = this.#resolve(path)
@@ -918,13 +1038,13 @@ export class ProjectFiles {
   }
 
   /**
-   * The target's folder, made inside pages/ one level at a time; an existing one a real folder on
+   * The target's folder, made inside its area (pages/, inputs/) one level at a time; an existing one a real folder on
    * the project's disk, named as asked (not another one's name but for case or accents).
    */
   #ensureFolders(r: Resolved, made: string[]): string {
     if (r.area === "story") return this.#root
     let at = this.#root
-    for (const part of ["pages", ...r.rest.slice(0, -1)]) {
+    for (const part of [r.area, ...r.rest.slice(0, -1)]) {
       const parent = at
       at = join(at, part)
       let created = false
@@ -945,7 +1065,7 @@ export class ProjectFiles {
       if (stat.dev !== this.#dev) {
         throw new FileRefusal("not-allowed", `${r.canonical}: on another disk`)
       }
-      if (!created && at !== join(this.#root, "pages") && !hasName(parent, part)) {
+      if (!created && at !== join(this.#root, r.area) && !hasName(parent, part)) {
         throw new FileRefusal(
           "collision",
           `${r.canonical}: the folder is named ${diskName(parent, part)} (not ${part}): use that name`,
@@ -979,6 +1099,20 @@ export class ProjectFiles {
       "exists",
       `${r.canonical} already exists: read it, then write it with its hash`,
     )
+  }
+
+  /** inputs/ stays within its limits after a new attachment. */
+  #checkInputsRoom(adding: number): void {
+    const inputs = sizeOf(join(this.#root, "inputs"), "inputs/")
+    if (
+      inputs.bytes + adding > FILE_LIMITS.inputsBytes ||
+      inputs.files + 1 > FILE_LIMITS.inputsFiles
+    ) {
+      throw new FileRefusal(
+        "too-large",
+        "inputs/ is full (200 MB, 1,000 files): remove attachments that aren't needed",
+      )
+    }
   }
 
   /** pages/ stays within its limits after this write: all of it, its page folder, its file count. */
@@ -1017,7 +1151,10 @@ export class ProjectFiles {
  * pages/'s total size, file count and size per page folder, in one walk within limits (deeper or
  * wider: refused); never through a link (each entry lstat-ed, pages/ itself a real folder).
  */
-function sizeOf(pages: string): { bytes: number; files: number; byPage: Map<string, number> } {
+function sizeOf(
+  pages: string,
+  label = "pages/",
+): { bytes: number; files: number; byPage: Map<string, number> } {
   const byPage = new Map<string, number>()
   let bytes = 0
   let files = 0
@@ -1025,21 +1162,21 @@ function sizeOf(pages: string): { bytes: number; files: number; byPage: Map<stri
   try {
     const root = lstatSync(pages)
     if (!root.isDirectory())
-      throw new FileRefusal("link", "pages/ isn't a folder: links are never followed")
+      throw new FileRefusal("link", `${label} isn't a folder: links are never followed`)
   } catch (error) {
     if (error instanceof FileRefusal) throw error
     return { bytes, files, byPage } // not made yet
   }
   const walk = (dir: string, depth: number, page: string | undefined) => {
     if (depth > FILE_LIMITS.walkDepth)
-      throw new FileRefusal("too-large", "pages/ is nested too deep")
+      throw new FileRefusal("too-large", `${label} is nested too deep`)
     const handle = opendirSync(dir)
     try {
       for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
         // Hidden entries aren't the agent's (it can't see or delete them): not counted.
         if (entry.name.startsWith(".")) continue
         if (++seen > FILE_LIMITS.walkEntries) {
-          throw new FileRefusal("too-large", "pages/ has too many entries")
+          throw new FileRefusal("too-large", `${label} has too many entries`)
         }
         const at = join(dir, entry.name)
         let stat: Stats

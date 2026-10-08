@@ -90,6 +90,8 @@ const { values } = parseArgs({
     then: { type: "string" },
     // A file copied into the project's inputs/ (as an attachment would be), once it's created.
     input: { type: "string", multiple: true },
+    // A file attached to the brief in the composer (its picker, as the user would).
+    attach: { type: "string", multiple: true },
   },
 })
 function usage(why: string): never {
@@ -317,6 +319,10 @@ try {
     await box.fill(text)
     await box.press("Enter")
     await page.getByRole("button", { name: "Stop" }).waitFor({ timeout: 30_000 })
+  }
+  if (values.attach !== undefined) {
+    await page.getByTestId("attach-input").setInputFiles(values.attach)
+    log(`attached ${values.attach.map((f) => basename(f)).join(", ")}`)
   }
   await send(values.brief ?? run.brief)
   log("brief sent")

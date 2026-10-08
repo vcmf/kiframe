@@ -386,9 +386,9 @@ function start(): void {
             frame: null,
           },
         // `send` answers null when the run started: never read as "no agent".
-        "chat:send": (text) => {
+        "chat:send": (text, files) => {
           const agent = workspace.agent
-          return agent === undefined ? "open a project first" : agent.send(text)
+          return agent === undefined ? "open a project first" : agent.send(text, files ?? [])
         },
         // An unreadable vault says why here (projects still open: a secret step can't run).
         "secrets:list": async () => {

@@ -12,6 +12,35 @@ import type {
 import { z } from "zod"
 import { INVOKE_CHANNELS, EVENT_CHANNELS } from "./channels.ts"
 
+/**
+ * Files attached to one message at most, and a file's size at most (the largest type's: images,
+ * `FILE_LIMITS.imageBytes`; main checks each type's own). What the window may attach (main checks
+ * the content again).
+ */
+export const MAX_ATTACHMENTS = 5
+export const ATTACHMENT_BYTES = 10 * 1024 * 1024
+/** Each type the window may attach and its size at most (the project's `ATTACHMENT_TYPES`). */
+export const ATTACHABLE: Readonly<Record<string, number>> = {
+  png: ATTACHMENT_BYTES,
+  jpg: ATTACHMENT_BYTES,
+  jpeg: ATTACHMENT_BYTES,
+  gif: ATTACHMENT_BYTES,
+  webp: ATTACHMENT_BYTES,
+  md: 1024 * 1024,
+  txt: 1024 * 1024,
+  svg: 512 * 1024,
+  html: 512 * 1024,
+  htm: 512 * 1024,
+}
+/** Those shown to the agent as images (an SVG is read as text). */
+export const IMAGE_ATTACHABLE: readonly string[] = ["png", "jpg", "jpeg", "gif", "webp"]
+
+/** A file the user attaches: its name as the system gave it, and its bytes. */
+export interface AttachedFile {
+  name: string
+  bytes: Uint8Array<ArrayBuffer>
+}
+
 /** An app's name as the project writes it (`AppName`'s form; main looks it up in the project). */
 const AppName = z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/)
 
@@ -152,7 +181,8 @@ export interface SecretView {
  * item, or a newer version of one (same id), replaces what the window had.
  */
 export type ChatItem =
-  | { kind: "user"; id: string; text: string }
+  /** `attachments`: the files the user attached, as written in the project (inputs/…). */
+  | { kind: "user"; id: string; text: string; attachments?: string[] }
   | { kind: "assistant"; id: string; text: string }
   | {
       kind: "tool"
@@ -291,8 +321,27 @@ export const invokeArgs = {
   "external:open": z.tuple([z.string().max(2048)]),
   /** The open project's chat (after a reload). */
   "chat:state": z.tuple([]),
-  /** A message to the agent: starts a run (refused while one is going). */
-  "chat:send": z.tuple([z.string().trim().min(1).max(20_000)]),
+  /**
+   * A message to the agent: starts a run (refused while one is going). With up to 5 files the user
+   * attached (their bytes, never a path main would read: checked and written by main); then the
+   * text may be empty.
+   */
+  "chat:send": z
+    .tuple([
+      z.string().trim().max(20_000),
+      z
+        .array(
+          z.object({
+            name: z.string().min(1).max(255),
+            bytes: z
+              .instanceof(Uint8Array)
+              .refine((b) => b.byteLength <= ATTACHMENT_BYTES, "a file is at most 10 MB"),
+          }),
+        )
+        .max(MAX_ATTACHMENTS)
+        .optional(),
+    ])
+    .refine(([text, files]) => text !== "" || (files?.length ?? 0) > 0, "an empty message"),
   /** Stops the run (its tools and open requests with it). */
   "chat:stop": z.tuple([]),
   /** The user's answer to an open request (by its item id). */
