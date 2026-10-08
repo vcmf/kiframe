@@ -1,7 +1,6 @@
 // The chat column: the user's messages, the agent's answers and tool steps (grouped, collapsible),
 // its requests as cards, and the composer (a status bar with Stop while the agent works).
 import {
-  Brain,
   CaretDown,
   CaretRight,
   ChatCircleDots,
@@ -41,8 +40,6 @@ import { AgentText } from "./markdown.tsx"
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>
 type ThinkingItem = Extract<ChatItem, { kind: "thinking" }>
-/** A row of a step group: a tool call, or a stretch of thinking. */
-type StepItem = ToolItem | ThinkingItem
 
 const TOOL_ICONS: Record<string, ReactNode> = {
   list_scenes: <ListBullets size={15} />,
@@ -55,8 +52,8 @@ const TOOL_ICONS: Record<string, ReactNode> = {
   record_scene: <Record size={15} />,
 }
 
-/** Items in order, consecutive tool steps and thinking as one group. */
-type Block = { kind: "item"; item: ChatItem } | { kind: "steps"; id: string; steps: StepItem[] }
+/** Items in order, consecutive tool steps as one group (a thought is a line of its own). */
+type Block = { kind: "item"; item: ChatItem } | { kind: "steps"; id: string; steps: ToolItem[] }
 
 /**
  * The chat as the user sees it: each message of theirs, and between them one agent turn holding
@@ -88,9 +85,8 @@ export function blocks(items: ChatItem[]): Block[] {
   const out: Block[] = []
   for (const item of items) {
     const last = out.at(-1)
-    const step = item.kind === "tool" || item.kind === "thinking"
-    if (step && last?.kind === "steps") last.steps.push(item)
-    else if (step) out.push({ kind: "steps", id: item.id, steps: [item] })
+    if (item.kind === "tool" && last?.kind === "steps") last.steps.push(item)
+    else if (item.kind === "tool") out.push({ kind: "steps", id: item.id, steps: [item] })
     else out.push({ kind: "item", item })
   }
   return out
@@ -215,8 +211,9 @@ function Item({ item }: { item: ChatItem }) {
         </div>
       )
     case "tool":
-    case "thinking":
       return <ToolGroup steps={[item]} />
+    case "thinking":
+      return <Thought item={item} />
   }
 }
 
@@ -226,7 +223,19 @@ export function thoughtFor(ms: number): string {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60 === 0 ? "" : ` ${s % 60}s`}`
 }
 
-function ToolGroup({ steps }: { steps: StepItem[] }) {
+/** A thought, as plain text between what the agent said and did (never its words). */
+function Thought({ item }: { item: ThinkingItem }) {
+  return item.ms === undefined ? (
+    <div className="thought">
+      Thinking
+      <span className="thinking-dots" aria-hidden="true" />
+    </div>
+  ) : (
+    <div className="thought">Thought for {thoughtFor(item.ms)}</div>
+  )
+}
+
+function ToolGroup({ steps }: { steps: ToolItem[] }) {
   const [open, setOpen] = useState(true)
   // Opened or closed by the user: its head stays where it was clicked (the log is anchored at its
   // end, so what grows near the end would otherwise push the head up from under the pointer).
@@ -241,56 +250,34 @@ function ToolGroup({ steps }: { steps: StepItem[] }) {
     // Measured after layout, the browser's own anchoring already applied: the rest, corrected.
     log.scrollTop += el.getBoundingClientRect().top - at
   }, [open])
-  const tools = steps.filter((t): t is ToolItem => t.kind === "tool")
-  const thinking = steps.some((t) => t.kind === "thinking" && t.ms === undefined)
-  const running = tools.some((t) => t.status === "running")
-  const failed = tools.filter((t) => t.status === "failed").length
-  const summary = `${tools.length} ${tools.length === 1 ? "step" : "steps"}${running ? " · running" : thinking ? " · thinking" : ""}${failed > 0 ? ` · ${failed} failed` : ""}`
-  // Thinking alone: its row, no head to fold it (it would only repeat the row).
-  const lone = tools.length === 0
+  const running = steps.some((t) => t.status === "running")
+  const failed = steps.filter((t) => t.status === "failed").length
+  const summary = `${steps.length} ${steps.length === 1 ? "step" : "steps"}${running ? " · running" : ""}${failed > 0 ? ` · ${failed} failed` : ""}`
   return (
     <div className="tool-group">
-      {!lone && (
-        <button
-          type="button"
-          className="tool-group-head"
-          aria-expanded={open}
-          ref={head}
-          onClick={() => {
-            clickedAt.current = head.current?.getBoundingClientRect().top
-            setOpen((v) => !v)
-          }}
-        >
-          {open ? <CaretDown size={12} /> : <CaretRight size={12} />}
-          {summary}
-        </button>
-      )}
-      {(open || lone) && (
+      <button
+        type="button"
+        className="tool-group-head"
+        aria-expanded={open}
+        ref={head}
+        onClick={() => {
+          clickedAt.current = head.current?.getBoundingClientRect().top
+          setOpen((v) => !v)
+        }}
+      >
+        {open ? <CaretDown size={12} /> : <CaretRight size={12} />}
+        {summary}
+      </button>
+      {open && (
         <ul className="tool-list">
-          {steps.map((step) =>
-            step.kind === "thinking" ? (
-              <li key={step.id} className="tool-row thinking-row">
-                <span className="tool-icon">
-                  <Brain size={15} />
-                </span>
-                {step.ms === undefined ? (
-                  <span className="tool-name">
-                    Thinking
-                    <span className="thinking-dots" aria-hidden="true" />
-                  </span>
-                ) : (
-                  <span className="tool-name">Thought for {thoughtFor(step.ms)}</span>
-                )}
-              </li>
-            ) : (
-              <li key={step.id} className={`tool-row tool-${step.status}`} title={step.result}>
-                <span className="tool-icon">{TOOL_ICONS[step.name] ?? <Wrench size={15} />}</span>
-                <span className="tool-name">{step.name}</span>
-                <span className="tool-detail">{step.detail}</span>
-                <ToolStatus status={step.status} />
-              </li>
-            ),
-          )}
+          {steps.map((step) => (
+            <li key={step.id} className={`tool-row tool-${step.status}`} title={step.result}>
+              <span className="tool-icon">{TOOL_ICONS[step.name] ?? <Wrench size={15} />}</span>
+              <span className="tool-name">{step.name}</span>
+              <span className="tool-detail">{step.detail}</span>
+              <ToolStatus status={step.status} />
+            </li>
+          ))}
         </ul>
       )}
     </div>

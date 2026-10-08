@@ -115,7 +115,7 @@ describe("the chat", () => {
     expect(within(log).queryByText("It isn't there.")).toBeNull()
   })
 
-  it("shows the agent thinking among its steps (dots), then for how long it thought", async () => {
+  it("shows the agent thinking as a plain line (dots), then for how long, apart from its steps", async () => {
     const { push } = open()
     await screen.findByLabelText("Message Kif")
     act(() => {
@@ -123,19 +123,23 @@ describe("the chat", () => {
       push("chat:item", { kind: "thinking", id: "th1" })
     })
     const log = screen.getByRole("log", { name: "Messages" })
-    // Thinking alone: its row, no head repeating it.
-    expect(log.querySelector(".thinking-row")?.textContent).toBe("Thinking")
-    expect(log.querySelector(".thinking-row .thinking-dots")).not.toBeNull()
+    // Text alone: no step box, no icon, no head to fold it.
+    const thought = () => log.querySelector(".agent-turn .thought")
+    expect(thought()?.textContent).toBe("Thinking")
+    expect(thought()?.querySelector(".thinking-dots")).not.toBeNull()
+    expect(thought()?.querySelector("svg")).toBeNull()
+    expect(log.querySelector(".tool-group, .tool-row")).toBeNull()
     expect(within(log).queryByRole("button")).toBeNull()
     act(() => {
       push("chat:item", { kind: "thinking", id: "th1", ms: 95_000 })
       push("chat:item", { kind: "tool", id: "t1", name: "snapshot", detail: "", status: "running" })
     })
-    // One group: the thought, then the step.
+    // The thought stays a line, then the step in its own group.
+    expect(thought()?.textContent).toBe("Thought for 1m 35s")
+    expect(thought()?.closest(".tool-group")).toBeNull()
+    expect(log.querySelector(".thinking-dots")).toBeNull()
     expect(log.querySelectorAll(".tool-group")).toHaveLength(1)
     expect(within(log).getByRole("button", { name: "1 step · running" })).toBeTruthy()
-    expect(within(log).getByText("Thought for 1m 35s")).toBeTruthy()
-    expect(log.querySelector(".thinking-dots")).toBeNull()
   })
 
   it("says how long a thought took", () => {
@@ -386,6 +390,8 @@ describe("the chat's turns", () => {
       { kind: "assistant", id: "a1", text: "Looking." },
       { kind: "tool", id: "t1", name: "snapshot", detail: "", status: "ok" },
       { kind: "tool", id: "t2", name: "run_step", detail: "", status: "ok" },
+      { kind: "thinking", id: "th1", ms: 2_000 },
+      { kind: "tool", id: "t3", name: "save_scene", detail: "", status: "ok" },
       { kind: "end", id: "e1", outcome: "error", message: "401 User not found." },
       { kind: "user", id: "u2", text: "Again" },
       { kind: "end", id: "e2", outcome: "error", message: "401 User not found." },
@@ -395,7 +401,7 @@ describe("the chat's turns", () => {
         ? t.item.id
         : t.blocks.map((b) => (b.kind === "steps" ? b.steps.length : b.item.id)),
     )
-    // An error alone is a turn too (its mark shown).
-    expect(shape).toEqual(["u1", ["a1", 2, "e1"], "u2", ["e2"]])
+    // A thought is a line between step groups; an error alone is a turn too (its mark shown).
+    expect(shape).toEqual(["u1", ["a1", 2, "th1", 1, "e1"], "u2", ["e2"]])
   })
 })
