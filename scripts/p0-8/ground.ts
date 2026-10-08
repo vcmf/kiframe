@@ -152,7 +152,7 @@ version: 1
 setup:        # off camera, runs first: navigation, login, making the app ready
   - { preset: <name> }                       # a project preset (see below)
   - { action: goto, url: /path }             # relative to the app
-steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id
+steps:        # ON CAMERA, 5-50 steps (most scenes 5-15), each with a unique kebab-case id
   - { id: open-new, action: click, target: <locator>, caption: "Short caption for the video" }
   - { id: name, action: type, target: <locator>, value: "Text", clear: true, submit: false }
   - { id: save, action: press, keys: Enter }           # keys like Enter, Mod+k, Escape
@@ -320,8 +320,8 @@ async function replay(yaml: string): Promise<string> {
   }
   const issues = checkScenarioAgainstProject(scenario, project)
   if (issues.length > 0) return `invalid scenario: ${issues.join("; ")}`
-  if (scenario.steps.length < 5 || scenario.steps.length > 15) {
-    return `a scene has 5-15 on-camera steps (this one has ${scenario.steps.length})`
+  if (scenario.steps.length < 5 || scenario.steps.length > 50) {
+    return `a scene has 5-50 on-camera steps (this one has ${scenario.steps.length})`
   }
   const context = await browser.newContext({ viewport })
   const fresh = await context.newPage()
