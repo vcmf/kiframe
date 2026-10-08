@@ -19,7 +19,13 @@ import {
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { FILE_LIMITS, FileRefusal, ProjectFiles } from "../src/project-files.ts"
+import {
+  attachmentName,
+  attachmentType,
+  FILE_LIMITS,
+  FileRefusal,
+  ProjectFiles,
+} from "../src/project-files.ts"
 
 /** A project folder under the system's temp folder (on macOS, behind the /var link). */
 function project(files: Record<string, string> = {}) {
@@ -695,5 +701,96 @@ describe("editing, checking and keeping (C2)", () => {
     // Its code only: never a path in the app's data (the user's name) to the model.
     expect(said).not.toContain("/Users/")
     expect(readFileSync(join(dir, "pages", "b.html"), "utf8")).toBe("b")
+  })
+})
+
+describe("the user's attachments (E2: OBJECT-MODEL §0.12)", () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+
+  it("names a file safely: its last part, odd characters made -, the extension lowercased", () => {
+    expect(attachmentName("Logo.PNG")).toBe("Logo.png")
+    expect(attachmentName("../../etc/passwd.txt")).toBe("passwd.txt")
+    expect(attachmentName("C:\\Users\\me\\brief v2 (final).md")).toBe("brief-v2-final.md")
+    expect(attachmentName(".png")).toBe("attachment.png")
+    expect(attachmentName("-.png")).toBe("attachment.png")
+    expect(attachmentName("..hidden.txt")).toBe("hidden.txt")
+    expect(attachmentName("デザイン.png")).toBe("attachment.png")
+    expect(attachmentName("x".repeat(300) + ".html")).toBe("x".repeat(72) + ".html")
+    expect(attachmentName("notes")).toBe("notes")
+  })
+
+  it("writes into inputs/, never over another file (-2, -3, the disk's own case too)", () => {
+    const { dir, files } = project({ "inputs/Logo.png": "the user's first logo" })
+    const second = files.attach("logo.png", png)
+    // A case-insensitive disk takes logo.png for Logo.png: the next name.
+    expect(second.path).toMatch(/^inputs\/logo(-2)?\.png$/)
+    const third = files.attach("logo.png", png)
+    expect(third.path).not.toBe(second.path)
+    expect(readFileSync(join(dir, "inputs/Logo.png"), "utf8")).toBe("the user's first logo")
+    expect(readFileSync(join(dir, third.path))).toEqual(png)
+    expect(third.hash).toBe(createHash("sha256").update(png).digest("hex"))
+    // Made when there's no inputs/ yet.
+    const fresh = project()
+    expect(fresh.files.attach("brief.md", Buffer.from("# Brief")).path).toBe("inputs/brief.md")
+  })
+
+  it("says a file's kind once for the host's check and attach (SVG and HTML read as text)", () => {
+    expect(attachmentType("Logo.PNG", 10)).toEqual({ name: "Logo.png", ext: "png", kind: "image" })
+    expect(attachmentType("icon.svg", 10)).toEqual({ name: "icon.svg", ext: "svg", kind: "text" })
+    expect(attachmentType("mock.htm", 10)).toMatchObject({ kind: "text" })
+    expect(attachmentType("run.sh", 10)).toMatchObject({ code: "not-allowed" })
+    expect(attachmentType("a.png", FILE_LIMITS.imageBytes + 1)).toMatchObject({
+      code: "too-large",
+      message: "a.png is over 10 MB",
+    })
+  })
+
+  it("takes only the types and sizes the user may attach", () => {
+    const { files } = project()
+    expect(refusal(() => files.attach("run.sh", Buffer.from("rm -rf ~"))).code).toBe("not-allowed")
+    expect(refusal(() => files.attach("notes", Buffer.from("x"))).code).toBe("not-allowed")
+    expect(
+      refusal(() => files.attach("big.png", Buffer.alloc(FILE_LIMITS.imageBytes + 1))).code,
+    ).toBe("too-large")
+    expect(
+      refusal(() => files.attach("mock.html", Buffer.alloc(FILE_LIMITS.pageFileBytes + 1))).code,
+    ).toBe("too-large")
+    expect(files.attach("spec.md", Buffer.alloc(FILE_LIMITS.pageFileBytes + 1, 0x61)).path).toBe(
+      "inputs/spec.md",
+    )
+  })
+
+  it("never follows a link: inputs/ itself a link to elsewhere is refused", () => {
+    const { dir, outside, files } = project()
+    symlinkSync(outside, join(dir, "inputs"))
+    expect(refusal(() => files.attach("a.png", png)).code).toBe("link")
+    expect(existsSync(join(outside, "a.png"))).toBe(false)
+  })
+
+  it("keeps inputs/ within its limits", () => {
+    const { dir, files } = project()
+    mkdirSync(join(dir, "inputs"))
+    for (let i = 0; i < FILE_LIMITS.inputsFiles; i++)
+      writeFileSync(join(dir, `inputs/f${i}.txt`), "")
+    expect(refusal(() => files.attach("one-more.txt", Buffer.from("x"))).message).toMatch(
+      /inputs\/ is full/,
+    )
+  })
+
+  it("removes an attachment it wrote only while it's those bytes, and only in inputs/", () => {
+    const { dir, files } = project({ "pages/a.html": "<p>a</p>" })
+    const made = files.attach("logo.png", png)
+    files.unattach(made.path, "0".repeat(64))
+    expect(existsSync(join(dir, made.path))).toBe(true)
+    files.unattach(made.path, made.hash)
+    expect(existsSync(join(dir, made.path))).toBe(false)
+    const page = files.stat("pages/a.html")
+    expect(refusal(() => files.unattach("pages/a.html", page.hash)).code).toBe("not-allowed")
+    expect(existsSync(join(dir, "pages/a.html"))).toBe(true)
+  })
+
+  it("never lets the agent's own calls write into inputs/", () => {
+    const { files } = project()
+    expect(refusal(() => files.write("inputs/x.md", "x", { ifHash: null })).code).toBe("read-only")
   })
 })
