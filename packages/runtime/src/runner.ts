@@ -261,6 +261,8 @@ export { firstLine } from "./run/context.ts"
 export { urlMatches } from "./run/conditions.ts"
 export { pathOnly, scrubSecrets, secretMatcher, secretScrubber } from "./run/secrets.ts"
 export type { HandoverRequest } from "./run/handover.ts"
+export type { SessionLanding } from "./run/context.ts"
+export { checksSignedIn, sessionChecks } from "./run/setup.ts"
 
 /** The parts of a scene that never run any more: its `teardown`, its `ensure`s and its presets'. */
 function ignoredParts(scenario: Scenario, project: ProjectConfig): string[] {

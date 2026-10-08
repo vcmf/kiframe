@@ -1,6 +1,7 @@
 import { defineTool, isWithImages, type Tool, withImages } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
-import { AppName, firstApp, SceneId } from "@kiframe/schema"
+import { AppName, firstApp, RuleName, SceneId } from "@kiframe/schema"
+import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { fileTools } from "./file-tools.ts"
 import { isCyclic } from "./refs.ts"
@@ -96,6 +97,29 @@ const handOver = defineTool({
       .describe("how they'll know it's done (e.g. 'the dashboard shows')"),
   }),
   run: ({ task, done_when }, studio: Studio, signal) => studio.handOver(task, done_when, signal),
+})
+
+const savePresetTool = defineTool({
+  name: "save_preset",
+  description:
+    "Save a project preset: off-camera steps several scenes share (a sign-in, its handover included). `session: true` for a sign-in: checking and recording a scene that starts with { preset: <name> } sign in once, then reuse it (the user is asked for a code once). A session preset ends with a waitFor or expect on the signed-in page. A new name only.",
+  parameters: z.object({
+    name: RuleName.describe("a new name (kebab-case)"),
+    session: z.boolean(),
+    app: AppName.optional().describe("the app its steps start in (default: the first)"),
+    yaml: z.string().min(1).describe("its steps: a YAML list of off-camera actions"),
+  }),
+  run: ({ name, session, app, yaml }, studio: Studio) => {
+    let steps: unknown
+    try {
+      steps = parseYaml(yaml)
+    } catch (error) {
+      return Promise.resolve({ error: `yaml: ${String(error).split("\n")[0]}` })
+    }
+    return Promise.resolve(
+      studio.savePreset({ name, session, ...(app !== undefined && { app }), steps }),
+    )
+  },
 })
 
 /** A run_step's scene start app (by name; checked against the project's apps in the studio). */
@@ -386,6 +410,7 @@ export const studioTools: Tool<Studio>[] = [
   addApp,
   askUser,
   saveSceneTool,
+  savePresetTool,
   recordScene,
   ...fileTools,
 ].map(scrubbed)

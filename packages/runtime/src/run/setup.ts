@@ -13,8 +13,49 @@ import { runOne } from "./step.ts"
  */
 type PresetOrigin = { name: string; session: boolean }
 type SetupEntry =
-  | { kind: "action"; index: number; action: Action; app: string; preset?: PresetOrigin }
-  | ({ kind: "preset_done"; index: number } & PresetOrigin)
+  | {
+      kind: "action"
+      index: number
+      action: Action
+      app: string
+      preset?: PresetOrigin
+      /** A reused session preset's check (its landing, its own last checks): failing, expired. */
+      probe?: boolean
+    }
+  /** A preset's end; `held`: a reused session's checks passed (its state saved again, not a login). */
+  | ({ kind: "preset_done"; index: number; held?: boolean } & PresetOrigin)
+
+/** A preset's last checks (its trailing waitFor/expect): what says its session holds. */
+export function sessionChecks(steps: readonly (Action | { ensure: unknown })[]): Action[] {
+  const out: Action[] = []
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const s = steps[i]
+    if (s === undefined || "ensure" in s || (s.action !== "waitFor" && s.action !== "expect")) break
+    out.unshift(s)
+  }
+  return out
+}
+
+/**
+ * Whether a preset's last checks can tell signed in from out: one of them waits for something the
+ * signed-in page shows (an element, a text), never only the network, a hidden thing or a URL (a
+ * signed-out app may keep those).
+ */
+export function checksSignedIn(steps: readonly (Action | { ensure: unknown })[]): boolean {
+  return sessionChecks(steps).some((c) => {
+    const condition = c.action === "waitFor" ? c.until : c.action === "expect" ? c.that : undefined
+    return condition !== undefined && ("visible" in condition || "text" in condition)
+  })
+}
+
+/** What a reused session's check failing says: it doesn't hold (not a slow page, a network error). */
+const SIGNED_OUT = new Set([
+  "expectation-failed",
+  "condition-timeout",
+  "target-not-found",
+  "off-app",
+  "off-origin",
+])
 
 /**
  * Inlines presets into setup, and drops session presets the page already has (`skipSessionPresets`).
@@ -43,7 +84,8 @@ export function expandSetup(
       if (preset === undefined) throw invalid(`unknown preset "${item.preset}"`)
       const from = { name: item.preset, session: preset.session }
       if (preset.session && skip.includes(item.preset)) {
-        // Its state is kept, not its page: back where it ended (a setup may rely on that page).
+        // Its state is kept, not its page: back where it ended (a setup may rely on that page),
+        // then its own last checks, which say the session still holds (else: expired).
         const landing = Object.hasOwn(landings, item.preset) ? landings[item.preset] : undefined
         const goto =
           landing === undefined
@@ -56,7 +98,22 @@ export function expandSetup(
             action: goto.data,
             app: landing.app,
             preset: from,
+            probe: true,
           })
+          // The checks under the landing's index: a setup's indexes stay those of the file.
+          const own = preset.app ?? firstApp(project).name
+          for (const check of sessionChecks(preset.steps)) {
+            out.push({
+              kind: "action",
+              index: n - 1,
+              action: check,
+              app: own,
+              preset: from,
+              probe: true,
+            })
+          }
+          // Held: its state saved again (a refresh token the reuse spent, renewed).
+          out.push({ kind: "preset_done", index: n - 1, held: true, ...from })
         }
         continue
       }
@@ -82,7 +139,10 @@ export async function runSetupEntry(ctx: Ctx, entry: SetupEntry): Promise<void> 
       const ref: StepRef = { phase: "setup", index: Math.max(0, entry.index), action: "preset" }
       throw new StepError(ref, "stopped", "the run was stopped")
     }
-    ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
+    // A login done (never a reuse: no preset ran).
+    if (entry.held !== true) {
+      ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
+    }
     const ready = ctx.options.onSessionReady
     if (entry.session && ready !== undefined) {
       // Named after the preset's last step.
@@ -94,21 +154,34 @@ export async function runSetupEntry(ctx: Ctx, entry: SetupEntry): Promise<void> 
       // On the page the login ended on: back from an OAuth popup that closed, settled (its
       // callback's cookies set). A preset should end with a `waitFor` on the app's page.
       await syncPage(ctx, ref)
-      await guard(ref, async () => ready(entry.name, ctx.page))
+      await guard(ref, async () => ready(entry.name, ctx.page, entry.held === true))
     }
     return
   }
   const { action } = entry
-  await runOne(
-    ctx,
-    action,
-    {
-      phase: "setup",
-      index: entry.index,
-      stepId: action.id,
-      action: action.action,
-      ...(entry.preset !== undefined && { preset: entry.preset.name }),
-    },
-    entry.app,
-  )
+  const ref: StepRef = {
+    phase: "setup",
+    index: entry.index,
+    stepId: action.id,
+    action: action.action,
+    ...(entry.preset !== undefined && { preset: entry.preset.name }),
+  }
+  try {
+    await runOne(ctx, action, ref, entry.app)
+  } catch (error) {
+    // A reused session's check failing: it expired (signed out, a redirect to the sign-in).
+    if (
+      entry.probe === true &&
+      error instanceof StepError &&
+      SIGNED_OUT.has(error.reason) &&
+      entry.preset !== undefined
+    ) {
+      throw new StepError(
+        ref,
+        "session-expired",
+        `the saved sign-in of "${entry.preset.name}" doesn't hold any more (${error.reason}): run again, it signs in fresh`,
+      )
+    }
+    throw error
+  }
 }

@@ -23,6 +23,8 @@ export type StepErrorReason =
   | "needs-user"
   /** The user couldn't do a handover's task. */
   | "handover-declined"
+  /** A reused session (a session preset's saved state) failed its check: signed out, expired. */
+  | "session-expired"
   | "secret-unavailable"
   | "secret-refused"
   /** The user declined the approval of a secret step: the scene is `blocked` (§3 A3). */

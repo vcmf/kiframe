@@ -1656,3 +1656,92 @@ steps:
     expect(step.ok === false && step.text).toMatch(/a handover goes in the setup/)
   }, 60_000)
 })
+
+describe("sign-in reuse (session presets saved by the agent)", () => {
+  const sceneWith = () =>
+    parseScenarioYaml(`version: 1
+setup: [{ preset: sign-in }]
+steps:
+${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 20 }`).join("\n")}
+`)
+  /** A studio whose user signs in at each handover (a session cookie, `seconds` long). */
+  const signingIn = (seconds?: number) => {
+    let asks = 0
+    const made = makeStudio(async (request) => {
+      if (request.kind !== "handover") return "ok"
+      asks++
+      await made.studio.handoverPage!.evaluate((s) => {
+        document.cookie = `session=1; path=/${s === undefined ? "" : `; max-age=${s}`}`
+      }, seconds)
+      return { outcome: "done", note: "", hide: true } as never
+    })
+    return { ...made, asks: () => asks }
+  }
+  const save = (studio: Studio) =>
+    studio.savePreset({
+      name: "sign-in",
+      session: true,
+      steps: [
+        { action: "goto", url: "/session" },
+        { action: "handover", task: "Sign in" },
+        { action: "goto", url: "/session" },
+        { action: "expect", that: { visible: { by: "text", text: "Signed in", exact: true } } },
+      ],
+    })
+
+  it("asks the user once: later checks start signed in, at where the sign-in ended", async () => {
+    const { studio, asks } = signingIn()
+    expect(save(studio)).toEqual({ saved: "sign-in" })
+    const never = new AbortController().signal
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    expect(asks()).toBe(1)
+  }, 60_000)
+
+  it("never reuses a sign-in once the project's apps changed (signs in again)", async () => {
+    const { studio, asks } = signingIn()
+    save(studio)
+    const never = new AbortController().signal
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    const { apps } = studio.options.config
+    studio.setApps({ ...apps, other: { ...apps.app!, url: "https://other.test" } })
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    expect(asks()).toBe(2)
+  }, 60_000)
+
+  it("says a saved sign-in that no longer holds expired, then signs in fresh", async () => {
+    const { studio, asks } = signingIn(2)
+    save(studio)
+    const never = new AbortController().signal
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    await new Promise((r) => setTimeout(r, 2500))
+    expect(await studio.replay(sceneWith(), "demo", never)).toMatch(/session-expired/)
+    expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
+    expect(asks()).toBe(2)
+  }, 60_000)
+
+  it("saves a new preset only, a session one ending with a check of the signed-in page", () => {
+    const { studio } = signingIn()
+    expect(save(studio)).toEqual({ saved: "sign-in" })
+    expect(save(studio)).toEqual({ error: 'a preset named "sign-in" exists: pick another name' })
+    expect(
+      studio.savePreset({
+        name: "no-check",
+        session: true,
+        steps: [{ action: "goto", url: "/session" }],
+      }),
+    ).toMatchObject({ error: expect.stringMatching(/ends with a waitFor or an expect/) as unknown })
+    // A last check that can't tell signed in from out (the network idle): refused too.
+    expect(
+      studio.savePreset({
+        name: "idle-check",
+        session: true,
+        steps: [
+          { action: "goto", url: "/session" },
+          { action: "waitFor", until: { networkIdle: true } },
+        ],
+      }),
+    ).toMatchObject({ error: expect.stringMatching(/ends with a waitFor or an expect/) as unknown })
+  })
+})
