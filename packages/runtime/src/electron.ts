@@ -48,6 +48,41 @@ const PASSED_ENV = [
 const LAUNCH_MS = 20_000
 /** How long a terminated app may take to quit before it's killed. */
 const QUIT_MS = 2000
+/** How long closing the debugging connection may take (the group is killed after it anyway). */
+const CLOSE_MS = 2000
+/** How long an app that dropped the attach has to tell its exit. */
+const EXIT_TELL_MS = 1000
+
+/** `work`, given at most `ms` (its result then never awaited). */
+async function within(work: Promise<unknown> | undefined, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  await Promise.race([work, new Promise((resolve) => (timer = setTimeout(resolve, ms)))])
+  clearTimeout(timer)
+}
+
+/** Whether the app exited, or does within `ms`. */
+async function exitedSoon(child: ChildProcess, ms: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.off("exit", exited)
+      resolve(false)
+    }, ms)
+    const exited = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    child.once("exit", exited)
+  })
+}
+
+/** Shutdown phases that took long, said on stderr (KIFRAME_ELECTRON_TIMING): CI's evidence. */
+function timing(phase: string, since: number) {
+  const took = Date.now() - since
+  if (process.env.KIFRAME_ELECTRON_TIMING !== undefined && took > 500) {
+    process.stderr.write(`[electron] ${phase} took ${took} ms\n`)
+  }
+}
 
 const QUIT_EARLY =
   "the app quit before Kiframe could attach (it may allow only one instance: quit it and try again; be a launcher for another program; or refuse automation)"
@@ -170,7 +205,13 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   const end = () =>
     (ended ??= (async () => {
       const alive = browser?.isConnected() === true
-      await browser?.close().catch(() => undefined)
+      // Bounded: the group is killed right after (a close the app never answers never holds it).
+      const t0 = Date.now()
+      await within(
+        browser?.close().catch(() => undefined),
+        CLOSE_MS,
+      )
+      timing("close", t0)
       return stop(child, sandbox.root, opts.stateFile, alive)
     })())
   try {
@@ -291,7 +332,8 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     }
   } catch (error) {
     // It quit while being attached (after opening its port): said as such, never Playwright's.
-    const quit = child.exitCode !== null || child.signalCode !== null
+    // A moment for its exit to be told (it may quit as the attach drops: the drop comes first).
+    const quit = await exitedSoon(child, EXIT_TELL_MS)
     await end()
     if (opts.signal?.aborted === true) throw opts.signal.reason as Error
     if (spawnError !== undefined) {
@@ -508,6 +550,7 @@ async function stop(
 ): Promise<{ unread: boolean }> {
   const pid = child.pid
   const leader = child.exitCode === null && child.signalCode === null
+  let t0 = Date.now()
   if (pid !== undefined && (leader || alive || (await orphanedGroup(pid)))) {
     if (leader) {
       const exited = new Promise((resolve) => child.once("exit", resolve))
@@ -516,11 +559,16 @@ async function stop(
     }
     signalGroup(pid, "SIGKILL")
   }
+  timing("kill", t0)
   // Helpers that left the group (a daemon, a pty host) still point at the sandbox.
+  t0 = Date.now()
   const swept = await sweepSandbox(sandbox)
+  timing("sweep", t0)
+  t0 = Date.now()
   await rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
     () => undefined,
   )
+  timing("remove", t0)
   try {
     note(stateFile, sandbox, false)
   } catch {

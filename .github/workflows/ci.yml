@@ -36,6 +36,9 @@ jobs:
       # launch a fixture desktop app.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: xvfb-run -a pnpm test:coverage
+        env:
+          # Slow shutdown phases of a desktop app's launch, said (the Electron target's evidence).
+          KIFRAME_ELECTRON_TIMING: "1"
       # The desktop app, built and launched under a virtual display.
       - name: Desktop end-to-end
         run: xvfb-run -a pnpm --filter @kiframe/desktop e2e
