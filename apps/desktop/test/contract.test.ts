@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { EVENT_CHANNELS, INVOKE_CHANNELS } from "../src/shared/channels.ts"
-import { invokeArgs } from "../src/shared/ipc.ts"
+import { ATTACHMENT_TYPES, FILE_LIMITS } from "@kiframe/project"
+import { ATTACHABLE, ATTACHMENT_BYTES, invokeArgs } from "../src/shared/ipc.ts"
 
 describe("the IPC contract", () => {
   it("validates every channel's arguments (the preload allows exactly these)", () => {
@@ -31,6 +32,22 @@ describe("the IPC contract", () => {
     expect(invokeArgs["project:open"].safeParse(["/etc"]).success).toBe(false)
     expect(invokeArgs["chat:send"].safeParse(["  "]).success).toBe(false)
     expect(invokeArgs["chat:send"].safeParse(["x".repeat(20_001)]).success).toBe(false)
+    // Files: bytes (never a path), at most 5, each at most 10 MB; then the text may be empty.
+    const send = invokeArgs["chat:send"]
+    const file = (bytes: number, name = "a.png") => ({ name, bytes: new Uint8Array(bytes) })
+    expect(send.safeParse(["", [file(10)]]).success).toBe(true)
+    expect(send.safeParse(["hi", []]).success).toBe(true)
+    expect(send.safeParse(["", []]).success).toBe(false)
+    expect(send.safeParse(["hi", Array.from({ length: 6 }, () => file(1))]).success).toBe(false)
+    expect(send.safeParse(["hi", [file(10 * 1024 * 1024 + 1)]]).success).toBe(false)
+    expect(send.safeParse(["hi", [{ name: "/etc/passwd", path: "/etc/passwd" }]]).success).toBe(
+      false,
+    )
+    expect(send.safeParse(["hi", [{ name: "a.png", bytes: [1, 2, 3] }]]).success).toBe(false)
+    expect(send.safeParse(["hi", [file(1, "")]]).success).toBe(false)
+    // The window's limits are the project's (main checks each type's own).
+    expect(ATTACHMENT_BYTES).toBe(FILE_LIMITS.imageBytes)
+    expect([...ATTACHABLE].sort()).toEqual(Object.keys(ATTACHMENT_TYPES).sort())
     expect(invokeArgs["chat:answer"].safeParse(["request-1", true]).success).toBe(true)
     // A secret is added for an app by its name (main finds its origin): never an origin.
     const add = invokeArgs["secrets:add"]

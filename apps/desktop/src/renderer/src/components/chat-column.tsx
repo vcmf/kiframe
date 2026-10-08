@@ -17,6 +17,9 @@ import {
   LockKey,
   MagnifyingGlass,
   PaperPlaneRight,
+  Paperclip,
+  ImageSquare,
+  X,
   Question,
   Record,
   Stop,
@@ -27,6 +30,8 @@ import {
   Warning,
 } from "@phosphor-icons/react"
 import {
+  type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   type ReactNode,
   useEffect,
@@ -34,8 +39,8 @@ import {
   useRef,
   useState,
 } from "react"
-import type { ChatItem } from "../../../shared/ipc.ts"
-import { useChat } from "../chat-store.ts"
+import { ATTACHABLE, type ChatItem } from "../../../shared/ipc.ts"
+import { pastedFile, useChat } from "../chat-store.ts"
 import { KifMark } from "./kif-mark.tsx"
 import { AgentText } from "./markdown.tsx"
 
@@ -115,8 +120,32 @@ export function ChatColumn() {
   const items = useChat((s) => s.items)
   const running = useChat((s) => s.running)
   const connect = useChat((s) => s.connect)
+  const attach = useChat((s) => s.attach)
   const body = useRef<HTMLDivElement>(null)
+  const [dropping, setDropping] = useState(false)
   useEffect(() => connect(), [connect])
+  // A file dropped anywhere else in the window is never opened by it (nothing happens); a text
+  // dragged into a field still drops as text.
+  useEffect(() => {
+    const ignore = (e: globalThis.DragEvent) => {
+      if (e.dataTransfer?.types.includes("Files") === true) e.preventDefault()
+    }
+    window.addEventListener("dragover", ignore)
+    window.addEventListener("drop", ignore)
+    return () => {
+      window.removeEventListener("dragover", ignore)
+      window.removeEventListener("drop", ignore)
+    }
+  }, [])
+  // Files only (a text dragged into the composer is typed), and never while a run goes (the
+  // composer shows no files then).
+  const withFiles = (e: DragEvent) => [...e.dataTransfer.types].includes("Files")
+  const dropped = (e: DragEvent) => {
+    if (!withFiles(e)) return
+    e.preventDefault()
+    setDropping(false)
+    if (!running && e.dataTransfer.files.length > 0) attach([...e.dataTransfer.files])
+  }
   // The log is reversed (CSS): its end is scrollTop 0, so layout keeps it there as the chat grows
   // or the log resizes, and anchoring holds a reader who scrolled up. Code moves it only for a new
   // item that needs the user: their own message, or a request the run waits on.
@@ -126,7 +155,19 @@ export function ChatColumn() {
     if (newNeedUser(items, seen.current) && log !== null) log.scrollTop = 0
   }, [items])
   return (
-    <aside className="chat" aria-label="Chat">
+    <aside
+      className={dropping ? "chat dropping" : "chat"}
+      aria-label="Chat"
+      onDragOver={(e) => {
+        if (!withFiles(e)) return
+        e.preventDefault()
+        if (!running) setDropping(true)
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false)
+      }}
+      onDrop={dropped}
+    >
       <div className="pane-head">
         <span className="pane-title">Chat</span>
       </div>
@@ -192,7 +233,21 @@ function AgentTurn({ blocks: parts, working }: { blocks: Block[]; working: boole
 function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case "user":
-      return <div className="msg-user">{item.text}</div>
+      return (
+        <div className="msg-user">
+          {item.text}
+          {item.attachments !== undefined && item.attachments.length > 0 && (
+            <ul className="msg-files" aria-label="Attached files">
+              {item.attachments.map((path) => (
+                <li key={path} className="file-chip">
+                  <FileIcon name={path} />
+                  <span className="file-name">{path.replace(/^inputs\//, "")}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )
     case "assistant":
       return (
         <div className="msg-agent-text">
@@ -557,6 +612,28 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
   )
 }
 
+/** What the picker offers (main checks every file again, by its content). */
+const ACCEPT = ATTACHABLE.map((e) => `.${e}`).join(",")
+
+/** A file's size as said on its chip. */
+export function sizeSaid(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * An image or a text file, by its name (never its content: nothing attached is rendered); an SVG
+ * is read as text by the agent, so shown as one.
+ */
+function FileIcon({ name }: { name: string }) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(name) ? (
+    <ImageSquare size={13} aria-hidden />
+  ) : (
+    <FileText size={13} aria-hidden />
+  )
+}
+
 function Composer() {
   const running = useChat((s) => s.running)
   const model = useChat((s) => s.model)
@@ -564,14 +641,27 @@ function Composer() {
   const send = useChat((s) => s.send)
   const stop = useChat((s) => s.stop)
   const items = useChat((s) => s.items)
+  const pending = useChat((s) => s.pending)
+  const attach = useChat((s) => s.attach)
+  const detach = useChat((s) => s.detach)
+  const picker = useRef<HTMLInputElement>(null)
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
+  const empty = text.trim() === "" && pending.length === 0
   const submit = async () => {
     const message = text.trim()
-    if (message === "" || sending) return
+    if (empty || sending) return
     setSending(true)
     if (await send(message)) setText("")
     setSending(false)
+  }
+  // A pasted image (a screenshot, an image copied from a page) is attached; anything with plain
+  // text (cells, rich text that also comes as a picture) is typed as usual.
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...event.clipboardData.files]
+    if (files.length === 0 || [...event.clipboardData.types].includes("text/plain")) return
+    event.preventDefault()
+    attach(files.map((f) => pastedFile(f)))
   }
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -622,10 +712,57 @@ function Composer() {
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={onKey}
+              onPaste={onPaste}
             />
+            {pending.length > 0 && (
+              <ul className="pending-files" aria-label="Files to send">
+                {pending.map((file, i) => (
+                  <li key={`${file.name}-${i}`} className="file-chip">
+                    <FileIcon name={file.name === "" ? "pasted.png" : file.name} />
+                    <span className="file-name">
+                      {file.name === "" ? "Pasted image" : file.name}
+                    </span>
+                    <span className="file-size">{sizeSaid(file.size)}</span>
+                    <button
+                      type="button"
+                      className="file-remove"
+                      aria-label={`Remove ${file.name}`}
+                      onClick={() => detach(i)}
+                    >
+                      <X size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
           </>
         )}
         <div className="composer-row">
+          {!running && (
+            <>
+              <button
+                type="button"
+                className="attach-btn"
+                aria-label="Attach files"
+                title="Attach images, text or HTML"
+                onClick={() => picker.current?.click()}
+              >
+                <Paperclip size={17} />
+              </button>
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                hidden
+                accept={ACCEPT}
+                data-testid="attach-input"
+                onChange={(e) => {
+                  if (e.target.files !== null) attach([...e.target.files])
+                  e.target.value = ""
+                }}
+              />
+            </>
+          )}
           {model !== "" && <span className="chip mono">{model}</span>}
           <div className="spacer" />
           {running ? (
@@ -638,7 +775,7 @@ function Composer() {
               type="submit"
               className="send-btn"
               aria-label="Send"
-              disabled={text.trim() === "" || sending}
+              disabled={empty || sending}
             >
               <PaperPlaneRight size={17} weight="fill" />
             </button>

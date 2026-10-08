@@ -21,7 +21,14 @@ const project: ProjectView = {
 afterEach(() => {
   cleanup()
   useApp.setState({ status: null, busy: null, dismissed: null })
-  useChat.setState({ items: [], running: false, model: "", frame: null, refused: null })
+  useChat.setState({
+    items: [],
+    running: false,
+    model: "",
+    frame: null,
+    refused: null,
+    pending: [],
+  })
 })
 
 const open = (answers: Parameters<typeof stubApi>[0] = {}) => {
@@ -397,5 +404,116 @@ describe("the chat's turns", () => {
     )
     // An error alone is a turn too (its mark shown).
     expect(shape).toEqual(["u1", ["a1", 2, "e1"], "u2", ["e2"]])
+  })
+})
+
+describe("attaching files (E2)", () => {
+  const file = (name: string, content: string, type = "text/markdown") =>
+    new File([content], name, { type })
+
+  it("attaches picked files as chips, removes one, and sends their bytes (text may be empty)", async () => {
+    const { invoke } = open({ "chat:send": () => null })
+    await screen.findByLabelText("Message Kif")
+    const input = screen.getByTestId("attach-input")
+    fireEvent.change(input, {
+      target: { files: [file("brief.md", "# Brief"), file("old.md", "x")] },
+    })
+    const chips = screen.getByRole("list", { name: "Files to send" })
+    expect(within(chips).getByText("brief.md")).toBeTruthy()
+    expect(within(chips).getByText("7 B")).toBeTruthy()
+    fireEvent.click(screen.getByRole("button", { name: "Remove old.md" }))
+    expect(within(chips).queryByText("old.md")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await act(() => new Promise((r) => setTimeout(r, 20)))
+    expect(invoke).toHaveBeenCalledWith("chat:send", "", [
+      { name: "brief.md", bytes: new Uint8Array(new TextEncoder().encode("# Brief")) },
+    ])
+    expect(screen.queryByRole("list", { name: "Files to send" })).toBeNull()
+  })
+
+  it("attaches a pasted image (a name of its own) and a dropped file", async () => {
+    const { invoke } = open({ "chat:send": () => null })
+    const box = await screen.findByLabelText("Message Kif")
+    // The clipboard names every image image.png: each paste gets its own name.
+    fireEvent.paste(box, {
+      clipboardData: { files: [file("image.png", "png", "image/png")], types: ["Files"] },
+    })
+    const pasted = screen.getByText(/^pasted-\d{8}-\d{6}-\d+\.png$/)
+    fireEvent.drop(screen.getByRole("complementary", { name: "Chat" }), {
+      dataTransfer: { files: [file("mock.html", "<p>hi</p>", "text/html")], types: ["Files"] },
+    })
+    expect(screen.getByText("mock.html")).toBeTruthy()
+    fireEvent.change(box, { target: { value: "Use these" } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    await act(() => new Promise((r) => setTimeout(r, 20)))
+    expect(invoke).toHaveBeenCalledWith("chat:send", "Use these", [
+      expect.objectContaining({ name: pasted.textContent }),
+      expect.objectContaining({ name: "mock.html" }),
+    ])
+  })
+
+  it("types pasted text that also comes as a picture, and lets a text drag drop as text", async () => {
+    open()
+    const box = await screen.findByLabelText("Message Kif")
+    const cells = fireEvent.paste(box, {
+      clipboardData: {
+        files: [file("image.png", "png", "image/png")],
+        types: ["text/plain", "text/html", "Files"],
+      },
+    })
+    expect(cells).toBe(true) // not prevented: the browser types the text
+    expect(screen.queryByRole("list", { name: "Files to send" })).toBeNull()
+    const textDrop = fireEvent.drop(box, { dataTransfer: { files: [], types: ["text/plain"] } })
+    expect(textDrop).toBe(true)
+  })
+
+  it("refuses a file it can't send before reading it, and takes no drop while Kif works", async () => {
+    const { push } = open()
+    await screen.findByLabelText("Message Kif")
+    const big = file("movie.png", "x", "image/png")
+    Object.defineProperty(big, "size", { value: 11 * 1024 * 1024 })
+    fireEvent.change(screen.getByTestId("attach-input"), { target: { files: [big] } })
+    expect((await screen.findByRole("alert")).textContent).toBe("movie.png is over 10 MB")
+    fireEvent.change(screen.getByTestId("attach-input"), {
+      target: { files: [file("clip.mov", "x", "video/quicktime")] },
+    })
+    expect((await screen.findByRole("alert")).textContent).toMatch(/^clip\.mov: attach images/)
+    act(() => push("chat:running", true))
+    fireEvent.drop(screen.getByRole("complementary", { name: "Chat" }), {
+      dataTransfer: { files: [file("late.md", "x")], types: ["Files"] },
+    })
+    expect(useChat.getState().pending).toEqual([])
+  })
+
+  it("refuses a sixth file, and keeps the files when main refuses the message", async () => {
+    open({ "chat:send": () => "fake.png isn't the PNG image its name says" })
+    await screen.findByLabelText("Message Kif")
+    const input = screen.getByTestId("attach-input")
+    fireEvent.change(input, {
+      target: { files: Array.from({ length: 6 }, (_, i) => file(`f${i}.md`, "x")) },
+    })
+    expect((await screen.findByRole("alert")).textContent).toBe("at most 5 files a message")
+    expect(screen.queryByRole("list", { name: "Files to send" })).toBeNull()
+    fireEvent.change(input, { target: { files: [file("fake.png", "<html>", "image/png")] } })
+    fireEvent.click(screen.getByRole("button", { name: "Send" }))
+    expect((await screen.findByRole("alert")).textContent).toMatch(/isn't the PNG image/)
+    expect(screen.getByText("fake.png")).toBeTruthy()
+  })
+
+  it("shows a message's files by name, never their content", async () => {
+    const { push } = open()
+    await screen.findByLabelText("Message Kif")
+    act(() => {
+      push("chat:item", {
+        kind: "user",
+        id: "u1",
+        text: "Use these",
+        attachments: ["inputs/mock.html", "inputs/logo.png"],
+      })
+    })
+    const files = await screen.findByRole("list", { name: "Attached files" })
+    expect(within(files).getByText("mock.html")).toBeTruthy()
+    expect(within(files).getByText("logo.png")).toBeTruthy()
+    expect(document.querySelector(".msg-user img, .msg-user iframe")).toBeNull()
   })
 })

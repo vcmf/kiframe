@@ -1,9 +1,10 @@
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { LlmClient, LlmMessage, LlmTurn } from "@kiframe/agent"
 import { createProject, TakeStore } from "@kiframe/project"
 import { type Browser, chromium } from "playwright"
+import { PNG } from "pngjs"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { startFixtureServer } from "../../../packages/runtime/test/fixture-server.ts"
 import type { ChatItem, LiveFrame } from "../src/shared/ipc.ts"
@@ -45,6 +46,7 @@ function host(
   failShowing?: () => void,
   secrets?: Secrets | (() => Secrets | undefined),
   seesImages?: boolean,
+  seesImagesFn?: () => Promise<boolean>,
 ) {
   const llm = typeof model === "function" ? model : () => Promise.resolve(model)
   const dir = join(mkdtempSync(join(tmpdir(), "kiframe-agent-")), "demo.kiframe")
@@ -69,6 +71,7 @@ function host(
     llm,
     model: "test/model",
     ...(seesImages !== undefined && { seesImages: () => Promise.resolve(seesImages) }),
+    ...(seesImagesFn !== undefined && { seesImages: seesImagesFn }),
     ...(secrets !== undefined && {
       secrets: typeof secrets === "function" ? secrets : () => secrets,
     }),
@@ -96,10 +99,93 @@ function host(
 }
 
 describe("the agent in the app", () => {
+  it("writes attached files into inputs/ and shows them to that run only (image, text scrubbed)", async () => {
+    const { llm, seen } = script([
+      { kind: "text", text: "Got them." },
+      { kind: "text", text: "Still here." },
+    ])
+    const secrets = new Secrets(
+      join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
+      memoryBackend(),
+    )
+    await secrets.add(
+      { name: "acme.password", kind: "password", value: "hunter22-secret" },
+      new URL(server.url).origin,
+    )
+    const { agent, running, until, shown, dir } = host(llm, undefined, undefined, secrets)
+    const image = new Uint8Array(PNG.sync.write(new PNG({ width: 40, height: 20 })))
+    const brief = new TextEncoder().encode("# Brief\nThe password is hunter22-secret.")
+    expect(
+      await agent.send("Use these", [
+        { name: "Logo.png", bytes: image },
+        { name: "brief.md", bytes: brief },
+      ]),
+    ).toBeNull()
+    await until(() => running.at(-1) === false)
+    expect(readdirSync(join(dir, "inputs")).sort()).toEqual(["Logo.png", "brief.md"])
+    expect(shown()[0]).toMatchObject({
+      kind: "user",
+      text: "Use these",
+      attachments: ["inputs/Logo.png", "inputs/brief.md"],
+    })
+    const imagesOf = (m: LlmMessage | undefined) => (m?.role === "user" ? (m.images ?? []) : [])
+    const first = seen[0]?.at(-1)
+    expect(first?.role).toBe("user")
+    expect(imagesOf(first)).toHaveLength(1)
+    expect(first?.content).toContain(
+      "- inputs/Logo.png: an image (PNG, 40×20 px), shown with this message",
+    )
+    expect(first?.content).toContain(
+      "- inputs/brief.md (text, 2 lines):\n# Brief\nThe password is [secret].",
+    )
+    expect(JSON.stringify(seen)).not.toContain("hunter22-secret")
+    // The next run: the history keeps the line, never the images or the text.
+    expect(await agent.send("and now?")).toBeNull()
+    await until(() => running.at(-1) === false && seen.length === 2)
+    const kept = seen[1]?.find((m) => m.role === "user" && m.content.includes("Use these"))
+    expect(kept?.content).toBe(
+      "Use these\n\n[The user attached: inputs/Logo.png (image), inputs/brief.md (text). They stay in inputs/: read_file to see them again.]",
+    )
+    expect(seen[1]?.some((m) => imagesOf(m).length > 0)).toBe(false)
+    await agent.close()
+  })
+
+  it("refuses a message whose file is refused: nothing written, no run, said why", async () => {
+    const { llm, seen } = script([])
+    const { agent, dir, running } = host(llm)
+    expect(
+      await agent.send("Use this", [
+        { name: "brief.md", bytes: new TextEncoder().encode("ok") },
+        { name: "fake.png", bytes: new TextEncoder().encode("<html>") },
+      ]),
+    ).toBe("fake.png isn't the PNG image its name says")
+    expect(existsSync(join(dir, "inputs"))).toBe(false)
+    expect(running).toEqual([])
+    expect(seen).toEqual([])
+    await agent.close()
+  })
+
+  it("never starts two runs while a message's files are being written", async () => {
+    let release: (v: boolean) => void = () => undefined
+    // The first ask (checking the file) waits; the run's own asks after it don't.
+    let asks = 0
+    const sees = () =>
+      ++asks === 1 ? new Promise<boolean>((r) => (release = r)) : Promise.resolve(true)
+    const { llm } = script([{ kind: "text", text: "ok" }])
+    const { agent, running, until } = host(llm, undefined, undefined, undefined, undefined, sees)
+    const image = new Uint8Array(PNG.sync.write(new PNG({ width: 4, height: 4 })))
+    const first = agent.send("one", [{ name: "a.png", bytes: image }])
+    expect(await agent.send("two")).toBe("Kif is still working: stop it first")
+    release(true)
+    expect(await first).toBeNull()
+    await until(() => running.at(-1) === false)
+    await agent.close()
+  }, 30_000)
+
   it("sends no image to a model that takes none (look says so)", async () => {
     const { llm, seen } = script([call("look", {}), { kind: "text", text: "ok" }])
     const { agent, running, until } = host(llm, undefined, undefined, undefined, false)
-    expect(agent.send("look at the page")).toBeNull()
+    expect(await agent.send("look at the page")).toBeNull()
     await until(() => running.at(-1) === false)
     const last = seen.at(-1) ?? []
     expect(JSON.stringify(last)).toContain("the model doesn't take images")
@@ -113,7 +199,7 @@ describe("the agent in the app", () => {
       { kind: "text", text: "The project has no scenes yet." },
     ])
     const { agent, shown, running, until, sends } = host(llm)
-    expect(agent.send("what's in the project?")).toBeNull()
+    expect(await agent.send("what's in the project?")).toBeNull()
     await until(() => running.at(-1) === false)
     expect(shown()).toMatchObject([
       { kind: "user", text: "what's in the project?" },
@@ -126,7 +212,7 @@ describe("the agent in the app", () => {
     await new Promise((r) => setTimeout(r, 150))
     expect(sends.filter((i) => i.kind === "assistant")).toHaveLength(1)
     // The next run's model sees this one's turns.
-    expect(agent.send("thanks")).toBeNull()
+    expect(await agent.send("thanks")).toBeNull()
     await until(() => running.length === 4)
     const last = seen.at(-1)!
     expect(last.some((m) => m.role === "user" && m.content === "what's in the project?")).toBe(true)
@@ -151,7 +237,7 @@ describe("the agent in the app", () => {
     ])
     const { agent, shown, running, until } = host(llm)
     expect(agent.running).toBe(false)
-    expect(agent.send("look")).toBeNull()
+    expect(await agent.send("look")).toBeNull()
     expect(agent.running).toBe(true)
     await until(() => running.at(-1) === false)
     expect(agent.running).toBe(false)
@@ -168,7 +254,7 @@ describe("the agent in the app", () => {
         viewport: { width: 800, height: 600, deviceScaleFactor: 2 },
       },
     })
-    expect(agent.send("go to docs")).toBeNull()
+    expect(await agent.send("go to docs")).toBeNull()
     await until(() => running.length === 4)
     expect(
       shown()
@@ -190,7 +276,7 @@ describe("the agent in the app", () => {
     }
     const { llm } = script([call("run_step", risky), { kind: "text", text: "Opened." }])
     const { agent, shown, running, frames, until } = host(llm)
-    agent.send("open projects")
+    void agent.send("open projects")
     await until(() => shown().some((i) => i.kind === "request" && i.state === "open"))
     const request = shown().find((i) => i.kind === "request")!
     expect(request).toMatchObject({
@@ -229,9 +315,9 @@ describe("the agent in the app", () => {
     }
     const { llm } = script([call("run_step", risky), { kind: "text", text: "never said" }])
     const { agent, shown, running, until } = host(llm)
-    agent.send("open projects")
+    void agent.send("open projects")
     await until(() => shown().some((i) => i.kind === "request" && i.state === "open"))
-    expect(agent.send("another")).toMatch(/still working/)
+    expect(await agent.send("another")).toMatch(/still working/)
     agent.stop()
     await until(() => running.at(-1) === false)
     expect(shown()).toMatchObject([
@@ -241,10 +327,10 @@ describe("the agent in the app", () => {
       { kind: "end", outcome: "stopped" },
     ])
     expect(shown().some((i) => i.kind === "assistant")).toBe(false)
-    expect(agent.send("again")).toBeNull()
+    expect(await agent.send("again")).toBeNull()
     await until(() => running.length === 4)
     await agent.close()
-    expect(agent.send("after close")).toMatch(/closed/)
+    expect(await agent.send("after close")).toMatch(/closed/)
   }, 60_000)
 
   it("works on in a new browser when the last one died (crashed, killed)", async () => {
@@ -255,11 +341,11 @@ describe("the agent in the app", () => {
       call("snapshot", {}),
     ])
     const made = host(llm, () => Promise.resolve(current))
-    made.agent.send("look")
+    void made.agent.send("look")
     await made.until(() => made.running.at(-1) === false)
     await current.close()
     current = await chromium.launch()
-    made.agent.send("look again")
+    void made.agent.send("look again")
     await made.until(() => made.running.length === 4)
     const snapshots = made.shown().filter((i) => i.kind === "tool")
     expect(snapshots.map((s) => s.kind === "tool" && s.status)).toEqual(["ok", "ok"])
@@ -279,12 +365,12 @@ describe("the agent in the app", () => {
       launches += 1
       return Promise.resolve(current)
     })
-    made.agent.send("look")
+    void made.agent.send("look")
     await made.until(() => made.running.at(-1) === false)
     // The browser dies: the next run makes its studio again, after closing the old one.
     await current.close()
     current = await chromium.launch()
-    made.agent.send("look again")
+    void made.agent.send("look again")
     const before = launches
     await made.agent.close()
     await new Promise((r) => setTimeout(r, 500))
@@ -297,9 +383,9 @@ describe("the agent in the app", () => {
     const made = host(llm, undefined, () => {
       throw new Error("the window is gone")
     })
-    made.agent.send("what's there?")
+    void made.agent.send("what's there?")
     await made.until(() => made.running.at(-1) === false)
-    made.agent.send("and now?")
+    void made.agent.send("and now?")
     await made.until(() => made.running.length === 4)
     expect(seen.at(-1)?.some((m) => m.role === "assistant" && m.content === "None.")).toBe(true)
     await made.agent.close()
@@ -320,7 +406,7 @@ steps:
       { kind: "text", text: "Saved." },
     ])
     const { agent, shown, running, until, changed } = host(llm)
-    agent.send("save it")
+    void agent.send("save it")
     await until(() => running.at(-1) === false, 40_000)
     expect(shown()[1]).toMatchObject({ kind: "tool", name: "save_scene", status: "ok" })
     expect(changed()).toBe(1)
@@ -329,7 +415,7 @@ steps:
 
   it("says why a run couldn't start (no key to make the model), and a model's failure", async () => {
     const noKey = host(() => Promise.reject(new Error("no OpenRouter key: add one first")))
-    expect(noKey.agent.send("hi")).toBeNull()
+    expect(await noKey.agent.send("hi")).toBeNull()
     await noKey.until(() => noKey.running.at(-1) === false)
     expect(noKey.shown().at(-1)).toMatchObject({
       kind: "end",
@@ -338,7 +424,7 @@ steps:
     })
     await noKey.agent.close()
     const failing = host({ complete: () => Promise.reject(new Error("rate limited")) })
-    failing.agent.send("hi")
+    void failing.agent.send("hi")
     await failing.until(() => failing.running.at(-1) === false)
     expect(failing.shown().at(-1)).toMatchObject({
       kind: "end",
@@ -354,10 +440,10 @@ steps:
     const made = host(() =>
       fail ? Promise.reject(new Error("no OpenRouter key")) : Promise.resolve(llm),
     )
-    made.agent.send("film the signup flow")
+    void made.agent.send("film the signup flow")
     await made.until(() => made.running.at(-1) === false)
     fail = false
-    made.agent.send("go ahead")
+    void made.agent.send("go ahead")
     await made.until(() => made.running.length === 4)
     expect(seen[0]?.some((m) => m.role === "user" && m.content === "film the signup flow")).toBe(
       true,
@@ -401,7 +487,7 @@ steps:
       { kind: "text", text: "Again." },
     ])
     const made = host(llm, undefined, undefined, secrets)
-    made.agent.send("sign in")
+    void made.agent.send("sign in")
     await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
     const asked = made.shown().find((i) => i.kind === "request")!
     expect(asked).toMatchObject({
@@ -434,7 +520,7 @@ steps:
         settled.request.shot,
     ).toBeUndefined()
     // Granted: the same step types it without asking again.
-    made.agent.send("again")
+    void made.agent.send("again")
     await made.until(() => made.running.length === 4)
     expect(made.shown().filter((i) => i.kind === "request")).toHaveLength(1)
     expect(JSON.stringify(made.sends)).not.toContain("hunter2-secret")
@@ -451,7 +537,7 @@ steps:
       { kind: "text", text: "b" },
     ])
     const made = host(llm, undefined, undefined, () => later.vault)
-    made.agent.send("which secrets?")
+    void made.agent.send("which secrets?")
     await made.until(() => made.running.at(-1) === false)
     const vault = new Secrets(
       join(mkdtempSync(join(tmpdir(), "kiframe-vault-")), "vault.json"),
@@ -462,7 +548,7 @@ steps:
       { name: "acme.password", kind: "password", value: "pw-x" },
       new URL(server.url).origin,
     )
-    made.agent.send("and now?")
+    void made.agent.send("and now?")
     await made.until(() => made.running.length === 4)
     const results = made
       .shown()
@@ -488,10 +574,10 @@ steps:
     ])
     const made = host(llm, undefined, undefined, vault)
     writeFileSync(join(made.dir, "story.md"), "# Demo v1\nlogin pw-story-1")
-    made.agent.send("first")
+    void made.agent.send("first")
     await made.until(() => made.running.at(-1) === false)
     writeFileSync(join(made.dir, "story.md"), "# Demo v2")
-    made.agent.send("second")
+    void made.agent.send("second")
     await made.until(() => made.running.length === 4)
     const userText = (messages: LlmMessage[]) =>
       messages.filter((m) => m.role === "user").map((m) => m.content)
@@ -513,7 +599,7 @@ steps:
       { kind: "text", text: "thanks" },
     ])
     const made = host(llm)
-    made.agent.send("go")
+    void made.agent.send("go")
     await made.until(() =>
       made.shown().some((i) => i.kind === "request" && i.request.kind === "handover"),
     )
@@ -569,7 +655,7 @@ steps:
       { kind: "text", text: "done" },
     ])
     const made = host(llm)
-    made.agent.send("go")
+    void made.agent.send("go")
     await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
     await made.until(() => made.frames.length > 0)
     const request = made.shown().find((i) => i.kind === "request")!
@@ -588,7 +674,7 @@ steps:
     made.agent.input(request.id, gen, { kind: "text", text: "stop-typed-5544" })
     made.agent.stop()
     await made.until(() => made.running.at(-1) === false)
-    made.agent.send("again")
+    void made.agent.send("again")
     await made.until(() => made.running.length === 4)
     const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
     expect(write).toMatchObject({ status: "failed" })
@@ -602,7 +688,7 @@ steps:
       { kind: "text", text: "ok" },
     ])
     const made = host(llm)
-    made.agent.send("go")
+    void made.agent.send("go")
     await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
     await made.until(() => made.frames.length > 0)
     const request = made.shown().find((i) => i.kind === "request")!
@@ -620,7 +706,7 @@ steps:
       { kind: "text", text: "done" },
     ])
     const made = host(llm)
-    made.agent.send("go")
+    void made.agent.send("go")
     await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
     await made.until(() => made.frames.length > 0)
     const request = made.shown().find((i) => i.kind === "request")!
@@ -638,7 +724,7 @@ steps:
     made.agent.answer(request.id, { outcome: "done", note: "", hide: false })
     made.agent.stop()
     await made.until(() => made.running.at(-1) === false)
-    made.agent.send("again")
+    void made.agent.send("again")
     await made.until(() => made.running.length === 4)
     const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
     expect(write).toMatchObject({ status: "ok" })
@@ -652,7 +738,7 @@ steps:
       { kind: "text", text: "done" },
     ])
     const made = host(llm)
-    made.agent.send("go")
+    void made.agent.send("go")
     await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
     await made.until(() => made.frames.length > 0)
     const request = made.shown().find((i) => i.kind === "request")!
@@ -671,7 +757,7 @@ steps:
     made.agent.answer(request.id, { outcome: "done", note: "", hide: true })
     made.agent.stop()
     await made.until(() => made.running.at(-1) === false)
-    made.agent.send("again")
+    void made.agent.send("again")
     await made.until(() => made.running.length === 4)
     const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
     expect(JSON.stringify(write)).toMatch(/holds a secret's value/)
@@ -694,7 +780,7 @@ steps:
       { kind: "text", text: "recorded" },
     ])
     const made = host(llm)
-    made.agent.send("go")
+    void made.agent.send("go")
     await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
     const request = made.shown().find((i) => i.kind === "request")!
     expect(request).toMatchObject({
@@ -731,7 +817,7 @@ steps:
     const waiting = { ready: () => new Promise<void>(() => undefined) } as unknown as Secrets
     const { llm } = script([{ kind: "text", text: "never" }])
     const made = host(llm, undefined, undefined, () => waiting)
-    made.agent.send("go")
+    void made.agent.send("go")
     await new Promise((r) => setTimeout(r, 200))
     expect(made.running).toEqual([true])
     made.agent.stop()
