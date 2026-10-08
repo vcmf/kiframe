@@ -101,8 +101,8 @@ Dependencies: P0-1 → P0-2 → (P0-3, P0-4) → P0-5 → P0-6 → P0-7. P0-8 ne
 
 | Order | What | From |
 |---|---|---|
-| 1 | **HTML pages**: the demo's cutscenes (a title, a feature callout, an outro, an attached mock-up), filmed like any app; cards become page templates | D1–D4 (OBJECT-MODEL §0.11) |
-| 2 | **Electron targets**: per-app isolation (verified: an app may ignore `--user-data-dir`, minmux did), launched with a debugging port and attached over CDP, a window frame in the video; native dialogs through the handover | V1-3 (moved from v0.1) |
+| 1 | **Electron targets**: per-app isolation (verified: an app may ignore `--user-data-dir`, minmux did), launched with a debugging port and attached over CDP, a window frame in the video; native dialogs through the handover | V1-3 (moved from v0.1) |
+| 2 | **HTML pages**: the demo's cutscenes (a title, a feature callout, an outro, an attached mock-up), filmed like any app; cards become page templates | D1–D4 (OBJECT-MODEL §0.11) |
 | 3 | **Stills**: screenshots captured from scenes, re-taken on every replay (a README, a landing page, a launch post) | V1-4, its captured part only (moved from v0.1) |
 | 4 | **Billing and distribution**: sign-in and subscriptions (the app is paid, BYOK or not), signed and notarized builds with auto-update | M5-1, M5-2, M5-6 (sign-in only), V1-7 (moved from v0.1), M6-2 |
 
