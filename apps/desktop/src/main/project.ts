@@ -178,7 +178,7 @@ export function appRemovalRefused(
   request: { session: string; name: string; origin: string },
   running: boolean,
 ): string | null {
-  if (running) return "the agent is working: stop it first"
+  if (running) return "Kif is working: stop it first"
   const at = appOriginOf(view, request.session, request.name)
   if ("why" in at) return at.why
   if (at.origin !== request.origin) return "that app changed meanwhile: try again"

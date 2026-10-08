@@ -224,7 +224,7 @@ const editFile = defineTool({
       }
       if (error instanceof FileRefusal && error.code === "refused") {
         studio.options.stopRun(
-          `the agent put a secret's value together in ${at}: refused, and the run stopped`,
+          `Kif put a secret's value together in ${at}: refused, and the run stopped`,
         )
         return Promise.resolve({
           error: "refused: the result holds a secret's value (you never write one); the run stops",

@@ -192,7 +192,7 @@ export class AgentHost {
   /** Starts a run: null, or why it didn't start. */
   send(text: string): string | null {
     if (this.#closed) return "the project is closed"
-    if (this.#run !== undefined) return "the agent is still working: stop it first"
+    if (this.#run !== undefined) return "Kif is still working: stop it first"
     const controller = new AbortController()
     this.#run = { controller, done: this.#go(text, controller.signal) }
     return null

@@ -248,7 +248,7 @@ describe("removing one of the project's apps (B5)", () => {
     }
     const docs = { session: "s1", name: "docs", origin: "https://docs.test" }
     expect(appRemovalRefused(view, docs, false)).toBeNull()
-    expect(appRemovalRefused(view, docs, true)).toMatch(/agent is working/)
+    expect(appRemovalRefused(view, docs, true)).toMatch(/Kif is working/)
     expect(appRemovalRefused(view, { ...docs, session: "s0" }, false)).toMatch(/project changed/)
     expect(appRemovalRefused(view, { ...docs, origin: "https://other.test" }, false)).toMatch(
       /changed meanwhile/,

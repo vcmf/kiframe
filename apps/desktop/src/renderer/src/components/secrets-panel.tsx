@@ -106,7 +106,7 @@ export function SecretsPanel({
           </button>
         </div>
         <p className="dialog-text">
-          Logins and keys the agent may type
+          Logins and keys Kif may type
           {several ? (
             ", app by app"
           ) : (
@@ -119,9 +119,9 @@ export function SecretsPanel({
           every take.
         </p>
         <p className="dialog-text dialog-note">
-          Use a throwaway demo account. The agent sees the page as text and screenshots, with your
-          secrets hidden where the page shows them as text; a value drawn in an image or a canvas
-          can’t be hidden.
+          Use a throwaway demo account. Kif sees the page as text and screenshots, with your secrets
+          hidden where the page shows them as text; a value drawn in an image or a canvas can’t be
+          hidden.
         </p>
         {groups === null ? null : groups.every((g) => g.secrets.length === 0) ? (
           <p className="dialog-empty">No secrets yet.</p>

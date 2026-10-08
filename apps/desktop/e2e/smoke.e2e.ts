@@ -229,7 +229,7 @@ describe("the desktop app", () => {
     await expect
       .poll(() => page.getByRole("button", { name: /Fixture app/ }).isVisible())
       .toBe(true)
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     const idle = (await page.locator(".composer").boundingBox())?.height ?? -1
     await box.fill("Open the projects page")
     await box.press("Enter")
@@ -251,7 +251,7 @@ describe("the desktop app", () => {
   })
 
   it("runs the step once approved, and shows the agent's browser in the live app", async () => {
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     await box.fill("Try again")
     await box.press("Enter")
     const approve = page.getByRole("button", { name: "Approve this step" })
@@ -261,7 +261,7 @@ describe("the desktop app", () => {
       .poll(() => page.getByText("Opened your projects.").isVisible(), { timeout: 30_000 })
       .toBe(true)
     // The composer is back, empty, and says nothing was refused.
-    expect(await page.getByLabel("Message the agent").inputValue()).toBe("")
+    expect(await page.getByLabel("Message Kif").inputValue()).toBe("")
     expect(await page.locator(".composer-refused").count()).toBe(0)
     const frame = page.getByRole("img", { name: /The live app at/ })
     await expect.poll(() => frame.isVisible()).toBe(true)
@@ -280,7 +280,7 @@ describe("the desktop app", () => {
       .toBe(true)
     expect(await page.content()).not.toContain("hunter2-e2e-secret")
     await panel.getByRole("button", { name: "Close" }).click()
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     await box.fill("Sign in")
     await box.press("Enter")
     const dialog = page.getByRole("dialog", { name: "Type a secret here?" })
@@ -318,7 +318,7 @@ describe("the desktop app", () => {
       }
       requestAnimationFrame(tick)
     })
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     for (let i = 0; i < 14; i++) {
       await box.fill(`Note ${i}`)
       await box.press("Enter")
@@ -389,7 +389,7 @@ describe("the desktop app", () => {
       page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))))
     try {
       // Steps running: the reader goes back with the keys; new rows come in below, unseen.
-      const box = page.getByLabel("Message the agent")
+      const box = page.getByLabel("Message Kif")
       await box.fill("Check then ask")
       await box.press("Enter")
       await expect
@@ -506,7 +506,7 @@ describe("the desktop app", () => {
     await expect
       .poll(() => page.getByRole("button", { name: /Fixture app/ }).isVisible())
       .toBe(true)
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     await box.fill("Go home")
     await box.press("Enter")
     await expect
@@ -519,7 +519,7 @@ describe("the desktop app", () => {
   it("shows the agent thinking (its dots moving), then for how long it thought", async () => {
     // Motion allowed (a machine set to reduce it shows still dots).
     await page.emulateMedia({ reducedMotion: "no-preference" })
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     await box.fill("Think it over")
     await box.press("Enter")
     const thinking = page.locator(".thinking-row .thinking-dots")

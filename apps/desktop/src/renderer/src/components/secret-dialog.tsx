@@ -59,8 +59,7 @@ export function SecretDialog() {
           <h2 id="secret-title">Type a secret here?</h2>
           <p>
             The scene types <span className="mono">{request.secret}</span> into the field outlined
-            below. Kiframe fills it in: the agent never sees the value, and it’s blurred in every
-            take.
+            below. Kiframe fills it in: Kif never sees the value, and it’s blurred in every take.
           </p>
         </div>
         {shot !== undefined && (

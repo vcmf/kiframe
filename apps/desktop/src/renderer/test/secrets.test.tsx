@@ -46,7 +46,7 @@ describe("a secret's approval", () => {
       "chat:answer": () => undefined,
     })
     render(<App />)
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => push("chat:item", approval()))
     const dialog = screen.getByRole("dialog", { name: "Type a secret here?" })
     expect(within(dialog).getByRole("img").getAttribute("src")).toBe("data:image/jpeg;base64,AAAA")
@@ -75,7 +75,7 @@ describe("a secret's approval", () => {
       "chat:answer": () => undefined,
     })
     render(<App />)
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => push("chat:item", approval()))
     fireEvent.keyDown(document, { key: "Escape" })
     expect(invoke).toHaveBeenCalledWith("chat:answer", "r1", false)

@@ -33,7 +33,7 @@ const open = (answers: Parameters<typeof stubApi>[0] = {}) => {
 describe("the chat", () => {
   it("sends a message on Enter (Shift+Enter is a new line), and shows the model", async () => {
     const { invoke } = open({ "chat:send": () => null })
-    const box = await screen.findByLabelText("Message the agent")
+    const box = await screen.findByLabelText("Message Kif")
     expect(await screen.findByText("test/model")).toBeTruthy()
     fireEvent.change(box, { target: { value: "Make a demo of invoices" } })
     fireEvent.keyDown(box, { key: "Enter", shiftKey: true })
@@ -45,8 +45,8 @@ describe("the chat", () => {
   })
 
   it("keeps the message and says why when main refuses it", async () => {
-    open({ "chat:send": () => "the agent is still working: stop it first" })
-    const box = await screen.findByLabelText("Message the agent")
+    open({ "chat:send": () => "Kif is still working: stop it first" })
+    const box = await screen.findByLabelText("Message Kif")
     fireEvent.change(box, { target: { value: "again" } })
     fireEvent.click(screen.getByRole("button", { name: "Send" }))
     expect((await screen.findByRole("alert")).textContent).toMatch(/still working/)
@@ -55,7 +55,7 @@ describe("the chat", () => {
 
   it("shows no agent turn for a run that ended quietly (no lone mark)", async () => {
     const { push } = open()
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:item", { kind: "user", id: "u1", text: "hello" })
       push("chat:item", { kind: "end", id: "e1", outcome: "done" })
@@ -84,7 +84,7 @@ describe("the chat", () => {
 
   it("shows what main folds: messages, steps (grouped), the run's end", async () => {
     const { push } = open()
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     const items: ChatItem[] = [
       { kind: "user", id: "u1", text: "open projects" },
       { kind: "tool", id: "t1", name: "snapshot", detail: "", status: "ok" },
@@ -117,7 +117,7 @@ describe("the chat", () => {
 
   it("shows the agent thinking among its steps (dots), then for how long it thought", async () => {
     const { push } = open()
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:item", { kind: "user", id: "u1", text: "go" })
       push("chat:item", { kind: "thinking", id: "th1" })
@@ -150,7 +150,7 @@ describe("the chat", () => {
 
   it("turns the composer into a status bar with Stop while the agent works", async () => {
     const { push, invoke } = open({ "chat:stop": () => undefined })
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:running", true)
       push("chat:item", {
@@ -161,17 +161,17 @@ describe("the chat", () => {
         status: "running",
       })
     })
-    expect(screen.queryByLabelText("Message the agent")).toBeNull()
+    expect(screen.queryByLabelText("Message Kif")).toBeNull()
     expect(screen.getAllByRole("status")[0]?.textContent).toMatch(/run_step click Send/)
     fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     expect(invoke).toHaveBeenCalledWith("chat:stop")
     act(() => push("chat:running", false))
-    expect(await screen.findByLabelText("Message the agent")).toBeTruthy()
+    expect(await screen.findByLabelText("Message Kif")).toBeTruthy()
   })
 
   it("answers a risky step's approval and a question from their cards", async () => {
     const { push, invoke } = open({ "chat:answer": () => undefined })
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:item", {
         kind: "request",
@@ -205,7 +205,7 @@ describe("the chat", () => {
 
   it("asks to add a site: the host first, what's notable, the agent's words as its own", async () => {
     const { push, invoke } = open({ "chat:answer": () => undefined })
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() =>
       push("chat:item", {
         kind: "request",
@@ -254,7 +254,7 @@ describe("the chat", () => {
       screen.getByText(/1 scene already names “docs”: “Install”\. They’ll open this site\./),
     ).toBeTruthy()
     expect(card.textContent).toMatch(
-      /The agent says \(pages it read can influence this\): Kiframe: already approved/,
+      /Kif says \(pages it read can influence this\): Kiframe: already approved/,
     )
     fireEvent.click(screen.getByRole("button", { name: "Add xn--pple-43d.example:8080" }))
     expect(invoke).toHaveBeenCalledWith("chat:answer", "r1", true)
@@ -262,7 +262,7 @@ describe("the chat", () => {
 
   it("asks before deleting a file, or replacing one the agent didn't write", async () => {
     const { push, invoke } = open({ "chat:answer": () => undefined })
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() =>
       push("chat:item", {
         kind: "request",
@@ -295,7 +295,7 @@ describe("the chat", () => {
 
   it("only lets the user decline a request this version can't show", async () => {
     const { push, invoke } = open({ "chat:answer": () => undefined })
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() =>
       push("chat:item", {
         kind: "request",
@@ -311,7 +311,7 @@ describe("the chat", () => {
 
   it("shows the live app when a run starts, its frames as they come", async () => {
     const { push } = open()
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     expect(screen.getByRole("tab", { name: "Preview" }).getAttribute("aria-selected")).toBe("true")
     act(() => {
       push("chat:running", true)
@@ -320,7 +320,7 @@ describe("the chat", () => {
     expect(screen.getByRole("tab", { name: /Live app/ }).getAttribute("aria-selected")).toBe("true")
     const img = screen.getByRole("img", { name: "The live app at /projects" })
     expect(img.getAttribute("src")).toBe("data:image/jpeg;base64,AAAA")
-    expect(screen.getByText("Agent driving")).toBeTruthy()
+    expect(screen.getByText("Kif is driving")).toBeTruthy()
   })
 
   it("loads the open project's chat (after a reload), keeping newer items", async () => {
@@ -342,14 +342,14 @@ describe("the chat", () => {
 
   it("starts the chat afresh when a project opens again (another one, or the same folder reopened)", async () => {
     const { push } = open()
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     act(() => {
       push("chat:item", { kind: "user", id: "user-a-1", text: "project A's message" })
       push("live:frame", { jpeg: "AAAA", path: "/a", gen: 1 })
     })
     expect(screen.getByText("project A's message")).toBeTruthy()
     act(() => push("status", status({ hasKey: true, project: { ...project, session: "s2" } })))
-    await screen.findByLabelText("Message the agent")
+    await screen.findByLabelText("Message Kif")
     expect(screen.queryByText("project A's message")).toBeNull()
     expect(useChat.getState().frame).toBeNull()
   })

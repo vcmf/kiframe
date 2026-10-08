@@ -161,7 +161,7 @@ describe("a run the host stopped", () => {
     const log = new ChatLog()
     log.user("make a page")
     log.stopReason =
-      "the agent tried to write a secret's value into pages/a.html: refused, and the run stopped"
+      "Kif tried to write a secret's value into pages/a.html: refused, and the run stopped"
     const [end] = log.event({ type: "aborted", messages: [] }).slice(-1)
     expect(end).toMatchObject({ kind: "end", outcome: "stopped", message: log.stopReason })
     log.user("again")

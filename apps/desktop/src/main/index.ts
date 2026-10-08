@@ -117,7 +117,7 @@ function start(): void {
       },
       (e: unknown) => {
         if (browser === launched) browser = undefined
-        throw new Error(`the agent's browser didn't start: ${message(e)}`)
+        throw new Error(`Kif's browser didn't start: ${message(e)}`)
       },
     )
     browser = launched

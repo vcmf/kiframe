@@ -22,7 +22,7 @@ export async function previewOf(
   if (broken !== undefined) return { ok: false, why: `It didn’t read: ${broken.message}` }
   if (scenario === undefined) return { ok: false, why: "Not grounded yet: no steps to film." }
   if (composition?.take === undefined) {
-    return { ok: false, why: "Not filmed yet: the agent records it once its steps work." }
+    return { ok: false, why: "Not filmed yet: Kif records it once its steps work." }
   }
   let take: ReturnType<TakeStore["take"]>
   try {

@@ -47,7 +47,7 @@ export function AppsPanel({
           </button>
         </div>
         <p className="dialog-text">
-          The sites this project’s scenes may open. The agent asks before adding one.
+          The sites this project’s scenes may open. Kif asks before adding one.
         </p>
         <ul className="app-list" aria-label="The project's apps">
           {project.apps.map((app, i) => (
@@ -63,7 +63,7 @@ export function AppsPanel({
                   type="button"
                   className="btn btn-ghost"
                   disabled={busy || running}
-                  title={running ? "The agent is working: stop it first" : undefined}
+                  title={running ? "Kif is working: stop it first" : undefined}
                   onClick={() => void remove(app.name, app.origin)}
                 >
                   Remove {app.name}
