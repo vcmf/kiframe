@@ -522,7 +522,7 @@ describe("the desktop app", () => {
     const box = page.getByLabel("Message the agent")
     await box.fill("Think it over")
     await box.press("Enter")
-    const thinking = page.locator(".thinking-row .thinking-dots")
+    const thinking = page.locator(".thought .thinking-dots")
     await expect.poll(() => thinking.isVisible(), { timeout: 10_000 }).toBe(true)
     // The dots, drawn by CSS: they change while it thinks.
     const dots = new Set<string>()
@@ -536,7 +536,7 @@ describe("the desktop app", () => {
       .poll(() => page.getByText("Thought it through.").isVisible(), { timeout: 30_000 })
       .toBe(true)
     expect(await thinking.count()).toBe(0)
-    const row = page.locator(".thinking-row").last()
+    const row = page.locator(".thought").last()
     expect(await row.innerText()).toMatch(/^Thought\s*for [23]s$/)
     if (shots !== undefined) await page.screenshot({ path: join(shots, "agent-thought.png") })
   })

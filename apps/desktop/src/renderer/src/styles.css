@@ -974,9 +974,9 @@ ul.strip-cards > li {
   }
 }
 
-.thinking-row .tool-name {
-  font-family: inherit;
-  font-size: 12.5px;
+/* A thought: plain muted text in the turn, no box, no icon. */
+.thought {
+  font-size: 13px;
   color: var(--muted);
 }
 
