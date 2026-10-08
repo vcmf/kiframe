@@ -79,7 +79,7 @@ export const TITLE_BAR_HEIGHT = 48
  * The main window, as in the mockup: the app draws its own title bar on every platform (macOS's
  * buttons inset in it; Windows' and Linux's controls drawn over its right end).
  */
-export function createWindow(preloadDir: string, devServer?: string): BrowserWindow {
+export function createWindow(preloadDir: string, icon: string, devServer?: string): BrowserWindow {
   const mac = process.platform === "darwin"
   // The screen it opens on (macOS opens a window where the user is: the display under the
   // cursor, not always the primary).
@@ -91,6 +91,8 @@ export function createWindow(preloadDir: string, devServer?: string): BrowserWin
     center: true,
 
     title: app.getName(),
+    // The window's and taskbar's icon on Windows and Linux (macOS takes the Dock's).
+    icon,
     backgroundColor: "#FFFFFF",
     show: false,
     ...(mac
