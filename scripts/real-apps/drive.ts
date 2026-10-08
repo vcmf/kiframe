@@ -305,7 +305,7 @@ try {
   }
 
   const send = async (text: string) => {
-    const box = page.getByLabel("Message the agent")
+    const box = page.getByLabel("Message Kif")
     await box.fill(text)
     await box.press("Enter")
     await page.getByRole("button", { name: "Stop" }).waitFor({ timeout: 30_000 })
