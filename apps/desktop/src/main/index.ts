@@ -31,6 +31,7 @@ import { Secrets } from "./secrets.ts"
 import { readStatus } from "./status.ts"
 import { workerInspector } from "./folder-reader.ts"
 import makeFolderWorker from "./folder-worker.ts?nodeWorker"
+import icon from "../../resources/icon.png?asset"
 import { ProjectIndex } from "./project-index.ts"
 import { KeyStore, takeStoreKey } from "./settings.ts"
 import { TakeKeeper } from "./take-keeper.ts"
@@ -260,7 +261,7 @@ function start(): void {
 
   const showWindow = () => {
     if (window === null) {
-      window = createWindow(join(here, "../preload"), devServer)
+      window = createWindow(join(here, "../preload"), icon, devServer)
       window.on("closed", () => {
         window = null
       })
@@ -311,6 +312,8 @@ function start(): void {
     projects = new ProjectIndex(join(data, "data"))
     keeper = new TakeKeeper(takes, projects, folders.inspect, () => workspace.opened?.project.id)
     setAppMenu(dev)
+    // The Dock takes its icon from here (no packaged bundle carries one yet).
+    if (process.platform === "darwin") app.dock?.setIcon(icon)
     hardenSessions(devServer)
     serveApp(join(here, "../renderer"))
     registerHandlers(

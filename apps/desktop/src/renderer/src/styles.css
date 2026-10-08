@@ -816,7 +816,93 @@ ul.strip-cards > li {
 
 .agent-mark {
   display: flex;
-  color: var(--accent);
+}
+
+/* Kif (kif-mark.tsx): the play button in the accent, its sparkle in ink, the eyes cut out. */
+.kif-play {
+  fill: var(--accent);
+}
+
+.kif-sparkle,
+.kif-twinkle {
+  fill: var(--text);
+}
+
+.kif-twinkle {
+  opacity: 0;
+}
+
+.kif-lids {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* While its turn is being written, in stepped frames like the pixels: Kif glances at its sparkle
+   as it twinkles, looks back, then blinks. */
+@media (prefers-reduced-motion: no-preference) {
+  .kif-mark.working .kif-eyes {
+    animation: kif-glance 2.4s steps(1, end) infinite;
+  }
+
+  .kif-mark.working .kif-lids {
+    animation: kif-blink 2.4s steps(1, end) infinite;
+  }
+
+  .kif-mark.working .kif-sparkle {
+    animation: kif-sparkle 2.4s steps(1, end) infinite;
+  }
+
+  .kif-mark.working .kif-twinkle {
+    animation: kif-twinkle 2.4s steps(1, end) infinite;
+  }
+}
+
+@keyframes kif-glance {
+  0% {
+    transform: none;
+  }
+  30% {
+    transform: translate(1px, -1px);
+  }
+  60% {
+    transform: none;
+  }
+}
+
+@keyframes kif-blink {
+  0% {
+    transform: none;
+  }
+  78% {
+    transform: scaleY(0.34);
+  }
+  84% {
+    transform: none;
+  }
+}
+
+@keyframes kif-sparkle {
+  0% {
+    opacity: 1;
+  }
+  38% {
+    opacity: 0;
+  }
+  52% {
+    opacity: 1;
+  }
+}
+
+@keyframes kif-twinkle {
+  0% {
+    opacity: 0;
+  }
+  38% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0;
+  }
 }
 
 .msg-agent-text {
