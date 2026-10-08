@@ -81,6 +81,8 @@ const { values } = parseArgs({
     url: { type: "string" },
     // The recorded scene exported to a video file (.mp4 or .webm), through the exporter.
     export: { type: "string" },
+    // A handover's answer: text typed into the live app, then Done (as the user would).
+    "hand-type": { type: "string" },
     // Another app of the project, `name=https://…` (written to project.json, as add_app will).
     also: { type: "string" },
     // A follow-up message, sent in the same chat once the first run is done (a second run).
@@ -329,7 +331,24 @@ try {
     const reply = page.getByLabel("Your answer")
     // A site the agent asks to add: allowed (its host logged, as the user would read it).
     const site = page.getByRole("button", { name: /^Add \S+$/ })
+    const handover = page.getByLabel("Take over the browser")
     if (
+      await handover
+        .getByRole("button", { name: "Done" })
+        .isVisible()
+        .catch(() => false)
+    ) {
+      // The user's hands on the live app: text typed (through the window's own live view), Done.
+      const task = (await handover.locator("p").first().textContent()) ?? ""
+      log(`handover: ${task}`)
+      const typing = page.getByLabel("Type into the live app")
+      await typing.focus()
+      if (values["hand-type"] !== undefined) await page.keyboard.type(values["hand-type"])
+      await page.waitForTimeout(1500)
+      await handover.getByLabel("A note for the agent").fill("done from the live view")
+      await handover.getByRole("button", { name: "Done" }).click()
+      log("handover done")
+    } else if (
       await site
         .first()
         .isVisible()

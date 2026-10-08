@@ -77,6 +77,27 @@ const look = defineTool({
   },
 })
 
+const handOver = defineTool({
+  name: "hand_over",
+  description:
+    "Hand the live browser to the user for a moment: a one-time or 2FA code, a CAPTCHA, a payment, anything you can't do with steps. You see nothing until they're done (then take a snapshot). Never for a password (the user adds it in Secrets).",
+  parameters: z.object({
+    task: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .describe("what the user should do, one sentence they can act on"),
+    done_when: z
+      .string()
+      .trim()
+      .max(200)
+      .optional()
+      .describe("how they'll know it's done (e.g. 'the dashboard shows')"),
+  }),
+  run: ({ task, done_when }, studio: Studio, signal) => studio.handOver(task, done_when, signal),
+})
+
 /** A run_step's scene start app (by name; checked against the project's apps in the studio). */
 const startApp = AppName.optional().describe(
   "the scene's start app (its top-level `app:`): steps without an app mean it. Default: the one its last step ran in, else its saved `app:`, else the first app",
@@ -227,7 +248,8 @@ const askUser = defineTool({
   parameters: z.object({ question: z.string().min(1) }),
   run: async ({ question }, studio: Studio, signal) => {
     const answer = await studio.options.requestUser({ kind: "question", question }, signal)
-    return { answer: String(answer) }
+    // A question is answered with text, or declined (false); a handover's end never answers one.
+    return { answer: typeof answer === "object" ? "" : String(answer) }
   },
 })
 
@@ -357,6 +379,7 @@ export const studioTools: Tool<Studio>[] = [
   listScenes,
   snapshot,
   look,
+  handOver,
   runStep,
   runSteps,
   listSecrets,

@@ -14,8 +14,16 @@ import {
   systemPrompt,
 } from "@kiframe/studio"
 import type { Browser } from "playwright"
-import type { ApprovalRequest, SecretUse } from "@kiframe/runtime"
-import type { ChatItem, ChatRequest, ChatState, LiveFrame } from "../shared/ipc.ts"
+import { type ApprovalRequest, formValues, type SecretUse } from "@kiframe/runtime"
+import type {
+  ChatAnswer,
+  ChatItem,
+  ChatRequest,
+  ChatState,
+  LiveFrame,
+  LiveInput,
+} from "../shared/ipc.ts"
+import { Handover } from "./handover.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import type { FileVersions } from "./file-versions.ts"
 import { errorMessage } from "../shared/util.ts"
@@ -83,7 +91,7 @@ export interface AgentHostOptions {
 
 interface Pending {
   request: ChatRequest
-  resolve: (answer: string | boolean) => void
+  resolve: (answer: ChatAnswer) => void
 }
 
 /**
@@ -142,6 +150,10 @@ export class AgentHost {
   /** The live app's last frame (a reloaded window shows where the run ended). */
   #frame: LiveFrame | null = null
   #live: LiveView | undefined
+  /** The handover open (the user's hands on the live app), if any. */
+  #handover: Handover | undefined
+  /** Every handover's typed values made known (a run, and the close, wait for it). */
+  #typedKnown: Promise<void> = Promise.resolve()
   #run: { controller: AbortController; done: Promise<void> } | undefined
   readonly #pending = new Map<string, Pending>()
   /** The streaming text item: sent, and its newer version (if any) waiting for the timer. */
@@ -188,12 +200,59 @@ export class AgentHost {
   }
 
   /** The user's answer to an open request (a mismatched kind is ignored). */
-  answer(id: string, answer: string | boolean): void {
+  answer(id: string, answer: ChatAnswer): void {
     const pending = this.#pending.get(id)
     if (pending === undefined) return
+    const kind = pending.request.kind
     const fits =
-      pending.request.kind === "question" ? typeof answer === "string" : typeof answer === "boolean"
-    if (fits) pending.resolve(answer)
+      kind === "question"
+        ? typeof answer === "string"
+        : kind === "handover"
+          ? typeof answer === "object"
+          : typeof answer === "boolean"
+    if (!fits) return
+    if (kind !== "handover") {
+      pending.resolve(answer)
+      return
+    }
+    // Answered once (a second click on Done never reaches the agent early). The user's hands off
+    // first (held keys released, what they typed known to the scrubber): only then does the agent
+    // hear back (its note scrubbed of it).
+    this.#pending.delete(id)
+    // The card says so at once (the agent hears back once what was typed is known).
+    const settled = this.#log.settle(id, { answer })
+    if (settled !== undefined) this.#emit(settled)
+    const hide = typeof answer === "object" ? answer.hide : true
+    void this.#endHandover(id, hide).then(() => pending.resolve(answer))
+  }
+
+  /**
+   * The user's input on the live app during an open handover (`id`), on the frame they saw
+   * (`gen`): dropped otherwise (no handover open, another one, an older page's frame).
+   */
+  input(id: string, gen: number, event: LiveInput): void {
+    const handover = this.#handover
+    if (handover?.id !== id || this.#live?.gen !== gen) return
+    handover.input(event)
+  }
+
+  /** The handover ends: input stops, what was held released, what was typed scrubbed from now on. */
+  #endHandover(id: string, hide = true): Promise<void> {
+    const handover = this.#handover
+    if (handover?.id !== id) return Promise.resolve()
+    this.#handover = undefined
+    const done = (async () => {
+      try {
+        const typed = await handover.close()
+        // Hidden unless the user said not to (a stop says nothing: hidden).
+        if (hide) this.#studio?.knowTyped(typed)
+      } catch {
+        // never a run, or the close, stuck on it (the reads are bounded; a failure: what was read)
+      }
+    })()
+    // Every run and the close wait for every handover's end (one never replaces another).
+    this.#typedKnown = Promise.all([this.#typedKnown, done]).then(() => undefined)
+    return done
   }
 
   /** The project closes: the run stops, then the studio's browser context closes. */
@@ -203,6 +262,8 @@ export class AgentHost {
     await this.#run?.done
     // The live view's last frame too (never racing the context closing).
     await this.#liveStopped
+    // A handover's typed values read before its context goes (bounded: the reads time out).
+    await this.#typedKnown
     await this.#studio?.close()
   }
 
@@ -223,6 +284,8 @@ export class AgentHost {
       )
       await this.#liveStopped
       this.#live.start()
+      // A handover the last run ended in: what the user typed known before anything is read.
+      await untilStopped(this.#typedKnown, signal)
       // story.md and the files' names, given with this run's message (never stored): built once
       // the vault is read (every value known to the scrubber), scrubbed again each turn.
       const notes = runNotes(studio)
@@ -355,10 +418,20 @@ export class AgentHost {
     request: ChatRequest,
     signal: AbortSignal,
     onItem?: (id: string) => void,
-  ): Promise<string | boolean> {
+  ): Promise<ChatAnswer> {
     signal.throwIfAborted()
     const item = this.#log.request(request)
     onItem?.(item.id)
+    // A handover: the live app takes the user's input until it's answered or stopped.
+    if (request.kind === "handover") {
+      // The page the live view shows (the frame the user acts on), never one it hasn't shown yet.
+      const context = this.#studio?.currentPage?.context()
+      this.#handover = new Handover(
+        item.id,
+        () => this.#live?.followed,
+        () => (context === undefined ? Promise.resolve([]) : formValues(context)),
+      )
+    }
     this.#emit(item)
     return new Promise((resolve, reject) => {
       const done = () => {
@@ -367,6 +440,8 @@ export class AgentHost {
       }
       const onAbort = () => {
         done()
+        // Stopped mid-handover: what was typed is made known all the same (the next run waits).
+        void this.#endHandover(item.id)
         const closed = this.#log.settle(item.id, "closed")
         if (closed !== undefined) this.#emit(closed)
         reject(signal.reason instanceof Error ? signal.reason : new Error("stopped"))

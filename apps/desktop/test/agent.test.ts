@@ -494,6 +494,145 @@ steps:
     await made.agent.close()
   }, 60_000)
 
+  it("hands the browser over: the card names the page's origin, input on an old frame is dropped, what the user typed never reaches the model", async () => {
+    const { llm, seen } = script([
+      call("hand_over", { task: "Enter the code from your phone", done_when: "the page shows" }),
+      { kind: "text", text: "thanks" },
+    ])
+    const made = host(llm)
+    made.agent.send("go")
+    await made.until(() =>
+      made.shown().some((i) => i.kind === "request" && i.request.kind === "handover"),
+    )
+    await made.until(() => made.frames.length > 0)
+    const request = made.shown().find((i) => i.kind === "request")!
+    expect(request).toMatchObject({
+      request: {
+        kind: "handover",
+        task: "Enter the code from your phone",
+        origin: new URL(server.url).origin,
+        onApp: true,
+      },
+    })
+    const gen = made.frames.at(-1)!.gen
+    made.agent.input(request.id, gen + 99, { kind: "text", text: "stale-frame-value" })
+    made.agent.input("another", gen, { kind: "text", text: "other-handover-value" })
+    // A backlog before the text (the user's moves): the agent hears back only once it's all applied
+    // and the text is known (never before: the result would carry it).
+    for (let i = 0; i < 150; i++) {
+      made.agent.input(request.id, gen, {
+        kind: "mouse",
+        type: "move",
+        x: (i % 10) / 10,
+        y: 0.5,
+        button: "left",
+        clickCount: 0,
+      })
+    }
+    made.agent.input(request.id, gen, { kind: "text", text: "otp-778899" })
+    made.agent.answer(request.id, {
+      outcome: "done",
+      note: "used otp-778899 (stale-frame-value, other-handover-value)",
+      hide: true,
+    })
+    // A second click on Done: never an early answer (the first one is under way).
+    made.agent.answer(request.id, { outcome: "declined", note: "otp-778899 again", hide: true })
+    await made.until(() => made.running.at(-1) === false)
+    const result = JSON.stringify(seen.at(-1)?.find((m) => m.role === "tool"))
+    expect(result).toContain('\\"outcome\\":\\"done\\"')
+    expect(result).not.toContain("otp-778899")
+    expect(result).toContain("[secret]")
+    // Dropped: never typed, so never made a secret (said as the user wrote it).
+    expect(result).toContain("stale-frame-value")
+    expect(result).toContain("other-handover-value")
+    await made.agent.close()
+  }, 60_000)
+
+  it("makes what the user typed known before the next run, when they stop mid-handover", async () => {
+    const { llm } = script([
+      call("hand_over", { task: "Enter the code" }),
+      // The next run writes it (a guess, as far as the tools know): refused only if it's known.
+      call("write_file", { path: "story.md", content: "code: stop-typed-5544" }, "c2"),
+      { kind: "text", text: "done" },
+    ])
+    const made = host(llm)
+    made.agent.send("go")
+    await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
+    await made.until(() => made.frames.length > 0)
+    const request = made.shown().find((i) => i.kind === "request")!
+    const gen = made.frames.at(-1)!.gen
+    // A backlog first: the handover's end takes a while (the next run must wait for it).
+    for (let i = 0; i < 150; i++) {
+      made.agent.input(request.id, gen, {
+        kind: "mouse",
+        type: "move",
+        x: (i % 10) / 10,
+        y: 0.5,
+        button: "left",
+        clickCount: 0,
+      })
+    }
+    made.agent.input(request.id, gen, { kind: "text", text: "stop-typed-5544" })
+    made.agent.stop()
+    await made.until(() => made.running.at(-1) === false)
+    made.agent.send("again")
+    await made.until(() => made.running.length === 4)
+    const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
+    expect(write).toMatchObject({ status: "failed" })
+    expect(JSON.stringify(write)).toMatch(/holds a secret's value/)
+    await made.agent.close()
+  }, 60_000)
+
+  it("leaves what the user typed visible when they untick hiding it (a search term)", async () => {
+    const { llm, seen } = script([
+      call("hand_over", { task: "Search for something" }),
+      { kind: "text", text: "ok" },
+    ])
+    const made = host(llm)
+    made.agent.send("go")
+    await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
+    await made.until(() => made.frames.length > 0)
+    const request = made.shown().find((i) => i.kind === "request")!
+    made.agent.input(request.id, made.frames.at(-1)!.gen, { kind: "text", text: "invoices" })
+    made.agent.answer(request.id, { outcome: "done", note: "searched invoices", hide: false })
+    await made.until(() => made.running.at(-1) === false)
+    expect(JSON.stringify(seen.at(-1))).toContain("searched invoices")
+    await made.agent.close()
+  }, 60_000)
+
+  it("waits for what was typed when the user clicks Done and then Stop at once", async () => {
+    const { llm } = script([
+      call("hand_over", { task: "Enter the code" }),
+      call("write_file", { path: "story.md", content: "code: done-stop-6655" }, "c2"),
+      { kind: "text", text: "done" },
+    ])
+    const made = host(llm)
+    made.agent.send("go")
+    await made.until(() => made.shown().some((i) => i.kind === "request" && i.state === "open"))
+    await made.until(() => made.frames.length > 0)
+    const request = made.shown().find((i) => i.kind === "request")!
+    const gen = made.frames.at(-1)!.gen
+    for (let i = 0; i < 150; i++) {
+      made.agent.input(request.id, gen, {
+        kind: "mouse",
+        type: "move",
+        x: (i % 10) / 10,
+        y: 0.5,
+        button: "left",
+        clickCount: 0,
+      })
+    }
+    made.agent.input(request.id, gen, { kind: "text", text: "done-stop-6655" })
+    made.agent.answer(request.id, { outcome: "done", note: "", hide: true })
+    made.agent.stop()
+    await made.until(() => made.running.at(-1) === false)
+    made.agent.send("again")
+    await made.until(() => made.running.length === 4)
+    const write = made.shown().find((i) => i.kind === "tool" && i.name === "write_file")
+    expect(JSON.stringify(write)).toMatch(/holds a secret's value/)
+    await made.agent.close()
+  }, 60_000)
+
   it("stops a run still waiting on the keychain (a prompt the user hasn't answered)", async () => {
     const waiting = { ready: () => new Promise<void>(() => undefined) } as unknown as Secrets
     const { llm } = script([{ kind: "text", text: "never" }])

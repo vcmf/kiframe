@@ -19,6 +19,7 @@ import {
   type ApprovalRequest,
   type Box,
   knownValuesOf,
+  addKnownValues,
   StepError,
   type StepRef,
   visibleOnly,
@@ -79,6 +80,22 @@ export type UserRequest =
   | ({ kind: "approve-app" } & AppCard)
   /** Delete a page's file, or replace a whole file the agent didn't write (the file tools). */
   | { kind: "approve-file"; action: "delete" | "replace"; path: string }
+  /**
+   * The user takes the live browser for a moment (`hand_over`): `task` is the agent's words, so the
+   * card shows the page's own origin beside it (`onApp`: one of the project's apps), never only them.
+   */
+  | { kind: "handover"; task: string; doneWhen?: string; origin: string; onApp: boolean }
+
+/** The user's answer to a handover: done or not, and a note for the agent (scrubbed). */
+export interface HandoverAnswer {
+  outcome: "done" | "declined"
+  note: string
+  /** What they typed hidden from the agent from now on (the host makes it known before answering). */
+  hide: boolean
+}
+
+/** What a request is answered with: text, a yes or no, a handover's end. */
+export type UserAnswer = string | boolean | HandoverAnswer
 
 /** The shortest secret value checked in what the agent writes (`Studio.secretTest`). */
 const MIN_CHECKED = 4
@@ -139,7 +156,7 @@ export interface StudioOptions {
   /** The secrets usable on an app's exact origin (names, never values), asked app by app. */
   secrets?: (origin: string) => { name: string; provided: boolean }[]
   /** Asks the user (a dialog in the app); rejects when `signal` aborts (the dialog closes). */
-  requestUser: (request: UserRequest, signal: AbortSignal) => Promise<string | boolean>
+  requestUser: (request: UserRequest, signal: AbortSignal) => Promise<UserAnswer>
   /** Where a site's address really lands (its www. or https form), as a project's first app's. */
   resolveAddress?: (url: string) => Promise<string>
   /**
@@ -455,6 +472,90 @@ export class Studio {
       if (error instanceof LookRefusal) return { error: `couldn't look: ${error.message}` }
       return { error: "couldn't look at the page now: try again in a moment" }
     }
+  }
+
+  /**
+   * The user takes the live browser for a moment (`hand_over`): a code, a CAPTCHA, what the agent
+   * can't or shouldn't do. The agent sees nothing meanwhile (the tool runs alone: no snapshot, no
+   * look); the host makes its live view take the user's input, and adds what they type to the
+   * context's known values (scrubbed from then on). A page the user opens (a popup) becomes the
+   * live page; its closing goes back. What the agent learns: done or not, the user's note, where
+   * the page is now; its refs are gone (it snapshots again).
+   */
+  async handOver(
+    task: string,
+    doneWhen: string | undefined,
+    signal: AbortSignal,
+  ): Promise<
+    | { outcome: "done" | "declined"; note?: string; url: string; title: string; took_s: number }
+    | { error: string }
+  > {
+    const page = await this.livePage()
+    const live = this.#live
+    if (live === undefined) return { error: "there's no live page to hand over" }
+    let origin = ""
+    try {
+      // An opaque origin (about:blank, data:) is "null": said as none.
+      const own = new URL(page.url()).origin
+      origin = own === "null" ? "" : own
+    } catch {
+      // a page with no address yet: said as none
+    }
+    const started = Date.now()
+    // A page the user opens becomes the live page (the live view follows it); closed, back. Only
+    // during the handover (its handlers go with it).
+    const closers: { page: Page; back: () => void }[] = []
+    const onPage = (opened: Page) => {
+      const before = live.page
+      live.page = opened
+      const back = () => {
+        if (live.page === opened) {
+          live.page = before.isClosed() ? (this.#backPage() ?? before) : before
+        }
+      }
+      opened.once("close", back)
+      closers.push({ page: opened, back })
+    }
+    live.context.on("page", onPage)
+    let answer: UserAnswer
+    try {
+      answer = await this.options.requestUser(
+        {
+          kind: "handover",
+          task,
+          ...(doneWhen !== undefined && doneWhen.trim() !== "" && { doneWhen }),
+          origin,
+          onApp: siteOf(page.url(), this.options.config.apps) === "app",
+        },
+        signal,
+      )
+    } finally {
+      live.context.off("page", onPage)
+      for (const { page: opened, back } of closers) opened.off("close", back)
+      // Its refs are gone, stopped too (the page may be another): a new snapshot gives new ones.
+      this.#snapshot = undefined
+      this.#checked = undefined
+    }
+    // Never a new page here: a new context would forget what the user typed (made known on this one).
+    const now = this.currentPage ?? this.#backPage()
+    const title = (await now?.title().catch(() => "")) ?? ""
+    const handed = typeof answer === "object" ? answer : undefined
+    const note = handed?.note.trim() ?? ""
+    return {
+      outcome: handed?.outcome ?? "declined",
+      ...(note !== "" && { note }),
+      url: now === undefined ? "" : this.#where(now.url()),
+      title,
+      took_s: Math.round((Date.now() - started) / 1000),
+    }
+  }
+
+  /**
+   * What the user typed during a handover, known to the live context from now on (scrubbed from
+   * every read, masked in every look), whatever page is open.
+   */
+  knowTyped(values: string[]): void {
+    if (this.#live !== undefined && values.length > 0) addKnownValues(this.#live.context, values)
   }
 
   /** One text scrubbed (`scrubber`). */

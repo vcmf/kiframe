@@ -1,7 +1,7 @@
 // The open project's chat, as main folds it (main owns it; the window shows it and sends the
 // user's messages, stops and answers), and the live app's latest frame.
 import { create } from "zustand"
-import type { ChatItem, LiveFrame } from "../../shared/ipc.ts"
+import type { ChatItem, LiveFrame, ChatAnswer } from "../../shared/ipc.ts"
 import { errorMessage, upsert } from "../../shared/util.ts"
 
 import { api } from "./api.ts"
@@ -17,7 +17,7 @@ interface ChatStore {
   connect: () => () => void
   send: (text: string) => Promise<boolean>
   stop: () => void
-  answer: (id: string, answer: string | boolean) => void
+  answer: (id: string, answer: ChatAnswer) => void
 }
 
 /** The connect current (a late answer to an earlier one is dropped). */

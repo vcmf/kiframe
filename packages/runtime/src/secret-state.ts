@@ -20,6 +20,16 @@ export function knownValuesOf(context: BrowserContext): ReadonlySet<string> {
 }
 
 /**
+ * Adds values a person typed in a context's page (a handover: the agent saw nothing of it) to what
+ * the context knows: from then on they're scrubbed and masked as any secret's (for the context's
+ * life, never stored).
+ */
+export function addKnownValues(context: BrowserContext, values: Iterable<string>): void {
+  const known = secretsOf(context).values
+  for (const v of values) if (v.trim() !== "") known.add(v)
+}
+
+/**
  * The secret state of a browser context (SECRETS-DESIGN §3 A5: "while secrets are known in a
  * context"): shared by every run on it, gone with it (its handles die with the context).
  */

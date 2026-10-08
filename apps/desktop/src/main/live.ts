@@ -9,6 +9,9 @@ const FRAME_MS = 125
 /** JPEG quality of the live frames (text on the page stays legible). */
 const QUALITY = 80
 
+/** Frames' page numbers, over every live view (a new one never reuses an old one's numbers). */
+let gens = 0
+
 export class LiveView {
   readonly #page: () => Page | undefined
   readonly #send: (frame: LiveFrame) => void
@@ -19,10 +22,21 @@ export class LiveView {
   #latest: { page: Page; data: Buffer } | undefined
   #pending: ReturnType<typeof setTimeout> | undefined
   #switching: Promise<void> = Promise.resolve()
+  #gen = 0
 
   constructor(page: () => Page | undefined, send: (frame: LiveFrame) => void) {
     this.#page = page
     this.#send = send
+  }
+
+  /** The page the frames show now (a handover's input goes there). */
+  get followed(): Page | undefined {
+    return this.#followed
+  }
+
+  /** Which page the frames show now (a new one per page followed): input on an older one drops. */
+  get gen(): number {
+    return this.#gen
   }
 
   /** Follows the live page until `stop`. */
@@ -49,7 +63,9 @@ export class LiveView {
     const last = await page
       .screenshot({ type: "jpeg", quality: QUALITY, timeout: 2000 })
       .catch(() => undefined)
-    if (last !== undefined) this.#send({ jpeg: last.toString("base64"), path: pathOf(page) })
+    if (last !== undefined) {
+      this.#send({ jpeg: last.toString("base64"), path: pathOf(page), gen: this.#gen })
+    }
   }
 
   #flush(): void {
@@ -58,7 +74,7 @@ export class LiveView {
     this.#latest = undefined
     if (latest === undefined || latest.page !== this.#followed) return
     this.#lastSent = Date.now()
-    this.#send({ jpeg: latest.data.toString("base64"), path: pathOf(latest.page) })
+    this.#send({ jpeg: latest.data.toString("base64"), path: pathOf(latest.page), gen: this.#gen })
   }
 
   #follow(): void {
@@ -73,6 +89,7 @@ export class LiveView {
     if (page === this.#followed) return
     const old = this.#followed
     this.#followed = page
+    this.#gen = ++gens
     await old?.screencast.stop().catch(() => undefined)
     if (page === undefined) return
     // At the page's own size, capped (sharp on the stage, without full-size frames over IPC

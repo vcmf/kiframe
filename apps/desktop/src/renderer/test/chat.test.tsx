@@ -298,7 +298,7 @@ describe("the chat", () => {
     expect(screen.getByRole("tab", { name: "Preview" }).getAttribute("aria-selected")).toBe("true")
     act(() => {
       push("chat:running", true)
-      push("live:frame", { jpeg: "AAAA", path: "/projects" })
+      push("live:frame", { jpeg: "AAAA", path: "/projects", gen: 1 })
     })
     expect(screen.getByRole("tab", { name: /Live app/ }).getAttribute("aria-selected")).toBe("true")
     const img = screen.getByRole("img", { name: "The live app at /projects" })
@@ -313,7 +313,7 @@ describe("the chat", () => {
         items: [{ kind: "user", id: "u1", text: "earlier message" }],
         running: true,
         model: "test/model",
-        frame: { jpeg: "BBBB", path: "/projects" },
+        frame: { jpeg: "BBBB", path: "/projects", gen: 1 },
       }),
     })
     render(<App />)
@@ -328,7 +328,7 @@ describe("the chat", () => {
     await screen.findByLabelText("Message the agent")
     act(() => {
       push("chat:item", { kind: "user", id: "user-a-1", text: "project A's message" })
-      push("live:frame", { jpeg: "AAAA", path: "/a" })
+      push("live:frame", { jpeg: "AAAA", path: "/a", gen: 1 })
     })
     expect(screen.getByText("project A's message")).toBeTruthy()
     act(() => push("status", status({ hasKey: true, project: { ...project, session: "s2" } })))

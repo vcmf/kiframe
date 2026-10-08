@@ -1123,6 +1123,74 @@ ul.strip-cards > li {
 }
 
 /* ── live view ── */
+.live-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.live-frame-control {
+  cursor: default;
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 8px 24px rgba(17, 18, 20, 0.08);
+}
+
+/* Where the keyboard goes during a handover: unseen, never in the way of the frame. */
+.live-typing {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  resize: none;
+}
+
+.chip-you {
+  color: var(--accent);
+}
+
+.request-origin {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.request-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--danger, #b42318);
+  font-weight: 600;
+}
+
+.request-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.request-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.request-note {
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  resize: vertical;
+}
+
 .live-frame {
   max-width: 100%;
   max-height: 100%;

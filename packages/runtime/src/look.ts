@@ -194,12 +194,12 @@ async function bounded(page: Page, session: CDPSession, deadline: number): Promi
 
 // ── The snapshot (CDP DOMSnapshot.captureSnapshot) ───────────────────────────────────────────────
 
-interface Rare<T> {
+export interface Rare<T> {
   index: number[]
   value: T[]
 }
 
-interface SnapshotDocument {
+export interface SnapshotDocument {
   documentURL: number
   frameId: number
   scrollOffsetX?: number
@@ -213,12 +213,13 @@ interface SnapshotDocument {
     inputValue?: Rare<number>
     textValue?: Rare<number>
     contentDocumentIndex?: Rare<number>
+    backendNodeId?: number[]
   }
   layout: { nodeIndex: number[]; bounds: number[][]; text: number[] }
   textBoxes: { layoutIndex: number[]; bounds: number[][]; start: number[]; length: number[] }
 }
 
-interface Snapshot {
+export interface Snapshot {
   documents: SnapshotDocument[]
   strings: string[]
 }

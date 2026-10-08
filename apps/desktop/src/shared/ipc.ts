@@ -56,6 +56,11 @@ export interface ProjectView {
 
 /** What the agent asks the user (the studio's `UserRequest`), as the chat shows it. */
 export type ChatRequest =
+  /**
+   * The user takes the live browser for a moment: the agent's task beside the page's own origin
+   * (main's: never the agent's words alone), `onApp` when it's one of the project's apps.
+   */
+  | { kind: "handover"; task: string; doneWhen?: string; origin: string; onApp: boolean }
   | { kind: "question"; question: string }
   | { kind: "approve-risky"; scene: string; step: string; action: string }
   /** Delete a page's file, or replace a whole file the agent didn't write (the file tools). */
@@ -158,7 +163,7 @@ export type ChatItem =
       request: ChatRequest
       /** `closed`: the run stopped before the user answered. */
       state: "open" | "answered" | "closed"
-      answer?: string | boolean
+      answer?: ChatAnswer
     }
   | {
       kind: "end"
@@ -177,13 +182,73 @@ export interface ChatState {
   frame: LiveFrame | null
 }
 
-/** A frame of the live app (the agent's browser), view only. */
+/** A frame of the live app (the agent's browser), view only but during a handover. */
 export interface LiveFrame {
   /** A JPEG, base64. */
   jpeg: string
   /** The page's path (never its query: it may hold a value). */
   path: string
+  /** Which page it shows (a new one per page followed): input on an older frame is dropped. */
+  gen: number
 }
+
+/** A handover's answer: done or not, and a note for the agent. */
+export const HandoverAnswer = z.strictObject({
+  outcome: z.enum(["done", "declined"]),
+  note: z.string().max(2000),
+  /** What the user typed hidden from the agent from now on (their call: a search term isn't). */
+  hide: z.boolean(),
+})
+
+/** An answer to a request: text, a yes or no, a handover's end. */
+export type ChatAnswer = string | boolean | z.infer<typeof HandoverAnswer>
+
+/** Modifiers a key is pressed with (never held alone: AltGr/Option text stays text). */
+export const LIVE_MODIFIERS = ["Shift", "Control", "Alt", "Meta"] as const
+
+/** Keys the live view sends during a handover, each pressed once (text goes as text). */
+export const LIVE_KEYS = [
+  "Enter",
+  "Tab",
+  "Backspace",
+  "Delete",
+  "Escape",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  ..."abcdefghijklmnopqrstuvwxyz0123456789".split(""),
+] as const
+
+const Point = { x: z.number().min(0).max(1), y: z.number().min(0).max(1) }
+
+/** One input from the live view during a handover (a point: 0–1 of the frame). */
+export const LiveInput = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("mouse"),
+    type: z.enum(["move", "down", "up"]),
+    ...Point,
+    button: z.enum(["left", "right", "middle"]),
+    clickCount: z.number().int().min(0).max(3),
+  }),
+  z.strictObject({
+    kind: z.literal("wheel"),
+    ...Point,
+    dx: z.number().min(-5000).max(5000),
+    dy: z.number().min(-5000).max(5000),
+  }),
+  z.strictObject({
+    kind: z.literal("key"),
+    key: z.enum(LIVE_KEYS),
+    modifiers: z.array(z.enum(LIVE_MODIFIERS)).max(4),
+  }),
+  z.strictObject({ kind: z.literal("text"), text: z.string().min(1).max(2000) }),
+])
+export type LiveInput = z.infer<typeof LiveInput>
 
 /** What the window needs to know to show the right screen. */
 export interface AppStatus {
@@ -222,7 +287,15 @@ export const invokeArgs = {
   /** Stops the run (its tools and open requests with it). */
   "chat:stop": z.tuple([]),
   /** The user's answer to an open request (by its item id). */
-  "chat:answer": z.tuple([z.string().max(64), z.union([z.string().max(5000), z.boolean()])]),
+  "chat:answer": z.tuple([
+    z.string().max(64),
+    z.union([z.string().max(5000), z.boolean(), HandoverAnswer]),
+  ]),
+  /**
+   * The user's hands on the live app during a handover (by its request's item id, on the frame
+   * `gen` they saw): dropped unless that handover is open and the frame current.
+   */
+  "live:input": z.tuple([z.string().max(64), z.number().int().min(0), LiveInput]),
   /** The open project's secrets, app by app. */
   "secrets:list": z.tuple([]),
   /**
@@ -274,6 +347,7 @@ export interface InvokeResults {
   "chat:send": string | null
   "chat:stop": void
   "chat:answer": void
+  "live:input": void
   "secrets:list": SecretGroup[]
   /** null when done; else why not, in words. */
   "secrets:add": string | null
