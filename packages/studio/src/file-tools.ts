@@ -1,4 +1,4 @@
-import { defineTool } from "@kiframe/agent"
+import { defineTool, withImages } from "@kiframe/agent"
 import { FileRefusal } from "@kiframe/project"
 import { z } from "zod"
 import type { Studio } from "./studio.ts"
@@ -100,13 +100,13 @@ const listFiles = defineTool({
 const readFile = defineTool({
   name: "read_file",
   description:
-    "A text file of the project (story.md, pages/…, inputs/…): its text (a long one by lines: from, lines). Read a file before you change it.",
+    "A file of the project (story.md, pages/…, inputs/…): a text file's text (a long one by lines: from, lines); an image (PNG, JPEG, GIF, WebP) is shown to you. Read a file before you change it.",
   parameters: z.object({
     path,
     from: z.number().int().min(1).optional().describe("the first line (1-based)"),
     lines: z.number().int().min(1).max(2000).optional().describe("how many lines"),
   }),
-  run: (args, studio: Studio) => {
+  run: async (args, studio: Studio, signal) => {
     try {
       const range =
         args.from !== undefined || args.lines !== undefined
@@ -125,26 +125,39 @@ const readFile = defineTool({
         ) {
           const stat = studio.files.stat(args.path)
           noteRead(studio, stat.path, stat.hash, false)
-          return Promise.resolve(
-            `${error.message} (${stat.size} bytes): it can't be read, but it can be deleted (then copied anew)`,
-          )
+          return `${error.message} (${stat.size} bytes): it can't be read, but it can be deleted (then copied anew)`
         }
         throw error
       }
       if (read.kind === "image") {
-        // Its hash noted all the same (a copy over it, a delete); its bytes never sent.
-        noteRead(studio, read.path, read.hash, true)
-        return Promise.resolve(
-          `${read.path}: an image (${read.mime}, ${read.bytes.length} bytes). You can't see images yet; copy it into a page with copy_file.`,
+        // Its hash noted all the same (a copy over it, a delete). Its bytes never sent: its pixels
+        // made again. An image in pages/ may be the agent's own bytes under an image's name (text
+        // it wrote, copied in): harmless, what it writes is checked for secrets as it's written.
+        const seen = await studio.imageForModel(read.bytes, signal)
+        // Seen whole only once shown: a refused one is noted for a copy over it or a delete,
+        // never a whole replace without the user (it was never seen).
+        noteRead(studio, read.path, read.hash, !("error" in seen))
+        if ("error" in seen) {
+          return { error: `${read.path}: ${seen.error}; copy it into a page with copy_file` }
+        }
+        const { header } = seen
+        const size =
+          seen.width === header.width && seen.height === header.height
+            ? `${header.width}×${header.height} px`
+            : `${header.width}×${header.height} px, shown at ${seen.width}×${seen.height}`
+        const frames = header.animated ? ", animated: its first frame" : ""
+        return withImages(
+          `${read.path}: an image (${header.format.toUpperCase()}, ${size}${frames}), shown below`,
+          [{ url: seen.url }],
         )
       }
       noteRead(studio, read.path, read.hash, !read.partial && !read.scrubbed)
       const said = read.partial
         ? `${read.path} (lines ${range?.from ?? 1}… of ${read.lines}; part of it: read the rest by lines)`
         : `${read.path} (${read.lines} lines)`
-      return Promise.resolve(`${said}\n${read.text}`)
+      return `${said}\n${read.text}`
     } catch (error) {
-      return Promise.resolve(refused(error))
+      return refused(error)
     }
   },
 })

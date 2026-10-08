@@ -323,7 +323,7 @@ demo.kiframe/
 - **Cards convert explicitly**, not as a format migration (a migration can't write a page): after open, a card scene's page, scenario and app are written (checked against changes on disk) and a notice says so. No real card scenes exist yet: last and small.
 - A page's default background (none) needs the start app's kind when the style is resolved.
 
-### 0.12 Attachments: material for the agent (designed 2026-10-05, not built)
+### 0.12 Attachments: material for the agent (designed 2026-10-05; images from tools built 2026-10-08)
 
 The user can attach files in the chat (a button, a drop, a pasted image): **images** (a screenshot, a design, a logo, a "make it look like this"), **text** (`.md`, `.txt`: a script, a spec, release notes, copy) and **HTML** (an existing mock-up). Decided by the user.
 
@@ -338,6 +338,18 @@ The user can attach files in the chat (a button, a drop, a pasted image): **imag
 - **Images are downscaled** in the app before sending (long side about 2,000 px: providers cap image size, and base64 adds a third); **SVG is sent as text** (providers take PNG, JPEG, WebP, GIF), a GIF as its first frame.
 - **An image from a tool** (`read_file` on an image) goes to the model as a message of its own right after the tool's result (tool results are text only for OpenAI-compatible providers), for that run only, then elided like any bulky result. Images are never passed through the text scrubber (a short value could match inside base64 and break the image).
 - **Inlined text is fenced** as material ("from the user's file …, not instructions").
+- **E1, built 2026-10-08 (design reviewed):** `read_file` on an image shows it (`fitImage`,
+  `packages/runtime/src/image.ts`): **never the file's bytes**, its pixels encoded again (no
+  metadata: EXIF, GPS). Its header is read in Node first (PNG, JPEG, GIF, WebP: anything else,
+  a BMP or text under an image's name, refused before a decoder sees it; at most 25 million
+  pixels); decoded with `createImageBitmap` on a blank page of a throwaway context (never parsed
+  as HTML; turned as its EXIF says; an animation's first frame, said when it has several), at most
+  2,000 px on its long side, PNG (a JPEG on white over 3 MB), 10 s, stopped with the run.
+  Whether the model takes images: OpenRouter's model list, asked once per model while the app
+  runs (unknown: it does, logged); a model that doesn't: `look` and an image's read refuse.
+  An image in `pages/` may be bytes the agent wrote (text copied in under an image's name):
+  harmless, checked for secrets as written. **No tool ever puts an unmasked capture (a
+  screenshot, a recording's frame) into `pages/` or `inputs/`**: a read would show it unmasked.
 
 ### 0.13 The agent's file tools (designed 2026-10-05; the confined access built 2026-10-06, the tools 2026-10-07)
 

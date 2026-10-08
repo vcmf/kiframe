@@ -72,6 +72,8 @@ const look = defineTool({
       .describe("an element of the last snapshot (e.g. the drawing canvas): only it is shown"),
   }),
   run: async ({ ref }, studio: Studio, signal) => {
+    const refused = await studio.refusedImages()
+    if (refused !== undefined) return refused
     const seen = await studio.look(ref, signal)
     if ("error" in seen) return seen
     return withImages(seen.text, [{ url: seen.image }])
@@ -369,9 +371,14 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
         if (error instanceof Error) scrubbed.name = error.name
         throw scrubbed
       }
-      // A tool's images (a screenshot) are masked where they're made: only its text is scrubbed
-      // here (scrubbing an image's bytes would break it, and never hide anything in its pixels).
+      // A tool's images are made safe where they're made (a screenshot masked; a project's image
+      // file, its pixels made again: never a capture, only the user's files or bytes the agent
+      // wrote, checked as it wrote them): only its text is scrubbed here (scrubbing an image's
+      // bytes would break it, and never hide anything in its pixels).
       if (isWithImages(result)) {
+        // Every tool's images, whichever: none to a model that takes none (it would fail the run).
+        const refused = await studio.refusedImages()
+        if (refused !== undefined) return refused
         return withImages(scrubDeep(result.result, studio.scrubber()), result.images)
       }
       return scrubDeep(result, studio.scrubber())
