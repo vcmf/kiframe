@@ -1,5 +1,6 @@
 import { defineTool, withImages } from "@kiframe/agent"
 import { FileRefusal } from "@kiframe/project"
+import type { FittedImage } from "@kiframe/runtime"
 import { z } from "zod"
 import type { Studio } from "./studio.ts"
 
@@ -97,6 +98,17 @@ const listFiles = defineTool({
   },
 })
 
+/** An image as the model is shown it: its format, size (and the size shown), first frame. */
+export function imageSaid(seen: FittedImage): string {
+  const { header } = seen
+  const size =
+    seen.width === header.width && seen.height === header.height
+      ? `${header.width}×${header.height} px`
+      : `${header.width}×${header.height} px, shown at ${seen.width}×${seen.height}`
+  const frames = header.animated ? ", animated: its first frame" : ""
+  return `an image (${header.format.toUpperCase()}, ${size}${frames})`
+}
+
 const readFile = defineTool({
   name: "read_file",
   description:
@@ -140,16 +152,7 @@ const readFile = defineTool({
         if ("error" in seen) {
           return { error: `${read.path}: ${seen.error}; copy it into a page with copy_file` }
         }
-        const { header } = seen
-        const size =
-          seen.width === header.width && seen.height === header.height
-            ? `${header.width}×${header.height} px`
-            : `${header.width}×${header.height} px, shown at ${seen.width}×${seen.height}`
-        const frames = header.animated ? ", animated: its first frame" : ""
-        return withImages(
-          `${read.path}: an image (${header.format.toUpperCase()}, ${size}${frames}), shown below`,
-          [{ url: seen.url }],
-        )
+        return withImages(`${read.path}: ${imageSaid(seen)}, shown below`, [{ url: seen.url }])
       }
       noteRead(studio, read.path, read.hash, !read.partial && !read.scrubbed)
       const said = read.partial
