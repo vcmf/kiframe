@@ -76,6 +76,8 @@ export interface AgentHostOptions {
   /** The model for a run (built from the key in the keychain then). */
   llm: () => Promise<LlmClient>
   model: string
+  /** Whether the model takes images (none: it does). */
+  seesImages?: () => Promise<boolean>
   /**
    * The app's secrets, when the vault reads (asked again each time a studio is made: a vault read
    * later is picked up; none: a scene typing one fails, "no secret resolver given").
@@ -412,6 +414,7 @@ export class AgentHost {
         keepVersion: (path: string, bytes: Uint8Array) => this.#options.versions?.keep(path, bytes),
       }),
       handoversSettled: () => this.#typedKnown,
+      ...(this.#options.seesImages !== undefined && { seesImages: this.#options.seesImages }),
       stopRun: (why: string) => {
         this.#log.stopReason = why
         this.stop()
