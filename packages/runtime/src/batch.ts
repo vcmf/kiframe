@@ -139,6 +139,7 @@ export async function recordBatch(
       const page = await current.newPage()
       const take = await recordScenario(page, scene.scenario, project, {
         ...record,
+        fresh: true,
         outDir: scene.outDir,
         sceneId: scene.sceneId,
         // The values earlier scenes resolved (they share a session): a scene whose login was

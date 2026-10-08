@@ -144,6 +144,12 @@ export interface RunOptions {
   timeoutMs?: number
   /** Timeout of a `goto` navigation (page load). Default 30000 ms. */
   navigationTimeoutMs?: number
+  /**
+   * The page is a fresh browser's (a check, a recording, a batch's scene): a scene that doesn't go
+   * to a page first is opened on its start app (never run on a blank page). Never inferred from the
+   * page's URL: a page a caller built in place (`setContent`) is blank too.
+   */
+  fresh?: boolean
   /** Set by the recorder: measure targets and fields for the take (extra page round trips). */
   recording?: boolean
   /**

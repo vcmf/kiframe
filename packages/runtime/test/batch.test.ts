@@ -89,6 +89,12 @@ describe("recordBatch", () => {
     expect(logins).toBe(1)
   })
 
+  it("opens each scene's fresh browser on its start app (a scene with no goto)", async () => {
+    const home = `  - { id: home, action: expect, that: { visible: { by: role, role: link, name: Projects } } }\n`
+    const { results } = await run([[home, "[]"]])
+    expect(results.map((r) => r.ok)).toEqual([true])
+  })
+
   it("gives the session only to scenes that use it", async () => {
     const signedOut = `  - { id: out, action: expect, that: { visible: { by: text, text: Signed out, exact: true } } }\n`
     const { results, logins } = await run([

@@ -1,5 +1,5 @@
 import { firstApp, stepReference } from "@kiframe/schema"
-import type { Studio } from "./studio.ts"
+import { SCENE_STEPS, type Studio } from "./studio.ts"
 
 /** The agent's instructions for a project (the scene format, how to ground, the tools' rules). */
 export function systemPrompt(studio: Studio): string {
@@ -32,7 +32,7 @@ version: 1
 setup:        # off camera, runs first: navigation, login, making the app ready
   - { preset: <name> }                       # a project preset (see below)
   - { action: goto, url: /path }             # relative to the scene's start app
-steps:        # ON CAMERA, 5-15 steps, each with a unique kebab-case id (a caption on the ones that matter)
+steps:        # ON CAMERA, ${SCENE_STEPS.min}-${SCENE_STEPS.max} steps (most scenes 5-15), each with a unique kebab-case id (a caption on the ones that matter)
   - { id: open-new, action: click, target: <locator>, caption: "Short caption for the video" }
   - { id: send, action: click, target: <locator>, risky: true }  # risky: true on deletes/sends/pays the demo shows (the user approves)
 
@@ -57,8 +57,19 @@ Locators (prefer in this order; they must match exactly ONE visible element):
   { by: css, selector: "…" }                               # last resort
   Add "nth: <n>" (0-based, visible matches only) only when there is no better way.
 
+Craft (the video is the product: make it a demo someone would be glad to show):
+- Do it the way a person would, on camera: the real work the demo is about, never a shortcut that skips it
+  (an import, a paste, a template, a URL that jumps past the steps) unless the brief asks for one.
+- Before you save, look at the result and judge it like a designer, not only that the steps ran: things
+  aligned and evenly spaced, sizes consistent, colours that go together, text readable and not cut off,
+  nothing overlapping by accident, connectors clean (no loops, no line crossing a shape), and a final frame
+  free of leftovers (selection handles, open menus, hint overlays, a stray cursor tooltip).
+- Fix what looks off, even if it takes more steps: a careful result beats a quick one.
+
 Rules:
-- One scene = one idea, 5-15 steps. Give it a short title and a one-line brief (notes). Pick its id first:
+- One scene = one idea, usually 5-15 steps; up to ${SCENE_STEPS.max} when it builds something step by step on camera (a
+  drawing, a form filled in full): show the building, never a shortcut that skips it. Give it a short title
+  and a one-line brief (notes). Pick its id first:
   run_step's \`scene\` is that id (approvals you get while grounding are the scene's), and save_scene uses it.
 - Never invent a locator: point at the element by its ref (or take its locator from a snapshot), and run
   the step to confirm it.
@@ -87,7 +98,8 @@ Rules:
   A point (\`at\`) off screen is below the fold: scroll to it first.
 - The replay starts in a FRESH browser (no cookies, no storage): panels, sidebars and menus are in their
   default state there, whatever you left open on the live page. Steps must not rely on UI state from your
-  exploration: open what they need explicitly.
+  exploration: open what they need explicitly. It opens on the scene's start app (its URL) unless the
+  scene goes to a page first: a goto to the page the scene starts on.
 The project's files (besides its scenes, which only save_scene writes):
 - story.md: the demo's memory (audience and goal, the outline: a line per scene, decisions with the
   user, open questions), short, never a transcript. It comes with each of your runs (<project-notes>,

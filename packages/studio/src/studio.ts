@@ -119,6 +119,12 @@ type StorageState = Awaited<ReturnType<BrowserContext["storageState"]>>
 /** The session presets a saved sign-in holds: each its key (steps, apps) and where it ended. */
 type SessionPresets = Map<string, { key: string; landing: SessionLanding }>
 
+/**
+ * A scene's on-camera steps: most are 5-15 (one idea); one that builds something step by step (a
+ * drawing, a form filled in full) may take up to 50 (decided by the user, 2026-10-08).
+ */
+export const SCENE_STEPS = { min: 5, max: 50 } as const
+
 /** At most this long a run's context waits for a handover's end before it closes. */
 const SETTLE_HANDOVER_MS = 8000
 
@@ -1263,7 +1269,7 @@ export class Studio {
     }
   }
 
-  /** The scenario the agent wrote, checked: parsed, against the project, 5–15 on-camera steps. */
+  /** The scenario the agent wrote, checked: parsed, against the project, its on-camera steps' count. */
   check(yaml: string): { scenario: Scenario } | { error: string } {
     let scenario: Scenario
     try {
@@ -1285,8 +1291,10 @@ export class Studio {
     }
     const issues = checkScenarioAgainstProject(scenario, this.options.config)
     if (issues.length > 0) return { error: `invalid scenario: ${issues.join("; ")}` }
-    if (scenario.steps.length < 5 || scenario.steps.length > 15) {
-      return { error: `a scene has 5-15 on-camera steps (this one has ${scenario.steps.length})` }
+    if (scenario.steps.length < SCENE_STEPS.min || scenario.steps.length > SCENE_STEPS.max) {
+      return {
+        error: `a scene has ${SCENE_STEPS.min}-${SCENE_STEPS.max} on-camera steps (this one has ${scenario.steps.length})`,
+      }
     }
     return { scenario }
   }
@@ -1320,6 +1328,7 @@ export class Studio {
       }
       await runScenario(await context.newPage(), paced, this.options.config, {
         ...this.#run(scene, signal, "check"),
+        fresh: true,
         skipSessionPresets: reuse.skipSessionPresets,
         sessionLandings: reuse.sessionLandings,
         onSessionReady: this.#sessionHooks(),
@@ -1368,6 +1377,7 @@ export class Studio {
     try {
       recorded = await recordScenario(await context.newPage(), scenario, config, {
         ...this.#run(sceneId, signal, "record"),
+        fresh: true,
         skipSessionPresets: reuse.skipSessionPresets,
         sessionLandings: reuse.sessionLandings,
         onSessionReady: this.#sessionHooks(),

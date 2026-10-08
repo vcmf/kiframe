@@ -64,6 +64,48 @@ async function failure(
 }
 
 describe("runScenario", { timeout: 30_000 }, () => {
+  it("opens a fresh page on its start app when the scene doesn't go to a page first", async () => {
+    // No setup, a check first: on a blank page nothing is there to find.
+    const events = await run(
+      `steps:
+  - { id: on, action: expect, that: { visible: { by: role, role: link, name: Projects } } }
+`,
+      { fresh: true },
+    )
+    expect(page.url()).toBe(`${server.url}/`)
+    expect(events.filter((e) => e.kind === "navigate").map((e) => e.step.action)).toContain(
+      "open app",
+    )
+    // A setup that starts with a wait (a handover, a check) too.
+    await page.goto("about:blank")
+    await run(
+      `setup: [{ action: waitFor, until: { visible: { by: role, role: link, name: Projects } } }]
+steps: [{ id: on, action: pause, ms: 1 }]
+`,
+      { fresh: true },
+    )
+    expect(page.url()).toBe(`${server.url}/`)
+  })
+
+  it("never opens the app over a scene's own goto, nor on a page that isn't fresh", async () => {
+    const events = await run(
+      `setup: [{ action: goto, url: /projects }]
+steps: [{ id: on, action: pause, ms: 1 }]
+`,
+      { fresh: true },
+    )
+    expect(events.filter((e) => e.kind === "navigate").map((e) => e.step.action)).not.toContain(
+      "open app",
+    )
+    // A page the caller built in place is blank too (its URL): it's run as it is.
+    await page.goto("about:blank")
+    await page.setContent(`<button>Here</button>`)
+    await run(
+      `steps: [{ id: here, action: click, target: { by: role, role: button, name: Here } }]`,
+    )
+    expect(page.url()).toBe("about:blank")
+  })
+
   it("runs the documented flow: preset setup, click, type, submit, waitFor", async () => {
     const events = await run(`setup:
   - preset: open-projects

@@ -147,6 +147,35 @@ describe("studio tools", () => {
     await studio.close()
   }, 30_000)
 
+  it("checks and records a scene with no goto on its start app (never a blank page)", async () => {
+    const { studio } = makeStudio()
+    const yaml = SCENE.replace("setup: [{ action: goto, url: / }]\n", "")
+    expect(yaml).not.toMatch(/goto/)
+    expect(
+      await tool("save_scene").run({ id: "no-goto", title: "No goto", yaml }, studio, never),
+    ).toMatch(/^saved/)
+    expect(await tool("record_scene").run({ id: "no-goto" }, studio, never)).toMatch(/^recorded/)
+    await studio.close()
+  }, 60_000)
+
+  it("takes a scene of up to 50 on-camera steps (one built step by step), never more", async () => {
+    const { studio } = makeStudio()
+    const scene = (n: number) =>
+      `version: 1\nsetup: [{ action: goto, url: / }]\nsteps:\n${Array.from({ length: n }, (_, i) => `  - { id: s${i}, action: pause, ms: 1 }`).join("\n")}\n`
+    expect(
+      await tool("save_scene").run({ id: "long", title: "Long", yaml: scene(40) }, studio, never),
+    ).toMatch(/^saved/)
+    expect(
+      await tool("save_scene").run(
+        { id: "too-long", title: "Too long", yaml: scene(51) },
+        studio,
+        never,
+      ),
+    ).toMatchObject({
+      error: expect.stringMatching(/5-50 on-camera steps \(this one has 51\)/) as unknown,
+    })
+  }, 60_000)
+
   it("saves a scene only once its replay passes, then records it with its composition", async () => {
     let tidied = 0
     const { studio, dir } = makeStudio(undefined, { afterRecord: () => (tidied += 1) })
@@ -155,12 +184,12 @@ describe("studio tools", () => {
         {
           id: "tour",
           title: "Tour",
-          yaml: "version: 1\nsteps: [{ id: a, action: pause, ms: 1 }]\n",
+          yaml: "version: 1\nsetup: [{ action: goto, url: / }]\nsteps: [{ id: a, action: pause, ms: 1 }]\n",
         },
         studio,
         never,
       ),
-    ).toMatchObject({ error: expect.stringMatching(/5-15/) as unknown })
+    ).toMatchObject({ error: expect.stringMatching(/5-50/) as unknown })
     expect(
       await tool("save_scene").run(
         { id: "tour", title: "Tour", notes: "Opening projects", yaml: SCENE },
@@ -564,6 +593,9 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 150
   it("never shows a known value in the system prompt's app url", () => {
     const { studio } = makeStudio(undefined, { knownValues: () => new Set(["127.0.0.1"]) })
     expect(systemPrompt(studio)).not.toContain("127.0.0.1")
+    // A good eye: the real work on camera (never a shortcut), the result judged before saving.
+    expect(systemPrompt(studio)).toMatch(/never a shortcut that skips it/)
+    expect(systemPrompt(studio)).toMatch(/judge it like a designer/)
   })
 
   it("stops a tool's dialog when the studio closes", async () => {
