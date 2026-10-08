@@ -3,7 +3,6 @@
 import { create } from "zustand"
 import {
   ATTACHABLE,
-  ATTACHMENT_BYTES,
   type AttachedFile,
   type ChatAnswer,
   type ChatItem,
@@ -47,12 +46,17 @@ const PASTED: Record<string, string> = {
 }
 
 /**
- * A pasted image under a name of its own (the clipboard calls each one image.png): the time it was
- * pasted, so a hundred screenshots never queue for the same name.
+ * A pasted clipboard image under a name of its own (the clipboard calls each one image.png): the
+ * local time it was pasted, so a hundred screenshots never queue for the same name. A file pasted
+ * from the Finder keeps its name.
  */
 export function pastedFile(file: File, at = new Date()): File {
+  if (!file.type.startsWith("image/") || (file.name !== "" && file.name !== "image.png")) {
+    return file
+  }
   const ext = Object.hasOwn(PASTED, file.type) ? PASTED[file.type] : "png"
-  const stamp = at.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15)
+  const two = (n: number) => String(n).padStart(2, "0")
+  const stamp = `${at.getFullYear()}${two(at.getMonth() + 1)}${two(at.getDate())}-${two(at.getHours())}${two(at.getMinutes())}${two(at.getSeconds())}`
   return new File([file], `pasted-${stamp}-${Math.floor(Math.random() * 1000)}.${ext}`, {
     type: file.type,
   })
@@ -60,11 +64,14 @@ export function pastedFile(file: File, at = new Date()): File {
 
 /** Why a file can't be attached, seen before its bytes are read (main checks it again). */
 function notAttachable(file: File): string | undefined {
-  const ext = file.name.includes(".") ? file.name.slice(file.name.lastIndexOf(".") + 1) : ""
-  if (!ATTACHABLE.includes(ext.toLowerCase())) {
+  const ext = file.name.includes(".")
+    ? file.name.slice(file.name.lastIndexOf(".") + 1).toLowerCase()
+    : ""
+  const cap = Object.hasOwn(ATTACHABLE, ext) ? ATTACHABLE[ext] : undefined
+  if (cap === undefined) {
     return `${file.name}: attach images (PNG, JPEG, GIF, WebP), SVG, text (.md, .txt) or HTML`
   }
-  if (file.size > ATTACHMENT_BYTES) return `${file.name} is over 10 MB`
+  if (file.size > cap) return `${file.name} is over ${cap / (1024 * 1024)} MB`
   return undefined
 }
 

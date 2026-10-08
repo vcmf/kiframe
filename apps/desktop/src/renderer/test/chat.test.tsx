@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import type { ChatItem, ProjectView } from "../../shared/ipc.ts"
 import { App } from "../src/app.tsx"
 import { newNeedUser, thoughtFor, turns } from "../src/components/chat-column.tsx"
-import { useChat } from "../src/chat-store.ts"
+import { pastedFile, useChat } from "../src/chat-store.ts"
 import { useApp } from "../src/store.ts"
 import { status, stubApi } from "./stub-api.ts"
 
@@ -465,6 +465,26 @@ describe("attaching files (E2)", () => {
     expect(screen.queryByRole("list", { name: "Files to send" })).toBeNull()
     const textDrop = fireEvent.drop(box, { dataTransfer: { files: [], types: ["text/plain"] } })
     expect(textDrop).toBe(true)
+  })
+
+  it("keeps a pasted file's own name (copied in the Finder), and refuses a text over its size", async () => {
+    open()
+    const box = await screen.findByLabelText("Message Kif")
+    fireEvent.paste(box, {
+      clipboardData: { files: [file("brief.md", "# Brief")], types: ["Files"] },
+    })
+    expect(screen.getByText("brief.md")).toBeTruthy()
+    const page = file("export.html", "x", "text/html")
+    Object.defineProperty(page, "size", { value: 4 * 1024 * 1024 })
+    fireEvent.change(screen.getByTestId("attach-input"), { target: { files: [page] } })
+    expect((await screen.findByRole("alert")).textContent).toBe("export.html is over 0.5 MB")
+  })
+
+  it("names a pasted screenshot by the local time it was pasted", () => {
+    const at = new Date(2026, 9, 8, 9, 15, 30)
+    expect(pastedFile(file("image.png", "png", "image/png"), at).name).toMatch(
+      /^pasted-20261008-091530-\d+\.png$/,
+    )
   })
 
   it("refuses a file it can't send before reading it, and takes no drop while Kif works", async () => {

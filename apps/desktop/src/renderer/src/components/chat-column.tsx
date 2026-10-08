@@ -39,7 +39,7 @@ import {
   useRef,
   useState,
 } from "react"
-import { ATTACHABLE, type ChatItem } from "../../../shared/ipc.ts"
+import { ATTACHABLE, type ChatItem, IMAGE_ATTACHABLE } from "../../../shared/ipc.ts"
 import { pastedFile, useChat } from "../chat-store.ts"
 import { KifMark } from "./kif-mark.tsx"
 import { AgentText } from "./markdown.tsx"
@@ -140,9 +140,11 @@ export function ChatColumn() {
   // Files only (a text dragged into the composer is typed), and never while a run goes (the
   // composer shows no files then).
   const withFiles = (e: DragEvent) => [...e.dataTransfer.types].includes("Files")
+  const depth = useRef(0)
   const dropped = (e: DragEvent) => {
     if (!withFiles(e)) return
     e.preventDefault()
+    depth.current = 0
     setDropping(false)
     if (!running && e.dataTransfer.files.length > 0) attach([...e.dataTransfer.files])
   }
@@ -163,8 +165,14 @@ export function ChatColumn() {
         e.preventDefault()
         if (!running) setDropping(true)
       }}
+      // Counted (entering a child leaves its parent): the highlight holds until the drag is out.
+      onDragEnter={(e) => {
+        if (withFiles(e)) depth.current += 1
+      }}
       onDragLeave={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropping(false)
+        if (!withFiles(e)) return
+        depth.current = Math.max(0, depth.current - 1)
+        if (depth.current === 0) setDropping(false)
       }}
       onDrop={dropped}
     >
@@ -613,7 +621,9 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
 }
 
 /** What the picker offers (main checks every file again, by its content). */
-const ACCEPT = ATTACHABLE.map((e) => `.${e}`).join(",")
+const ACCEPT = Object.keys(ATTACHABLE)
+  .map((e) => `.${e}`)
+  .join(",")
 
 /** A file's size as said on its chip. */
 export function sizeSaid(bytes: number): string {
@@ -627,7 +637,8 @@ export function sizeSaid(bytes: number): string {
  * is read as text by the agent, so shown as one.
  */
 function FileIcon({ name }: { name: string }) {
-  return /\.(png|jpe?g|gif|webp)$/i.test(name) ? (
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1).toLowerCase() : ""
+  return IMAGE_ATTACHABLE.includes(ext) ? (
     <ImageSquare size={13} aria-hidden />
   ) : (
     <FileText size={13} aria-hidden />
@@ -718,10 +729,8 @@ function Composer() {
               <ul className="pending-files" aria-label="Files to send">
                 {pending.map((file, i) => (
                   <li key={`${file.name}-${i}`} className="file-chip">
-                    <FileIcon name={file.name === "" ? "pasted.png" : file.name} />
-                    <span className="file-name">
-                      {file.name === "" ? "Pasted image" : file.name}
-                    </span>
+                    <FileIcon name={file.name} />
+                    <span className="file-name">{file.name}</span>
                     <span className="file-size">{sizeSaid(file.size)}</span>
                     <button
                       type="button"

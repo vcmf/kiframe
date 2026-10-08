@@ -19,7 +19,21 @@ import { INVOKE_CHANNELS, EVENT_CHANNELS } from "./channels.ts"
  */
 export const MAX_ATTACHMENTS = 5
 export const ATTACHMENT_BYTES = 10 * 1024 * 1024
-export const ATTACHABLE = ["png", "jpg", "jpeg", "gif", "webp", "svg", "md", "txt", "html", "htm"]
+/** Each type the window may attach and its size at most (the project's `ATTACHMENT_TYPES`). */
+export const ATTACHABLE: Readonly<Record<string, number>> = {
+  png: ATTACHMENT_BYTES,
+  jpg: ATTACHMENT_BYTES,
+  jpeg: ATTACHMENT_BYTES,
+  gif: ATTACHMENT_BYTES,
+  webp: ATTACHMENT_BYTES,
+  md: 1024 * 1024,
+  txt: 1024 * 1024,
+  svg: 512 * 1024,
+  html: 512 * 1024,
+  htm: 512 * 1024,
+}
+/** Those shown to the agent as images (an SVG is read as text). */
+export const IMAGE_ATTACHABLE: readonly string[] = ["png", "jpg", "jpeg", "gif", "webp"]
 
 /** A file the user attaches: its name as the system gave it, and its bytes. */
 export interface AttachedFile {

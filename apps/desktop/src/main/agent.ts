@@ -206,7 +206,7 @@ export class AgentHost {
   state(): ChatState {
     return {
       items: [...this.#log.items],
-      running: this.#run !== undefined,
+      running: this.running,
       model: this.#options.model,
       frame: this.#frame,
     }
@@ -237,6 +237,7 @@ export class AgentHost {
         this.#options.seesImages ?? (() => Promise.resolve(true)),
       )
       if (typeof checked === "string") return checked
+      // Closed meanwhile (another send can't start: this one is sending).
       if (this.#closed) return "the project is closed"
       this.#files ??= new ProjectFiles(this.#options.project.dir)
       const written = writeAttachments(this.#files, checked)

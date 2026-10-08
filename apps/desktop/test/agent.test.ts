@@ -176,6 +176,8 @@ describe("the agent in the app", () => {
     const image = new Uint8Array(PNG.sync.write(new PNG({ width: 4, height: 4 })))
     const first = agent.send("one", [{ name: "a.png", bytes: image }])
     expect(await agent.send("two")).toBe("Kif is still working: stop it first")
+    // The window says so too (after a reload): no idle composer whose sends are refused.
+    expect(agent.state().running).toBe(true)
     release(true)
     expect(await first).toBeNull()
     await until(() => running.at(-1) === false)

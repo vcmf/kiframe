@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { EVENT_CHANNELS, INVOKE_CHANNELS } from "../src/shared/channels.ts"
-import { ATTACHMENT_TYPES, FILE_LIMITS } from "@kiframe/project"
-import { ATTACHABLE, ATTACHMENT_BYTES, invokeArgs } from "../src/shared/ipc.ts"
+import { attachmentType, ATTACHMENT_TYPES, FILE_LIMITS, FileRefusal } from "@kiframe/project"
+import { ATTACHABLE, ATTACHMENT_BYTES, IMAGE_ATTACHABLE, invokeArgs } from "../src/shared/ipc.ts"
 
 describe("the IPC contract", () => {
   it("validates every channel's arguments (the preload allows exactly these)", () => {
@@ -47,7 +47,12 @@ describe("the IPC contract", () => {
     expect(send.safeParse(["hi", [file(1, "")]]).success).toBe(false)
     // The window's limits are the project's (main checks each type's own).
     expect(ATTACHMENT_BYTES).toBe(FILE_LIMITS.imageBytes)
-    expect([...ATTACHABLE].sort()).toEqual(Object.keys(ATTACHMENT_TYPES).sort())
+    expect(ATTACHABLE).toEqual(ATTACHMENT_TYPES)
+    const images = Object.keys(ATTACHMENT_TYPES).filter((ext) => {
+      const type = attachmentType(`a.${ext}`, 1)
+      return !(type instanceof FileRefusal) && type.kind === "image"
+    })
+    expect([...IMAGE_ATTACHABLE].sort()).toEqual(images.sort())
     expect(invokeArgs["chat:answer"].safeParse(["request-1", true]).success).toBe(true)
     // A secret is added for an app by its name (main finds its origin): never an origin.
     const add = invokeArgs["secrets:add"]
