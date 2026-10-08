@@ -231,7 +231,13 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     )
     const context = browser.contexts()[0]
     if (context === undefined) throw new ElectronLaunchError("the app opened no window")
-    const page = await mainWindow(context, deadline, opts.signal)
+    const connected = browser
+    const page = await mainWindow(
+      context,
+      deadline,
+      opts.signal,
+      () => child.exitCode !== null || child.signalCode !== null || !connected.isConnected(),
+    )
     // Sealed now, from the main window alone: its own scheme (app:) or dev server (loopback).
     const launched = new Set<string>()
     const schemes = new Set<string>()
@@ -428,12 +434,15 @@ async function mainWindow(
   context: BrowserContext,
   deadline: number,
   signal: AbortSignal | undefined,
+  gone: () => boolean,
 ): Promise<Page> {
   const windows = () => context.pages().filter((p) => !isDevtools(p.url()) && !p.isClosed())
   let seen = ""
   let since = Date.now()
   for (;;) {
     signal?.throwIfAborted()
+    // Quit (or dropped its port) before showing a window: said at once, never a wait to the end.
+    if (gone()) throw new ElectronLaunchError(QUIT_EARLY)
     const now = windows()
     const key = now.map((p) => p.url()).join("\n")
     if (key !== seen) {
