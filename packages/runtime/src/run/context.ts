@@ -1,6 +1,7 @@
 import type { Action, Apps, ProjectConfig, Step } from "@kiframe/schema"
 import type { ElementHandle, Locator, Page } from "playwright"
 import { type ApprovalRequest, type SecretUse, StepError, type StepRef } from "../errors.ts"
+import type { ElectronTarget } from "../electron.ts"
 import type { HandoverRequest } from "./handover.ts"
 import type { Box, CursorPacing, Point, TypingPacing } from "../motion.ts"
 import type { NetworkTracker } from "../network.ts"
@@ -127,6 +128,11 @@ export interface RunOptions {
    * (a replay, a recording); off for a step grounded on the live page, which says where it went.
    */
   confineToApps?: boolean
+  /**
+   * The desktop app this run's page belongs to (its target, `launchElectron`): a scene starting in
+   * it runs only with it, and its pages (`allows`) are the app's own. None: no desktop app runs.
+   */
+  electron?: { app: string } & Pick<ElectronTarget, "allows" | "stopped" | "prepare">
   /** The org interrupt rules this run's config kept from the org (their approvals are the org's). */
   orgInterrupts?: { orgId: string; ruleIds: readonly string[] }
   /** Resolves an `upload` step's project asset (`<sha256>.<ext>`) to a file path. */

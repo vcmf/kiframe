@@ -2,6 +2,7 @@ import { Action, appOf, firstApp, type ProjectConfig, type SetupItem } from "@ki
 import { StepError, type StepRef } from "../errors.ts"
 import { type Ctx, guard, type SessionLanding } from "./context.ts"
 import { syncPage } from "./pages.ts"
+import { conditionOf } from "./conditions.ts"
 import { runOne } from "./step.ts"
 
 // Setup: presets inlined (session presets skipped or replaced by their landing). An `ensure` (from
@@ -43,7 +44,7 @@ export function sessionChecks(steps: readonly (Action | { ensure: unknown })[]):
  */
 export function checksSignedIn(steps: readonly (Action | { ensure: unknown })[]): boolean {
   return sessionChecks(steps).some((c) => {
-    const condition = c.action === "waitFor" ? c.until : c.action === "expect" ? c.that : undefined
+    const condition = conditionOf(c)
     return condition !== undefined && ("visible" in condition || "text" in condition)
   })
 }
@@ -70,6 +71,8 @@ export function expandSetup(
   skip: readonly string[],
   landings: Readonly<Record<string, SessionLanding>>,
   start: string,
+  /** The desktop app this run was launched in (its presets run there); none: no desktop app runs. */
+  electronApp?: string,
 ): SetupEntry[] {
   const out: SetupEntry[] = []
   // Setup indexes count actions and ensures only (`preset_done` is a marker, not a step).
@@ -85,9 +88,14 @@ export function expandSetup(
       const from = { name: item.preset, session: preset.session }
       // Its steps run in its app (the first by default): a desktop app has its own driver (next).
       const runsIn = preset.app ?? firstApp(project).name
-      if (appOf(project, runsIn)?.kind !== "web") {
+      // A desktop app's run has that one app: its presets run there, never a web app's.
+      if (
+        electronApp !== undefined ? runsIn !== electronApp : appOf(project, runsIn)?.kind !== "web"
+      ) {
         throw invalid(
-          `preset "${item.preset}" runs in "${runsIn}", a desktop app: Kiframe can't run steps in desktop apps yet (give the preset a web app: \`app:\`)`,
+          electronApp !== undefined
+            ? `preset "${item.preset}" runs in "${runsIn}": a scene in the desktop app "${electronApp}" stays in it (give the preset \`app: ${electronApp}\`)`
+            : `preset "${item.preset}" runs in "${runsIn}", a desktop app this run isn't in (give the preset a web app: \`app:\`, or start the scene in that app)`,
         )
       }
       if (preset.session && skip.includes(item.preset)) {
@@ -171,7 +179,8 @@ export async function runSetupEntry(ctx: Ctx, entry: SetupEntry): Promise<void> 
     if (entry.held !== true) {
       ctx.options.onEvent?.({ kind: "preset_done", name: entry.name, session: entry.session })
     }
-    const ready = ctx.options.onSessionReady
+    // A desktop app's sign-in isn't saved between runs yet.
+    const ready = ctx.options.electron === undefined ? ctx.options.onSessionReady : undefined
     if (entry.session && ready !== undefined) {
       // Named after the preset's last step.
       const ref: StepRef = {
