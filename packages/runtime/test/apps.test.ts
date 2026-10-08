@@ -542,9 +542,7 @@ defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
     const started = await failure(`app: notes
 steps: [{ id: a, action: pause, ms: 1 }]`)
     expect(started.reason).toBe("invalid-setup")
-    expect(started.message).toMatch(
-      /app "notes" is a desktop app: Kiframe can't run scenes in desktop apps yet/,
-    )
+    expect(started.message).toMatch(/app "notes" is a desktop app: it runs only in its own launch/)
     expect(page.url()).toBe("about:blank")
     // The web app is still its own (a desktop app never matches a page's address).
     await runScenario(

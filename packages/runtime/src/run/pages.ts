@@ -76,6 +76,22 @@ async function switchTo(ctx: Ctx, next: Page, step: StepRef): Promise<void> {
 }
 
 /**
+ * A desktop app's window made ready before the run follows it (at the scene's size: never read or
+ * filmed at its own); false when it closed meanwhile (its guard closed it: the run stays).
+ */
+async function ready(ctx: Ctx, next: Page, step: StepRef): Promise<boolean> {
+  const prepare = ctx.options.electron?.prepare
+  if (prepare === undefined) return true
+  try {
+    await prepare(next)
+    return true
+  } catch (error) {
+    if (next.isClosed()) return false
+    throw new StepError(step, "action-failed", firstLine(error), { cause: error })
+  }
+}
+
+/**
  * Brings the driven page in line with the browser, at a step boundary (the one place pages change):
  * 1. the driven page closed (a popup's "Done", an OAuth window): back to the nearest open opener;
  * 2. the LAST page opened, if it's still open once loaded, is driven from now on (and settled). If
@@ -89,6 +105,13 @@ export async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
     back ??= ctx.opened.filter((p) => !p.isClosed()).at(-1)
     if (back !== undefined) ctx.opened.splice(0)
     if (back === undefined) {
+      throw new StepError(
+        step,
+        "page-closed",
+        "the page was closed and there's no page to return to",
+      )
+    }
+    if (!(await ready(ctx, back, step))) {
       throw new StepError(
         step,
         "page-closed",
@@ -109,6 +132,7 @@ export async function syncPage(ctx: Ctx, step: StepRef): Promise<void> {
     throw new StepError(step, "action-failed", firstLine(error), { cause: error })
   }
   if (next.isClosed()) return
+  if (!(await ready(ctx, next, step))) return
   ctx.openers.push(ctx.page)
   await switchPage(ctx, next, step)
   // Settled like any page an action led to (its data may load after DOMContentLoaded).

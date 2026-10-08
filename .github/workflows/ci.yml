@@ -31,13 +31,17 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
-      - run: pnpm test:coverage
-      # The desktop app, built and launched under a virtual display. Ubuntu 24 restricts the user
-      # namespaces Chromium's sandbox needs: allowed back, so the app runs sandboxed as shipped.
+      # Ubuntu 24 restricts the user namespaces Chromium's sandbox needs: allowed back (Electron runs
+      # sandboxed as shipped). The tests run under a virtual display: the Electron target's tests
+      # launch a fixture desktop app.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: xvfb-run -a pnpm test:coverage
+        env:
+          # Slow shutdown phases of a desktop app's launch, said (the Electron target's evidence).
+          KIFRAME_ELECTRON_TIMING: "1"
+      # The desktop app, built and launched under a virtual display.
       - name: Desktop end-to-end
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          xvfb-run -a pnpm --filter @kiframe/desktop e2e
+        run: xvfb-run -a pnpm --filter @kiframe/desktop e2e
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5

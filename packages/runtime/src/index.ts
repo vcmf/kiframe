@@ -8,6 +8,14 @@ export * from "./recorder.ts"
 export * from "./runner.ts"
 export * from "./scanner.ts"
 export { type CastFrame, watchScreencast } from "./screencast.ts"
+export {
+  allowedPage,
+  type ElectronLaunch,
+  ElectronLaunchError,
+  type ElectronTarget,
+  launchElectron,
+  sweepElectronOrphans,
+} from "./electron.ts"
 export { LookRefusal, maskedScreenshot, type MaskedShot } from "./look.ts"
 export {
   fitImage,

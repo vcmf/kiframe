@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Fixture notes</title>
+  </head>
+  <body style="font-family: sans-serif">
+    <h1>Notes</h1>
+    <button
+      onclick="
+        document.getElementById('n').textContent = String(
+          Number(document.getElementById('n').textContent) + 1,
+        )
+      "
+    >
+      Add note
+    </button>
+    <p>Notes: <span id="n">0</span></p>
+    <p>Width: <span id="w"></span></p>
+    <a href="other.html">Settings</a>
+    <button onclick="window.open('other.html')">Open settings window</button>
+    <a href="file:///etc/hosts">Hosts file</a>
+    <a id="site" href="https://example.com/">A website</a>
+    <button onclick="window.open(link)">Open website window</button>
+    <a href="http://127.0.0.1:1/">A dead link</a>
+    <button onclick="location.replace(link)">Replace with website</button>
+    <button
+      onclick="
+        const w = window.open('')
+        setTimeout(() => (w.location = 'other.html'), 800)
+      "
+    >
+      Open window that loads later
+    </button>
+    <button onclick="embed('file:///etc/hosts')">Embed hosts</button>
+    <button onclick="embed('other.html')">Embed settings</button>
+    <script>
+      const w = () => (document.getElementById("w").textContent = String(innerWidth))
+      w()
+      addEventListener("resize", w)
+      const params = new URLSearchParams(location.search)
+      const link = params.get("link") ?? "https://example.com/"
+      document.getElementById("site").href = link
+      if (params.get("embed") === "1") embed(link)
+      function embed(src) {
+        const frame = document.createElement("iframe")
+        frame.src = src
+        document.body.append(frame)
+      }
+    </script>
+  </body>
+</html>

@@ -1,4 +1,5 @@
 import { firstApp, type ProjectConfig } from "@kiframe/schema"
+import { conditionOf } from "./conditions.ts"
 import type { Page } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import {
@@ -82,12 +83,39 @@ const skippedRulesOf = new WeakMap<object, Set<string>>()
 
 const exactRulesOf = new WeakMap<object, Set<string>>()
 
+/** Whether an action needs a web app's address: a goto, a wait or a check on a URL. */
+function needsAddress(action: ProjectConfig["interrupts"][number]["do"]): boolean {
+  if (action.action === "goto") return true
+  const condition = conditionOf(action)
+  return condition !== undefined && "url" in condition
+}
+
+/**
+ * Whether a rule can run in this run: in a desktop app's run, never one whose `do` goes to an
+ * address (a web app's rule: its window stays in the app), skipped with one warning.
+ */
+function runsHere(ctx: Ctx, rule: ProjectConfig["interrupts"][number]): boolean {
+  if (ctx.options.electron === undefined || !needsAddress(rule.do)) return true
+  // Said once per browser context (as other skipped rules).
+  const context = ctx.page.context()
+  const skippedRules = skippedRulesOf.get(context) ?? new Set<string>()
+  skippedRulesOf.set(context, skippedRules)
+  if (!skippedRules.has(`electron:${rule.id}`)) {
+    skippedRules.add(`electron:${rule.id}`)
+    ctx.options.onEvent?.({
+      kind: "warning",
+      message: `interrupt rule "${rule.id}" is skipped in the desktop app: it needs a web app's address`,
+    })
+  }
+  return false
+}
+
 /** The first rule (in order, not in `skip`) whose `when` is visible right now (no waiting). */
 async function matchingInterrupt(
   ctx: Ctx,
   skip: ReadonlySet<string>,
 ): Promise<ProjectConfig["interrupts"][number] | undefined> {
-  const rules = ctx.interrupts.filter((r) => !skip.has(r.id))
+  const rules = ctx.interrupts.filter((r) => !skip.has(r.id) && runsHere(ctx, r))
   // The exact-names rule (§3 A8) decided once for all the rules.
   const names = await exactNamesFor(
     ctx.page,

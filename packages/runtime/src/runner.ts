@@ -49,14 +49,34 @@ export async function runScenario(
   }
   // The scene's start app: what its steps mean when they name no app.
   const started = startAppOf(scenario, project)
-  // A desktop app is launched by its own driver (the Electron target, next): never run on a page.
-  if (started.app.kind !== "web") {
+  // A desktop app runs only in its own target (launched for the run): never on a browser page; and
+  // a target runs only its own app's scene (a web scene never in a desktop app's window).
+  if (options.electron !== undefined && options.electron.app !== started.name) {
     throw new StepError(
       { phase: "setup", index: 0, action: "setup" },
       "invalid-setup",
-      `app "${started.name}" is a desktop app: Kiframe can't run scenes in desktop apps yet`,
+      `the scene starts in "${started.name}", not in the desktop app "${options.electron.app}" it was given`,
     )
   }
+  // A desktop app's sign-in isn't kept between runs yet: its session presets run each time (a
+  // reuse asked for is refused; the hook that would save one is never called).
+  if (options.electron !== undefined && (options.skipSessionPresets?.length ?? 0) > 0) {
+    throw new StepError(
+      { phase: "setup", index: 0, action: "setup" },
+      "invalid-setup",
+      "a desktop app's sign-in isn't kept between runs yet: its session presets run each time",
+    )
+  }
+  if (started.app.kind !== "web" && options.electron === undefined) {
+    throw new StepError(
+      { phase: "setup", index: 0, action: "setup" },
+      "invalid-setup",
+      `app "${started.name}" is a desktop app: it runs only in its own launch (not on a browser page)`,
+    )
+  }
+  // What the app's guard stopped before this run (a step that failed earlier, its launch) is
+  // never this run's.
+  options.electron?.stopped()
   const start = started.name
   const setup = expandSetup(
     scenario.setup ?? [],
@@ -64,6 +84,7 @@ export async function runScenario(
     options.skipSessionPresets ?? [],
     options.sessionLandings ?? {},
     start,
+    options.electron?.app,
   )
   const settleMs = scenario.overrides?.pacing?.settleMs ?? project.defaults.pacing.settleMs
   const network = new NetworkTracker(page)
@@ -87,10 +108,17 @@ export async function runScenario(
     return tracker
   }
   const onPopup = (popup: Page) => {
+    if (opened.includes(popup)) return
     opened.push(popup)
     trackerOf(popup)
     watch(popup)
   }
+  // A desktop app's windows opened by its main process (no opener: no popup event) are followed
+  // as popups are (Preferences from a menu, the main window after a sign-in window).
+  const onAppWindow = (p: Page) => {
+    if (!p.url().startsWith("devtools://") && p !== page) onPopup(p)
+  }
+  if (options.electron !== undefined) page.context().on("page", onAppWindow)
   // Every main-frame navigation is reported (goto, redirects, links clicked…), attributed to the
   // step running at that moment.
   let current: StepRef | undefined
@@ -266,6 +294,7 @@ export async function runScenario(
     await ctx.fieldsInflight?.catch(() => undefined)
     for (const tracker of trackers.values()) tracker.dispose()
     for (const p of watched) p.off("popup", onPopup)
+    page.context().off("page", onAppWindow)
     ctx.detach(ctx.page)
   }
 }
