@@ -475,6 +475,7 @@ function start(): void {
         },
         "chat:stop": () => workspace.agent?.stop(),
         "chat:answer": (id, answer) => workspace.agent?.answer(id, answer),
+        "live:input": (id, gen, event) => workspace.agent?.input(id, gen, event),
       },
       devServer,
     )

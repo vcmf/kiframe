@@ -1513,3 +1513,64 @@ describe("look: the live page as an image", () => {
     expect(image).not.toContain("[secret]")
   }, 60_000)
 })
+
+describe("hand_over: the user takes the live browser", () => {
+  it("knows what the user typed from now on, and says a blank page as no origin", async () => {
+    let asked: UserRequest | undefined
+    const { studio } = makeStudio((request) => {
+      asked = request
+      return Promise.resolve({ outcome: "done", note: "", hide: true } as never)
+    })
+    const page = await studio.livePage()
+    await page.goto("about:blank")
+    await studio.handOver("Look", undefined, new AbortController().signal)
+    expect(asked).toMatchObject({ kind: "handover", origin: "" })
+    // An empty "done when": never shown as one.
+    await studio.handOver("Look", "  ", new AbortController().signal)
+    expect(asked).not.toHaveProperty("doneWhen")
+    // The page closed meanwhile: what was typed is known to the browser context all the same.
+    await page.close()
+    studio.knowTyped(["typed-value-9"])
+    expect(studio.scrub("x typed-value-9")).toBe("x [secret]")
+  }, 60_000)
+
+  it("never opens a new page when the one handed over closed (what was typed stays known)", async () => {
+    const { studio } = makeStudio(async () => {
+      studio.knowTyped(["closing-typed-1"])
+      await studio.currentPage!.close()
+      return { outcome: "done", note: "", hide: true } as never
+    })
+    await studio.livePage()
+    const result = await studio.handOver("Sign in", undefined, new AbortController().signal)
+    expect(result).toMatchObject({ outcome: "done", url: "" })
+    expect(studio.scrub("x closing-typed-1")).toBe("x [secret]")
+  }, 60_000)
+
+  it("returns what happened as data (declined too), follows a page the user opened, and voids the agent's refs", async () => {
+    let asked: UserRequest | undefined
+    const { studio } = makeStudio(async (request) => {
+      asked = request
+      // The user opens a popup (a sign-in window) and leaves it open.
+      const page = studio.currentPage!
+      await page.evaluate(() => window.open("about:blank#popup"))
+      await new Promise((r) => setTimeout(r, 300))
+      return { outcome: "declined", note: "no phone at hand", hide: true } as never
+    })
+    const page = await studio.livePage()
+    await page.setContent(`<button>Go</button>`)
+    const snap = await studio.snapshot()
+    expect(snap.ok).toBe(true)
+    const result = await studio.handOver("Enter the code", undefined, new AbortController().signal)
+    expect(asked).toMatchObject({ kind: "handover", task: "Enter the code", onApp: true })
+    expect(result).toMatchObject({ outcome: "declined", note: "no phone at hand" })
+    // The page the user opened is the live page now (the live view follows it).
+    expect(studio.currentPage?.url()).toBe("about:blank#popup")
+    // Refs of the snapshot before: gone.
+    const step = await studio.runStep(
+      { id: "go", action: "click", target: { ref: "e2" } },
+      "demo",
+      new AbortController().signal,
+    )
+    expect(step.ok === false && step.text).toMatch(/not a ref of the last snapshot/)
+  }, 60_000)
+})

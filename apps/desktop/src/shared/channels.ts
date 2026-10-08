@@ -13,6 +13,7 @@ export const INVOKE_CHANNELS = [
   "chat:send",
   "chat:stop",
   "chat:answer",
+  "live:input",
   "secrets:list",
   "secrets:add",
   "secrets:remove",

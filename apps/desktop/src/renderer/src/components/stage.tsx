@@ -1,9 +1,10 @@
 // The stage: Preview / Live app tabs over the well, the scene strip below. A run shows the live
 // app (view only: the agent's browser) until the user picks a tab.
-import { Browser, FilmStrip, HandPointing, Monitor } from "@phosphor-icons/react"
+import { Browser, FilmStrip, HandGrabbing, HandPointing, Monitor } from "@phosphor-icons/react"
 import { useEffect, useRef, useState } from "react"
 import type { ProjectView } from "../../../shared/ipc.ts"
 import { useChat } from "../chat-store.ts"
+import { LiveControl } from "./live-control.tsx"
 import { PreviewPlayer } from "./preview-player.tsx"
 import { SceneStrip } from "./scene-strip.tsx"
 
@@ -14,6 +15,16 @@ export function Stage({ project }: { project: ProjectView }) {
   const [selected, setSelected] = useState<string | null>(null)
   const running = useChat((s) => s.running)
   const frame = useChat((s) => s.frame)
+  // A handover open: the live app takes the user's input (and shows).
+  const handover = useChat(
+    (s) =>
+      s.items.find(
+        (i) => i.kind === "request" && i.state === "open" && i.request.kind === "handover",
+      )?.id,
+  )
+  useEffect(() => {
+    if (handover !== undefined) setTab("live")
+  }, [handover])
   // A run starting shows the agent at work (once: the user's tab is theirs after); once it has
   // ended with a scene filmed, that scene's preview. The takes before the run are read when it
   // starts, never again during it (a take saved mid-run is the run's); the scenes it filmed may
@@ -65,10 +76,16 @@ export function Stage({ project }: { project: ProjectView }) {
           live={running}
         />
         <div className="spacer" />
-        {tab === "live" && running && (
+        {tab === "live" && running && handover === undefined && (
           <span className="chip">
             <HandPointing size={13} />
             Agent driving
+          </span>
+        )}
+        {tab === "live" && handover !== undefined && (
+          <span className="chip chip-you">
+            <HandGrabbing size={13} />
+            You’re in control
           </span>
         )}
         {tab === "live" && frame !== null && <span className="stage-path mono">{frame.path}</span>}
@@ -88,7 +105,9 @@ export function Stage({ project }: { project: ProjectView }) {
             active={tab === "preview"}
           />
         )}
-        {tab === "live" && frame !== null ? (
+        {tab === "live" && frame !== null && handover !== undefined ? (
+          <LiveControl frame={frame} handover={handover} />
+        ) : tab === "live" && frame !== null ? (
           <img
             className="live-frame"
             alt={`The live app at ${frame.path}`}

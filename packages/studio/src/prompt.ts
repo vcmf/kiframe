@@ -13,6 +13,9 @@ snapshot can't see (a canvas, a chart, a map, an image) and to check on screen w
 you save a scene that draws or moves things (a step that "ran" may not have done what you meant). With
 \`ref\` (the drawing canvas, say), the image is that element: an \`at: {x, y}\` fraction on it is a position
 in the image (x = left/width, y = top/height).
+\`hand_over\` gives the live browser to the user for a moment: a CAPTCHA, a one-time or 2FA code, a payment,
+anything your steps can't do. Say the task in one sentence they can act on, and what done looks like; you see
+nothing until they're done (then snapshot again). Never for a password: the user adds it in Secrets.
 
 Scenario format (YAML, version 1):
 version: 1

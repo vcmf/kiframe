@@ -91,11 +91,27 @@ function collect(): Collected {
  * whole word (a username "admin" isn't in "administrators").
  */
 export function valuePattern(value: string, flags = "giu"): RegExp {
-  const body = value.trim().split(/\s+/).map(escapeRegExp).join("\\s*")
+  const literal = value.trim().split(/\s+/).map(escapeRegExp).join("\\s*")
+  // A number: also its digits with any separators (as written still: glued to other digits too).
+  const digits = digitsPattern(value)
+  const body = digits === undefined ? literal : `(?:${literal}|${digits})`
   return new RegExp(
     value.trim().length < 6 ? `(?<![\\p{L}\\p{N}])${body}(?![\\p{L}\\p{N}])` : body,
     flags,
   )
+}
+
+/**
+ * A number of 6 digits or more (a card, an account, a code), however it's written: its digits with
+ * any separators between them ("4242424242424242" is "4242 4242 4242 4242" and "4242-4242-…" too).
+ * Undefined for any other value (only digits and separators count: "Main St 12" isn't one).
+ */
+export function digitsPattern(value: string): string | undefined {
+  const v = value.trim()
+  if (!/^[\d\s\-./()+]+$/.test(v)) return undefined
+  const digits = v.replace(/\D/g, "")
+  if (digits.length < 6) return undefined
+  return `(?<!\\d)${[...digits].join("[\\s\\-./()+]*")}(?!\\d)`
 }
 
 /** A string as a literal in a regular expression (valid with the `u` flag too). */

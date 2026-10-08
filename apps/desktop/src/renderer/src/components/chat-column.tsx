@@ -24,6 +24,8 @@ import {
   StopCircle,
   Wrench,
   XCircle,
+  HandGrabbing,
+  Warning,
 } from "@phosphor-icons/react"
 import {
   type KeyboardEvent,
@@ -322,8 +324,77 @@ function ToolStatus({ status }: { status: ToolItem["status"] }) {
 function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> }) {
   const answer = useChat((s) => s.answer)
   const [reply, setReply] = useState("")
+  const [hide, setHide] = useState(true)
   const { request } = item
   const open = item.state === "open"
+  if (request.kind === "handover") {
+    const handed = typeof item.answer === "object" ? item.answer : undefined
+    return (
+      <div className="request-card" aria-label="Take over the browser">
+        <div className="request-title">
+          <HandGrabbing size={17} />
+          Take over the browser
+        </div>
+        <p>
+          The agent asks: <b>{request.task}</b>
+          {request.doneWhen !== undefined && <> (done when {request.doneWhen})</>}
+        </p>
+        <p className="request-origin">
+          On <span className="mono">{request.origin || "a blank page"}</span>
+          {!request.onApp && (
+            <span className="request-warn">
+              <Warning size={13} /> not one of this project’s apps
+            </span>
+          )}
+        </p>
+        {open ? (
+          <>
+            <p className="request-hint">
+              Act in the Live app: the agent sees nothing until you’re done, and nothing is filmed.
+              For a password, use Secrets. Clear anything sensitive you leave on the page before
+              Done: the agent reads the page after. Dialogs and file pickers don’t show here yet.
+            </p>
+            <textarea
+              className="request-note"
+              aria-label="A note for the agent"
+              placeholder="A note for the agent (optional)"
+              value={reply}
+              maxLength={2000}
+              onChange={(e) => setReply(e.target.value)}
+            />
+            <label className="request-check">
+              <input type="checkbox" checked={hide} onChange={(e) => setHide(e.target.checked)} />
+              Hide what I typed from the agent
+            </label>
+            <div className="request-actions">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => answer(item.id, { outcome: "declined", note: reply, hide })}
+              >
+                Can’t do it
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => answer(item.id, { outcome: "done", note: reply, hide })}
+              >
+                Done
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="request-state">
+            {item.state === "closed"
+              ? "Closed: the run stopped."
+              : handed?.outcome === "done"
+                ? "Done: back to the agent."
+                : "Couldn’t do it: back to the agent."}
+          </div>
+        )}
+      </div>
+    )
+  }
   if (request.kind === "approve-risky") {
     return (
       <div className="request-card" aria-label="Approve a risky step?">
@@ -470,7 +541,7 @@ function RequestCard({ item }: { item: Extract<ChatItem, { kind: "request" }> })
         <div className="request-state">
           {item.state === "closed"
             ? "Closed: the run stopped."
-            : `You answered: ${String(item.answer)}`}
+            : `You answered: ${typeof item.answer === "object" ? "" : String(item.answer)}`}
         </div>
       )}
     </div>

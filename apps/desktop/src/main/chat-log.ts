@@ -2,7 +2,7 @@
 // Each change gives back the items that changed; the window replaces them by id.
 import { randomBytes } from "node:crypto"
 import { type AgentEvent, isToolFailure, isToolSoftError } from "@kiframe/agent"
-import type { ChatItem, ChatRequest } from "../shared/ipc.ts"
+import type { ChatAnswer, ChatItem, ChatRequest } from "../shared/ipc.ts"
 
 const LINE_MAX = 160
 
@@ -113,14 +113,14 @@ export class ChatLog {
   }
 
   /** An answered request's answer changed after the fact (a grant that couldn't be stored). */
-  revise(id: string, answer: string | boolean): ChatItem | undefined {
+  revise(id: string, answer: ChatAnswer): ChatItem | undefined {
     const item = this.items.find((i) => i.id === id)
     if (item?.kind !== "request" || item.state !== "answered") return undefined
     return this.#put({ ...item, answer })
   }
 
   /** The request's end: answered (with the answer) or closed by the stop. */
-  settle(id: string, end: { answer: string | boolean } | "closed"): ChatItem | undefined {
+  settle(id: string, end: { answer: ChatAnswer } | "closed"): ChatItem | undefined {
     const item = this.items.find((i) => i.id === id)
     if (item?.kind !== "request" || item.state !== "open") return undefined
     // A secret's screenshot goes with the question (kept, it would sit in the chat for good).

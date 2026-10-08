@@ -14,7 +14,7 @@ import {
   type StepRef,
 } from "../errors.ts"
 import type { Box } from "../motion.ts"
-import { escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
+import { digitsPattern, escapeRegExp, scanSecretTextPartly } from "../scanner.ts"
 import { isNavigationError, viewportOf } from "../targets.ts"
 import { appAtOrigin } from "./apps.ts"
 import { type Ctx, firstLine, guard, type RegionReport, type Viewport } from "./context.ts"
@@ -552,6 +552,11 @@ function secretSources(values: Iterable<string>): string[] {
     source: escapeRegExp(v),
     length: v.length,
   }))
+  // A number however it's written (a card's digits with any separators).
+  for (const v of list) {
+    const digits = digitsPattern(v)
+    if (digits !== undefined) patterns.push({ source: digits, length: v.length })
+  }
   // Split by whitespace: the raw values only (at least 4 characters, not to eat ordinary words),
   // each character optionally followed by whitespace.
   for (const v of list) {
