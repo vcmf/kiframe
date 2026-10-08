@@ -1,11 +1,12 @@
 // The window's top: the wordmark, the project menu, the app it films.
-import { CaretDown, Export, FolderSimple, Globe, Key } from "@phosphor-icons/react"
+import { CaretDown, Export, FolderSimple, AppWindow, Globe, Key } from "@phosphor-icons/react"
 import { useCallback, useEffect, useState } from "react"
-import type { ProjectView } from "../../../shared/ipc.ts"
+import { appViewIdentity, type ProjectView } from "../../../shared/ipc.ts"
 import { api } from "../api.ts"
 import { useApp } from "../store.ts"
 import { AppsPanel } from "./apps-panel.tsx"
 import { SecretsPanel } from "./secrets-panel.tsx"
+import { appLabel } from "../../../shared/util.ts"
 
 export function TitleBar() {
   const status = useApp((s) => s.status)
@@ -39,7 +40,7 @@ export function TitleBar() {
 }
 
 /** The first app's host, as a button opening the apps panel (with how many more there are). */
-function AppsButton({ project }: { project: Pick<ProjectView, "session" | "apps" | "url"> }) {
+function AppsButton({ project }: { project: Pick<ProjectView, "session" | "apps"> }) {
   const [open, setOpen] = useState(false)
   const close = useCallback(() => setOpen(false), [])
   const more = project.apps.length - 1
@@ -48,11 +49,11 @@ function AppsButton({ project }: { project: Pick<ProjectView, "session" | "apps"
       <button
         type="button"
         className="chip chip-button"
-        title={project.apps.map((a) => `${a.name}: ${a.origin}`).join("\n")}
+        title={project.apps.map((a) => `${a.name}: ${appViewIdentity(a)}`).join("\n")}
         onClick={() => setOpen(true)}
       >
-        <Globe size={13} />
-        {hostOf(project.url)}
+        {project.apps[0]?.kind === "electron" ? <AppWindow size={13} /> : <Globe size={13} />}
+        {project.apps[0] === undefined ? "" : appLabel(project.apps[0])}
         {more > 0 && <span className="chip-more">+{more}</span>}
       </button>
       {open && <AppsPanel project={project} onClose={close} />}
@@ -131,12 +132,4 @@ function ProjectMenu({ name }: { name: string }) {
       )}
     </div>
   )
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host
-  } catch {
-    return url
-  }
 }

@@ -4,7 +4,7 @@ import { EXACT_NAMES_HINT, ProbeRefusal } from "../secret-state.ts"
 import type { Locator as SchemaLocator } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { countUnderRule, describeLocator, documentOf } from "../targets.ts"
-import { appNamed } from "./apps.ts"
+import { webAppNamed } from "./apps.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
 // Conditions for `waitFor` / `expect`, and URL matching.
@@ -49,7 +49,7 @@ export async function waitForCondition(
       })
     } else if ("url" in condition) {
       // Relative to the app it names, else the one its step means.
-      const app = appNamed(ctx.apps, condition.app ?? ctx.app, step)
+      const app = webAppNamed(ctx.apps, condition.app ?? ctx.app, step, "a URL condition")
       const expected = new URL(condition.url, app.url)
       await page.waitForURL((url) => urlMatches(url, expected), { timeout })
     } else if (!(await ctx.network.waitForIdle(timeout))) {

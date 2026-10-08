@@ -1,6 +1,6 @@
 import { defineTool, isWithImages, type Tool, withImages } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
-import { AppName, firstApp, RuleName, SceneId } from "@kiframe/schema"
+import { AppName, firstApp, RuleName, SceneId, webAppsOf } from "@kiframe/schema"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { fileTools } from "./file-tools.ts"
@@ -232,8 +232,9 @@ const listSecrets = defineTool({
     "Names of the secrets the user provided (never their values), each with the app it's typed on.",
   parameters: z.object({}),
   run: (_args, studio: Studio) => {
-    // App by app (each its exact origin): a secret is typed only on its own app.
-    const apps = Object.entries(studio.options.config.apps)
+    // App by app (each its exact origin): a secret is typed only on its own app; a desktop app
+    // takes none (the user signs in by hand).
+    const apps = Object.entries(webAppsOf(studio.options.config.apps))
     const secrets = apps.flatMap(([app, { url }]) =>
       (studio.options.secrets?.(new URL(url).origin) ?? []).map((s) => ({ ...s, app })),
     )

@@ -14,7 +14,7 @@ import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
 import { DEFAULT_MODEL, imageInput, modelConfig } from "./model.ts"
 import {
-  appOriginOf,
+  secretOriginOf,
   appRemovalRefused,
   newProjectDir,
   projectFileName,
@@ -201,8 +201,9 @@ function start(): void {
     if (takes === undefined) throw new Error("the app isn't ready yet")
     return { registry, takes }
   }
-  /** One of the open project's apps for the window's request (`appOriginOf`). */
-  const appOrigin = (session: string, app: string) => appOriginOf(workspace.apps(), session, app)
+  /** A secret's origin: a web app's (a desktop app takes none). */
+  const secretOrigin = (session: string, app: string) =>
+    secretOriginOf(workspace.apps(), session, app)
 
   /**
    * The open project and its agent, switched as one. An agent's events reach the window only while
@@ -394,14 +395,16 @@ function start(): void {
         "secrets:list": async () => {
           const secrets = vault()
           await secrets.ready()
-          return (workspace.apps()?.apps ?? []).map(({ name, origin }) => ({
+          // Web apps only: a desktop app takes no secrets.
+          const apps = (workspace.apps()?.apps ?? []).filter((a) => a.kind === "web")
+          return apps.map(({ name, origin }) => ({
             app: name,
             origin,
             secrets: secrets.list(origin),
           }))
         },
         "secrets:add": async ({ session, app, ...form }) => {
-          const at = appOrigin(session, app)
+          const at = secretOrigin(session, app)
           if ("why" in at) return at.why
           try {
             await vault().add(form, at.origin)
@@ -412,7 +415,7 @@ function start(): void {
           }
         },
         "secrets:remove": async ({ session, app, name }) => {
-          const at = appOrigin(session, app)
+          const at = secretOrigin(session, app)
           if ("why" in at) return at.why
           try {
             await vault().remove(name, at.origin)
@@ -421,12 +424,12 @@ function start(): void {
             return message(e)
           }
         },
-        "apps:remove": async ({ session, name, origin }) => {
+        "apps:remove": async ({ session, name, identity }) => {
           // Checked before asking and again after (the dialog waits on the user meanwhile).
           const refused = () =>
             appRemovalRefused(
               workspace.apps(),
-              { session, name, origin },
+              { session, name, identity },
               workspace.agent?.running === true,
             )
           const before = refused()
@@ -446,7 +449,7 @@ function start(): void {
               : ` ${rules.length === 1 ? "The interrupt rule" : "The interrupt rules"} ${rules.map((r) => `“${r}”`).join(", ")} ${rules.length === 1 ? "goes" : "go"} there: ${rules.length === 1 ? "it" : "they"} will fail until changed.`
           const { response } = await dialog.showMessageBox(parent(), {
             type: "warning",
-            message: `Remove ${name} (${origin}) from the project?`,
+            message: `Remove ${name} (${identity}) from the project?`,
             detail:
               (uses.length === 0
                 ? "No scene uses it. Its saved secrets stay; its approvals in this project go."
@@ -462,8 +465,10 @@ function start(): void {
           if (after !== null || workspace.opened !== opened) return after ?? "the project changed"
           // This project's approvals on that site go first (the secrets stay: other projects may
           // use them): a failure below leaves the app with its approvals asked again, never kept.
+          // A desktop app has none (it takes no secrets).
+          const removed = workspace.apps()?.apps.find((a) => a.name === name)
           try {
-            vault().revokeAt(ids().scope(opened.dir), origin)
+            if (removed?.kind === "web") vault().revokeAt(ids().scope(opened.dir), removed.origin)
           } catch (e) {
             return `not removed: its approvals couldn't be revoked: ${message(e)}`
           }

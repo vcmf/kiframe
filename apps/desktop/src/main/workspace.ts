@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { createProject, openProject, type OpenedProject } from "@kiframe/project"
 import type { ProjectView } from "../shared/ipc.ts"
-import { projectView } from "./project.ts"
+import { appView, projectView } from "./project.ts"
 
 /** What the workspace needs of an agent. */
 export interface Agent {
@@ -44,10 +44,7 @@ export class Workspace<A extends Agent> {
     if (this.#opened === null) return undefined
     return {
       session: this.#session,
-      apps: Object.entries(this.#opened.project.apps).map(([name, app]) => ({
-        name,
-        origin: new URL(app.url).origin,
-      })),
+      apps: Object.entries(this.#opened.project.apps).map(([name, app]) => appView(name, app)),
     }
   }
 

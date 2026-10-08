@@ -48,7 +48,16 @@ export async function runScenario(
     )
   }
   // The scene's start app: what its steps mean when they name no app.
-  const start = startAppOf(scenario, project).name
+  const started = startAppOf(scenario, project)
+  // A desktop app is launched by its own driver (the Electron target, next): never run on a page.
+  if (started.app.kind !== "web") {
+    throw new StepError(
+      { phase: "setup", index: 0, action: "setup" },
+      "invalid-setup",
+      `app "${started.name}" is a desktop app: Kiframe can't run scenes in desktop apps yet`,
+    )
+  }
+  const start = started.name
   const setup = expandSetup(
     scenario.setup ?? [],
     project,

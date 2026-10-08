@@ -1,4 +1,4 @@
-import { firstApp, stepReference } from "@kiframe/schema"
+import { type App, firstApp, stepReference } from "@kiframe/schema"
 import { SCENE_STEPS, type Studio } from "./studio.ts"
 
 /** The agent's instructions for a project (the scene format, how to ground, the tools' rules). */
@@ -118,6 +118,11 @@ Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
 ${appsPart(studio)}`
 }
 
+/** An app as the agent reads it: its address, or the desktop app it is. */
+function appSaid(app: App): string {
+  return app.kind === "web" ? app.url : `the desktop app ${app.bundleId}`
+}
+
 /**
  * The project's apps: one app said as before; several, with the rule a step on another app follows.
  * Either way, how a site the scene needs is added (add_app, the user approves).
@@ -128,13 +133,18 @@ function appsPart(studio: Studio): string {
   host: an identity provider is its own app): add it with \`add_app\` (the user approves; one line why).
   A step that ends on any other site fails in the replay. Never add a site to get around a refusal.`
   if (apps.length === 1) {
-    return `App: ${studio.scrub(firstApp(studio.options.config).app.url)}\n${adding}`
+    return `App: ${studio.scrub(appSaid(firstApp(studio.options.config).app))}\n${adding}`
   }
   const list = apps
-    .map(([name, app], i) => `  ${name}: ${studio.scrub(app.url)}${i === 0 ? " (the first)" : ""}`)
+    .map(
+      ([name, app], i) =>
+        `  ${name}: ${studio.scrub(appSaid(app))}${i === 0 ? " (the first)" : ""}`,
+    )
     .join("\n")
   return `Apps of the project (a scene may use several; never any other site):
 ${list}
+- A desktop app (one listed as "the desktop app …") can't be grounded or run yet: give every scene
+  and preset a web app (\`app: <name>\` when the first app is a desktop one).
 - A scene starts in the first app unless it says another at the top level, next to version:
   \`app: <name>\`. Pass the same as \`start_app\` to run_step and run_steps while you ground it.
 - A step without an app means the scene's start app, NEVER the app the page went to (a link, a

@@ -44,6 +44,19 @@ export interface AttachedFile {
 /** An app's name as the project writes it (`AppName`'s form; main looks it up in the project). */
 const AppName = z.string().regex(/^[a-z][a-z0-9_-]{0,39}$/)
 
+/**
+ * An app of the project as the window shows it: a web app by its exact origin (main's: never derived
+ * here), a desktop app by its bundle id.
+ */
+export type AppView =
+  | { name: string; kind: "web"; origin: string }
+  | { name: string; kind: "electron"; bundleId: string }
+
+/** What an app is, as one string (its exact origin, or its bundle id): an app removed is that one. */
+export function appViewIdentity(app: AppView): string {
+  return app.kind === "web" ? app.origin : app.bundleId
+}
+
 /** A scene as the window shows it (the scene strip). */
 export interface SceneView {
   id: string
@@ -74,10 +87,8 @@ export interface ProjectView {
   name: string
   /** The folder (shown in the title bar's menu; never sent back by the window to open it). */
   dir: string
-  /** The app its scenes start in (the project's first). */
-  url: string
   /** Every app of the project, in order, with its exact origin (main's: never derived here). */
-  apps: { name: string; origin: string }[]
+  apps: AppView[]
   scenes: SceneView[]
   /** Parts that didn't read (shown, never hidden). */
   problems: string[]
@@ -382,7 +393,7 @@ export const invokeArgs = {
    * the origin the window shows (refused when the project's app by that name is another now).
    */
   "apps:remove": z.tuple([
-    z.strictObject({ session: z.string().max(64), name: AppName, origin: z.string().max(2048) }),
+    z.strictObject({ session: z.string().max(64), name: AppName, identity: z.string().max(2048) }),
   ]),
   /** A scene of the open project, to play (its id, checked against the project in main). */
   "preview:open": z.tuple([z.string().min(1).max(200)]),
