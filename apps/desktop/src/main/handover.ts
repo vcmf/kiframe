@@ -23,6 +23,7 @@ export class Handover {
   #queue: Promise<void> = Promise.resolve()
   #waiting = 0
   #closed = false
+  #closing: Promise<string[]> | undefined
   /** The mouse buttons held, per page (Playwright's mouse is a page's). */
   readonly #buttons = new Map<Page, Set<"left" | "right" | "middle">>()
   /** Text typed since the last key that isn't text (a run: one field's value, most likely). */
@@ -70,7 +71,13 @@ export class Handover {
    * the user typed: the fields they changed (`typedValues`), and their keystroke runs and words
    * (a value they typed then cleared, a field that couldn't be read).
    */
-  async close(): Promise<string[]> {
+  close(): Promise<string[]> {
+    // Once (Done then Stop, or the reverse: the same end).
+    this.#closing ??= this.#close()
+    return this.#closing
+  }
+
+  async #close(): Promise<string[]> {
     this.#closed = true
     // Bounded: a page too busy to take its queued input never holds the agent, or the app's close.
     await Promise.race([this.#queue, new Promise((r) => setTimeout(r, CLOSE_MS))])

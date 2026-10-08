@@ -131,6 +131,7 @@ export async function runScenario(
     hideCss: hide.css,
     interruptsDone: new WeakMap(),
     inInterrupt: false,
+    handingOver: false,
     apps: project.apps,
     app: start,
     startApp: start,
@@ -259,6 +260,7 @@ export type { RunnerEvent, RunOptions } from "./run/context.ts"
 export { firstLine } from "./run/context.ts"
 export { urlMatches } from "./run/conditions.ts"
 export { pathOnly, scrubSecrets, secretMatcher, secretScrubber } from "./run/secrets.ts"
+export type { HandoverRequest } from "./run/handover.ts"
 
 /** The parts of a scene that never run any more: its `teardown`, its `ensure`s and its presets'. */
 function ignoredParts(scenario: Scenario, project: ProjectConfig): string[] {

@@ -27,6 +27,7 @@ import type { ReadTimes, RegionReport } from "./run/context.ts"
 import { placed as placeBox } from "./run/secrets.ts"
 import { firstLine, runScenario, type RunnerEvent, type RunOptions } from "./runner.ts"
 import { viewportOf } from "./targets.ts"
+import { watchScreencast } from "./screencast.ts"
 import { now } from "./clock.ts"
 
 // The recorder (docs/OBJECT-MODEL.md §3): replays a scenario through the runner while capturing the
@@ -137,11 +138,14 @@ export async function recordScenario(
     // Which capture is current (T4): a page's frames arriving after the capture left it are dropped,
     // and the next page's count from the switch.
     let generation = 0
+    /** A handover under way: frames are dropped (nothing the user does is filmed). */
+    let handingOver = false
     let switchedAt = 0
     let lastFrameT = 0
     function onFrame({ data, timestamp }: { data: Buffer; timestamp: number }, of: number) {
-      // After stop (or a failed stop), late frames are ignored: they'd never be awaited.
-      if (stopped || of !== generation) return
+      // After stop (or a failed stop), late frames are ignored: they'd never be awaited. During a
+      // handover, none is kept (nothing the user does is filmed).
+      if (stopped || of !== generation || handingOver) return
       const file = `frame-${String(frames.length).padStart(6, "0")}.jpg`
       // Asynchronous: a synchronous write per frame (~60/s) would stall the cursor and typing loops.
       pendingWrites.push(track(writeFile(join(framesDir, file), data)))
@@ -168,16 +172,17 @@ export async function recordScenario(
     }
     // The page being filmed: the runner may follow a tab or popup (and come back), the capture
     // follows it on the same clock (frame timestamps are epoch milliseconds whatever the page).
-    let capturing = page
-    await capturing.screencast.start(castOptions)
+    // Through the shared screencast (the live view may show the same page: a handover).
+    const watch = (on: Page, size: { width: number; height: number }, of: number) =>
+      watchScreencast(on, { size, quality: castOptions.quality ?? 85 }, (f) => onFrame(f, of))
+    let unwatch = await watch(page, castOptions.size!, 0)
     const onPageSwitch = async (next: Page) => {
       // Frames before now show the previous page: a region of this one starts here at the earliest.
       // After every frame of the page it leaves (one drawn within this millisecond, already kept):
       // the next page's frames come after it, and a left region lasts past it.
       switchedAt = Math.max(at(), lastFrameT + 0.001)
       const of = ++generation
-      await capturing.screencast.stop().catch(() => undefined)
-      capturing = next
+      await unwatch()
       // The next step's shot must be of this page, not the last frame of the previous one.
       lastFrame = undefined
       // A popup opened at its own size: rects and the capture size follow it (the take warns
@@ -185,15 +190,10 @@ export async function recordScenario(
       current = await viewportOf(next).catch(() => current)
       // A popup that closed right after loading: nothing to film (the runner returns to its
       // opener at the next step boundary).
-      await next.screencast
-        .start({
-          ...castOptions,
-          onFrame: (f) => onFrame(f, of),
-          size: await castSize(next, current),
-        })
-        .catch((error: unknown) => {
-          if (!next.isClosed()) throw error
-        })
+      unwatch = await watch(next, await castSize(next, current), of).catch((error: unknown) => {
+        if (!next.isClosed()) throw error
+        return () => Promise.resolve()
+      })
     }
 
     // ── events ──
@@ -381,12 +381,32 @@ export async function recordScenario(
           await onPageSwitch(next)
           await options.onPageSwitch?.(next)
         },
+        // A handover (setup only): nothing the user does is filmed. Its frames are dropped from
+        // before the user is asked until after the step's end scans (the screencast goes on: the
+        // live view shows it to the user meanwhile); the gap holds the last frame (setup is cut
+        // from the video anyway).
+        onHandover: async (phase, on) => {
+          if (phase === "start") {
+            handingOver = true
+          } else {
+            switchedAt = Math.max(at(), lastFrameT + 0.001)
+            lastFrame = undefined
+            handingOver = false
+            // The page as it is now: a still page sends no frame of its own (the video would hold
+            // the one from before the handover into the steps).
+            const shot = await on
+              .screenshot({ type: "jpeg", quality: castOptions.quality ?? 85, timeout: 5000 })
+              .catch(() => undefined)
+            if (shot !== undefined) onFrame({ data: shot, timestamp: Date.now() }, generation)
+          }
+          await options.onHandover?.(phase, on)
+        },
       })
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error))
     }
     stopped = true
-    await capturing.screencast.stop().catch(() => undefined)
+    await unwatch().catch(() => undefined)
     // Capture time, not disk-flush time.
     const durationMs = Math.max(at(), frames.at(-1)?.t ?? 0)
 

@@ -40,7 +40,8 @@ export async function runOne(
     // The action closed its own page (a "Done" button calling window.close()): Playwright can end
     // the click with "Target page … has been closed" as the close lands. It did what it should:
     // syncPage goes back to the opener (or says there's none).
-    if (!on.isClosed()) throw error
+    // Never a handover's (declined, stopped): its page closing is no success.
+    if (!on.isClosed() || action.action === "handover") throw error
   }
   // Settle after actions that act on the app (not after pauses and checks). The extra `settleMs`
   // pacing is a presentation choice: on camera only. A page the action closed has nothing to settle.
@@ -54,6 +55,11 @@ export async function runOne(
     await followSecretFields(ctx, step)
     // The page as the step left it: not a scan that started earlier in the step.
     await followSecretText(ctx, step, true)
+  }
+  // A handover's capture starts again only now: what the user typed, followed by the scans first.
+  if (ctx.handingOver) {
+    ctx.handingOver = false
+    await guard(step, async () => ctx.options.onHandover?.("end", ctx.page))
   }
   ctx.throwListenerError()
   ctx.options.onEvent?.({ kind: "step_end", step })

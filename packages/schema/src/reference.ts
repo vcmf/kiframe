@@ -105,6 +105,12 @@ export const ACTION_REFERENCE: Record<ActionKind, { what: string; forms: string[
     what: "a presentation beat (only for pacing, never to wait for the app)",
     forms: ["{ id: beat, action: pause, ms: 800 }"],
   },
+  handover: {
+    what: "setup only: the user does a part themselves (a code at sign-in, a CAPTCHA); the run waits for them, nothing they do is filmed",
+    forms: [
+      '{ action: handover, task: "Enter the 6-digit code from your authenticator app", done_when: "the dashboard shows" }',
+    ],
+  },
 }
 
 /**

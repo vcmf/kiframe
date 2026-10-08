@@ -1574,3 +1574,85 @@ describe("hand_over: the user takes the live browser", () => {
     expect(step.ok === false && step.text).toMatch(/not a ref of the last snapshot/)
   }, 60_000)
 })
+
+describe("a handover step in a scene's setup", () => {
+  const scenario = () =>
+    parseScenarioYaml(`version: 1
+setup:
+  - { action: goto, url: / }
+  - { action: handover, task: "Enter the code", done_when: "the page shows" }
+steps:
+  - { id: look, action: pause, ms: 100 }
+`)
+
+  it("asks the user while checking the scene, on the check's own page; what they typed stays hidden after", async () => {
+    let asked: UserRequest | undefined
+    let handed: string | undefined
+    const { studio } = makeStudio((request) => {
+      asked = request
+      handed = studio.handoverPage?.url()
+      // The host made what the user typed known (it does so before answering).
+      studio.knowTyped(["typed-in-check-1"])
+      return Promise.resolve({ outcome: "done", note: "", hide: true } as never)
+    })
+    const live = await studio.livePage()
+    expect(await studio.replay(scenario(), "demo", new AbortController().signal)).toBe("ok")
+    expect(asked).toMatchObject({
+      kind: "handover",
+      where: "check",
+      scene: "demo",
+      task: "Enter the code",
+    })
+    // The check's page, not the live one; gone with it.
+    expect(handed).toBe(`${server.url}/`)
+    expect(studio.handoverPage).toBeUndefined()
+    expect(studio.currentPage).toBe(live)
+    // Its context closed: the value stays known for the studio's life (a new live context too).
+    expect(studio.scrub("x typed-in-check-1")).toBe("x [secret]")
+    await live.context().close()
+    await studio.livePage()
+    expect(studio.scrub("x typed-in-check-1")).toBe("x [secret]")
+  }, 60_000)
+
+  it("closes a stopped check's browser only once the handovers settled (what was typed read first)", async () => {
+    let open: boolean | undefined
+    let handed: import("playwright").Page | undefined
+    const stop = new AbortController()
+    const { studio } = makeStudio(
+      () => {
+        handed = studio.handoverPage
+        // The stop comes while the user is at it (a host's dialog rejects on it).
+        const stopped = new Promise((_, reject) => {
+          stop.signal.addEventListener("abort", () => reject(new Error("stopped")))
+        })
+        setTimeout(() => stop.abort(), 50)
+        return stopped as never
+      },
+      {
+        handoversSettled: async () => {
+          await new Promise((r) => setTimeout(r, 300))
+          open = handed !== undefined && !handed.isClosed()
+        },
+      },
+    )
+    await studio.replay(scenario(), "demo", stop.signal).catch(() => undefined)
+    expect(open).toBe(true)
+  }, 60_000)
+
+  it("fails the check clearly when the user can't do it", async () => {
+    const { studio } = makeStudio(() =>
+      Promise.resolve({ outcome: "declined", note: "my phone is dead", hide: true } as never),
+    )
+    const said = await studio.replay(scenario(), "demo", new AbortController().signal)
+    expect(said).toMatch(/handover-declined/)
+    // Their note: why (the agent asks again knowing it).
+    expect(said).toMatch(/my phone is dead/)
+    // Written on camera: said where it goes (an id would never do).
+    const step = await studio.runStep(
+      { action: "handover", task: "Enter the code" },
+      "demo",
+      new AbortController().signal,
+    )
+    expect(step.ok === false && step.text).toMatch(/a handover goes in the setup/)
+  }, 60_000)
+})

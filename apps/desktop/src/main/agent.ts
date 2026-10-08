@@ -13,7 +13,7 @@ import {
   studioTools,
   systemPrompt,
 } from "@kiframe/studio"
-import type { Browser } from "playwright"
+import type { Browser, BrowserContext, Page } from "playwright"
 import { type ApprovalRequest, formValues, type SecretUse } from "@kiframe/runtime"
 import type {
   ChatAnswer,
@@ -154,6 +154,10 @@ export class AgentHost {
   #handover: Handover | undefined
   /** Every handover's typed values made known (a run, and the close, wait for it). */
   #typedKnown: Promise<void> = Promise.resolve()
+  /** The browser context a handover open is on (its pages only take the user's input). */
+  #handoverContext: BrowserContext | undefined
+  /** Each handover's end, by its request's id (once each). */
+  readonly #ending = new Map<string, Promise<void>>()
   #run: { controller: AbortController; done: Promise<void> } | undefined
   readonly #pending = new Map<string, Pending>()
   /** The streaming text item: sent, and its newer version (if any) waiting for the timer. */
@@ -233,23 +237,51 @@ export class AgentHost {
   input(id: string, gen: number, event: LiveInput): void {
     const handover = this.#handover
     if (handover?.id !== id || this.#live?.gen !== gen) return
+    // Only on the handover's own browser, once the live view shows its page (never another).
+    const followed = this.#live?.followed
+    if (followed === undefined || followed.context() !== this.#handoverContext) return
     handover.input(event)
+  }
+
+  /**
+   * The page the live view shows: a handover open, its browser's page handed over (else its latest
+   * still open: never the agent's other one); else the live one.
+   */
+  #handoverView(studio: Studio): Page | undefined {
+    const context = this.#handoverContext
+    if (this.#handover === undefined || context === undefined) return studio.currentPage
+    const handed = studio.handoverPage ?? studio.currentPage
+    if (handed !== undefined && handed.context() === context) return handed
+    return context
+      .pages()
+      .filter((p) => !p.isClosed())
+      .at(-1)
   }
 
   /** The handover ends: input stops, what was held released, what was typed scrubbed from now on. */
   #endHandover(id: string, hide = true): Promise<void> {
+    // Ended once (Done then Stop: the user's choice holds, never a second end).
+    const ending = this.#ending.get(id)
+    if (ending !== undefined) return ending
     const handover = this.#handover
     if (handover?.id !== id) return Promise.resolve()
-    this.#handover = undefined
     const done = (async () => {
       try {
+        // Its input drained and its fields read on the page handed over (still the one the
+        // live view follows).
         const typed = await handover.close()
         // Hidden unless the user said not to (a stop says nothing: hidden).
         if (hide) this.#studio?.knowTyped(typed)
       } catch {
         // never a run, or the close, stuck on it (the reads are bounded; a failure: what was read)
+      } finally {
+        if (this.#handover === handover) {
+          this.#handover = undefined
+          this.#handoverContext = undefined
+        }
       }
     })()
+    this.#ending.set(id, done)
     // Every run and the close wait for every handover's end (one never replaces another).
     this.#typedKnown = Promise.all([this.#typedKnown, done]).then(() => undefined)
     return done
@@ -276,7 +308,8 @@ export class AgentHost {
       await untilStopped(this.#options.secrets?.()?.ready() ?? Promise.resolve(), signal)
       const llm = await this.#options.llm()
       this.#live ??= new LiveView(
-        () => studio.currentPage,
+        // A handover open: its browser's page handed over, else the live one.
+        () => this.#handoverView(studio),
         (frame) => {
           this.#frame = frame
           this.#notify("frame", frame)
@@ -377,6 +410,7 @@ export class AgentHost {
       ...(this.#options.versions !== undefined && {
         keepVersion: (path: string, bytes: Uint8Array) => this.#options.versions?.keep(path, bytes),
       }),
+      handoversSettled: () => this.#typedKnown,
       stopRun: (why: string) => {
         this.#log.stopReason = why
         this.stop()
@@ -425,10 +459,19 @@ export class AgentHost {
     // A handover: the live app takes the user's input until it's answered or stopped.
     if (request.kind === "handover") {
       // The page the live view shows (the frame the user acts on), never one it hasn't shown yet.
-      const context = this.#studio?.currentPage?.context()
+      const studio = this.#studio
+      const context = (studio?.handoverPage ?? studio?.currentPage)?.context()
+      // The handover's own browser (a check's, a recording's, the live one): its pages only, never
+      // the agent's other one (a page closing, a stop: never a fall back to it).
+      this.#handoverContext = context
+      // The live view onto the page handed over at once (input waits until it shows it).
+      queueMicrotask(() => void this.#live?.sync().catch(() => undefined))
       this.#handover = new Handover(
         item.id,
-        () => this.#live?.followed,
+        () => {
+          const followed = this.#live?.followed
+          return followed !== undefined && followed.context() === context ? followed : undefined
+        },
         () => (context === undefined ? Promise.resolve([]) : formValues(context)),
       )
     }

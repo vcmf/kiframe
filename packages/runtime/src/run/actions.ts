@@ -1,4 +1,5 @@
 import { isGrounded, secretRefName, type Target } from "@kiframe/schema"
+import { handover } from "./handover.ts"
 import type { ElementHandle, FileChooser, Locator } from "playwright"
 import { StepError, type StepRef } from "../errors.ts"
 import { EXACT_NAMES_HINT } from "../secret-state.ts"
@@ -271,6 +272,9 @@ export async function perform(ctx: Ctx, action: AnyAction, step: StepRef): Promi
       return
     case "pause":
       await guard(step, () => page.waitForTimeout(action.ms))
+      return
+    case "handover":
+      await handover(ctx, action, step)
       return
     case "select": {
       const target = await find(ctx, action.target, step)

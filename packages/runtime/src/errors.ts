@@ -19,6 +19,10 @@ export type StepErrorReason =
   | "expectation-failed"
   | "off-origin"
   | "risky-not-approved"
+  /** A handover step in a run no one can answer (unattended): it needs the user. */
+  | "needs-user"
+  /** The user couldn't do a handover's task. */
+  | "handover-declined"
   | "secret-unavailable"
   | "secret-refused"
   /** The user declined the approval of a secret step: the scene is `blocked` (§3 A3). */
