@@ -100,6 +100,18 @@ describe("recordBatch", () => {
     expect(logins).toBe(1)
   })
 
+  it("keeps every preset's landing when a scene reuses only some of them", async () => {
+    const pause = `  - { id: a, action: pause, ms: 1 }\n`
+    const { results, logins } = await run([
+      [pause, "[{ preset: login }, { preset: other }]"],
+      [signedIn, "[{ preset: login }, { action: goto, url: /session }]"],
+      [pause, "[{ preset: other }]"],
+    ])
+    expect(results.map((r) => r.ok)).toEqual([true, true, true])
+    // Both signed in once (scene 1): scene 3 still reuses "other" after scene 2 reused "login".
+    expect(logins).toBe(2)
+  })
+
   it("doesn't reuse a session another scene's fresh login replaced", async () => {
     const { results, logins } = await run([
       signedIn,

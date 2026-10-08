@@ -6,7 +6,7 @@ import {
   type Scenario,
   SceneId,
 } from "@kiframe/schema"
-import type { Browser, BrowserContext, BrowserContextOptions } from "playwright"
+import type { Browser, BrowserContext, BrowserContextOptions, Page } from "playwright"
 import { StepError } from "./errors.ts"
 import { recordScenario, type RecordOptions, type Take } from "./recorder.ts"
 import { appAtOrigin } from "./run/apps.ts"
@@ -38,8 +38,21 @@ export interface BatchOptions extends Omit<
 
 export type BatchResult = { ok: true; take: Take } | { ok: false; error: unknown }
 
+/**
+ * Where a session preset ended, as a way back (its app and a relative path): only on a listed
+ * app's own origin (a `goto` there can't reach a www. alias), a valid relative `goto`.
+ */
+export function landingOf(project: ProjectConfig, page: Page): SessionLanding | undefined {
+  const url = new URL(page.url())
+  const path = `${url.pathname}${url.search}${url.hash}`
+  const app = appAtOrigin(project.apps, url.href)
+  return app !== undefined && Action.safeParse({ action: "goto", app, url: path }).success
+    ? { app, url: path }
+    : undefined
+}
+
 /** The session presets a scene's setup uses. */
-function sessionPresetsOf(scenario: Scenario, project: ProjectConfig): string[] {
+export function sessionPresetsOf(scenario: Scenario, project: ProjectConfig): string[] {
   return (scenario.setup ?? []).flatMap((item) =>
     "preset" in item &&
     Object.hasOwn(project.presets, item.preset) &&
@@ -133,23 +146,20 @@ export async function recordBatch(
         knownSecretValues: [...(record.knownSecretValues ?? []), ...seenValues],
         skipSessionPresets: reuse ? uses : [],
         sessionLandings: landings,
-        onSessionReady: async (preset, at) => {
-          // Only fresh-login scenes get here (a reusing one skips its session presets). Its fresh
+        onSessionReady: async (preset, at, held) => {
+          // A reuse held: its state renewed (a spent refresh token), its landings as they were.
+          if (held) {
+            // Never the scene's failure: the state as it was (a snapshot that can't be taken).
+            state = await current.storageState({ indexedDB: true }).catch(() => state)
+            return
+          }
+          // A fresh login (a reusing scene's held presets returned above). Its fresh
           // context holds only what it logged into: sessions saved by earlier scenes are gone.
           state = await current.storageState({ indexedDB: true })
           if (savedHere.size === 0) landings = {}
           savedHere.add(preset)
-          const url = new URL(at.url())
-          const landing = `${url.pathname}${url.search}${url.hash}`
-          // Kept only if the runner can go back there: on a listed app's own origin (a `goto` there
-          // can't reach a www. alias), a valid relative `goto`.
-          const app = appAtOrigin(project.apps, url.href)
-          if (
-            app !== undefined &&
-            Action.safeParse({ action: "goto", app, url: landing }).success
-          ) {
-            landings[preset] = { app, url: landing }
-          }
+          const landing = landingOf(project, at)
+          if (landing !== undefined) landings[preset] = landing
         },
       })
       result = { ok: true, take }

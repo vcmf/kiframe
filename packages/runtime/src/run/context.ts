@@ -160,7 +160,8 @@ export interface RunOptions {
    * A session preset's steps all ran: the moment to save the context's state (awaited before the
    * setup goes on, so the state has the login and nothing the scene did after it).
    */
-  onSessionReady?: (preset: string, page: Page) => void | Promise<void>
+  /** `held`: a reused session's checks passed (no login ran): its state renewed, nothing else. */
+  onSessionReady?: (preset: string, page: Page, held: boolean) => void | Promise<void>
   /**
    * Where each skipped session preset ended (its app and a path there): the setup goes there in
    * its place, since a later setup step may rely on that page.

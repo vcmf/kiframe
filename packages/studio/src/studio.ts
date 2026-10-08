@@ -19,6 +19,10 @@ import {
   type ApprovalRequest,
   type Box,
   type HandoverRequest,
+  landingOf,
+  type SessionLanding,
+  checksSignedIn,
+  sessionPresetsOf,
   knownValuesOf,
   addKnownValues,
   StepError,
@@ -44,6 +48,7 @@ import {
   Locator,
   parseScenarioYaml,
   PresetRef,
+  Preset,
   Project,
   type ProjectConfig,
   type Scenario,
@@ -108,6 +113,11 @@ export interface HandoverAnswer {
 
 /** What a request is answered with: text, a yes or no, a handover's end. */
 export type UserAnswer = string | boolean | HandoverAnswer
+
+/** A browser context's saved state (cookies, local storage, IndexedDB). */
+type StorageState = Awaited<ReturnType<BrowserContext["storageState"]>>
+/** The session presets a saved sign-in holds: each its key (steps, apps) and where it ended. */
+type SessionPresets = Map<string, { key: string; landing: SessionLanding }>
 
 /** At most this long a run's context waits for a handover's end before it closes. */
 const SETTLE_HANDOVER_MS = 8000
@@ -217,6 +227,14 @@ export const SNAPSHOT_MAX = 20_000
 export class Studio {
   readonly options: StudioOptions
   #live: { context: BrowserContext; page: Page } | undefined
+  /**
+   * The saved sign-in (memory only, gone with the studio: it holds a session's cookies): one
+   * browser state, and the session presets it holds (each its key: its steps and the apps as they
+   * were; its landing: where it ended). Checks and recordings start from it (SECRETS-DESIGN §5b).
+   */
+  #session:
+    | { state: StorageState; presets: Map<string, { key: string; landing: SessionLanding }> }
+    | undefined
   /** What the user typed during handovers (made known for the studio's life: never stored). */
   readonly #typed = new Set<string>()
   /** The page a check's or a recording's handover gave the user (the live view follows it). */
@@ -390,6 +408,120 @@ export class Studio {
         pacing: { ...config.defaults.pacing, cursor: "instant", typing: "instant", settleMs: 0 },
       },
     }
+  }
+
+  /** A saved sign-in that expired: forgotten (the next run signs in fresh). */
+  #forgetExpired(error: unknown): void {
+    if (error instanceof StepError && error.reason === "session-expired") this.#session = undefined
+  }
+
+  /** A session preset's key: its name, its steps and the project's apps as they are now. */
+  #presetKey(name: string): string {
+    const { presets, apps } = this.options.config
+    return JSON.stringify([name, presets[name], apps])
+  }
+
+  /**
+   * A check's or a recording's sign-in: the saved state when every session preset it uses is
+   * there, unchanged (their landings in their place); else none (each signs in, then saved).
+   */
+  #reuse(scenario: Scenario): {
+    storageState?: StorageState
+    skipSessionPresets: string[]
+    sessionLandings: Record<string, SessionLanding>
+  } {
+    const uses = sessionPresetsOf(scenario, this.options.config)
+    const session = this.#session
+    const held =
+      session !== undefined &&
+      uses.length > 0 &&
+      uses.every((p) => session.presets.get(p)?.key === this.#presetKey(p))
+    if (!held) return { skipSessionPresets: [], sessionLandings: {} }
+    return {
+      storageState: session.state,
+      skipSessionPresets: uses,
+      sessionLandings: Object.fromEntries(uses.map((p) => [p, session.presets.get(p)!.landing])),
+    }
+  }
+
+  /**
+   * Saves the sign-in when a session preset is done (signed in fresh) or held (a reuse's checks
+   * passed: its state renewed, a refresh token it spent). A fresh run's state replaces the whole
+   * (other presets sign in again); a snapshot that fails is never saved, never a failure.
+   */
+  #sessionHooks() {
+    let first = true
+    return async (preset: string, page: Page, held: boolean) => {
+      let state: StorageState
+      try {
+        state = await page.context().storageState({ indexedDB: true })
+      } catch {
+        return
+      }
+      const session = this.#session
+      // Held (a reuse's checks passed): the state renewed, the landings as they were.
+      if (held) {
+        if (session !== undefined) this.#session = { state, presets: session.presets }
+        return
+      }
+      const landing = landingOf(this.options.config, page)
+      if (landing === undefined) return
+      // A fresh sign-in: its run's state replaces the whole (others sign in again next time).
+      const presets: SessionPresets =
+        first || session === undefined ? (new Map() as SessionPresets) : session.presets
+      first = false
+      presets.set(preset, { key: this.#presetKey(preset), landing })
+      this.#session = { state, presets }
+    }
+  }
+
+  /**
+   * Saves a preset the agent wrote (a sign-in, its handover included): a new name only (never one
+   * that exists: scenes and approvals would follow another); a session preset ends with a check of
+   * the signed-in page (`waitFor`/`expect`: how a reuse knows it still holds).
+   */
+  savePreset(input: {
+    name: string
+    session: boolean
+    app?: string
+    steps: unknown
+  }): { saved: string } | { error: string } {
+    const { project } = this
+    if (Object.hasOwn(project.project.presets ?? {}, input.name)) {
+      return { error: `a preset named "${input.name}" exists: pick another name` }
+    }
+    const preset = Preset.safeParse({
+      ...(input.app !== undefined && { app: input.app }),
+      session: input.session,
+      steps: input.steps,
+    })
+    if (!preset.success) return { error: `invalid preset: ${formatIssue(preset.error.issues[0])}` }
+    if (preset.data.session && !checksSignedIn(preset.data.steps)) {
+      return {
+        error:
+          "a session preset ends with a waitFor or an expect of something the signed-in page shows (visible, text: how a reuse knows the session still holds)",
+      }
+    }
+    const next = Project.safeParse({
+      ...project.project,
+      presets: { ...project.project.presets, [input.name]: preset.data },
+    })
+    if (!next.success) return { error: `can't save it: ${formatIssue(next.error.issues[0])}` }
+    if (projectChangedOnDisk(project)) {
+      return {
+        error: "project.json changed on disk: the user can reopen the project, then save again",
+      }
+    }
+    try {
+      saveProject(project, next.data)
+    } catch (error) {
+      return { error: `not saved: ${error instanceof Error ? error.message : String(error)}` }
+    }
+    this.options.config = {
+      ...this.options.config,
+      presets: { ...this.options.config.presets, [input.name]: preset.data },
+    }
+    return { saved: input.name }
   }
 
   /**
@@ -1172,7 +1304,11 @@ export class Studio {
     } catch (error) {
       return `replay failed: ${failure(error)}`
     }
-    const context = await this.options.browser.newContext(filmed)
+    const reuse = this.#reuse(scenario)
+    const context = await this.options.browser.newContext({
+      ...filmed,
+      ...(reuse.storageState !== undefined && { storageState: reuse.storageState }),
+    })
     try {
       // The pointer at once, also over the scene's own pacing (its typing and settling stay).
       const paced: Scenario = {
@@ -1182,15 +1318,16 @@ export class Studio {
           pacing: { ...scenario.overrides?.pacing, cursor: "instant" },
         },
       }
-      await runScenario(
-        await context.newPage(),
-        paced,
-        this.options.config,
-        this.#run(scene, signal, "check"),
-      )
+      await runScenario(await context.newPage(), paced, this.options.config, {
+        ...this.#run(scene, signal, "check"),
+        skipSessionPresets: reuse.skipSessionPresets,
+        sessionLandings: reuse.sessionLandings,
+        onSessionReady: this.#sessionHooks(),
+      })
       return "ok"
     } catch (error) {
       if (isStopped(error)) throw error
+      this.#forgetExpired(error)
       return `replay failed: ${failure(error)}`
     } finally {
       await this.#settled()
@@ -1220,19 +1357,27 @@ export class Studio {
       return failed(`can't record "${sceneId}": ${failure(error)}`)
     }
     const dir = takes.newTakeDir(this.project.project.id, sceneId)
-    const context = await this.options.browser.newContext(filmed)
+    const reuse = this.#reuse(scenario)
+    const context = await this.options.browser.newContext({
+      ...filmed,
+      ...(reuse.storageState !== undefined && { storageState: reuse.storageState }),
+    })
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
     let why: string | undefined
     let stopped: StepError | undefined
     try {
       recorded = await recordScenario(await context.newPage(), scenario, config, {
         ...this.#run(sceneId, signal, "record"),
+        skipSessionPresets: reuse.skipSessionPresets,
+        sessionLandings: reuse.sessionLandings,
+        onSessionReady: this.#sessionHooks(),
         outDir: dir,
         // A failed take's video is dropped as it settles: never encoded.
         encodeFailed: false,
       })
     } catch (error) {
       if (isStopped(error)) stopped = error as StepError
+      this.#forgetExpired(error)
       why = failure(error)
     } finally {
       await this.#settled()

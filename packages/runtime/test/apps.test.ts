@@ -343,10 +343,37 @@ presets: { login: { session: true, steps: [{ action: goto, url: /login }] } }
       { login: { app: "docs", url: "/projects?tab=1" } },
       "app",
     )
-    // The landing's goto means its app; the scene's own comes back after it.
+    // The landing's goto means its app; the scene's own comes back after it. Then the preset's
+    // end, held (its state saved again: no login ran).
     expect(entries.map((e) => [e.kind, "app" in e ? e.app : undefined])).toEqual([
       ["action", "docs"],
+      ["preset_done", undefined],
     ])
+    expect(entries.at(-1)).toMatchObject({ kind: "preset_done", held: true })
+  })
+})
+
+describe("a reused session's checks", () => {
+  const project = () =>
+    parseProjectYaml(`version: 2
+apps: { app: { kind: web, url: "${app.origin}" } }
+presets:
+  login:
+    session: true
+    steps:
+      - { action: goto, url: /login }
+      - { action: expect, that: { visible: { by: text, text: Signed in } } }
+`)
+  it("run under the landing's setup index (they add none: a later step's index as without them)", () => {
+    const reused = expandSetup(
+      [{ preset: "login" }, { action: "goto", url: "/x" }],
+      project(),
+      ["login"],
+      { login: { app: "app", url: "/home" } },
+      "app",
+    )
+    // The landing (0), its check under the same index (0), the scene's own step after (1).
+    expect(reused.filter((e) => e.kind === "action").map((e) => e.index)).toEqual([0, 0, 1])
   })
 })
 

@@ -20,6 +20,11 @@ When a scene's setup needs the user too (a code at sign-in, a CAPTCHA), write a 
 \`{ action: handover, task: "…", done_when: "…" }\` (setup or a preset only, never between on-camera steps):
 checking and recording the scene ask the user at that step (nothing they do is filmed); if they can't, the
 check fails "handover-declined": ask them before trying again.
+A sign-in the user must take part in (a code at sign-in): save it once as a session preset (\`save_preset\`,
+session: true, its handover included, ending with a waitFor/expect on the signed-in page) and start scenes with
+\`{ preset: <name> }\`: the first check or recording asks the user, later ones reuse the sign-in. A failure
+"session-expired" means the saved sign-in no longer holds: run again (it signs in fresh). A scene that signs out
+on camera ends that session for later runs.
 
 Scenario format (YAML, version 1):
 version: 1
