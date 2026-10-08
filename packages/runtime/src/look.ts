@@ -155,7 +155,7 @@ async function scanFor(
 }
 
 /** A step of a look, given up at once when the run is stopped (its work left to finish alone). */
-function untilStopped<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+export function untilStopped<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   if (signal === undefined) return work
   signal.throwIfAborted()
   return new Promise<T>((resolve, reject) => {

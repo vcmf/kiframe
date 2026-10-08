@@ -9,6 +9,15 @@ export * from "./runner.ts"
 export * from "./scanner.ts"
 export { type CastFrame, watchScreencast } from "./screencast.ts"
 export { LookRefusal, maskedScreenshot, type MaskedShot } from "./look.ts"
+export {
+  fitImage,
+  type FittedImage,
+  imageHeader,
+  type ImageHeader,
+  ImageRefusal,
+  MAX_IMAGE_PIXELS,
+  MAX_IMAGE_SIDE,
+} from "./image.ts"
 export { formValues, type FormValue, longEnoughToKnow, typedValues } from "./form-values.ts"
 export { normalizeText } from "./text-match.ts"
 export { viewOf, type PageView } from "./scroller.ts"
