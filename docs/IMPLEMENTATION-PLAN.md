@@ -93,7 +93,20 @@ Dependencies: P0-1 → P0-2 → (P0-3, P0-4) → P0-5 → P0-6 → P0-7. P0-8 ne
 - After a UI change on the test app, `kiframe heal` + re-record produces an up-to-date video and guide with no manual edit, for renamed or moved elements (flow changes may need the human).
 - The vault passes a **security review** of the leak paths in APPROACHES §7.4 (a test suite with injected pages that try to exfiltrate).
 - Signed and notarized builds for macOS and Windows, with auto-update working.
-- Invite a teammate to an org, and they see the org's settings and the list of missing secrets.
+- ~~Invite a teammate to an org, and they see the org's settings and the list of missing secrets.~~ Moved to v1 with teams (2026-10-08).
+- **Added 2026-10-08:** a demo mixes scenes in the user's web app, in their Electron app and HTML cutscenes, exported as one video; stills are re-taken from the scenes; a user signs in and subscribes from the app.
+- **Open (2026-10-08):** whether the guide output and `kiframe heal` stay in v0.
+
+**Re-scoped (2026-10-08, decided by the user): v0 is for indie devs** (APPROACHES "Positioning", 2026-10-07): a closed, paid product, local first. What remains of v0, in order:
+
+| Order | What | From |
+|---|---|---|
+| 1 | **Electron targets**: per-app isolation (verified: an app may ignore `--user-data-dir`, minmux did), launched with a debugging port and attached over CDP, a window frame in the video; native dialogs through the handover | V1-3 (moved from v0.1) |
+| 2 | **HTML pages**: the demo's cutscenes (a title, a feature callout, an outro, an attached mock-up), filmed like any app; cards become page templates | D1–D4 (OBJECT-MODEL §0.11) |
+| 3 | **Stills**: screenshots captured from scenes, re-taken on every replay (a README, a landing page, a launch post) | V1-4, its captured part only (moved from v0.1) |
+| 4 | **Billing and distribution**: sign-in and subscriptions (the app is paid, BYOK or not), signed and notarized builds with auto-update | M5-1, M5-2, M5-6 (sign-in only), V1-7 (moved from v0.1), M6-2 |
+
+Moved out of v0 (to v1 or later): the Canvas view (V1-1, V1-2), the timeline editor (V1-5), imported media (V1-4's rest), a scene background from an attachment (E3), teams (orgs, invitations, settings API: M5-3 to M5-5). **Proposed, to confirm:** the managed-model proxy and metering (V1-6) out of v0 too (the subscription is for the app; a model without the user's key as a later add-on). **Open:** the written guide output and `kiframe heal` (M6-1) in v0. The exit criteria above are updated (the teammate invite leaves v0; the new targets added).
 
 The milestones below can partly run in parallel. Recommended order: **M1 → M2 → M3**, with **M4** starting after M1, and **M5 / M6** in parallel.
 
@@ -196,9 +209,11 @@ The slice merged into `main` on 2026-10-03 (S1–S4, plus the real-app pass, act
 
 ---
 
-## 4. v0.1
+## 4. v1 (was v0.1)
 
-**Objective:** the Canvas view and desktop targets, plus the paid mode.
+**Re-scoped (2026-10-08):** Electron targets (V1-3), captured stills (V1-4) and billing (V1-7) moved to v0 (§3). v1 gets the **MCP bridge** (BACKLOG "MCP bridge (v1)": Kiframe's tools for the user's own coding agent) on top of what's left below.
+
+**Objective (as first planned):** the Canvas view and desktop targets, plus the paid mode.
 
 **Exit criteria:** Canvas and Sequence views stay in sync on the same project. An Electron app (dev build, and a hardened packaged one) is recorded end to end through `--remote-debugging-port` + `connectOverCDP` (PHASE0-FINDINGS F4). Paid users can work without a BYOK key, with per-org metering.
 

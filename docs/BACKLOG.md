@@ -20,6 +20,19 @@
 
 Non-severe review findings deferred on purpose (see the review-round rule: only severe findings trigger a new round).
 
+## MCP bridge (v1, decided 2026-10-08)
+
+Kiframe's tools for the user's own coding agent: once the app is installed, an MCP server lets Claude Code, Cursor or Codex make the demo (it knows the codebase: the feature that shipped, the routes, the copy; the model runs on the user's own subscription). Kif stays built in. Notes from the discussion:
+- **The app stays in charge**: the MCP server is a thin bridge into the running app (stdio, started by the agent's config), never a copy of the tools; approvals, handovers and the live view stay in Kiframe's window; every invariant holds at the tool layer as now (results scrubbed, a guessed value ends the run).
+- **Access**: only clients the user approves ("Claude Code wants to use Kiframe"), a token per client, never an open local port.
+- **Stated risk, the new one**: a page's text (a snapshot, a look) reaches an agent that has a shell and the user's files; results are labelled untrusted data, but the agent's actions aren't ours. Limit it to the project's apps; say it at connect.
+- **Prompt**: the craft rules, scene limits and failure hints move into MCP instructions and tool descriptions.
+- **Billing**: an MCP user pays for the app (the subscription), not for a model.
+
+## Cloud storage (deferred, 2026-10-08)
+
+Today a project and its takes live on the user's machine only. Some users will want their files in the cloud (hosted share links for videos, project sync across machines, backups): a paid feature with real storage costs, to scope on its own (where takes are encrypted, who can open a link, retention).
+
 ## @kiframe/schema (P0-2)
 - **JSON Schema export:** exported schemas are `guarded()` transforms, so `z.toJSONSchema(Scenario)` throws. When the agent/tool layer needs a JSON Schema of the formats, expose the base schemas for introspection (or move the guard into a `.check()` on the base).
 - **Action / Step duplication:** both unions list the 8 action variants (guarded by a drift test). Revisit when M1-1 adds the full action set.
