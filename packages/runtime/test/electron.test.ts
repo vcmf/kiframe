@@ -125,10 +125,11 @@ const launch = async (extra: string[] = [], options: { stateFile?: string } = {}
   open.push(target)
   return target
 }
+// Closing sweeps the system's process table: a slow CI machine gets room.
 afterEach(async () => {
   for (const target of open) await target.close()
   open = []
-})
+}, 30_000)
 
 /** What the fixture says it saw at start (written into its own data folder). */
 const seenBy = async (target: ElectronTarget) => {

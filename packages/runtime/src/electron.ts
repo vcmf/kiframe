@@ -8,7 +8,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs"
-import { rm } from "node:fs/promises"
+import { readdir, readlink, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
 import { sameApp, type Viewport } from "@kiframe/schema"
@@ -564,27 +564,52 @@ function run(command: string, args: string[]): Promise<string | undefined> {
 }
 
 /**
+ * Every process's working folder: Linux's /proc (quick), else `lsof` (macOS: no /proc); undefined
+ * when it can't be read.
+ */
+async function workingDirs(): Promise<[number, string][] | undefined> {
+  if (process.platform === "linux") {
+    const out: [number, string][] = []
+    try {
+      for (const entry of await readdir("/proc")) {
+        if (!/^\d+$/.test(entry)) continue
+        try {
+          out.push([Number(entry), await readlink(`/proc/${entry}/cwd`)])
+        } catch {
+          // gone, or another user's
+        }
+      }
+      return out
+    } catch {
+      return undefined
+    }
+  }
+  const listed = await run("lsof", ["-a", "-d", "cwd", "-Fpn"])
+  if (listed === undefined) return undefined
+  const out: [number, string][] = []
+  let pid: number | undefined
+  for (const line of listed.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1))
+    else if (line.startsWith("n") && pid !== undefined) out.push([pid, line.slice(1)])
+  }
+  return out
+}
+
+/**
  * Kills every process (never this one) that points at `sandbox`: its command line names it (the
  * app's helpers carry `--user-data-dir=<sandbox>/profile`), or it works in it (a helper detached
  * with its cwd there). Both are quick to read (never a walk of every file). Unread: said.
  */
 export async function sweepSandbox(sandbox: string): Promise<{ swept: number; unread: boolean }> {
   if (!existsSync(sandbox)) return { swept: 0, unread: false }
-  const [ps, cwds] = await Promise.all([
-    run("ps", ["-axo", "pid=,command="]),
-    run("lsof", ["-a", "-d", "cwd", "-Fpn"]),
-  ])
+  const [ps, cwds] = await Promise.all([run("ps", ["-axo", "pid=,command="]), workingDirs()])
   const pids = new Set<number>()
   const within = (path: string) => path === sandbox || path.startsWith(`${sandbox}/`)
   for (const line of ps?.split("\n") ?? []) {
     const match = /^\s*(\d+)\s+(.*)$/.exec(line)
     if (match !== null && match[2]?.includes(sandbox) === true) pids.add(Number(match[1]))
   }
-  let pid: number | undefined
-  for (const line of cwds?.split("\n") ?? []) {
-    if (line.startsWith("p")) pid = Number(line.slice(1))
-    else if (line.startsWith("n") && pid !== undefined && within(line.slice(1))) pids.add(pid)
-  }
+  for (const [pid, cwd] of cwds ?? []) if (within(cwd)) pids.add(pid)
   pids.delete(process.pid)
   for (const p of pids) {
     try {
