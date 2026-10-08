@@ -19,7 +19,7 @@ import {
   scrubSecrets,
   TEXT_SCAN_MS,
 } from "./run/secrets.ts"
-import { expandSetup, runSetupEntry } from "./run/setup.ts"
+import { expandSetup, openingGoto, runSetupEntry } from "./run/setup.ts"
 import { perform } from "./run/actions.ts"
 import { runOne } from "./run/step.ts"
 import { now } from "./clock.ts"
@@ -209,6 +209,12 @@ export async function runScenario(
   try {
     let failure: Error | undefined
     try {
+      // A fresh browser is blank: a scene that doesn't go to a page first opens on its start app.
+      const open =
+        options.fresh === true ? openingGoto(setup, scenario.steps, project, start) : undefined
+      if (open !== undefined) {
+        await runOne(ctx, open, { phase: "setup", index: 0, action: "open app" }, start)
+      }
       for (const entry of setup) await runSetupEntry(ctx, entry)
       for (const [index, step] of scenario.steps.entries()) {
         await runOne(

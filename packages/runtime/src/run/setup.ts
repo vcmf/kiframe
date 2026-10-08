@@ -1,4 +1,4 @@
-import { Action, firstApp, type ProjectConfig, type SetupItem } from "@kiframe/schema"
+import { Action, appOf, firstApp, type ProjectConfig, type SetupItem } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
 import { type Ctx, guard, type SessionLanding } from "./context.ts"
 import { syncPage } from "./pages.ts"
@@ -130,6 +130,26 @@ export function expandSetup(
     }
   }
   return out
+}
+
+/**
+ * The goto that opens a scene in a fresh browser (`fresh`): its start app's own URL, when the
+ * scene's first action doesn't go to a page itself (a setup that starts with a handover or a check,
+ * a preset that doesn't navigate, no setup at all).
+ */
+export function openingGoto(
+  setup: readonly SetupEntry[],
+  steps: readonly Action[],
+  project: ProjectConfig,
+  start: string,
+): Action | undefined {
+  const first = setup.find((e) => e.kind === "action")?.action ?? steps[0]
+  if (first?.action === "goto") return undefined
+  const app = appOf(project, start)
+  if (app === undefined) return undefined
+  const url = new URL(app.url)
+  const goto = Action.safeParse({ action: "goto", url: `${url.pathname}${url.search}` })
+  return goto.success ? goto.data : undefined
 }
 
 export async function runSetupEntry(ctx: Ctx, entry: SetupEntry): Promise<void> {
