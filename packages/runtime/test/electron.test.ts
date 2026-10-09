@@ -497,9 +497,26 @@ steps:
     expect(error).toBeInstanceOf(ElectronLaunchError)
     expect(error?.why).toBe("site")
     expect(error?.site).toBe("https://kiframe-wrapper.invalid")
-    // Listed as its own: it's driven (its page the browser's error page: no network here).
-    const target = await launch(["wrapper"], { origins: ["https://kiframe-wrapper.invalid"] })
-    expect(target.page).toBeDefined()
+    // Listed as its own but never loaded: said (never a window driven on an error page).
+    await expect(
+      launch(["wrapper"], { origins: ["https://kiframe-wrapper.invalid"] }),
+    ).rejects.toThrow(/couldn't load kiframe-wrapper\.invalid/)
+    // Listed and loaded: driven.
+    const site = new URL(secure).origin
+    const target = await launch([`wrapper=${secure}`, "trust-test-cert"], { origins: [site] })
+    expect(target.page.url()).toBe(secure)
+  })
+
+  it("says a dev build whose server isn't running, as such (never an off-app site)", async () => {
+    const closed = createNetServer()
+    await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve))
+    const port = (closed.address() as AddressInfo).port
+    await new Promise((resolve) => closed.close(resolve))
+    await expect(launch([`dev-down=http://127.0.0.1:${port}/`])).rejects.toThrow(
+      new RegExp(
+        `couldn't load 127\\.0\\.0\\.1:${port} \\(offline\\? its server not running\\?\\)`,
+      ),
+    )
   })
 
   it("says an app that quits at once, and leaves nothing behind", async () => {

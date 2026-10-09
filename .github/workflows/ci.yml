@@ -61,6 +61,8 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # A desktop app's takes are encoded with ffmpeg (as on Linux).
+      - run: brew install ffmpeg
       - run: pnpm exec vitest run --project electron
         env:
           KIFRAME_ELECTRON_TIMING: "1"

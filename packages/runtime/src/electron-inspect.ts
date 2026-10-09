@@ -1,8 +1,8 @@
-import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { constants, createReadStream } from "node:fs"
 import { access, lstat, readdir, readlink, realpath } from "node:fs/promises"
 import { basename, join } from "node:path"
+import { command as run } from "./electron-workarea.ts"
 
 // A desktop app the user picks, inspected before Kiframe ever runs it (PR 3b, design reviewed
 // 2026-10-09): only plutil and codesign run, nothing of the app. What's refused is said as is;
@@ -34,23 +34,8 @@ export class InspectError extends Error {}
 
 const BUNDLE_ID = /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
 
-/** A command's exit code and output (the C locale: read the same in every language). */
-function command(
-  cmd: string,
-  args: string[],
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      cmd,
-      args,
-      { timeout: 30_000, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } },
-      (error, stdout, stderr) => {
-        const code = error === null ? 0 : typeof error.code === "number" ? error.code : -1
-        resolve({ code, stdout, stderr })
-      },
-    )
-  })
-}
+/** codesign on a large bundle (a verify reads it all) can take a while: never forever. */
+const TIMEOUT = 60_000
 
 /** Why an app can't be used from where it is (its real path), or undefined. */
 export function placeRefusal(real: string): string | undefined {
@@ -69,16 +54,26 @@ export function placeRefusal(real: string): string | undefined {
 
 /** A value of an Info.plist (undefined when it has none), read by plutil. */
 async function plistValue(plist: string, key: string): Promise<string | undefined> {
-  const out = await command("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", plist])
-  return out.code === 0 ? out.stdout.trim() : undefined
+  const out = await run("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", plist], TIMEOUT)
+  // An empty value is no value (a build with an empty name: its fallback instead).
+  const value = out.code === 0 ? out.stdout.trim() : ""
+  return value === "" ? undefined : value
 }
 
-/** What `codesign -dv` says of a signature: unsigned, ad hoc, or a developer's. */
+/**
+ * What `codesign -dv` says of a signature: unsigned (it says so), ad hoc, a developer's, or unread
+ * (it failed otherwise, timed out: never taken for "unsigned").
+ */
 export function parseSigning(
   code: number,
   stderr: string,
-): { kind: "unsigned" } | { kind: "adhoc" } | { kind: "team"; team: string; identifier: string } {
-  if (code !== 0) return { kind: "unsigned" }
+):
+  | { kind: "unsigned" }
+  | { kind: "adhoc" }
+  | { kind: "team"; team: string; identifier: string }
+  | { kind: "unread" } {
+  if (code !== 0)
+    return /not signed at all/.test(stderr) ? { kind: "unsigned" } : { kind: "unread" }
   const field = (name: string) => new RegExp(`^${name}=(.*)$`, "m").exec(stderr)?.[1]?.trim()
   const team = field("TeamIdentifier")
   const identifier = field("Identifier")
@@ -97,17 +92,16 @@ export function teamRequirement(team: string, identifier: string): string {
 /** Whether the bundle's signature is whole and its developer's (`codesign --verify --strict`). */
 export async function signatureHolds(path: string, signer: Signer): Promise<boolean> {
   if (signer.kind !== "team") return true
-  const out = await command("/usr/bin/codesign", [
-    "--verify",
-    "--strict",
-    `-R=${teamRequirement(signer.team, signer.identifier)}`,
-    path,
-  ])
+  const out = await run(
+    "/usr/bin/codesign",
+    ["--verify", "--strict", `-R=${teamRequirement(signer.team, signer.identifier)}`, path],
+    TIMEOUT,
+  )
   return out.code === 0
 }
 
 /** The code an unsigned app runs, hashed: what pins the exact build (any change: a new digest). */
-export async function codeDigest(path: string, executable: string): Promise<string> {
+export async function codeDigest(path: string): Promise<string> {
   const hash = createHash("sha256")
   const add = async (rel: string) => {
     const full = join(path, rel)
@@ -126,27 +120,25 @@ export async function codeDigest(path: string, executable: string): Promise<stri
       for await (const chunk of createReadStream(full)) hash.update(chunk as Buffer)
     }
   }
-  const framework = "Contents/Frameworks/Electron Framework.framework"
-  for (const rel of [
-    executable.slice(path.length + 1),
-    "Contents/Info.plist",
-    // Electron itself, its helpers and libraries.
-    `${framework}/Versions/A`,
-    "Contents/Resources/app.asar",
-    "Contents/Resources/app.asar.unpacked",
-    "Contents/Resources/app",
-  ]) {
-    await add(rel)
-  }
+  // All of it (helpers, frameworks, links as links): any code it could run is in the digest.
+  await add("Contents")
   return hash.digest("hex")
 }
 
-/** The signer of an app at `path` (its executable's signature; pinned when it has no developer). */
-export async function signerOf(path: string, executable: string): Promise<Signer> {
-  const signing = await command("/usr/bin/codesign", ["-dv", path])
+/**
+ * The signer of an app at `path`, and whether it's signed at all (an unsigned one has no
+ * entitlements to read). Unread: refused (never taken for unsigned).
+ */
+export async function signerOf(path: string): Promise<Signer & { signed: boolean }> {
+  const signing = await run("/usr/bin/codesign", ["-dv", path], TIMEOUT)
   const parsed = parseSigning(signing.code, signing.stderr)
-  if (parsed.kind === "team") return parsed
-  return { kind: "pinned", digest: await codeDigest(path, executable) }
+  if (parsed.kind === "unread") throw new InspectError("that app's signature couldn't be read")
+  if (parsed.kind === "team") return { ...parsed, signed: true }
+  return {
+    kind: "pinned",
+    digest: await codeDigest(path),
+    signed: parsed.kind === "adhoc",
+  }
 }
 
 /**
@@ -187,31 +179,38 @@ export async function inspectDesktopApp(picked: string): Promise<DesktopApp> {
   } catch {
     throw new InspectError("that app's executable isn't its own runnable file")
   }
-  const entitlements = await command("/usr/bin/codesign", [
-    "-d",
-    "--entitlements",
-    "-",
-    "--xml",
-    path,
-  ])
-  if (/<key>com\.apple\.security\.app-sandbox<\/key>\s*<true\s*\/>/.test(entitlements.stdout)) {
-    throw new InspectError(
-      "that's a Mac App Store build (it has its own sandbox, which can't run in Kiframe's)",
+  const { signed, ...signer } = await signerOf(path)
+  // A signed app's entitlements, read (unread: refused, never taken for "not sandboxed"); an
+  // unsigned one has none.
+  if (signed) {
+    const entitlements = await run(
+      "/usr/bin/codesign",
+      ["-d", "--entitlements", "-", "--xml", path],
+      TIMEOUT,
     )
+    if (entitlements.code !== 0) {
+      throw new InspectError("that app's entitlements couldn't be read")
+    }
+    if (/<key>com\.apple\.security\.app-sandbox<\/key>\s*<true\s*\/>/.test(entitlements.stdout)) {
+      throw new InspectError(
+        "that's a Mac App Store build (it has its own sandbox, which can't run in Kiframe's)",
+      )
+    }
   }
-  const signer = await signerOf(path, executable)
   if (!(await signatureHolds(path, signer))) {
     throw new InspectError("that app's signature is broken: reinstall it")
   }
-  const name =
-    (await plistValue(plist, "CFBundleDisplayName")) ??
-    (await plistValue(plist, "CFBundleName")) ??
-    basename(path, ".app")
+  const [display, short, version] = await Promise.all(
+    ["CFBundleDisplayName", "CFBundleName", "CFBundleShortVersionString"].map((key) =>
+      plistValue(plist, key),
+    ),
+  )
+  const name = display ?? short ?? basename(path, ".app")
   return {
     path,
     bundleId,
     name,
-    version: await plistValue(plist, "CFBundleShortVersionString"),
+    version,
     electron,
     executable,
     signer,

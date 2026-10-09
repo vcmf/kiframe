@@ -89,8 +89,15 @@ if (
     // "embed-at-start": it shows that site in a frame as it opens.
     const link = process.argv.find((a) => a.startsWith("link="))?.slice(5) ?? "https://example.com/"
     const query = { link, ...(process.argv.includes("embed-at-start") && { embed: "1" }) }
-    // "wrapper": its window is a site (as Slack's app.slack.com), one that never loads (.invalid).
-    if (process.argv.includes("wrapper")) win.loadURL("https://kiframe-wrapper.invalid/client")
+    // "wrapper[=<url>]": its window is a site (as Slack's app.slack.com); by default one that never
+    // loads (.invalid). "dev-down=<url>": its dev server, not running.
+    const wrapper = process.argv.find((a) => a === "wrapper" || a.startsWith("wrapper="))
+    const devDown = process.argv.find((a) => a.startsWith("dev-down="))?.slice(9)
+    if (wrapper !== undefined) {
+      win.loadURL(
+        wrapper === "wrapper" ? "https://kiframe-wrapper.invalid/client" : wrapper.slice(8),
+      )
+    } else if (devDown !== undefined) win.loadURL(devDown)
     else if (process.argv.includes("elsewhere")) win.loadURL("data:text/html,<h1>Elsewhere</h1>")
     else win.loadFile(join(__dirname, "index.html"), { query })
   })

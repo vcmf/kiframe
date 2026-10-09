@@ -9,7 +9,7 @@ import type { DesktopApp } from "./electron-inspect.ts"
 export type TrialOutcome = { ok: true } | { site: string } | { quit: true } | { failed: string }
 
 export interface TrialOptions {
-  /** Sites it shows as its own (a second trial, after the first named one): the network then. */
+  /** Sites it shows as its own (a second trial, after the first named one). */
   origins?: readonly string[]
   workDir?: string
   signal?: AbortSignal
@@ -18,9 +18,8 @@ export interface TrialOptions {
 }
 
 /**
- * An app tried before it's added (PR 3b): launched confined, without the network beyond this
- * machine unless sites are listed (no updater, no backend: what it shows is its own), its main
- * window attached, then closed. A stop is thrown as the stop.
+ * An app tried before it's added (PR 3b): launched confined, its main window attached, then
+ * closed. A stop is thrown as the stop.
  */
 export async function trialDesktopApp(
   app: Pick<DesktopApp, "path" | "executable">,
@@ -31,7 +30,9 @@ export async function trialDesktopApp(
     const target = await launchElectron({
       executable: app.executable,
       bundle: app.path,
-      network: origins.length > 0 ? "all" : "loopback",
+      // The network as in a run (its site shown even behind its own offline page): an updater
+      // can't touch the real app all the same (nothing outside the sandbox is written).
+      network: "all",
       origins,
       viewport: opts.viewport ?? { width: 1440, height: 900, deviceScaleFactor: 1 },
       ...(opts.workDir !== undefined && { workDir: opts.workDir }),
@@ -42,7 +43,9 @@ export async function trialDesktopApp(
     return { ok: true }
   } catch (error) {
     if (opts.signal?.aborted === true) throw opts.signal.reason
-    if (!(error instanceof ElectronLaunchError)) throw error
+    // Anything else (a timeout while attaching): said as is, never thrown at the caller.
+    if (!(error instanceof ElectronLaunchError))
+      return { failed: String((error as Error).message ?? error) }
     if (error.why === "site" && error.site !== undefined) return { site: error.site }
     if (error.why === "quit") return { quit: true }
     return { failed: error.message }

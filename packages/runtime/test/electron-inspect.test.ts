@@ -47,6 +47,11 @@ describe("where an app can't stay", () => {
 describe("a signature", () => {
   it("reads unsigned, ad hoc and a developer's from codesign", () => {
     expect(parseSigning(1, "code object is not signed at all")).toEqual({ kind: "unsigned" })
+    // Any other failure (a timeout, a codesign that can't read it): unread, never "unsigned".
+    expect(parseSigning(-1, "")).toEqual({ kind: "unread" })
+    expect(parseSigning(1, "invalid signature (code or signature have been modified)")).toEqual({
+      kind: "unread",
+    })
     expect(
       parseSigning(0, "Identifier=Electron\nSignature=adhoc\nTeamIdentifier=not set\n"),
     ).toEqual({
@@ -114,7 +119,17 @@ describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 
     )
     const digest = (await inspectDesktopApp(edited)).signer
     expect(digest).not.toEqual(seen.signer)
-    expect(await codeDigest(seen.path, seen.executable)).toBe(
+    // A helper app (where its pages and GPU run) changed: another build too.
+    const helper = bundle("Helper", (a) => {
+      const resources = join(
+        a,
+        "Contents/Frameworks/Electron Helper (Renderer).app/Contents/Resources",
+      )
+      mkdirSync(resources, { recursive: true })
+      writeFileSync(join(resources, "added.js"), "changed")
+    })
+    expect((await inspectDesktopApp(helper)).signer).not.toEqual(seen.signer)
+    expect(await codeDigest(seen.path)).toBe(
       seen.signer.kind === "pinned" ? seen.signer.digest : "",
     )
   })
@@ -141,6 +156,19 @@ describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 
     rmSync(exe)
     symlinkSync("/bin/sh", exe)
     await expect(inspectDesktopApp(linked)).rejects.toThrow(/executable isn't its own/)
+  })
+
+  it("names an app with an empty display name by its bundle name", async () => {
+    const app = bundle("Unnamed", (a) =>
+      execFileSync("plutil", [
+        "-replace",
+        "CFBundleDisplayName",
+        "-string",
+        "",
+        join(a, "Contents/Info.plist"),
+      ]),
+    )
+    expect((await inspectDesktopApp(app)).name).toBe("Kiframe Fixture")
   })
 
   it("refuses an app inside another app", async () => {
@@ -171,16 +199,17 @@ describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 
     const app = await inspectDesktopApp(withMode("Notes", "plain"))
     expect(await trialDesktopApp(app, { workDir: work })).toEqual({ ok: true })
     const wrapper = await inspectDesktopApp(withMode("Wrapper", "wrapper"))
-    // No network in a trial: the site is named all the same (where its window failed to go).
+    // Its site named, even unreached (where its window failed to go).
     expect(await trialDesktopApp(wrapper, { workDir: work })).toEqual({
       site: "https://kiframe-wrapper.invalid",
     })
+    // Listed, unreachable: said as a failed load (a real one loads, in electron.test.ts).
     expect(
       await trialDesktopApp(wrapper, {
         workDir: work,
         origins: ["https://kiframe-wrapper.invalid"],
       }),
-    ).toEqual({ ok: true })
+    ).toMatchObject({ failed: expect.stringMatching(/couldn't load/) as string })
     const quits = await inspectDesktopApp(withMode("Quits", "quit-at-once"))
     expect(await trialDesktopApp(quits, { workDir: work })).toEqual({ quit: true })
     // Nothing left of any trial.

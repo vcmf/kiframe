@@ -26,6 +26,7 @@ import {
 import { untilStopped } from "./look.ts"
 import {
   chromium,
+  errors,
   type Browser,
   type BrowserContext,
   type CDPSession,
@@ -154,6 +155,27 @@ export interface LaunchHooks {
   readable?: readonly string[]
   /** Off macOS only (Linux CI): launched without the Seatbelt confinement (there's none). */
   allowUnconfined?: boolean
+}
+
+/** How long one attach may take before it's tried again. */
+const ATTACH_TRY_MS = 5000
+
+/**
+ * Attached over CDP, tried again while time is left: an attach as the app's first page turns into
+ * Chromium's error page (a dev server not started) can hang (measured: 1 in 5), a second never did.
+ */
+async function attach(endpoint: string, deadline: number, signal?: AbortSignal): Promise<Browser> {
+  for (;;) {
+    const left = deadline - Date.now()
+    try {
+      return await untilStopped(
+        chromium.connectOverCDP(endpoint, { timeout: Math.max(1, Math.min(left, ATTACH_TRY_MS)) }),
+        signal,
+      )
+    } catch (error) {
+      if (!(error instanceof errors.TimeoutError) || left <= ATTACH_TRY_MS) throw error
+    }
+  }
 }
 
 /** Where a page that failed to load was going (Chromium's error page keeps it, over CDP). */
@@ -394,10 +416,7 @@ export async function launchElectronWith(
       opts.signal,
       () => spawnError,
     )
-    browser = await untilStopped(
-      chromium.connectOverCDP(endpoint, { timeout: Math.max(1, deadline - Date.now()) }),
-      opts.signal,
-    )
+    browser = await attach(endpoint, deadline, opts.signal)
     const context = browser.contexts()[0]
     if (context === undefined) throw new ElectronLaunchError("the app opened no window")
     const connected = browser
@@ -408,13 +427,17 @@ export async function launchElectronWith(
       () => child.exitCode !== null || child.signalCode !== null || !connected.isConnected(),
       opts.settleMs ?? SETTLE_MS,
     )
+    // Where the main window is, or went: a load that failed (offline, a dev server not started)
+    // still names it (CDP's unreachable URL), judged and said by that.
+    const failed = page.url().startsWith("chrome-error:")
+    const shown = failed ? ((await unreachableUrl(page)) ?? page.url()) : page.url()
     // Sealed now, from the main window alone: its own scheme (app:) or dev server (loopback).
     const launched = new Set<string>()
     const schemes = new Set<string>()
     const embedded = new Set<string>()
-    const origin = loopbackOrigin(page.url())
+    const origin = loopbackOrigin(shown)
     if (origin !== undefined) launched.add(origin)
-    const scheme = ownScheme(page.url())
+    const scheme = ownScheme(shown)
     if (scheme !== undefined) schemes.add(scheme)
     // What the main window embeds as it opens (a video, a widget) is part of the app as shipped.
     for (const frame of page.frames()) {
@@ -433,16 +456,17 @@ export async function launchElectronWith(
       origins: [...(opts.origins ?? []), ...embedded],
     }
     const allows = (url: string) => allowedPage(url, own)
-    // A load that failed (no network in a trial) still names where it went (CDP's unreachable
-    // URL): judged by that, a wrapper's site said even unreached.
-    const shown = page.url().startsWith("chrome-error:")
-      ? ((await unreachableUrl(page)) ?? page.url())
-      : page.url()
     if (!allows(shown)) {
       const url = URL.parse(shown)
       throw new ElectronLaunchError(
         `the app shows ${placeOf(shown)}: if that's the app's own, list it in its origins`,
         url?.protocol === "https:" ? { why: "site", site: url.origin } : { why: "other" },
+      )
+    }
+    // Its own page, never loaded: said (never a window driven on Chromium's error page).
+    if (failed) {
+      throw new ElectronLaunchError(
+        `the app couldn't load ${placeOf(shown)} (offline? its server not running?)`,
       )
     }
     // The guard: every frame of every window, every navigation, at once; one that isn't the app's

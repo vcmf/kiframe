@@ -108,15 +108,28 @@ function ownerOf(name: string): Owner | undefined {
 }
 
 /** A command's output (undefined when it fails; lsof's "nothing found" is an answer). */
-export function run(command: string, args: string[]): Promise<string | undefined> {
+export async function run(cmd: string, args: string[]): Promise<string | undefined> {
+  const out = await command(cmd, args, 5000)
+  return out.code === 0 || out.code === 1 ? out.stdout : undefined
+}
+
+/**
+ * A command's exit code (-1: it couldn't run, or timed out) and output, in the C locale: what's
+ * parsed (a start time, codesign's fields) reads the same in every language.
+ */
+export function command(
+  cmd: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
-      command,
+      cmd,
       args,
-      // The C locale: what's parsed (a start time) reads the same in every language.
-      { timeout: 5000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } },
-      (error, stdout) => {
-        resolve(error !== null && (error as { code?: unknown }).code !== 1 ? undefined : stdout)
+      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } },
+      (error, stdout, stderr) => {
+        const code = error === null ? 0 : typeof error.code === "number" ? error.code : -1
+        resolve({ code: error?.killed === true ? -1 : code, stdout, stderr })
       },
     )
   })
