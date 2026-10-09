@@ -13,6 +13,7 @@ import {
   DesktopAdds,
   DesktopApprovals,
   desktopStatus,
+  endAddsOnSwitch,
   opensOf,
 } from "../src/main/desktop-apps.ts"
 
@@ -70,8 +71,9 @@ describe("a desktop app's approvals", () => {
     const approvals = new DesktopApprovals(data)
     approvals.approve(notes(), "folder-a", opensOf(entry()))
     const again = new DesktopApprovals(data)
+    // With the build this project tried.
     expect(again.copyFor("COM.EXAMPLE.NOTES", "folder-a")?.scopes).toEqual({
-      "folder-a": { opens: opensOf(entry()) },
+      "folder-a": { opens: opensOf(entry()), version: "1.0" },
     })
     expect(readFileSync(join(data, "desktop-apps.json")).length).toBeGreaterThan(0)
     again.drop("com.example.Notes", "folder-a")
@@ -109,6 +111,26 @@ describe("a desktop app's approvals", () => {
     // A project switching copies lets the other go.
     approvals.approve(dev, "folder-a", "a".repeat(64))
     expect(approvals.copies("com.example.Notes").map((c) => c.path)).toEqual([dev.path])
+  })
+
+  it("always read back (copies capped, long names cut): never set aside for what they wrote", () => {
+    const data = dir()
+    const approvals = new DesktopApprovals(data)
+    for (let i = 0; i < 25; i++) {
+      approvals.approve(
+        notes({
+          path: `/Users/me/dev/w${i}/Notes.app`,
+          name: "N".repeat(300),
+          version: "9".repeat(150),
+        }),
+        `folder-${i}`,
+        "a".repeat(64),
+      )
+    }
+    const again = new DesktopApprovals(data)
+    expect(again.takeProblem()).toBeNull()
+    expect(again.copies("com.example.Notes")).toHaveLength(20)
+    expect(again.copyFor("com.example.Notes", "folder-24")?.name).toHaveLength(200)
   })
 
   it("change nothing when a write fails (memory as on disk)", () => {
@@ -168,6 +190,23 @@ describe("a desktop app's status (static: nothing launches)", () => {
     // A pull added a site the project shows as the app's own (or an argument): asked again.
     const opens = entry({ origins: ["https://evil.example"] })
     expect((await status(at, approved, opens)).status).toBe("opens-changed")
+  })
+
+  it("keeps each project's tried build: another's approval of an update changes nothing here", async () => {
+    const approvals = new DesktopApprovals(dir())
+    approvals.approve(notes(), "folder-b", opensOf(entry()))
+    const updated = { "/Applications/Notes.app": notes({ version: "1.1" }) }
+    expect(await desktopStatus(entry(), "folder-b", approvals, looks(updated).looks)).toEqual({
+      status: "updated",
+    })
+    // Project A tries and approves 1.1: B still hasn't tried it.
+    approvals.approve(notes({ version: "1.1" }), "folder-a", opensOf(entry()))
+    expect(await desktopStatus(entry(), "folder-b", approvals, looks(updated).looks)).toEqual({
+      status: "updated",
+    })
+    expect(await desktopStatus(entry(), "folder-a", approvals, looks(updated).looks)).toEqual({
+      status: "ready",
+    })
   })
 
   it("never looks at the app to say what needs no look (another project's, opens changed)", async () => {
@@ -383,6 +422,24 @@ describe("adding a desktop app", () => {
     expect(signal?.aborted).toBe(true)
   })
 
+  it("stops looking at the app again when its add is given up", async () => {
+    const h = harness()
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    let signal: AbortSignal | undefined
+    h.fake.looks.inspect = (_path, s) => {
+      signal = s
+      return new Promise<DesktopApp>((_, reject) =>
+        s?.addEventListener("abort", () => reject(s.reason as Error)),
+      )
+    }
+    const adding = h.adds.add(1, "s1", card.token)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    h.adds.dropFor(1)
+    await expect(adding).rejects.toThrow(/isn't being added any more/)
+    expect(signal?.aborted).toBe(true)
+  })
+
   it("is done once written: an approval that fails then is said, never added twice", async () => {
     const h = harness()
     h.host.approve = () => {
@@ -544,7 +601,7 @@ describe("an add's lifetime: its project's, checked after every wait", () => {
       },
       host,
     )
-    workspace.onSwitch(() => adds.dropAll())
+    endAddsOnSwitch(workspace, adds)
     const session = workspace.session ?? ""
     const card = await adds.pick(1, session)
     const checking = adds.check(1, session, card?.token ?? "", false)

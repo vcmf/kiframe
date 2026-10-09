@@ -281,4 +281,32 @@ describe("adding a desktop app", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
     await within(panel).findByRole("region", { name: "Adding Notion" })
   })
+
+  it("checks the next card at once, whatever a given-up card's check is still doing", async () => {
+    let checks = 0
+    let picks = 0
+    stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "apps:desktop-pick": () => ({
+        card:
+          picks++ === 0
+            ? card
+            : { ...card, token: "7b2d6d2f-1a1c-4e6f-8b4c-3d2e1f0a9b8c", name: "Notion" },
+      }),
+      "apps:desktop-check": () =>
+        (checks++ === 0 ? new Promise(() => undefined) : { ok: true }) as never,
+      "apps:desktop-cancel": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
+    const panel = screen.getByRole("dialog", { name: "Apps" })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const slack = await within(panel).findByRole("region", { name: "Adding Slack" })
+    fireEvent.click(within(slack).getByRole("button", { name: "Check" }))
+    fireEvent.click(within(slack).getByRole("button", { name: "Cancel" }))
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const notion = await within(panel).findByRole("region", { name: "Adding Notion" })
+    fireEvent.click(within(notion).getByRole("button", { name: "Check" }))
+    expect(await within(notion).findByRole("button", { name: "Add Notion" })).toBeTruthy()
+  })
 })

@@ -93,7 +93,8 @@ export function AppsPanel({
   // Busy flags read at once (a double click within one frame sees the first).
   const pickingNow = useRef(false)
   const addingNow = useRef(false)
-  const checkingNow = useRef(false)
+  // The card a check is under way for (another card's Check is its own).
+  const checkingNow = useRef<string | null>(null)
   const pick = async () => {
     if (pickingNow.current || addingNow.current) return
     pickingNow.current = true
@@ -115,15 +116,15 @@ export function AppsPanel({
   }
 
   const check = async (allowSite: boolean) => {
-    if (card === null || checkingNow.current) return
+    if (card === null || checkingNow.current === card.token) return
     const token = card.token
-    checkingNow.current = true
+    checkingNow.current = token
     setChecking(true)
     setOutcome(null)
     const result = await api()
       .invoke("apps:desktop-check", { session: project.session, token, allowSite })
       .catch((e: unknown) => ({ failed: String(e) }))
-    checkingNow.current = false
+    if (checkingNow.current === token) checkingNow.current = null
     // Given up meanwhile (cancelled, another app picked): never shown on another card.
     if (current.current !== token) return
     setChecking(false)

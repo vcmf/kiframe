@@ -28,10 +28,22 @@ const Approval = z.strictObject({
   version: z.string().max(100).optional(),
   signer: SignerSchema,
   approvedAt: z.string(),
-  /** Per project folder (the registry's scope): what it opens with the app, approved. */
-  scopes: z.record(z.string(), z.strictObject({ opens: z.string().regex(/^[0-9a-f]{64}$/) })),
+  /**
+   * Per project folder (the registry's scope): what it opens with the app, approved, and the build
+   * it tried (each project's own: another's update never changes its status).
+   */
+  scopes: z.record(
+    z.string(),
+    z.strictObject({
+      opens: z.string().regex(/^[0-9a-f]{64}$/),
+      version: z.string().max(100).optional(),
+    }),
+  ),
 })
 type Approval = z.infer<typeof Approval>
+
+/** At most this many copies of one app kept (the oldest let go): the file always reads back. */
+const MAX_COPIES = 20
 
 /**
  * Each bundle id's copies (a release in Applications, a dev build elsewhere: one id, several
@@ -99,21 +111,25 @@ export class DesktopApprovals {
    * afresh when another is there now; the project's other copy of that id let go.
    */
   approve(app: DesktopApp, scope: string, opens: string): void {
+    const here = this.copies(app.bundleId).find((copy) => copy.path === app.path)
     const others = this.copies(app.bundleId)
-      .filter((copy) => copy.path !== app.path)
+      .filter((copy) => copy !== here)
       .map((copy) => ({ ...copy, scopes: without(copy.scopes, scope) }))
       .filter((copy) => Object.keys(copy.scopes).length > 0)
-    const here = this.copies(app.bundleId).find((copy) => copy.path === app.path)
     const kept = here !== undefined && sameSigner(here.signer, app.signer) ? here.scopes : {}
+    const version = app.version?.slice(0, 100)
     const copy: Approval = {
       path: app.path,
-      name: app.name,
-      ...(app.version !== undefined && { version: app.version }),
+      name: app.name.slice(0, 200),
+      ...(version !== undefined && { version }),
       signer: app.signer,
       approvedAt: new Date().toISOString(),
-      scopes: { ...kept, [scope]: { opens } },
+      scopes: { ...kept, [scope]: { opens, ...(version !== undefined && { version }) } },
     }
-    this.#write({ ...this.#file.apps, [keyOf(app.bundleId)]: [...others, copy] })
+    this.#write({
+      ...this.#file.apps,
+      [keyOf(app.bundleId)]: [...others, copy].slice(-MAX_COPIES),
+    })
   }
 
   /** This project folder's approval of the app taken back (the app removed from the project). */
@@ -127,7 +143,8 @@ export class DesktopApprovals {
 
   /** Written whole, then kept (a write that fails changes nothing here either). */
   #write(apps: File["apps"]): void {
-    const next: File = { version: 1, apps }
+    // What reads back (never a file that would be set aside at the next start).
+    const next: File = File.parse({ version: 1, apps })
     mkdirSync(dirname(this.#path), { recursive: true })
     const tmp = `${this.#path}.${randomBytes(6).toString("hex")}.tmp`
     writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
@@ -172,13 +189,12 @@ export async function desktopStatus(
   scope: string,
   approvals: DesktopApprovals,
   looks: Pick<Looks, "inspect">,
-  signal?: AbortSignal,
 ): Promise<DesktopStatus> {
   const copy = approvals.copyFor(entry.bundleId, scope)
   if (copy === undefined) {
     return approvals.copies(entry.bundleId).length === 0
       ? { status: "allow", why: "not added on this Mac: add it from Applications to use it here" }
-      : { status: "allow", why: "approved for another project: allow it in this one" }
+      : { status: "allow", why: "not allowed in this project yet: pick it to allow it here" }
   }
   if (copy.scopes[scope]?.opens !== opensOf(entry)) {
     return {
@@ -188,9 +204,8 @@ export async function desktopStatus(
   }
   let now: DesktopApp
   try {
-    now = await looks.inspect(copy.path, signal)
+    now = await looks.inspect(copy.path)
   } catch (error) {
-    if (signal?.aborted === true) throw error
     if (!existsSync(copy.path)) {
       return { status: "not-found", why: `not at ${copy.path} any more: add it again` }
     }
@@ -199,7 +214,7 @@ export async function desktopStatus(
   if (keyOf(now.bundleId) !== keyOf(entry.bundleId) || !sameSigner(copy.signer, now.signer)) {
     return { status: "changed", why: "another app is there now (or another build): add it again" }
   }
-  return now.version !== copy.version && now.signer.kind === "team"
+  return now.version !== copy.scopes[scope]?.version && now.signer.kind === "team"
     ? { status: "updated" }
     : { status: "ready" }
 }
@@ -286,6 +301,8 @@ interface Pending {
   tried: boolean
   trial: AbortController | undefined
   adding: boolean
+  /** Ends what's under way for it (its add's look at the app) when it's dropped. */
+  stopping: AbortController
 }
 
 /** Refused: said to the user as is. */
@@ -361,6 +378,7 @@ export class DesktopAdds {
         tried: false,
         trial: undefined,
         adding: false,
+        stopping: new AbortController(),
       })
       return {
         token,
@@ -427,7 +445,13 @@ export class DesktopAdds {
     if (pending.adding) throw refused("it's being added already")
     pending.adding = true
     try {
-      const now = await this.#looks.inspect(pending.app.path)
+      const now = await this.#looks
+        .inspect(pending.app.path, pending.stopping.signal)
+        .catch((error: unknown) => {
+          // Given up meanwhile: said as such (the gate's words).
+          this.#own(owner, session, token)
+          throw error
+        })
       this.#own(owner, session, token)
       if (!sameSigner(now.signer, pending.app.signer)) {
         throw refused("the app changed since it was checked: pick it again")
@@ -485,6 +509,7 @@ export class DesktopAdds {
     for (const [token, pending] of this.#pending) {
       if (pending.owner !== owner) continue
       pending.trial?.abort()
+      pending.stopping.abort()
       this.#pending.delete(token)
     }
   }
@@ -493,7 +518,10 @@ export class DesktopAdds {
   dropAll(): void {
     for (const pick of this.#picks.values()) pick.stopping.abort()
     this.#picks.clear()
-    for (const pending of this.#pending.values()) pending.trial?.abort()
+    for (const pending of this.#pending.values()) {
+      pending.trial?.abort()
+      pending.stopping.abort()
+    }
     this.#pending.clear()
   }
 
@@ -513,6 +541,7 @@ export class DesktopAdds {
     const pending = this.#pending.get(token)
     if (pending !== undefined && !this.#isCurrent(pending.session)) {
       pending.trial?.abort()
+      pending.stopping.abort()
       this.#pending.delete(token)
     }
     const still = this.#pending.get(token)
@@ -539,4 +568,12 @@ export function addHostOf(
     busy: () => (workspace.agent?.running === true ? "Kif is working: stop it first" : undefined),
     ...deps,
   }
+}
+
+/** The adds ended, their trials too, as the workspace switches project (main's wiring). */
+export function endAddsOnSwitch(
+  workspace: { onSwitch(listener: () => void): void },
+  adds: DesktopAdds,
+): void {
+  workspace.onSwitch(() => adds.dropAll())
 }
