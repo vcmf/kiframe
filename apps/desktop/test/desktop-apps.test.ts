@@ -13,7 +13,6 @@ import {
   DesktopAdds,
   DesktopApprovals,
   desktopStatus,
-  endAddsOnSwitch,
   opensOf,
 } from "../src/main/desktop-apps.ts"
 
@@ -124,13 +123,18 @@ describe("a desktop app's approvals", () => {
           version: "9".repeat(150),
         }),
         `folder-${i}`,
-        "a".repeat(64),
+        opensOf(entry()),
       )
     }
     const again = new DesktopApprovals(data)
     expect(again.takeProblem()).toBeNull()
     expect(again.copies("com.example.Notes")).toHaveLength(20)
     expect(again.copyFor("com.example.Notes", "folder-24")?.name).toHaveLength(200)
+    // A long version compares as it was kept (never "updated" for being long).
+    const team = notes({ path: "/Users/me/dev/w24/Notes.app", version: "9".repeat(150) })
+    return desktopStatus(entry(), "folder-24", again, looks({ [team.path]: team }).looks).then(
+      (status) => expect(status).toEqual({ status: "ready" }),
+    )
   })
 
   it("change nothing when a write fails (memory as on disk)", () => {
@@ -601,7 +605,7 @@ describe("an add's lifetime: its project's, checked after every wait", () => {
       },
       host,
     )
-    endAddsOnSwitch(workspace, adds)
+    workspace.onSwitch(() => adds.dropAll())
     const session = workspace.session ?? ""
     const card = await adds.pick(1, session)
     const checking = adds.check(1, session, card?.token ?? "", false)

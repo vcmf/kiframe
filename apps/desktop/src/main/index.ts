@@ -15,7 +15,6 @@ import {
   DesktopAdds,
   DesktopApprovals,
   desktopStatus,
-  endAddsOnSwitch,
   type Looks,
 } from "./desktop-apps.ts"
 import { FileVersions } from "./file-versions.ts"
@@ -294,7 +293,8 @@ function start(): void {
     workDir,
   )
   // Every add ends, its trial too, as the project switches.
-  endAddsOnSwitch(workspace, adds)
+  // Every add ends, its trial too, as the project switches.
+  workspace.onSwitch(() => adds.dropAll())
   let approvals: DesktopApprovals | undefined
   const desktopApprovals = (): DesktopApprovals =>
     (approvals ??= new DesktopApprovals(app.getPath("userData")))

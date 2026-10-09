@@ -92,11 +92,13 @@ export function AppsPanel({
 
   // Busy flags read at once (a double click within one frame sees the first).
   const pickingNow = useRef(false)
-  const addingNow = useRef(false)
+  // The card an add is under way for (a card given up frees the panel at once).
+  const addingNow = useRef<string | null>(null)
   // The card a check is under way for (another card's Check is its own).
   const checkingNow = useRef<string | null>(null)
   const pick = async () => {
-    if (pickingNow.current || addingNow.current) return
+    if (pickingNow.current || (addingNow.current !== null && addingNow.current === current.current))
+      return
     pickingNow.current = true
     setError(null)
     setOutcome(null)
@@ -132,14 +134,14 @@ export function AppsPanel({
   }
 
   const add = async () => {
-    if (card === null || addingNow.current) return
+    if (card === null || addingNow.current === card.token) return
     const token = card.token
-    addingNow.current = true
+    addingNow.current = token
     setAdding(true)
     const refused = await api()
       .invoke("apps:desktop-add", { session: project.session, token })
       .catch((e: unknown) => String(e))
-    addingNow.current = false
+    if (addingNow.current === token) addingNow.current = null
     setAdding(false)
     // Given up meanwhile (cancelled, another app picked): never said on another card.
     if (current.current !== token) {
@@ -159,6 +161,7 @@ export function AppsPanel({
     setCard(null)
     setOutcome(null)
     setChecking(false)
+    setAdding(false)
     void api()
       .invoke("apps:desktop-cancel")
       .catch(() => undefined)

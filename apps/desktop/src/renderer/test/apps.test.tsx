@@ -268,10 +268,10 @@ describe("adding a desktop app", () => {
     fireEvent.click(within(slack).getByRole("button", { name: "Check" }))
     fireEvent.click(await within(slack).findByRole("button", { name: "Add Slack" }))
     fireEvent.click(within(slack).getByRole("button", { name: "Cancel" }))
-    // Picking waits for the add under way.
+    // Given up: the panel's free at once (main refuses that add's write).
     expect(
       within(panel).getByRole("button", { name: "Add desktop app…" }).hasAttribute("disabled"),
-    ).toBe(true)
+    ).toBe(false)
     await act(async () => {
       answer("the project can't take it so")
       await Promise.resolve()
