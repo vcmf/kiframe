@@ -10,7 +10,13 @@ import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
-import { DesktopAdds, DesktopApprovals, desktopStatus, type Looks } from "./desktop-apps.ts"
+import {
+  addHostOf,
+  DesktopAdds,
+  DesktopApprovals,
+  desktopStatus,
+  type Looks,
+} from "./desktop-apps.ts"
 import { FileVersions } from "./file-versions.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
@@ -267,9 +273,36 @@ function start(): void {
   const looks: Looks = { inspect: inspectDesktopApp, trial: trialDesktopApp }
   // Kiframe's work area (~/.kiframe); a test's own (never the user's) when it names one.
   const workDir = process.env.KIFRAME_WORK_DIR ?? defaultWorkDir()
-  const adds = new DesktopAdds(looks, () => workspace.apps()?.session, workDir)
-  // One app picker at a time (a second while it's open: nothing).
-  let picking = false
+  const adds: DesktopAdds = new DesktopAdds(
+    looks,
+    addHostOf(
+      workspace,
+      {
+        pickApp: async () => {
+          const picked = await dialog.showOpenDialog(parent(), {
+            title: "Add a desktop app",
+            buttonLabel: "Choose",
+            defaultPath: "/Applications",
+            properties: ["openFile"],
+            filters: [{ name: "Applications", extensions: ["app"] }],
+          })
+          return picked.canceled ? undefined : picked.filePaths[0]
+        },
+        approve: (picked, opened, opens) =>
+          desktopApprovals().approve(picked, ids().scope(opened.dir), opens),
+        changed: (opened) => {
+          // Told to this project's agent only (another opened meanwhile: never its).
+          if (workspace.opened !== opened) return
+          workspace.agent?.appsChanged(opened.project.apps)
+          void status().then((now) => {
+            if (workspace.opened === opened) emit(window, "status", now)
+          })
+        },
+      },
+      () => adds,
+    ),
+    workDir,
+  )
   let approvals: DesktopApprovals | undefined
   const desktopApprovals = (): DesktopApprovals =>
     (approvals ??= new DesktopApprovals(app.getPath("userData")))
@@ -291,6 +324,10 @@ function start(): void {
     if (window === null) {
       window = createWindow(join(here, "../preload"), icon, devServer)
       const closing = window.webContents.id
+      // A reload keeps the id: its add given up all the same (the window starts afresh).
+      window.webContents.on("did-start-navigation", (event) => {
+        if (event.isMainFrame && !event.isSameDocument) adds.dropFor(closing)
+      })
       window.on("closed", () => {
         // Its add dropped, its trial ended (macOS keeps the app open without a window).
         adds.dropFor(closing)
@@ -520,30 +557,14 @@ function start(): void {
           if (process.platform !== "darwin") {
             return { refused: "desktop apps run on macOS only (they're confined there)" }
           }
-          const opened = sessionProject(session)
-          if (typeof opened === "string") return { refused: opened }
-          if (workspace.agent?.running === true) return { refused: "Kif is working: stop it first" }
-          if (picking) return null
-          picking = true
-          const picked = await dialog
-            .showOpenDialog(parent(), {
-              title: "Add a desktop app",
-              buttonLabel: "Choose",
-              defaultPath: "/Applications",
-              properties: ["openFile"],
-              filters: [{ name: "Applications", extensions: ["app"] }],
-            })
-            .finally(() => (picking = false))
-          const path = picked.filePaths[0]
-          if (picked.canceled || path === undefined) return null
           try {
-            return { card: await adds.pick(owner(), session, path, opened.project) }
+            const card = await adds.pick(owner(), session)
+            return card === null ? null : { card }
           } catch (e) {
             return { refused: message(e) }
           }
         },
         "apps:desktop-check": async ({ session, token, allowSite }) => {
-          if (workspace.agent?.running === true) return { failed: "Kif is working: stop it first" }
           try {
             return await adds.check(owner(), session, token, allowSite)
           } catch (e) {
@@ -551,28 +572,12 @@ function start(): void {
           }
         },
         "apps:desktop-add": async ({ session, token }) => {
-          const opened = sessionProject(session)
-          if (typeof opened === "string") return opened
-          if (workspace.agent?.running === true) return "Kif is working: stop it first"
           try {
-            await adds.add(
-              owner(),
-              session,
-              token,
-              opened,
-              ids().scope(opened.dir),
-              desktopApprovals(),
-            )
+            await adds.add(owner(), session, token)
+            return null
           } catch (e) {
             return message(e)
           }
-          // Told to this project's agent only (another opened meanwhile: never its).
-          if (workspace.opened !== opened) return null
-          workspace.agent?.appsChanged(opened.project.apps)
-          void status().then((now) => {
-            if (workspace.opened === opened) emit(window, "status", now)
-          })
-          return null
         },
         "apps:desktop-cancel": () => adds.dropFor(owner()),
         "apps:desktop-status": async ({ session }) => {

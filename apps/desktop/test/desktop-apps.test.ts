@@ -5,7 +5,10 @@ import { createProject, openProject, saveProject } from "@kiframe/project"
 import type { DesktopApp, TrialOptions, TrialOutcome } from "@kiframe/runtime"
 import type { ElectronApp } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
+import { Workspace } from "../src/main/workspace.ts"
 import {
+  addHostOf,
+  type AddHost,
   appNameFor,
   DesktopAdds,
   DesktopApprovals,
@@ -157,121 +160,172 @@ describe("a desktop app's status (static: nothing launches)", () => {
   })
 })
 
-describe("adding a desktop app", () => {
-  const at = { "/Applications/Notes.app": notes() }
+/** A deferred answer (a wait the test lets go of when it wants). */
+function deferred<T>() {
+  let resolve: (value: T) => void = () => undefined
+  const promise = new Promise<T>((r) => (resolve = r))
+  return { promise, resolve }
+}
 
+/**
+ * The add flow with a fake host: the open project, its session, Kif's state and the picker driven
+ * by the test; what's approved and told recorded.
+ */
+function harness(
+  opened = project(),
+  at: Record<string, DesktopApp> = { "/Applications/Notes.app": notes() },
+  outcome: (o: TrialOptions) => TrialOutcome = () => ({ ok: true }),
+) {
+  const state = {
+    session: "s1" as string | undefined,
+    opened: opened as ReturnType<typeof project> | null,
+    busy: undefined as string | undefined,
+    picked: "/Applications/Notes.app" as string | undefined,
+    approved: [] as string[],
+    changed: 0,
+  }
+  const fake = looks(at, outcome)
+  const approvals = new DesktopApprovals(dir())
+  const host: AddHost = {
+    session: () => state.session,
+    opened: () => state.opened,
+    busy: () => state.busy,
+    pickApp: () => Promise.resolve(state.picked),
+    approve: (app, o, opens) => {
+      approvals.approve(app, "folder-a", opens)
+      state.approved.push(app.bundleId)
+      void o
+    },
+    changed: () => (state.changed += 1),
+  }
+  const adds = new DesktopAdds(fake.looks, host)
+  const pick = async () => {
+    const card = await adds.pick(1, "s1")
+    if (card === null) throw new Error("no card")
+    return card
+  }
+  return { adds, state, host, fake, approvals, opened, pick }
+}
+
+describe("adding a desktop app", () => {
   it("adds it once it ran confined: named, written to the project, approved here", async () => {
-    const opened = project()
-    const approvals = new DesktopApprovals(dir())
-    const adds = new DesktopAdds(looks(at).looks, () => "s1")
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    const h = harness()
+    const card = await h.pick()
     expect(card).toMatchObject({
       name: "Notes",
       bundleId: "com.example.Notes",
       signer: { kind: "team", team: "TEAM123456" },
     })
     expect(JSON.stringify(card)).not.toContain("/Applications")
-    // Never before a trial worked.
-    await expect(adds.add(1, "s1", card.token, opened, "folder-a", approvals)).rejects.toThrow(
-      /check it first/,
-    )
-    expect(await adds.check(1, "s1", card.token, false)).toEqual({ ok: true })
-    expect(await adds.add(1, "s1", card.token, opened, "folder-a", approvals)).toBe("notes")
-    expect(openProject(opened.dir).project.apps["notes"]).toMatchObject({
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/check it first/)
+    expect(await h.adds.check(1, "s1", card.token, false)).toEqual({ ok: true })
+    expect(await h.adds.add(1, "s1", card.token)).toBe("notes")
+    expect(openProject(h.opened.dir).project.apps["notes"]).toMatchObject({
       kind: "electron",
       bundleId: "com.example.Notes",
     })
+    expect(h.state.changed).toBe(1)
     expect(
       await desktopStatus(
-        opened.project.apps["notes"] as ElectronApp,
+        h.opened.project.apps["notes"] as ElectronApp,
         "folder-a",
-        approvals,
-        looks(at).looks,
+        h.approvals,
+        h.fake.looks,
       ),
     ).toEqual({ status: "ready" })
   })
 
-  it("allows a wrapper's site only as the trial named it (never one the window names)", async () => {
-    const opened = project()
-    const fake = looks(at, (o) =>
+  it("allows a wrapper's site only as the trial named it, tried before it's added", async () => {
+    const h = harness(project(), undefined, (o) =>
       (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.slack.com" },
     )
-    const adds = new DesktopAdds(fake.looks, () => "s1")
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await expect(adds.check(1, "s1", card.token, true)).rejects.toThrow(/no site to allow/)
-    expect(await adds.check(1, "s1", card.token, false)).toEqual({ site: "https://app.slack.com" })
-    expect(await adds.check(1, "s1", card.token, true)).toEqual({ ok: true })
-    expect(fake.trials.at(-1)?.origins).toEqual(["https://app.slack.com"])
-    await adds.add(1, "s1", card.token, opened, "folder-a", new DesktopApprovals(dir()))
-    expect(openProject(opened.dir).project.apps["notes"]).toMatchObject({
+    const card = await h.pick()
+    await expect(h.adds.check(1, "s1", card.token, true)).rejects.toThrow(/no site to allow/)
+    expect(await h.adds.check(1, "s1", card.token, false)).toEqual({
+      site: "https://app.slack.com",
+    })
+    expect(await h.adds.check(1, "s1", card.token, true)).toEqual({ ok: true })
+    expect(h.fake.trials.at(-1)?.origins).toEqual(["https://app.slack.com"])
+    await h.adds.add(1, "s1", card.token)
+    expect(openProject(h.opened.dir).project.apps["notes"]).toMatchObject({
       origins: ["https://app.slack.com"],
     })
   })
 
-  it("approves an app the project already names, without adding it twice", async () => {
-    const opened = project()
-    saveProject(opened, {
-      ...opened.project,
-      apps: { ...opened.project.apps, desk: entry({ origins: ["https://a.example"] }) },
-    })
-    const approvals = new DesktopApprovals(dir())
-    const fake = looks(at)
-    const adds = new DesktopAdds(fake.looks, () => "s1")
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    expect(card.existing).toBe("desk")
-    await adds.check(1, "s1", card.token, false)
-    // Tried with what the project runs it with.
-    expect(fake.trials[0]?.origins).toEqual(["https://a.example"])
-    expect(await adds.add(1, "s1", card.token, opened, "folder-a", approvals)).toBe("desk")
-    expect(Object.keys(openProject(opened.dir).project.apps)).toEqual(["app", "desk"])
-    expect(approvals.get("com.example.Notes")?.scopes["folder-a"]?.opens).toBe(
-      opensOf(entry({ origins: ["https://a.example"] })),
-    )
+  it("never adds while a check runs (a site allowed but not tried yet)", async () => {
+    const trial = deferred<TrialOutcome>()
+    let first = true
+    const h = harness()
+    h.fake.looks.trial = (_app, o) => {
+      h.fake.trials.push(o)
+      if (first) {
+        first = false
+        return Promise.resolve({ site: "https://app.slack.com" })
+      }
+      return trial.promise
+    }
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    const checking = h.adds.check(1, "s1", card.token, true)
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/being checked/)
+    trial.resolve({ ok: true })
+    await checking
+    expect(await h.adds.add(1, "s1", card.token)).toBe("notes")
   })
 
   it("refuses a token of another window or project, and a build changed since its trial", async () => {
-    const opened = project()
-    const apps = { ...at }
-    const adds = new DesktopAdds(looks(apps).looks, () => "s1")
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await expect(adds.check(2, "s1", card.token, false)).rejects.toThrow(
+    const h = harness()
+    const card = await h.pick()
+    await expect(h.adds.check(2, "s1", card.token, false)).rejects.toThrow(
       /isn't being added any more/,
     )
-    await expect(adds.check(1, "s2", card.token, false)).rejects.toThrow(
+    await expect(h.adds.check(1, "s2", card.token, false)).rejects.toThrow(
       /isn't being added any more/,
     )
-    await adds.check(1, "s1", card.token, false)
-    apps["/Applications/Notes.app"] = notes({
-      signer: { kind: "team", team: "OTHER00000", identifier: "x" },
-    })
-    await expect(
-      adds.add(1, "s1", card.token, opened, "folder-a", new DesktopApprovals(dir())),
-    ).rejects.toThrow(/changed since it was checked/)
+    await h.adds.check(1, "s1", card.token, false)
+    h.fake.looks.inspect = () =>
+      Promise.resolve(notes({ signer: { kind: "team", team: "OTHER00000", identifier: "x" } }))
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/changed since it was checked/)
   })
 
-  it("ends a trial when its add is dropped (another pick, the project closed, a quit)", async () => {
+  it("says a file changed on disk as itself, and a site the project can't take in words", async () => {
+    const h = harness()
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    writeFileSync(
+      join(h.opened.dir, "project.json"),
+      readFileSync(join(h.opened.dir, "project.json"), "utf8") + " ",
+    )
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/changed on disk.*reopen it/)
+    // The site is a web app's of the project already (one app per site).
     const opened = project()
-    let signal: AbortSignal | undefined
-    const adds = new DesktopAdds(
-      {
-        inspect: () => Promise.resolve(notes()),
-        trial: (_app, o) => {
-          signal = o.signal
-          return new Promise<TrialOutcome>((_, reject) =>
-            o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
-          )
-        },
-      },
-      () => "s1",
+    saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, desk: entry() } })
+    const g = harness(opened, undefined, (o) =>
+      (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.test" },
     )
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    const checking = adds.check(1, "s1", card.token, false)
-    adds.dropAll()
-    await expect(checking).rejects.toMatchObject({ name: "AbortError" })
-    expect(signal?.aborted).toBe(true)
-    await expect(adds.check(1, "s1", card.token, false)).rejects.toThrow(
-      /isn't being added any more/,
+    const named = await g.pick()
+    await g.adds.check(1, "s1", named.token, false)
+    await g.adds.check(1, "s1", named.token, true)
+    const error = await g.adds.add(1, "s1", named.token).then(
+      () => "",
+      (e: unknown) => (e as Error).message,
     )
+    expect(error).toMatch(/^the project can't take it so/)
+    expect(error).not.toMatch(/"code"|\[\{/)
+  })
+
+  it("is done once written: an approval that fails then is said, never added twice", async () => {
+    const h = harness()
+    h.host.approve = () => {
+      throw new Error("EACCES")
+    }
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(
+      /added as notes, but not approved on this Mac/,
+    )
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/isn't being added any more/)
+    expect(Object.keys(openProject(h.opened.dir).project.apps)).toEqual(["app", "notes"])
   })
 })
 
@@ -285,7 +339,6 @@ describe("an app's name in the project", () => {
 })
 
 describe("adding an app a project already names", () => {
-  const at = { "/Applications/Notes.app": notes() }
   const named = () => {
     const opened = project()
     saveProject(opened, {
@@ -298,149 +351,140 @@ describe("adding an app a project already names", () => {
     return opened
   }
 
-  it("shows what it opens, and never approves a project changed since the pick", async () => {
-    const opened = named()
-    const adds = new DesktopAdds(looks(at).looks, () => "s1")
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+  it("shows what it opens, tries it with its sites, and approves it without adding it twice", async () => {
+    const h = harness(named())
+    const card = await h.pick()
+    expect(card.existing).toBe("desk")
     expect(card.opens).toEqual({ args: ["files/vault"], origins: ["https://a.example"] })
-    await adds.check(1, "s1", card.token, false)
-    // A pull meanwhile adds a site: what the user saw isn't what would be approved.
-    const desk = opened.project.apps["desk"] as ElectronApp
-    saveProject(opened, {
-      ...opened.project,
+    await h.adds.check(1, "s1", card.token, false)
+    expect(h.fake.trials[0]?.origins).toEqual(["https://a.example"])
+    expect(await h.adds.add(1, "s1", card.token)).toBe("desk")
+    expect(Object.keys(openProject(h.opened.dir).project.apps)).toEqual(["app", "desk"])
+    expect(h.approvals.get("com.example.Notes")?.scopes["folder-a"]?.opens).toBe(
+      opensOf(entry({ args: ["files/vault"], origins: ["https://a.example"] })),
+    )
+  })
+
+  it("never approves a project changed since the pick", async () => {
+    const h = harness(named())
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    const desk = h.opened.project.apps["desk"] as ElectronApp
+    saveProject(h.opened, {
+      ...h.opened.project,
       apps: {
-        ...opened.project.apps,
+        ...h.opened.project.apps,
         desk: { ...desk, origins: ["https://a.example", "https://evil.example"] },
       },
     })
-    await expect(
-      adds.add(1, "s1", card.token, opened, "folder-a", new DesktopApprovals(dir())),
-    ).rejects.toThrow(/the project changed meanwhile/)
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/the project changed meanwhile/)
   })
 
   it("writes a site allowed in its check to the project, and approves that", async () => {
     const opened = project()
     saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, desk: entry() } })
-    const fake = looks(at, (o) =>
+    const h = harness(opened, undefined, (o) =>
       (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.slack.com" },
     )
-    const adds = new DesktopAdds(fake.looks, () => "s1")
-    const approvals = new DesktopApprovals(dir())
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await adds.check(1, "s1", card.token, false)
-    await adds.check(1, "s1", card.token, true)
-    expect(await adds.add(1, "s1", card.token, opened, "folder-a", approvals)).toBe("desk")
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    await h.adds.check(1, "s1", card.token, true)
+    expect(await h.adds.add(1, "s1", card.token)).toBe("desk")
     const desk = openProject(opened.dir).project.apps["desk"] as ElectronApp
     expect(desk.origins).toEqual(["https://app.slack.com"])
-    expect(await desktopStatus(desk, "folder-a", approvals, fake.looks)).toEqual({
+    expect(await desktopStatus(desk, "folder-a", h.approvals, h.fake.looks)).toEqual({
       status: "ready",
     })
   })
-
-  it("refuses a second pick while one is looked at, and a second add while one runs", async () => {
-    let release: () => void = () => undefined
-    const slow = new Promise<void>((resolve) => (release = resolve))
-    const adds = new DesktopAdds(
-      {
-        inspect: async () => {
-          await slow
-          return notes()
-        },
-        trial: () => Promise.resolve({ ok: true }),
-      },
-      () => "s1",
-    )
-    const opened = project()
-    const first = adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await expect(adds.pick(1, "s1", "/Applications/Notes.app", opened.project)).rejects.toThrow(
-      /being looked at/,
-    )
-    release()
-    const card = await first
-    await adds.check(1, "s1", card.token, false)
-    const approvals = new DesktopApprovals(dir())
-    const one = adds.add(1, "s1", card.token, opened, "folder-a", approvals)
-    await expect(adds.add(1, "s1", card.token, opened, "folder-a", approvals)).rejects.toThrow(
-      /being added already/,
-    )
-    expect(await one).toBe("notes")
-  })
 })
 
-describe("an add's lifetime: its project's, whatever changes it", () => {
-  const at = { "/Applications/Notes.app": notes() }
-
-  it("never writes an add given up while the app was looked at (cancelled, project changed)", async () => {
-    const opened = project()
-    let session = "s1"
-    let looking = false
-    let release: () => void = () => undefined
-    const adds = new DesktopAdds(
-      {
-        inspect: async () => {
-          if (looking) await new Promise<void>((resolve) => (release = resolve))
-          return notes()
-        },
-        trial: () => Promise.resolve({ ok: true }),
-      },
-      () => session,
-    )
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await adds.check(1, "s1", card.token, false)
-    looking = true
-    const approvals = new DesktopApprovals(dir())
-    const adding = adds.add(1, "s1", card.token, opened, "folder-a", approvals)
-    // Another project opened while the app was looked at.
-    session = "s2"
-    release()
-    await expect(adding).rejects.toThrow(/isn't being added any more/)
-    expect(openProject(opened.dir).project.apps["notes"]).toBeUndefined()
-    expect(approvals.get("com.example.Notes")).toBeUndefined()
-    // And cancelled (the window's add dropped) the same way.
-    session = "s1"
-    looking = false
-    const again = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await adds.check(1, "s1", again.token, false)
-    looking = true
-    const cancelled = adds.add(1, "s1", again.token, opened, "folder-a", approvals)
-    adds.dropFor(1)
-    release()
-    await expect(cancelled).rejects.toThrow(/isn't being added any more/)
-    expect(openProject(opened.dir).project.apps["notes"]).toBeUndefined()
+describe("an add's lifetime: its project's, checked after every wait", () => {
+  it("drops a pick whose project changed or that was cancelled while the user picked", async () => {
+    const h = harness()
+    const dialog = deferred<string | undefined>()
+    h.host.pickApp = () => dialog.promise
+    const picking = h.adds.pick(1, "s1")
+    await expect(h.adds.pick(1, "s1")).rejects.toThrow(/being picked already/)
+    h.adds.dropFor(1)
+    dialog.resolve("/Applications/Notes.app")
+    expect(await picking).toBeNull()
+    // And the next pick works (nothing left stuck).
+    h.host.pickApp = () => Promise.resolve("/Applications/Notes.app")
+    expect(await h.adds.pick(1, "s1")).not.toBeNull()
+    // A project switch while the app is looked at: no card.
+    const inspecting = deferred<DesktopApp>()
+    h.fake.looks.inspect = () => inspecting.promise
+    const later = h.adds.pick(1, "s1")
+    h.state.session = "s2"
+    inspecting.resolve(notes())
+    expect(await later).toBeNull()
   })
 
-  it("ends a check whose project closed, and refuses a pick for a project no longer open", async () => {
-    const opened = project()
-    let session: string | undefined = "s1"
-    const adds = new DesktopAdds(looks(at).looks, () => session)
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    session = undefined
-    await expect(adds.check(1, "s1", card.token, false)).rejects.toThrow(
-      /isn't being added any more/,
-    )
-    await expect(adds.pick(1, "s1", "/Applications/Notes.app", opened.project)).rejects.toThrow(
-      /project changed/,
-    )
-  })
-
-  it("says a site the project can't take in words, after a check that worked", async () => {
-    const opened = project()
-    // The site is a web app's of the project already (one app per site).
-    saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, desk: entry() } })
-    const fake = looks(at, (o) =>
-      (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.test" },
-    )
-    const adds = new DesktopAdds(fake.looks, () => "s1")
-    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
-    await adds.check(1, "s1", card.token, false)
-    await adds.check(1, "s1", card.token, true)
-    const error = await adds
-      .add(1, "s1", card.token, opened, "folder-a", new DesktopApprovals(dir()))
-      .then(
-        () => "",
-        (e: unknown) => (e as Error).message,
+  it("never writes an add given up, or Kif started, while the app was looked at again", async () => {
+    for (const giveUp of ["switch", "cancel", "busy"] as const) {
+      const h = harness()
+      const card = await h.pick()
+      await h.adds.check(1, "s1", card.token, false)
+      const inspecting = deferred<DesktopApp>()
+      h.fake.looks.inspect = () => inspecting.promise
+      const adding = h.adds.add(1, "s1", card.token)
+      if (giveUp === "switch") h.state.session = "s2"
+      if (giveUp === "cancel") h.adds.dropFor(1)
+      if (giveUp === "busy") h.state.busy = "Kif is working: stop it first"
+      inspecting.resolve(notes())
+      await expect(adding, giveUp).rejects.toThrow(
+        giveUp === "busy" ? /Kif is working/ : /isn't being added any more/,
       )
-    expect(error).toMatch(/^the project can't take it so/)
-    expect(error).not.toMatch(/"code"|\[\{/)
+      expect(openProject(h.opened.dir).project.apps["notes"], giveUp).toBeUndefined()
+      expect(h.state.approved, giveUp).toEqual([])
+    }
+  })
+
+  it("reads the project after the pick (an app removed meanwhile is no longer 'named')", async () => {
+    const opened = project()
+    saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, desk: entry() } })
+    const h = harness(opened)
+    const dialog = deferred<string | undefined>()
+    h.host.pickApp = () => dialog.promise
+    const picking = h.adds.pick(1, "s1")
+    const { desk: _desk, ...rest } = opened.project.apps
+    void _desk
+    saveProject(opened, { ...opened.project, apps: rest })
+    dialog.resolve("/Applications/Notes.app")
+    expect((await picking)?.existing).toBeUndefined()
+  })
+
+  it("ends every add and its trial as the workspace switches project", async () => {
+    const workspace = new Workspace(() => ({ close: () => Promise.resolve(), running: false }))
+    await workspace.open(project().dir)
+    let signal: AbortSignal | undefined
+    const host = addHostOf(
+      workspace,
+      {
+        pickApp: () => Promise.resolve("/Applications/Notes.app"),
+        approve: () => undefined,
+        changed: () => undefined,
+      },
+      () => adds,
+    )
+    const adds: DesktopAdds = new DesktopAdds(
+      {
+        inspect: () => Promise.resolve(notes()),
+        trial: (_app, o) => {
+          signal = o.signal
+          return new Promise<TrialOutcome>((_, reject) =>
+            o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
+          )
+        },
+      },
+      host,
+    )
+    const session = workspace.session ?? ""
+    const card = await adds.pick(1, session)
+    const checking = adds.check(1, session, card?.token ?? "", false)
+    await workspace.close()
+    await expect(checking).rejects.toMatchObject({ name: "AbortError" })
+    expect(signal?.aborted).toBe(true)
+    expect(workspace.session).toBeUndefined()
   })
 })

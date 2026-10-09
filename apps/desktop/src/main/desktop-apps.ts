@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname, join } from "node:path"
 import { type OpenedProject, saveProject } from "@kiframe/project"
 import type { DesktopApp, Signer, TrialOptions, TrialOutcome } from "@kiframe/runtime"
-import { type App, BUNDLE_ID, type ElectronApp } from "@kiframe/schema"
+import { BUNDLE_ID, type ElectronApp } from "@kiframe/schema"
 import { z } from "zod"
 
 const SignerSchema = z.union([
@@ -203,11 +203,13 @@ export function appNameFor(name: string, taken: readonly string[]): string {
   for (let i = 2; ; i++) if (!taken.includes(`${base}-${i}`)) return `${base}-${i}`
 }
 
-/** The app written to the project as `name` (refused by the project's rules: said in words). */
+/** The app written to the project as `name` (refused by the project's own rules: said in words). */
 function save(opened: OpenedProject, name: string, entry: ElectronApp): void {
   try {
     saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, [name]: entry } })
   } catch (error) {
+    // Only the project's rules reworded (a file changed on disk, a write failed: said as is).
+    if ((error as Error).name !== "ZodError") throw error
     const issue = (error as { issues?: { message: string }[] }).issues?.[0]?.message
     throw new Error(`the project can't take it so${issue === undefined ? "" : ` (${issue})`}`, {
       cause: error,
@@ -233,6 +235,24 @@ export interface DesktopCard {
   opens: { args: string[]; origins: string[] } | undefined
 }
 
+/**
+ * What the add flow needs of the app around it (main's; a fake in tests): read fresh at each step,
+ * never a snapshot.
+ */
+export interface AddHost {
+  /** The open project's session (none when no project is open). */
+  session(): string | undefined
+  opened(): OpenedProject | null
+  /** Why nothing may change now (Kif working), or undefined. */
+  busy(): string | undefined
+  /** The app the user picks (main's dialog): undefined when cancelled. */
+  pickApp(): Promise<string | undefined>
+  /** The app approved for this project with what it opens. */
+  approve(app: DesktopApp, opened: OpenedProject, opens: string): void
+  /** The project's apps changed (its agent and the window told, if it's still the open one). */
+  changed(opened: OpenedProject): void
+}
+
 interface Pending {
   owner: number
   session: string
@@ -246,86 +266,97 @@ interface Pending {
   origins: string[]
   /** Sites the user allowed in its checks (written to the project with it). */
   allowed: string[]
+  /** A trial worked with the sites it runs with now (they changed since: not tried). */
   tried: boolean
   trial: AbortController | undefined
-  /** An add under way (a second click waits for nothing: refused). */
   adding: boolean
 }
 
+/** Refused: said to the user as is. */
+const refused = (why: string) => new Error(why)
+const GONE = "that app isn't being added any more: pick it again"
+
 /**
- * Adds in progress, one per window: the app picked (its path stays in main: the window has a
- * token), tried, then added. Dropped with the project or the window; every trial ends at a quit.
+ * The add flow, owned whole (PR 3b-2, redesigned after three review rounds): the app picked (main's
+ * dialog; its path stays here: the window has a token), inspected, tried confined, added. One
+ * gate before every change and after every wait: the add still under way, its window's, its
+ * project the open one, Kif not working. A project switch ends every add at once (main's hook);
+ * the gate is the guarantee whatever path changed it.
  */
 export class DesktopAdds {
   readonly #pending = new Map<string, Pending>()
-  /** Windows whose pick is being inspected (another pick meanwhile: refused). */
-  readonly #picking = new Set<number>()
+  /** Each window's pick in progress (a cancel ends it: its answer dropped). */
+  readonly #picks = new Map<number, number>()
+  #generation = 0
   readonly #looks: Looks
+  readonly #host: AddHost
   readonly #workDir: string | undefined
-  /** The open project's session (none: no project): an add lives only while its own is open. */
-  readonly #session: () => string | undefined
 
-  constructor(looks: Looks, session: () => string | undefined, workDir?: string) {
+  constructor(looks: Looks, host: AddHost, workDir?: string) {
     this.#looks = looks
-    this.#session = session
+    this.#host = host
     this.#workDir = workDir
   }
 
-  /** The app the user picked, inspected (refused: said); a window's earlier add dropped. */
-  async pick(
-    owner: number,
-    session: string,
-    path: string,
-    project: { apps: Readonly<Record<string, App>> },
-  ): Promise<DesktopCard> {
-    if (this.#picking.has(owner)) throw new Error("an app is being looked at already")
-    if (this.#session() !== session) throw new Error("the project changed: pick it again")
+  /**
+   * The user picks an app (one pick per window at a time), inspected: its card, null when the
+   * dialog was cancelled or the pick given up meanwhile; refused: thrown, said.
+   */
+  async pick(owner: number, session: string): Promise<DesktopCard | null> {
+    if (this.#picks.has(owner)) throw refused("an app is being picked already")
+    this.#current(session)
     this.dropFor(owner)
-    this.#picking.add(owner)
-    let app: DesktopApp
+    const generation = ++this.#generation
+    this.#picks.set(owner, generation)
+    const still = () => this.#picks.get(owner) === generation && this.#isCurrent(session)
     try {
-      app = await this.#looks.inspect(path)
+      const path = await this.#host.pickApp()
+      if (path === undefined || !still()) return null
+      const app = await this.#looks.inspect(path)
+      if (!still()) return null
+      this.#current(session)
+      const opened = this.#host.opened()
+      if (opened === null) return null
+      const named = Object.entries(opened.project.apps).find(
+        ([, a]) => a.kind === "electron" && keyOf(a.bundleId) === keyOf(app.bundleId),
+      )
+      const existing = named?.[0]
+      // Named already: tried with the sites the project lists for it (what it'll run with), shown.
+      const entry = named?.[1].kind === "electron" ? named[1] : undefined
+      const listed = [...(entry?.origins ?? [])]
+      const token = randomUUID()
+      this.#pending.set(token, {
+        owner,
+        session,
+        app,
+        existing,
+        opensAtPick: entry === undefined ? undefined : opensOf(entry),
+        site: undefined,
+        origins: listed,
+        allowed: [],
+        tried: false,
+        trial: undefined,
+        adding: false,
+      })
+      return {
+        token,
+        name: app.name,
+        bundleId: app.bundleId,
+        version: app.version,
+        electron: app.electron,
+        signer:
+          app.signer.kind === "team" ? { kind: "team", team: app.signer.team } : { kind: "pinned" },
+        existing,
+        opens: entry === undefined ? undefined : { args: [...(entry.args ?? [])], origins: listed },
+      }
     } finally {
-      this.#picking.delete(owner)
-    }
-    if (this.#session() !== session) throw new Error("the project changed: pick it again")
-    const named = Object.entries(project.apps).find(
-      ([, a]) => a.kind === "electron" && keyOf(a.bundleId) === keyOf(app.bundleId),
-    )
-    const existing = named?.[0]
-    // Named already: tried with the sites the project lists for it (what it'll run with), shown.
-    const entry = named?.[1].kind === "electron" ? named[1] : undefined
-    const listed = [...(entry?.origins ?? [])]
-    const token = randomUUID()
-    this.#pending.set(token, {
-      owner,
-      session,
-      app,
-      existing,
-      opensAtPick: entry === undefined ? undefined : opensOf(entry),
-      site: undefined,
-      origins: listed,
-      allowed: [],
-      tried: false,
-      trial: undefined,
-      adding: false,
-    })
-    return {
-      token,
-      name: app.name,
-      bundleId: app.bundleId,
-      version: app.version,
-      electron: app.electron,
-      signer:
-        app.signer.kind === "team" ? { kind: "team", team: app.signer.team } : { kind: "pinned" },
-      existing,
-      opens: entry === undefined ? undefined : { args: [...(entry.args ?? [])], origins: listed },
+      if (this.#picks.get(owner) === generation) this.#picks.delete(owner)
     }
   }
 
   /**
    * The picked app tried, confined. `allowSite`: with the site the last trial named (kept here),
-   * as the app's own. A token of another window or project: refused.
+   * as the app's own: tried again before it can be added.
    */
   async check(
     owner: number,
@@ -334,12 +365,15 @@ export class DesktopAdds {
     allowSite: boolean,
   ): Promise<TrialOutcome> {
     const pending = this.#own(owner, session, token)
-    if (pending.trial !== undefined) throw new Error("it's being checked already")
+    if (pending.trial !== undefined) throw refused("it's being checked already")
+    if (pending.adding) throw refused("it's being added already")
     if (allowSite) {
-      if (pending.site === undefined) throw new Error("no site to allow: check it first")
+      if (pending.site === undefined) throw refused("no site to allow: check it first")
       pending.origins = [...new Set([...pending.origins, pending.site])]
       pending.allowed = [...new Set([...pending.allowed, pending.site])]
     }
+    // What it runs with now is untried until this trial says so.
+    pending.tried = false
     const stopping = new AbortController()
     pending.trial = stopping
     try {
@@ -358,35 +392,31 @@ export class DesktopAdds {
   }
 
   /**
-   * The tried app added to the project (or, named already, approved here): its build checked again
-   * (the one tried), the project written first (its changed-on-disk refusal), then the approval.
+   * The tried app added to the project (or, named already, allowed here): its build checked again
+   * (the one tried), the project written (its changed-on-disk refusal), then approved. Once the
+   * project is written the add is done (an approval that fails then: said, allowed again later).
    */
-  async add(
-    owner: number,
-    session: string,
-    token: string,
-    opened: OpenedProject,
-    scope: string,
-    approvals: DesktopApprovals,
-  ): Promise<string> {
+  async add(owner: number, session: string, token: string): Promise<string> {
     const pending = this.#own(owner, session, token)
-    if (!pending.tried) throw new Error("check it first: it's added once it ran here")
-    if (pending.adding) throw new Error("it's being added already")
+    if (pending.trial !== undefined) throw refused("it's being checked: wait for it")
+    if (!pending.tried) throw refused("check it first: it's added once it ran here")
+    if (pending.adding) throw refused("it's being added already")
     pending.adding = true
     try {
       const now = await this.#looks.inspect(pending.app.path)
-      // Still this add (never written once it was given up while the app was looked at).
       this.#own(owner, session, token)
       if (!sameSigner(now.signer, pending.app.signer)) {
-        throw new Error("the app changed since it was checked: pick it again")
+        throw refused("the app changed since it was checked: pick it again")
       }
+      const opened = this.#host.opened()
+      if (opened === null) throw refused(GONE)
       let name = pending.existing
       let entry: ElectronApp
       if (name !== undefined) {
         const named = opened.project.apps[name]
         // What the user saw at the pick, still (a project changed meanwhile: never approved untried).
         if (named?.kind !== "electron" || opensOf(named) !== pending.opensAtPick) {
-          throw new Error("the project changed meanwhile: pick it again")
+          throw refused("the project changed meanwhile: pick it again")
         }
         entry = named
         // A site allowed in a check: the project's too (its runs need it).
@@ -407,16 +437,25 @@ export class DesktopAdds {
         }
         save(opened, name, entry)
       }
-      approvals.approve(now, scope, opensOf(entry))
+      // Written: done, whatever follows.
       this.#pending.delete(token)
+      this.#host.changed(opened)
+      try {
+        this.#host.approve(now, opened, opensOf(entry))
+      } catch (error) {
+        throw refused(
+          `added as ${name}, but not approved on this Mac (${(error as Error).message}): pick it again to allow it`,
+        )
+      }
       return name
     } finally {
       pending.adding = false
     }
   }
 
-  /** A window's add dropped (another pick, the window closed, the project changed). */
+  /** A window's pick and add given up (cancelled, the window closed or reloaded). */
   dropFor(owner: number): void {
+    this.#picks.delete(owner)
     for (const [token, pending] of this.#pending) {
       if (pending.owner !== owner) continue
       pending.trial?.abort()
@@ -424,30 +463,59 @@ export class DesktopAdds {
     }
   }
 
-  /** Every add dropped, its trial ended (a quit, the project closed). */
+  /** Every pick and add given up, their trials ended (a project switch, a quit). */
   dropAll(): void {
+    this.#picks.clear()
     for (const pending of this.#pending.values()) pending.trial?.abort()
     this.#pending.clear()
   }
 
-  /**
-   * The add of this window and session, still under way, its project still the open one (checked
-   * at every step and after every wait: a project changed meanwhile ends it, whatever changed it).
-   */
+  #isCurrent(session: string): boolean {
+    return this.#host.session() === session
+  }
+
+  /** The session the window acts in is the open project's, and nothing may stop a change now. */
+  #current(session: string): void {
+    if (!this.#isCurrent(session)) throw refused("the project changed: pick the app again")
+    const busy = this.#host.busy()
+    if (busy !== undefined) throw refused(busy)
+  }
+
+  /** The gate: this window's add, still under way, its project the open one, Kif not working. */
   #own(owner: number, session: string, token: string): Pending {
     const pending = this.#pending.get(token)
-    if (pending !== undefined && this.#session() !== pending.session) {
+    if (pending !== undefined && !this.#isCurrent(pending.session)) {
       pending.trial?.abort()
       this.#pending.delete(token)
     }
-    if (
-      this.#pending.get(token) !== pending ||
-      pending === undefined ||
-      pending.owner !== owner ||
-      pending.session !== session
-    ) {
-      throw new Error("that app isn't being added any more: pick it again")
-    }
-    return pending
+    const still = this.#pending.get(token)
+    if (still === undefined || still.owner !== owner || still.session !== session)
+      throw refused(GONE)
+    const busy = this.#host.busy()
+    if (busy !== undefined) throw refused(busy)
+    return still
+  }
+}
+
+/**
+ * The add flow's host from the workspace (main's, and tests' with a real one): every add ends as
+ * the workspace switches project.
+ */
+export function addHostOf(
+  workspace: {
+    readonly session: string | undefined
+    readonly opened: OpenedProject | null
+    readonly agent: { readonly running: boolean } | undefined
+    onSwitch(listener: () => void): void
+  },
+  deps: Pick<AddHost, "pickApp" | "approve" | "changed">,
+  adds: () => DesktopAdds | undefined,
+): AddHost {
+  workspace.onSwitch(() => adds()?.dropAll())
+  return {
+    session: () => workspace.session,
+    opened: () => workspace.opened,
+    busy: () => (workspace.agent?.running === true ? "Kif is working: stop it first" : undefined),
+    ...deps,
   }
 }
