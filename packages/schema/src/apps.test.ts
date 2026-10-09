@@ -274,13 +274,13 @@ describe("a desktop Electron app (design 2026-10-08)", () => {
   const parse = (apps: object) => Project.safeParse(v2(apps))
 
   it("is named by its bundle id, beside web apps (the viewport defaulted)", () => {
-    const parsed = parse({ web: app("https://a.dev"), notes: desk({ args: ["~/Demo"] }) })
+    const parsed = parse({ web: app("https://a.dev"), notes: desk({ args: ["files/demo"] }) })
     expect(parsed.success).toBe(true)
     const notes = parsed.data?.apps.notes
     expect(notes).toEqual({
       kind: "electron",
       bundleId: "com.example.notes",
-      args: ["~/Demo"],
+      args: ["files/demo"],
       viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
     })
     expect(appIdentity(notes!)).toBe("electron:com.example.notes")
@@ -311,7 +311,20 @@ describe("a desktop Electron app (design 2026-10-08)", () => {
         /positional arguments only/,
       )
     }
-    expect(issue({ x: desk({ args: ["~/My Demo"] }) })).toBe("parsed")
+    expect(issue({ x: desk({ args: ["files/My Demo"] }) })).toBe("parsed")
+    // Only the project's files/ (never the user's own folders, never out of it).
+    for (const outside of [
+      "~/Demo",
+      "/Users/me/Demo",
+      "files",
+      "files/../x",
+      "files//x",
+      "./files/x",
+    ]) {
+      expect(issue({ x: desk({ args: [outside] }) }), outside).toMatch(
+        /a path in the project's files/,
+      )
+    }
     expect(issue({ x: desk({ bundleId: "1.0" }) })).toMatch(/a bundle id/)
   })
 

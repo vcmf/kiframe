@@ -42,6 +42,17 @@ const HttpsOrigin = z
   }, "an https origin (https://host, no path)")
 
 /**
+ * A desktop app's argument as a path in the project's files/ (`files/a/b` → ["a", "b"]); undefined
+ * for anything else (files/ itself, an empty, "." or ".." part: never outside it).
+ */
+export function filesPath(arg: string): string[] | undefined {
+  const parts = arg.split("/")
+  if (parts[0] !== "files" || parts.length < 2) return undefined
+  if (parts.some((p) => p === "" || p === "." || p === "..")) return undefined
+  return parts.slice(1)
+}
+
+/**
  * A desktop Electron app (OBJECT-MODEL §0.9, design 2026-10-08), named by its bundle id: never a
  * path or a program (a project may come from someone else: the app a bundle id means is found and
  * approved on each machine, by the desktop app). Launched sandboxed for each run.
@@ -53,7 +64,10 @@ export const ElectronApp = z.strictObject({
     .string()
     .max(255)
     .regex(/^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/, "a bundle id (com.example.app)"),
-  /** What the app opens (a folder, a file): positional only, never a switch. */
+  /**
+   * What the app opens: paths in the project's files/ (`files/demo-vault`; a copy is what it gets,
+   * decided 2026-10-09), positional only, never a switch.
+   */
   args: z
     .array(
       z
@@ -68,6 +82,10 @@ export const ElectronApp = z.strictObject({
             !/^\s|\s$/.test(a) &&
             ![...a].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127),
           "positional arguments only (no switches, no spaces at the ends)",
+        )
+        .refine(
+          (a) => filesPath(a) !== undefined,
+          "a path in the project's files/ (files/<name>): a desktop app opens only those",
         ),
     )
     .max(20)

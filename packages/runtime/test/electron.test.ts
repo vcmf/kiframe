@@ -1,31 +1,42 @@
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs"
 import { createRequire } from "node:module"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { tmpdir, userInfo } from "node:os"
+import { dirname, join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createServer, type Server } from "node:http"
+import { createServer as createNetServer } from "node:net"
+import { pathToFileURL } from "node:url"
 import { createServer as createHttpsServer } from "node:https"
 import type { AddressInfo } from "node:net"
 import {
   allowedPage,
   ElectronLaunchError,
   type ElectronTarget,
+  FILES_LIMITS,
   launchElectron,
   recordScenario,
   runScenario,
   StepError,
-  sweepElectronOrphans,
+  seatbeltProfile,
+  sweepWorkArea,
 } from "../src/index.ts"
+import { checkConfinement } from "../src/electron-confine.ts"
+import { sandboxesOf } from "../src/electron-workarea.ts"
 
 // The Electron target (OBJECT-MODEL §0.9 "Electron apps"): a fixture desktop app launched in a
 // sandbox with the repo's own Electron, driven and filmed like a web page, ended whole.
@@ -35,6 +46,22 @@ const electron = createRequire(join(import.meta.dirname, "../../../apps/desktop/
 ) as string
 const fixture = join(import.meta.dirname, "fixtures/electron-app")
 const viewport = { width: 800, height: 600, deviceScaleFactor: 1 }
+/** The repo's Electron.app (the fixture runs on it): what the confined app may read besides. */
+const electronApp = electron.slice(0, electron.indexOf(".app/") + 4)
+/** How many sandboxes this file's work area holds (one left behind is a leak). */
+const sandboxCount = () =>
+  existsSync(join(work, "sandboxes")) ? readdirSync(join(work, "sandboxes")).length : 0
+/** This file's work area (never the user's ~/.kiframe). */
+const work = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+/** How every launch here runs: the fixture on the repo's Electron, confined on macOS. */
+const base = {
+  executable: electron,
+  bundle: fixture,
+  readable: [electronApp],
+  workDir: work,
+  allowUnconfined: true,
+  viewport,
+}
 
 const project = parseProjectYaml(`version: 2
 apps:
@@ -115,14 +142,15 @@ const inTarget = (target: ElectronTarget) => ({
 })
 
 let open: ElectronTarget[] = []
-const launch = async (extra: string[] = [], options: { stateFile?: string } = {}) => {
+const launch = async (
+  extra: string[] = [],
+  options: { workDir?: string; files?: string; args?: string[]; readable?: string[] } = {},
+) => {
   const target = await launchElectron({
-    executable: electron,
-    bundle: fixture,
-    args: [fixture, "hidden", `link=${other}`, ...extra],
+    ...base,
+    appArgs: [fixture, "hidden", `link=${other}`, ...extra],
     // A plain fixture settles at once; the window-shape tests keep the real wait.
     ...(!extra.some((e) => ["splash", "swap", "embed-at-start"].includes(e)) && { settleMs: 300 }),
-    viewport,
     ...options,
   })
   open.push(target)
@@ -354,23 +382,30 @@ steps:
     expect(await waitFor(() => !alive(grouped))).toBe(true)
   })
 
-  it("never leaves an app running when its launch can't be noted", async () => {
-    const before = readdirSync(tmpdir()).filter((d) => d.startsWith("kiframe-app-")).length
-    await expect(
-      launch([], { stateFile: join(tmpdir(), "no-such-folder-x", "launches.json") }),
-    ).rejects.toThrow()
-    expect(readdirSync(tmpdir()).filter((d) => d.startsWith("kiframe-app-")).length).toBe(before)
+  it("never sweeps a launch as it starts (owned from the moment its sandbox exists)", async () => {
+    const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+    // Another Kiframe starting meanwhile sweeps the work area again and again.
+    let starting = true
+    const sweeps = (async () => {
+      while (starting) {
+        await sweepWorkArea(own)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+    })()
+    try {
+      const target = await launch([], { workDir: own })
+      expect(existsSync(target.sandbox)).toBe(true)
+      expect(await target.page.title()).toBe("Fixture notes")
+    } finally {
+      starting = false
+      await sweeps
+    }
   })
 
   it("takes a bundle given through a link (its pages report either path)", async () => {
     const link = join(mkdtempSync(join(tmpdir(), "kiframe-el-link-")), "Fixture.app")
     symlinkSync(fixture, link)
-    const target = await launchElectron({
-      executable: electron,
-      bundle: link,
-      args: [link, "hidden"],
-      viewport,
-    })
+    const target = await launchElectron({ ...base, bundle: link, appArgs: [link, "hidden"] })
     open.push(target)
     await runScenario(
       target.page,
@@ -387,25 +422,59 @@ steps:
     )
   })
 
-  it("sweeps what a crash left (by the files they hold), at the next start", async () => {
-    const stateFile = join(mkdtempSync(join(tmpdir(), "kiframe-el-state-")), "launches.json")
-    const target = await launch([], { stateFile })
-    const pidFile = join(target.sandbox, "profile", "helper.pid")
-    await waitFor(() => existsSync(pidFile))
-    const helper = Number(readFileSync(pidFile, "utf8"))
-    expect(JSON.parse(readFileSync(stateFile, "utf8"))).toHaveLength(1)
-    // Kiframe "crashed": never closed. The next start sweeps it.
-    expect(await sweepElectronOrphans(stateFile)).toBe(1)
-    expect(await waitFor(() => !alive(helper))).toBe(true)
-    expect(existsSync(target.sandbox)).toBe(false)
-    expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual([])
-  })
+  it("sweeps what a crash left at the next start (its owner gone)", async () => {
+    const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+    // A Kiframe that launched the app, then crashed (killed outright: nothing of it ran after).
+    const kiframe = spawn(
+      process.execPath,
+      [
+        "--experimental-strip-types",
+        "--no-warnings",
+        join(import.meta.dirname, "fixtures/crash-launch.ts"),
+        own,
+        electron,
+        fixture,
+        electronApp,
+        fixture,
+      ],
+      { stdio: ["ignore", "pipe", "inherit"] },
+    )
+    let printed = ""
+    kiframe.stdout.on("data", (d: Buffer) => (printed += d.toString()))
+    const pids: number[] = []
+    try {
+      expect(await waitFor(() => printed.includes("\n"), 30_000)).toBe(true)
+      const sandbox = printed.trim()
+      const pid = (name: string) => Number(readFileSync(join(sandbox, "profile", name), "utf8"))
+      // main.pid is written last.
+      await waitFor(() => existsSync(join(sandbox, "profile", "main.pid")))
+      pids.push(pid("main.pid"))
+      const helper = pid("helper.pid")
+      // And one left in the app's group, pointing nowhere (its cwd /, no sandbox in its command).
+      const grouped = pid("grouped.pid")
+      pids.push(helper, grouped)
+      // While it runs, its launch is its own: never swept.
+      expect(await sweepWorkArea(own)).toBe(0)
+      kiframe.kill("SIGKILL")
+      expect(await waitFor(() => kiframe.exitCode !== null || kiframe.signalCode !== null)).toBe(
+        true,
+      )
+      expect(alive(helper) && alive(grouped)).toBe(true)
+      expect(await sweepWorkArea(own)).toBe(1)
+      expect(await waitFor(() => !alive(helper) && !alive(grouped))).toBe(true)
+      expect(existsSync(sandbox)).toBe(false)
+    } finally {
+      // Never left running when the test fails midway.
+      kiframe.kill("SIGKILL")
+      for (const pid of pids) if (alive(pid)) process.kill(pid, "SIGKILL")
+    }
+  }, 60_000)
 
   it("says an app that quits at once, and leaves nothing behind", async () => {
-    const before = readdirSync(tmpdir()).filter((d) => d.startsWith("kiframe-app-")).length
+    const before = sandboxCount()
     await expect(launch(["quit-at-once"])).rejects.toThrow(ElectronLaunchError)
     await expect(launch(["quit-at-once"])).rejects.toThrow(/quit before Kiframe could attach/)
-    expect(readdirSync(tmpdir()).filter((d) => d.startsWith("kiframe-app-")).length).toBe(before)
+    expect(sandboxCount()).toBe(before)
   })
 
   it("learns its own scheme from a window it opens after a splash (never from a step)", async () => {
@@ -529,10 +598,8 @@ steps: [{ id: add, action: click, target: { by: role, role: button, name: Add no
   it("keeps what the app embeds as it opens, and takes its window back from a site", async () => {
     // A frame of another (https) site shown at launch is the app as shipped: never a stop.
     const embeds = await launchElectron({
-      executable: electron,
-      bundle: fixture,
-      args: [fixture, "hidden", `link=${secure}`, "embed-at-start", "trust-test-cert"],
-      viewport,
+      ...base,
+      appArgs: [fixture, "hidden", `link=${secure}`, "embed-at-start", "trust-test-cert"],
     })
     open.push(embeds)
     await runScenario(
@@ -763,11 +830,11 @@ steps:
   })
 
   it("says an app that isn't there any more, or can't start, never crashing the host", async () => {
+    await expect(launchElectron({ ...base, bundle: "/Applications/Gone.app" })).rejects.toThrow(
+      "the app isn't at /Applications/Gone.app any more",
+    )
     await expect(
-      launchElectron({ executable: electron, bundle: "/Applications/Gone.app", viewport }),
-    ).rejects.toThrow("the app isn't at /Applications/Gone.app any more")
-    await expect(
-      launchElectron({ executable: "/no/such/executable", viewport, timeoutMs: 5000 }),
+      launchElectron({ ...base, executable: "/no/such/executable", timeoutMs: 5000 }),
     ).rejects.toThrow(/the app couldn't be launched/)
   })
 
@@ -803,10 +870,8 @@ presets:
   it("stops when the run is stopped while it launches", async () => {
     const stop = new AbortController()
     const launching = launchElectron({
-      executable: electron,
-      bundle: fixture,
-      args: [fixture, "hidden"],
-      viewport,
+      ...base,
+      appArgs: [fixture, "hidden"],
       signal: stop.signal,
     })
     stop.abort(new Error("stopped"))
@@ -817,7 +882,7 @@ presets:
 describe("a desktop app's own pages", () => {
   const own = {
     bundles: ["/Applications/Notes.app"],
-    sandbox: "/tmp/kiframe-app-x",
+    trusted: ["/tmp/kiframe-app-x/home", "/tmp/kiframe-app-x/profile"],
     launched: new Set(["http://localhost:5173"]),
     schemes: new Set(["app:", "vscode-file:"]),
     origins: ["https://app.slack.com"],
@@ -843,6 +908,9 @@ describe("a desktop app's own pages", () => {
   it("are never the user's files, another site or port, or a data: page", () => {
     for (const url of [
       "file:///etc/hosts",
+      // The sandbox's copy of the project's files/ (its content: never the app's own pages).
+      "file:///tmp/kiframe-app-x/files/demo/index.html",
+      "file:///tmp/kiframe-app-x/tmp/x.html",
       "file:///Applications/Notes.app.evil/x.html",
       "file:///Applications/Notes.app/../Mail.app/x.html",
       "file:///Users/me/Documents/secret.pdf",
@@ -869,36 +937,259 @@ describe("a desktop app's own pages", () => {
   })
 })
 
-// The state file only names sandboxes Kiframe made: never a folder from a tampered file.
-describe("the launches' state file", () => {
-  it("keeps a launch noted while it sweeps (only what it swept is removed)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "kiframe-el-state-"))
-    const left = mkdtempSync(join(tmpdir(), "kiframe-app-"))
-    const meanwhile = mkdtempSync(join(tmpdir(), "kiframe-app-"))
-    const stateFile = join(dir, "launches.json")
-    writeFileSync(stateFile, JSON.stringify([left]))
+// The confinement (macOS's Seatbelt, measured 2026-10-09): every escape refused, the app driven.
+describe.runIf(process.platform === "darwin")(
+  "a desktop app's confinement",
+  { timeout: 60_000 },
+  () => {
+    it("refuses every escape it tries: the user's folders, other launchers, sockets, the keychain", async () => {
+      const outside = join(mkdtempSync(join(tmpdir(), "kiframe-el-outside-")), "private.txt")
+      writeFileSync(outside, "the user's own file")
+      // An agent's socket outside the sandbox (as ssh-agent's, Docker's): it would accept.
+      const socket = `/private/tmp/kf-${process.pid}.sock`
+      const agent = createNetServer((c) => c.end())
+      await new Promise<void>((resolve) => agent.listen(socket, resolve))
+      const probes = [
+        join(userInfo().homedir, "Library", "KiframeProbe.txt"),
+        "/Users/Shared/KiframeProbe.txt",
+        "/private/tmp/KiframeProbe.txt",
+        "/Applications/KiframeProbe.txt",
+      ]
+      try {
+        const target = await launch(["probes", `outside=${outside}`, `socket=${socket}`])
+        const file = join(target.sandbox, "profile", "probes.json")
+        expect(await waitFor(() => existsSync(file), 10_000)).toBe(true)
+        const seen = JSON.parse(readFileSync(file, "utf8")) as Record<string, string>
+        for (const escape of [
+          "write-real-home",
+          "read-real-home",
+          "write-users-shared",
+          "write-private-tmp",
+          "write-applications",
+          "read-outside",
+          "hardlink-outside",
+          "exec-open",
+          "exec-osascript",
+          "exec-launchctl",
+          "exec-copied",
+          "socket-agent",
+        ]) {
+          // Refused by the confinement itself (never an error of another kind passing for one).
+          expect(seen[escape], escape).toBe("DENIED EPERM")
+        }
+        // Never the user's clipboard (measured: an unconfined read saw what the host had copied).
+        expect(seen["clipboard-read"]).toBe("0")
+        // A mock keychain (never the user's): encryption still works for the app.
+        expect(seen["keychain-encrypts"]).toBe("OK true")
+        // And the app is driven as usual.
+        await runScenario(
+          target.page,
+          parseScenarioYaml(`version: 1
+steps:
+  - { id: add, action: click, target: { by: role, role: button, name: Add note } }
+  - { id: one, action: expect, that: { text: "Notes: 1" } }
+`),
+          project,
+          { electron: inTarget(target), timeoutMs: 5000 },
+        )
+      } finally {
+        // A probe that got through would have left its file: never kept.
+        for (const probe of probes) rmSync(probe, { force: true })
+        agent.close()
+      }
+    })
+
+    it("never launches when the confinement doesn't hold (a canary is read)", async () => {
+      // A profile that lets the canary be read (its folder readable): refused, no app started.
+      const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+      await expect(
+        launch([], { workDir: own, readable: [electronApp, realpathSync(own)] }),
+      ).rejects.toThrow(/the confinement didn't hold/)
+      expect(readdirSync(join(own, "sandboxes"))).toEqual([])
+    })
+
+    it("never passes a confinement that runs nothing for one that refuses", async () => {
+      // A sandbox named through a link (/var → /private/var): Seatbelt matches real paths, so the
+      // confined read of its own sandbox fails, as it would were sandbox-exec broken.
+      const real = mkdtempSync(join(realpathSync(tmpdir()), "kiframe-el-canary-"))
+      const linked = real.replace(/^\/private\/var\//, "/var/")
+      expect(linked).not.toBe(real)
+      await expect(
+        checkConfinement(
+          { sandbox: linked, readable: [], private: [], network: "all" },
+          join(mkdtempSync(join(tmpdir(), "kiframe-el-work-")), "canary.txt"),
+        ),
+      ).rejects.toThrow(/doesn't run programs/)
+    })
+
+    it("never reads the user's home wherever it is (a home outside /Users)", async () => {
+      // /var/tmp: outside every folder the profile denies by itself (as a /Network/Users home).
+      const home = mkdtempSync("/private/var/tmp/kiframe-el-home-")
+      const sandbox = mkdtempSync(join(realpathSync(tmpdir()), "kiframe-el-sb-"))
+      const confinement = { sandbox, readable: [], network: "all" } as const
+      try {
+        // Denied (the canary unread) only as one of the user's own folders.
+        await expect(
+          checkConfinement({ ...confinement, private: [home] }, join(home, "canary.txt")),
+        ).resolves.toBeUndefined()
+        await expect(
+          checkConfinement({ ...confinement, private: [] }, join(home, "canary.txt")),
+        ).rejects.toThrow(/didn't hold/)
+      } finally {
+        rmSync(home, { recursive: true, force: true })
+      }
+    })
+
+    it("keeps a trial off the network but this machine (no updater fetch)", () => {
+      const profile = seatbeltProfile({
+        sandbox: "/s",
+        readable: [],
+        private: [],
+        network: "loopback",
+      })
+      expect(profile).toContain("(deny network-outbound)")
+      expect(profile).toContain('(allow network-outbound (remote ip "localhost:*"))')
+      expect(
+        seatbeltProfile({ sandbox: "/s", readable: [], private: [], network: "all" }),
+      ).not.toContain("(deny network-outbound)\n")
+    })
+  },
+)
+
+// The project's files/ (decided 2026-10-09): copied into each launch, what its arguments name.
+describe("a desktop app's files", { timeout: 60_000 }, () => {
+  const filesWith = (entries: Record<string, string>) => {
+    const dir = join(mkdtempSync(join(tmpdir(), "kiframe-el-files-")), "files")
+    for (const [path, content] of Object.entries(entries)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true })
+      writeFileSync(join(dir, path), content)
+    }
+    return dir
+  }
+
+  it("opens a copy of the project's files: its edits never reach the project", async () => {
+    const files = filesWith({ "vault/note.md": "the project's note", "vault/sub/deep.md": "deep" })
+    const target = await launch(["touch-arg"], { files, args: ["files/vault"] })
+    const seen = await seenBy(target)
+    const copy = join(target.sandbox, "files", "vault")
+    expect(seen.args).toContain(copy)
+    expect(readFileSync(join(copy, "sub", "deep.md"), "utf8")).toBe("deep")
+    expect(
+      await waitFor(() => readFileSync(join(copy, "note.md"), "utf8") === "edited by the app"),
+    ).toBe(true)
+    expect(readFileSync(join(files, "vault", "note.md"), "utf8")).toBe("the project's note")
+    // The copy is the project's content, never the app's own pages (a page there: off-app).
+    expect(target.allows(pathToFileURL(join(copy, "note.md")).href)).toBe(false)
+    expect(target.allows(pathToFileURL(join(target.sandbox, "profile", "x.html")).href)).toBe(true)
+  })
+
+  it("refuses what isn't a file or a folder in files/, and arguments outside it", async () => {
+    const linked = filesWith({ "vault/note.md": "x" })
+    symlinkSync("/etc/hosts", join(linked, "vault", "hosts"))
+    await expect(launch([], { files: linked, args: ["files/vault"] })).rejects.toThrow(
+      /files\/vault\/hosts isn't a file or a folder/,
+    )
+    const files = filesWith({ "vault/note.md": "x" })
+    for (const arg of ["files/../escape", "/etc", "vault", "files", "files/missing"]) {
+      await expect(launch([], { files, args: [arg] }), arg).rejects.toThrow(ElectronLaunchError)
+    }
+    // files/ itself a link (a shared project's, to the user's documents): never followed.
+    const elsewhere = filesWith({ "vault/secret.md": "the user's" })
+    const project = join(mkdtempSync(join(tmpdir(), "kiframe-el-files-")), "files")
+    symlinkSync(elsewhere, project)
+    await expect(launch([], { files: project, args: ["files/vault"] })).rejects.toThrow(
+      /files\/ isn't a folder \(a link\?\)/,
+    )
+    // Folders count toward the limit (a tree of empty ones is as slow to copy and remove).
+    const wide = filesWith({})
+    mkdirSync(wide, { recursive: true })
+    for (let i = 0; i < 6; i++) mkdirSync(join(wide, `d${i}`))
+    const limit = FILES_LIMITS.files
+    FILES_LIMITS.files = 5
     try {
-      const sweeping = sweepElectronOrphans(stateFile)
-      // A run starts during the sweep: its launch is noted.
-      writeFileSync(stateFile, JSON.stringify([left, meanwhile]))
-      expect(await sweeping).toBe(1)
-      expect(JSON.parse(readFileSync(stateFile, "utf8"))).toEqual([meanwhile])
-      expect(existsSync(meanwhile)).toBe(true)
+      await expect(launch([], { files: wide })).rejects.toThrow(/too large to copy/)
     } finally {
-      rmSync(left, { recursive: true, force: true })
-      rmSync(meanwhile, { recursive: true, force: true })
+      FILES_LIMITS.files = limit
+    }
+    // A project without its files/ folder: said as such (never a raw error).
+    await expect(
+      launch([], { files: join(dirname(files), "absent"), args: ["files/vault"] }),
+    ).rejects.toThrow(/the project has no files\/ folder/)
+    expect(sandboxCount()).toBe(0)
+  })
+})
+
+// The work area: only its own sandboxes swept, never another running Kiframe's, never a link.
+describe("the work area", () => {
+  // A work area with: a launch of another running Kiframe, one whose Kiframe ended, one carrying
+  // this process's id from before (a reboot reuses ids), an unowned one, a link to elsewhere.
+  const workArea = (other: number) => {
+    const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+    const sandboxes = join(own, "sandboxes")
+    mkdirSync(sandboxes, { recursive: true, mode: 0o700 })
+    const startOf = (pid: number) =>
+      Math.round(
+        Date.parse(
+          execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+            encoding: "utf8",
+            env: { ...process.env, LC_ALL: "C" },
+          }).trim(),
+        ) / 1000,
+      )
+    const at = {
+      live: join(sandboxes, `kiframe-app-${other}-${startOf(other)}-a`),
+      ended: join(sandboxes, `kiframe-app-${spawnSync("true").pid}-${startOf(process.pid)}-b`),
+      reused: join(sandboxes, `kiframe-app-${process.pid}-${startOf(process.pid) - 3600}-c`),
+      unowned: join(sandboxes, "kiframe-app-d"),
+      link: join(sandboxes, "kiframe-app-link"),
+      elsewhere: mkdtempSync(join(tmpdir(), "users-files-")),
+    }
+    for (const dir of [at.live, at.ended, at.reused, at.unowned]) mkdirSync(dir)
+    symlinkSync(at.elsewhere, at.link)
+    return { own, at }
+  }
+
+  it("sweeps what no running Kiframe owns, never another's launch, a link or what's elsewhere", async () => {
+    // Another Kiframe running (a dev build): its launch is left alone, in any language.
+    const other = spawn("sleep", ["30"], { stdio: "ignore" })
+    const locale = process.env["LC_ALL"]
+    try {
+      const { own, at } = workArea(other.pid!)
+      process.env["LC_ALL"] = "ko_KR.UTF-8"
+      expect(await sweepWorkArea(own)).toBe(3)
+      expect([at.ended, at.reused, at.unowned].filter(existsSync)).toEqual([])
+      expect(existsSync(at.live)).toBe(true)
+      expect(existsSync(at.elsewhere)).toBe(true)
+      expect(lstatSync(at.link).isSymbolicLink()).toBe(true)
+    } finally {
+      if (locale === undefined) delete process.env["LC_ALL"]
+      else process.env["LC_ALL"] = locale
+      other.kill()
     }
   })
 
-  it("never sweeps a folder that isn't a sandbox (named like one, or anywhere else)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "kiframe-el-state-"))
-    const keep = mkdtempSync(join(tmpdir(), "users-files-"))
-    // Named like a sandbox, but not one this module made (not directly in the temp folder).
-    const lookalike = mkdtempSync(join(dir, "kiframe-app-"))
-    const stateFile = join(dir, "launches.json")
-    writeFileSync(stateFile, JSON.stringify([keep, lookalike, `${lookalike}/../..`]))
-    expect(await sweepElectronOrphans(stateFile)).toBe(0)
-    expect(existsSync(keep)).toBe(true)
-    expect(existsSync(lookalike)).toBe(true)
+  it("sweeps nothing when it can't tell who runs (ps unreadable)", async () => {
+    const other = spawn("sleep", ["30"], { stdio: "ignore" })
+    const path = process.env["PATH"]
+    try {
+      const { own, at } = workArea(other.pid!)
+      process.env["PATH"] = mkdtempSync(join(tmpdir(), "kiframe-el-nops-"))
+      expect(await sweepWorkArea(own)).toBe(0)
+      expect([at.live, at.ended, at.reused].every(existsSync)).toBe(true)
+    } finally {
+      process.env["PATH"] = path
+      other.kill()
+    }
+  })
+
+  it("is the user's alone (0700), never a link", () => {
+    const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+    chmodSync(own, 0o755)
+    sandboxesOf(own)
+    expect(statSync(own).mode & 0o777).toBe(0o700)
+    expect(statSync(join(own, "sandboxes")).mode & 0o777).toBe(0o700)
+    const linked = join(mkdtempSync(join(tmpdir(), "kiframe-el-link-")), "work")
+    symlinkSync(own, linked)
+    expect(() => sandboxesOf(linked)).toThrow(/isn't a folder/)
   })
 })

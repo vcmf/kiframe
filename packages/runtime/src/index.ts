@@ -14,8 +14,9 @@ export {
   ElectronLaunchError,
   type ElectronTarget,
   launchElectron,
-  sweepElectronOrphans,
 } from "./electron.ts"
+export { defaultWorkDir, sweepWorkArea, WorkAreaError } from "./electron-workarea.ts"
+export { ConfinementError, FILES_LIMITS, seatbeltProfile } from "./electron-confine.ts"
 export { LookRefusal, maskedScreenshot, type MaskedShot } from "./look.ts"
 export {
   fitImage,

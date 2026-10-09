@@ -89,3 +89,63 @@ if (process.argv.includes("quit-at-once")) {
   })
   app.on("window-all-closed", () => app.quit())
 }
+
+// "touch-arg": it edits what it was given to open (the files/ copy: never the project's own).
+const opened = process.argv.find((a) => a.includes("/files/"))
+if (process.argv.includes("touch-arg") && opened !== undefined) {
+  app.whenReady().then(() => writeFileSync(join(opened, "note.md"), "edited by the app"))
+}
+
+// "probes": each escape the confinement must refuse, tried and written down (never the user's
+// data: a write would only create a probe file the test removes; reads only list folders).
+if (process.argv.includes("probes")) {
+  app.whenReady().then(async () => {
+    const fs = require("node:fs")
+    const net = require("node:net")
+    const { execFileSync } = require("node:child_process")
+    const real = require("node:os").userInfo().homedir
+    const outside = process.argv.find((a) => a.startsWith("outside="))?.slice(8) ?? "/nonexistent"
+    const out = {}
+    const tryIt = (name, fn) => {
+      try {
+        out[name] = "OK " + String(fn()).slice(0, 40)
+      } catch (e) {
+        out[name] = "DENIED " + (e.code ?? String(e).slice(0, 40))
+      }
+    }
+    tryIt("write-real-home", () => fs.writeFileSync(join(real, "Library", "KiframeProbe.txt"), "x"))
+    tryIt("read-real-home", () => fs.readdirSync(join(real, "Library")).length)
+    tryIt("write-users-shared", () => fs.writeFileSync("/Users/Shared/KiframeProbe.txt", "x"))
+    tryIt("write-private-tmp", () => fs.writeFileSync("/private/tmp/KiframeProbe.txt", "x"))
+    tryIt("write-applications", () => fs.writeFileSync("/Applications/KiframeProbe.txt", "x"))
+    tryIt("read-outside", () => fs.readFileSync(outside, "utf8"))
+    tryIt("hardlink-outside", () => fs.linkSync(outside, join(app.getPath("userData"), "linked")))
+    tryIt("exec-open", () =>
+      execFileSync("/usr/bin/open", ["-h"], { stdio: "ignore", timeout: 3000 }),
+    )
+    tryIt("exec-osascript", () =>
+      execFileSync("/usr/bin/osascript", ["-e", "1"], { timeout: 3000 }),
+    )
+    tryIt("exec-launchctl", () => execFileSync("/bin/launchctl", ["version"], { timeout: 3000 }))
+    // A unix socket that would accept (the test's own server, outside the sandbox): an agent's.
+    const socket = process.argv.find((a) => a.startsWith("socket="))?.slice(7) ?? "/nonexistent"
+    out["socket-agent"] = await new Promise((resolve) => {
+      const s = net.connect(socket)
+      s.on("connect", () => (s.destroy(), resolve("OK connected")))
+      s.on("error", (e) => resolve("DENIED " + e.code))
+    })
+    // A program copied into its own sandbox, run from there (a copied launcher: an exact-path rule
+    // would miss it). `true`: it runs, or it's refused.
+    tryIt("exec-copied", () => {
+      const copy = join(app.getPath("userData"), "copied")
+      fs.copyFileSync("/usr/bin/true", copy)
+      fs.chmodSync(copy, 0o755)
+      return execFileSync(copy, [], { stdio: "ignore", timeout: 3000 })
+    })
+    // The user's clipboard (it may hold a password just copied): only how much is seen, never what.
+    const { safeStorage, clipboard } = require("electron")
+    out["clipboard-read"] = `${(await clipboard.readText()).length}`
+    tryIt("keychain-encrypts", () => safeStorage.isEncryptionAvailable())
+    fs.writeFileSync(join(app.getPath("userData"), "probes.json"), JSON.stringify(out))
+  })
+}
