@@ -950,7 +950,7 @@ steps:
         parseScenarioYaml(`version: 1
 steps:
   - { id: wait, action: pause, ms: 3500 }
-  - { id: add, action: click, target: { by: role, role: button, name: Add note } }
+  - { id: still, action: expect, that: { visible: { by: role, role: button, name: Add note } } }
 `),
         project,
         { electron: inTarget(target), timeoutMs: 5000 },
