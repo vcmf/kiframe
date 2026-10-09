@@ -35,7 +35,7 @@ import {
   seatbeltProfile,
   sweepWorkArea,
 } from "../src/index.ts"
-import { checkConfinement } from "../src/electron-confine.ts"
+import { checkConfinement, copyFiles } from "../src/electron-confine.ts"
 import { sandboxesOf } from "../src/electron-workarea.ts"
 
 // The Electron target (OBJECT-MODEL §0.9 "Electron apps"): a fixture desktop app launched in a
@@ -144,7 +144,14 @@ const inTarget = (target: ElectronTarget) => ({
 let open: ElectronTarget[] = []
 const launch = async (
   extra: string[] = [],
-  options: { workDir?: string; files?: string; args?: string[]; readable?: string[] } = {},
+  options: {
+    workDir?: string
+    files?: string
+    args?: string[]
+    readable?: string[]
+    timeoutMs?: number
+    signal?: AbortSignal
+  } = {},
 ) => {
   const target = await launchElectron({
     ...base,
@@ -1008,6 +1015,53 @@ steps:
       expect(readdirSync(join(own, "sandboxes"))).toEqual([])
     })
 
+    it("never lets launches at once spoil each other's canary", async () => {
+      // Broken launches (their canary readable) beside sound ones that end right after their
+      // canary (an argument missing): a shared canary removed by one is "unread" by another.
+      const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+      const [broken, sound] = await Promise.all([
+        Promise.allSettled(
+          Array.from({ length: 8 }, () =>
+            launch([], { workDir: own, readable: [electronApp, realpathSync(own)] }),
+          ),
+        ),
+        Promise.allSettled(
+          Array.from({ length: 8 }, () => launch([], { workDir: own, args: ["files/missing"] })),
+        ),
+      ])
+      for (const b of broken) {
+        expect(b.status === "rejected" && String(b.reason)).toMatch(/didn't hold/)
+      }
+      // The sound ones fail only for what they lack (never their canary spoiled by another).
+      for (const s of sound) {
+        expect(s.status === "rejected" && String(s.reason)).toMatch(/isn't in files/)
+      }
+      expect(readdirSync(own).filter((n) => n.startsWith("canary"))).toEqual([])
+    })
+
+    it("never passes a canary that went missing for one that was refused", async () => {
+      // Every canary removed as soon as it's written (as another launch would): unread for that
+      // reason, the check proves nothing, and a broken confinement must still never pass.
+      const own = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
+      sandboxesOf(own)
+      // Polled on every turn of the loop: faster than a confined program starts.
+      let watching = true
+      const remove = () => {
+        for (const name of readdirSync(own)) {
+          if (name.startsWith("canary")) rmSync(join(own, name), { force: true })
+        }
+        if (watching) setImmediate(remove)
+      }
+      remove()
+      try {
+        await expect(
+          launch([], { workDir: own, readable: [electronApp, realpathSync(own)] }),
+        ).rejects.toThrow(ElectronLaunchError)
+      } finally {
+        watching = false
+      }
+    })
+
     it("never passes a confinement that runs nothing for one that refuses", async () => {
       // A sandbox named through a link (/var → /private/var): Seatbelt matches real paths, so the
       // confined read of its own sandbox fails, as it would were sandbox-exec broken.
@@ -1081,7 +1135,43 @@ describe("a desktop app's files", { timeout: 60_000 }, () => {
     // The copy is the project's content, never the app's own pages (a page there: off-app).
     expect(target.allows(pathToFileURL(join(copy, "note.md")).href)).toBe(false)
     expect(target.allows(pathToFileURL(join(target.sandbox, "profile", "x.html")).href)).toBe(true)
+    // Its temp too (a print preview it writes there is its own page).
+    expect(target.allows(pathToFileURL(join(target.sandbox, "tmp", "preview.html")).href)).toBe(
+      true,
+    )
   })
+
+  // A files/ slow to copy (15,000 small files: seconds, measured on this machine first).
+  const slowFiles = async () => {
+    const files = filesWith({})
+    for (let d = 0; d < 150; d++) {
+      mkdirSync(join(files, `d${d}`), { recursive: true })
+      for (let f = 0; f < 100; f++) writeFileSync(join(files, `d${d}`, `f${f}`), "x")
+    }
+    const t0 = Date.now()
+    await copyFiles(files, join(mkdtempSync(join(tmpdir(), "kiframe-el-copy-")), "files"))
+    return { files, copyMs: Date.now() - t0 }
+  }
+
+  it("gives the app its whole time to start, however long its files take to copy", async () => {
+    const { files, copyMs } = await slowFiles()
+    // Barely more than the copy: were the copy counted, the app would have no time left.
+    const target = await launch([], { files, timeoutMs: copyMs + 500 })
+    expect(await target.page.title()).toBe("Fixture notes")
+  }, 120_000)
+
+  it("never starts the app when stopped while its files copy", async () => {
+    const { files } = await slowFiles()
+    const before = sandboxCount()
+    const stopping = new AbortController()
+    const launching = launch([], { files, signal: stopping.signal })
+    setTimeout(() => stopping.abort(), 300)
+    const t0 = Date.now()
+    await expect(launching).rejects.toThrow()
+    // Said at once (never once the app is up), its sandbox gone, no app left.
+    expect(Date.now() - t0).toBeLessThan(3000)
+    expect(sandboxCount()).toBe(before)
+  }, 120_000)
 
   it("refuses what isn't a file or a folder in files/, and arguments outside it", async () => {
     const linked = filesWith({ "vault/note.md": "x" })

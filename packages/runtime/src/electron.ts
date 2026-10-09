@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { posix } from "node:path"
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
+import { randomUUID } from "node:crypto"
 import { rm } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { join, sep } from "node:path"
@@ -110,7 +111,7 @@ export interface ElectronLaunch {
   args?: readonly string[]
   /** The project's files/ folder: copied into the sandbox at each launch (what `args` name). */
   files?: string
-  /** Kiframe's work area (default `~/.kiframe`): the sandboxes and the launches' state. */
+  /** Kiframe's work area (default `~/.kiframe`): the launches' sandboxes. */
   workDir?: string
   /** The network: "all" (a run: the app's backend), "loopback" (a trial: nothing beyond). */
   network?: "all" | "loopback"
@@ -193,6 +194,7 @@ async function makeSandbox(work: string): Promise<{
   env: NodeJS.ProcessEnv
   profile: string
   home: string
+  tmp: string
   files: string
 }> {
   let root: string
@@ -225,7 +227,7 @@ async function makeSandbox(work: string): Promise<{
   Object.assign(env, {
     HOME: dirs.home,
     // macOS: what reads NSHomeDirectory follows it (not appData, not the app's preferences: those
-    // stay the user's, checked by the trial launch).
+    // stay the user's, out of reach under the confinement).
     CFFIXED_USER_HOME: dirs.home,
     XDG_CONFIG_HOME: dirs.config,
     XDG_DATA_HOME: dirs.data,
@@ -233,7 +235,14 @@ async function makeSandbox(work: string): Promise<{
     XDG_STATE_HOME: dirs.state,
     TMPDIR: `${dirs.tmp}${sep}`,
   })
-  return { root, env, profile: dirs.profile, home: dirs.home, files: join(root, "files") }
+  return {
+    root,
+    env,
+    profile: dirs.profile,
+    home: dirs.home,
+    tmp: dirs.tmp,
+    files: join(root, "files"),
+  }
 }
 
 /** How long the app's windows must stay as they are before its main window is chosen. */
@@ -262,7 +271,6 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   if (!confined && opts.allowUnconfined !== true) {
     throw new ElectronLaunchError("desktop apps run only on macOS (they're confined there)")
   }
-  const deadline = Date.now() + (opts.timeoutMs ?? LAUNCH_MS)
   const work = opts.workDir ?? defaultWorkDir()
   const sandbox = await makeSandbox(work)
   // Its files and its confinement ready before it starts (said, its sandbox removed, if not).
@@ -278,16 +286,19 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
         private: [realpathOr(userInfo().homedir), realpathOr(work), "/private/var/tmp"],
         network: opts.network ?? "all",
       }
-      await checkConfinement(confinement, join(work, "canary.txt"))
+      // Its own canary (launches at once never delete each other's).
+      await checkConfinement(confinement, join(work, `canary-${randomUUID()}.txt`))
       profile = seatbeltProfile(confinement)
     }
-    if (opts.files !== undefined) await copyFiles(opts.files, sandbox.files)
+    if (opts.files !== undefined) await copyFiles(opts.files, sandbox.files, opts.signal)
     args = (opts.args ?? []).map((a) => argumentIn(a, sandbox.files))
     for (const arg of args) {
       if (!existsSync(arg)) {
         throw new ElectronLaunchError(`${arg.slice(sandbox.files.length + 1)} isn't in files/`)
       }
     }
+    // Stopped meanwhile: never started.
+    opts.signal?.throwIfAborted()
   } catch (error) {
     await rm(sandbox.root, { recursive: true, force: true }).catch(() => undefined)
     if (error instanceof FilesError || error instanceof ConfinementError) {
@@ -295,6 +306,8 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     }
     throw error
   }
+  // The app's own time to start (the copy and the canary never count against it).
+  const deadline = Date.now() + (opts.timeoutMs ?? LAUNCH_MS)
   const launchArgs = [
     ...(opts.appArgs ?? []),
     ...args,
@@ -371,8 +384,8 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     }
     const own = {
       bundles,
-      // Its home and profile (its own data): never the files/ copy (a project's content) or temp.
-      trusted: [sandbox.home, sandbox.profile],
+      // Its home, profile and temp (its own data): never the files/ copy (a project's content).
+      trusted: [sandbox.home, sandbox.profile, sandbox.tmp],
       launched,
       schemes,
       origins: [...(opts.origins ?? []), ...embedded],

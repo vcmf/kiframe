@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process"
 import { constants, existsSync, rmSync, writeFileSync } from "node:fs"
 import { copyFile, lstat, mkdir, readdir, utimes } from "node:fs/promises"
+import type { Stats } from "node:fs"
 import { join } from "node:path"
 import { filesPath } from "@kiframe/schema"
 
@@ -88,6 +89,8 @@ export async function checkConfinement(c: Confinement, denied: string): Promise<
       readsUnder(c, denied, "canary"),
       readsUnder(c, allowed, "canary"),
     ])
+    // Unread because it was gone (removed meanwhile) says nothing of the confinement.
+    if (!existsSync(denied)) throw new Error("its canary went missing")
   } catch (error) {
     throw new ConfinementError(
       `the confinement couldn't be checked (${(error as { code?: string }).code ?? String(error)})`,
@@ -114,21 +117,40 @@ export class FilesError extends Error {}
 /** The copy's limits (it's made at every launch). */
 export const FILES_LIMITS = { bytes: 500 * 1024 * 1024, files: 20_000, depth: 32 }
 
+/** Still the entry that was checked (same kind, same inode: never a link put in its place). */
+const same = (now: Stats, checked: Stats, kind: "dir" | "file") =>
+  (kind === "dir" ? now.isDirectory() : now.isFile()) &&
+  now.ino === checked.ino &&
+  now.dev === checked.dev
+
+const changed = (rel: string) =>
+  new FilesError(`files${rel} changed while it was copied: try again`)
+
 /**
  * A project's `files/` copied into a launch's sandbox (what the app opens: every run from the same
  * files, its edits thrown away). Own walk, never a library copy: only folders and regular files
  * (a link, a FIFO, a socket, a device refused: never followed, never opened), within the limits;
  * cloned where the disk can (APFS: near instant), times kept (a run sees the files as they are).
  */
-export async function copyFiles(from: string, to: string): Promise<void> {
+export async function copyFiles(from: string, to: string, signal?: AbortSignal): Promise<void> {
   let bytes = 0
   let entries = 0
   const tooLarge = () =>
     new FilesError("files/ is too large to copy at each launch (500 MB, 20,000 entries)")
-  const walk = async (src: string, dst: string, depth: number, rel: string): Promise<void> => {
+  const walk = async (
+    src: string,
+    dst: string,
+    depth: number,
+    rel: string,
+    checked: Stats,
+  ): Promise<void> => {
     if (depth > FILES_LIMITS.depth) throw new FilesError(`files/${rel} is nested too deep`)
     await mkdir(dst, { recursive: true })
-    for (const name of await readdir(src)) {
+    const names = await readdir(src)
+    // readdir follows a link: a folder swapped for one meanwhile is refused (as a file is).
+    if (!same(await lstat(src), checked, "dir")) throw changed(rel === "" ? "" : `/${rel}`)
+    for (const name of names) {
+      signal?.throwIfAborted()
       const s = join(src, name)
       const d = join(dst, name)
       const r = rel === "" ? name : `${rel}/${name}`
@@ -137,17 +159,14 @@ export async function copyFiles(from: string, to: string): Promise<void> {
       entries += 1
       if (entries > FILES_LIMITS.files) throw tooLarge()
       if (stat.isDirectory()) {
-        await walk(s, d, depth + 1, r)
+        await walk(s, d, depth + 1, r, stat)
       } else if (stat.isFile()) {
         bytes += stat.size
         if (bytes > FILES_LIMITS.bytes) throw tooLarge()
         await copyFile(s, d, constants.COPYFILE_FICLONE)
         // copyFile follows a link: an entry swapped for one meanwhile is refused (still the file
         // that was checked, never what a link points at).
-        const after = await lstat(s)
-        if (!after.isFile() || after.ino !== stat.ino || after.dev !== stat.dev) {
-          throw new FilesError(`files/${r} changed while it was copied: try again`)
-        }
+        if (!same(await lstat(s), stat, "file")) throw changed(`/${r}`)
         await utimes(d, stat.atime, stat.mtime)
       } else {
         throw new FilesError(`files/${r} isn't a file or a folder (a link?): only those are copied`)
@@ -163,9 +182,9 @@ export async function copyFiles(from: string, to: string): Promise<void> {
         "the project's files/ isn't a folder (a link?): only a real one is copied",
       )
     }
-    await walk(from, to, 0, "")
+    await walk(from, to, 0, "", root)
   } catch (error) {
-    if (error instanceof FilesError) throw error
+    if (error instanceof FilesError || signal?.aborted === true) throw error
     const code = (error as { code?: string }).code
     throw new FilesError(
       code === "ENOENT" && !existsSync(from)
