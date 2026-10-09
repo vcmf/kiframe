@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  renameSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -1036,7 +1037,8 @@ steps:
       for (const s of sound) {
         expect(s.status === "rejected" && String(s.reason)).toMatch(/isn't in files/)
       }
-      expect(readdirSync(own).filter((n) => n.startsWith("canary"))).toEqual([])
+      // None left (each beside its sandbox, removed with it).
+      expect(readdirSync(join(own, "sandboxes")).filter((n) => n.endsWith(".canary"))).toEqual([])
     })
 
     it("never passes a canary that went missing for one that was refused", async () => {
@@ -1047,8 +1049,8 @@ steps:
       // Polled on every turn of the loop: faster than a confined program starts.
       let watching = true
       const remove = () => {
-        for (const name of readdirSync(own)) {
-          if (name.startsWith("canary")) rmSync(join(own, name), { force: true })
+        for (const name of readdirSync(join(own, "sandboxes"))) {
+          if (name.endsWith(".canary")) rmSync(join(own, "sandboxes", name), { force: true })
         }
         if (watching) setImmediate(remove)
       }
@@ -1141,37 +1143,90 @@ describe("a desktop app's files", { timeout: 60_000 }, () => {
     )
   })
 
-  // A files/ slow to copy (15,000 small files: seconds, measured on this machine first).
-  const slowFiles = async () => {
-    const files = filesWith({})
-    for (let d = 0; d < 150; d++) {
-      mkdirSync(join(files, `d${d}`), { recursive: true })
-      for (let f = 0; f < 100; f++) writeFileSync(join(files, `d${d}`, `f${f}`), "x")
+  // A files/ slower to copy than the app takes to start, by far (sized here, on this machine:
+  // its tests' timing holds wherever they run). Built once, removed after.
+  describe("slow to copy", { timeout: 300_000 }, () => {
+    let root: string
+    let files: string
+    let mirror: string
+    let copyMs = 0
+    let budget = 0
+    const limit = FILES_LIMITS.files
+    const copyTime = async () => {
+      const to = join(mkdtempSync(join(root, "copy-")), "files")
+      const t0 = Date.now()
+      await copyFiles(files, to)
+      const ms = Date.now() - t0
+      rmSync(dirname(to), { recursive: true, force: true })
+      return ms
     }
-    const t0 = Date.now()
-    await copyFiles(files, join(mkdtempSync(join(tmpdir(), "kiframe-el-copy-")), "files"))
-    return { files, copyMs: Date.now() - t0 }
-  }
 
-  it("gives the app its whole time to start, however long its files take to copy", async () => {
-    const { files, copyMs } = await slowFiles()
-    // Barely more than the copy: were the copy counted, the app would have no time left.
-    const target = await launch([], { files, timeoutMs: copyMs + 500 })
-    expect(await target.page.title()).toBe("Fixture notes")
-  }, 120_000)
+    beforeAll(async () => {
+      // The app's own time to start, measured: it's given twice that and a second.
+      const t0 = Date.now()
+      await (await launch()).close()
+      budget = 2 * (Date.now() - t0) + 1000
+      root = mkdtempSync(join(tmpdir(), "kiframe-el-slow-"))
+      files = join(root, "files")
+      FILES_LIMITS.files = 400_000
+      // Grown until its copy takes well over the app's time (all of it under files/vault).
+      for (let batch = 0; copyMs < budget + 1000 && batch < 60; batch++) {
+        for (let d = 0; d < 50; d++) {
+          const dir = join(files, "vault", `d${batch}-${d}`)
+          mkdirSync(dir, { recursive: true })
+          for (let f = 0; f < 100; f++) writeFileSync(join(dir, `f${f}`), "x")
+        }
+        copyMs = await copyTime()
+      }
+      expect(copyMs).toBeGreaterThan(budget + 1000)
+      // The same folders elsewhere (what a folder swapped for a link would show).
+      mirror = join(root, "mirror")
+      execFileSync("cp", [
+        process.platform === "darwin" ? "-cR" : "-R",
+        join(files, "vault"),
+        mirror,
+      ])
+    }, 300_000)
 
-  it("never starts the app when stopped while its files copy", async () => {
-    const { files } = await slowFiles()
-    const before = sandboxCount()
-    const stopping = new AbortController()
-    const launching = launch([], { files, signal: stopping.signal })
-    setTimeout(() => stopping.abort(), 300)
-    const t0 = Date.now()
-    await expect(launching).rejects.toThrow()
-    // Said at once (never once the app is up), its sandbox gone, no app left.
-    expect(Date.now() - t0).toBeLessThan(3000)
-    expect(sandboxCount()).toBe(before)
-  }, 120_000)
+    afterAll(() => {
+      FILES_LIMITS.files = limit
+      if (root !== undefined) rmSync(root, { recursive: true, force: true })
+    })
+
+    it("gives the app its whole time to start, however long its files take to copy", async () => {
+      // Were the copy counted, the app would have no time left.
+      const target = await launch([], { files, timeoutMs: budget })
+      expect(await target.page.title()).toBe("Fixture notes")
+    })
+
+    it("never starts the app when stopped while its files copy", async () => {
+      const before = sandboxCount()
+      const stopping = new AbortController()
+      const launching = launch([], { files, signal: stopping.signal })
+      setTimeout(() => stopping.abort(), 300)
+      const t0 = Date.now()
+      // The stop itself (never another error), said at once (never once the copy is done).
+      await expect(launching).rejects.toMatchObject({ name: "AbortError" })
+      expect(Date.now() - t0).toBeLessThan(copyMs / 2)
+      expect(sandboxCount()).toBe(before)
+    })
+
+    it("refuses a folder swapped for a link while its files copy", async () => {
+      const vault = join(files, "vault")
+      const launching = launch([], { files })
+      // Mid-copy, vault becomes a link to the same folders elsewhere: every entry still found.
+      setTimeout(() => {
+        renameSync(vault, join(root, "vault-moved"))
+        symlinkSync(mirror, vault)
+      }, 300)
+      try {
+        await expect(launching).rejects.toThrow(/files\/vault.* changed while it was copied/)
+      } finally {
+        rmSync(vault, { force: true })
+        renameSync(join(root, "vault-moved"), vault)
+      }
+    })
+  })
 
   it("refuses what isn't a file or a folder in files/, and arguments outside it", async () => {
     const linked = filesWith({ "vault/note.md": "x" })
@@ -1235,6 +1290,8 @@ describe("the work area", () => {
       elsewhere: mkdtempSync(join(tmpdir(), "users-files-")),
     }
     for (const dir of [at.live, at.ended, at.reused, at.unowned]) mkdirSync(dir)
+    // Canaries beside their sandboxes, as a crash mid-check leaves them.
+    for (const dir of [at.live, at.ended]) writeFileSync(`${dir}.canary`, "canary")
     symlinkSync(at.elsewhere, at.link)
     return { own, at }
   }
@@ -1246,9 +1303,9 @@ describe("the work area", () => {
     try {
       const { own, at } = workArea(other.pid!)
       process.env["LC_ALL"] = "ko_KR.UTF-8"
-      expect(await sweepWorkArea(own)).toBe(3)
-      expect([at.ended, at.reused, at.unowned].filter(existsSync)).toEqual([])
-      expect(existsSync(at.live)).toBe(true)
+      expect(await sweepWorkArea(own)).toBe(4)
+      expect([at.ended, `${at.ended}.canary`, at.reused, at.unowned].filter(existsSync)).toEqual([])
+      expect(existsSync(at.live) && existsSync(`${at.live}.canary`)).toBe(true)
       expect(existsSync(at.elsewhere)).toBe(true)
       expect(lstatSync(at.link).isSymbolicLink()).toBe(true)
     } finally {

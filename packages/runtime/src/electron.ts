@@ -1,7 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { posix } from "node:path"
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
-import { randomUUID } from "node:crypto"
 import { rm } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { join, sep } from "node:path"
@@ -286,8 +285,9 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
         private: [realpathOr(userInfo().homedir), realpathOr(work), "/private/var/tmp"],
         network: opts.network ?? "all",
       }
-      // Its own canary (launches at once never delete each other's).
-      await checkConfinement(confinement, join(work, `canary-${randomUUID()}.txt`))
+      // Its own canary, beside its sandbox (never inside: that's readable) and named after it:
+      // launches at once never touch each other's, and a crash's is swept with its sandbox.
+      await checkConfinement(confinement, `${sandbox.root}.canary`, opts.signal)
       profile = seatbeltProfile(confinement)
     }
     if (opts.files !== undefined) await copyFiles(opts.files, sandbox.files, opts.signal)

@@ -57,12 +57,17 @@ ${c.network === "loopback" ? '(deny network-outbound)\n(allow network-outbound (
 export class ConfinementError extends Error {}
 
 /** Whether a program confined by `c` reads `file` (its content, exactly). */
-function readsUnder(c: Confinement, file: string, content: string): Promise<boolean> {
+function readsUnder(
+  c: Confinement,
+  file: string,
+  content: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   return new Promise((resolve) => {
     execFile(
       SANDBOX_EXEC,
       ["-p", seatbeltProfile(c), "/bin/cat", file],
-      { timeout: 5000 },
+      { timeout: 5000, ...(signal !== undefined && { signal }) },
       (error, stdout) => resolve(error === null && stdout === content),
     )
   })
@@ -73,7 +78,11 @@ function readsUnder(c: Confinement, file: string, content: string): Promise<bool
  * read, while one in the sandbox is: a confinement that runs nothing never passes for one that
  * refuses). Missing or broken (a macOS that removed or changed it): refused.
  */
-export async function checkConfinement(c: Confinement, denied: string): Promise<void> {
+export async function checkConfinement(
+  c: Confinement,
+  denied: string,
+  signal?: AbortSignal,
+): Promise<void> {
   if (!existsSync(SANDBOX_EXEC)) {
     throw new ConfinementError(
       "macOS's sandbox-exec is missing: Kiframe can't confine desktop apps",
@@ -82,27 +91,32 @@ export async function checkConfinement(c: Confinement, denied: string): Promise<
   const allowed = join(c.sandbox, "canary.txt")
   let deniedRead: boolean
   let allowedRead: boolean
+  let missing: boolean
   try {
     writeFileSync(denied, "canary")
     writeFileSync(allowed, "canary")
     ;[deniedRead, allowedRead] = await Promise.all([
-      readsUnder(c, denied, "canary"),
-      readsUnder(c, allowed, "canary"),
+      readsUnder(c, denied, "canary", signal),
+      readsUnder(c, allowed, "canary", signal),
     ])
-    // Unread because it was gone (removed meanwhile) says nothing of the confinement.
-    if (!existsSync(denied)) throw new Error("its canary went missing")
+    missing = !existsSync(denied)
   } catch (error) {
     throw new ConfinementError(
-      `the confinement couldn't be checked (${(error as { code?: string }).code ?? String(error)})`,
+      `the confinement couldn't be checked (${(error as { code?: string }).code ?? "unwritable"})`,
     )
   } finally {
     rmSync(allowed, { force: true })
     rmSync(denied, { force: true })
   }
+  signal?.throwIfAborted()
   if (deniedRead) {
     throw new ConfinementError(
       "the confinement didn't hold (a canary was read): desktop apps are off",
     )
+  }
+  // Unread because it was gone (removed meanwhile) says nothing of the confinement.
+  if (missing) {
+    throw new ConfinementError("the confinement couldn't be checked (its canary went missing)")
   }
   if (!allowedRead) {
     throw new ConfinementError(
@@ -172,6 +186,10 @@ export async function copyFiles(from: string, to: string, signal?: AbortSignal):
         throw new FilesError(`files/${r} isn't a file or a folder (a link?): only those are copied`)
       }
     }
+    // And still that folder once its entries are copied (they're reached through its path: one
+    // swapped for a link meanwhile, its entries came from elsewhere; every folder above checks
+    // the same after its own loop).
+    if (!same(await lstat(src), checked, "dir")) throw changed(rel === "" ? "" : `/${rel}`)
   }
   try {
     // files/ itself a real folder (a shared project's files/ linked to the user's documents: never
@@ -184,7 +202,8 @@ export async function copyFiles(from: string, to: string, signal?: AbortSignal):
     }
     await walk(from, to, 0, "", root)
   } catch (error) {
-    if (error instanceof FilesError || signal?.aborted === true) throw error
+    if (signal?.aborted === true) throw signal.reason
+    if (error instanceof FilesError) throw error
     const code = (error as { code?: string }).code
     throw new FilesError(
       code === "ENOENT" && !existsSync(from)
