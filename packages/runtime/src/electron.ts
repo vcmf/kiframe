@@ -488,6 +488,7 @@ export async function launchElectronWith(
     // What the main window embeds as it opens (a video, a widget) is part of the app as shipped.
     // A frame still loading (its first navigation not committed: its url empty or about:blank) is
     // read by its element's src, resolved against the page (else it'd be stopped once it loads).
+    const loading: { frame: Frame; url: string }[] = []
     for (const frame of page.frames()) {
       if (frame === page.mainFrame()) continue
       let shownIn = frame.url()
@@ -496,7 +497,11 @@ export async function launchElectronWith(
           .frameElement()
           .then((element) => element.getAttribute("src"))
           .catch(() => null)
-        shownIn = src === null ? shownIn : (URL.parse(src, page.url())?.href ?? shownIn)
+        const resolved = src === null ? undefined : URL.parse(src, page.url())?.href
+        if (resolved !== undefined) {
+          shownIn = resolved
+          loading.push({ frame, url: resolved })
+        }
       }
       const url = URL.parse(shownIn)
       // https only (a listed site's rule: never plain http in the app's name).
@@ -511,6 +516,11 @@ export async function launchElectronWith(
       origins: [...(opts.origins ?? []), ...embedded],
     }
     const allows = (url: string) => allowedPage(url, own)
+    // A frame still loading toward what isn't the app's: stopped now, at the launch (never as it
+    // lands in a run's first step).
+    for (const { frame, url } of loading) {
+      if (!allows(url)) await frame.goto("about:blank", { timeout: BACK_MS }).catch(() => undefined)
+    }
     if (!shown.startsWith("chrome-error:") && !allows(shown)) {
       const url = URL.parse(shown)
       throw new ElectronLaunchError(
@@ -557,10 +567,16 @@ export async function launchElectronWith(
             ? frame.goto("about:blank")
             : p !== page
               ? p.close()
-              : // Committed is enough (never the page's load, nor a step's short timeout).
+              : // Committed is enough (never the page's load, nor a step's short timeout). No
+                // history, or a back that failed: blank (never left showing the site; the run
+                // then says to relaunch).
                 p
                   .goBack({ waitUntil: "commit", timeout: BACK_MS })
                   .then((back) => (back === null ? frame.goto("about:blank") : back))
+                  .catch((error: unknown) => {
+                    debug("back", error)
+                    return frame.goto("about:blank")
+                  })
         const done = action.then(
           () => undefined,
           () => undefined,

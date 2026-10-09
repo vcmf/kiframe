@@ -137,9 +137,14 @@ beforeAll(async () => {
   )
   await new Promise<void>((resolve) => secureServer.listen(0, "127.0.0.1", resolve))
   secure = `https://127.0.0.1:${(secureServer.address() as AddressInfo).port}/`
-  server = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "text/html" })
-    res.end("<h1>Another site</h1>")
+  server = createServer((req, res) => {
+    // "/slow": answered after a while (a frame still loading as the app opens).
+    const answer = () => {
+      res.writeHead(200, { "content-type": "text/html" })
+      res.end("<h1>Another site</h1>")
+    }
+    if (req.url === "/slow") setTimeout(answer, 3000)
+    else answer()
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
   other = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`
@@ -789,6 +794,24 @@ steps: [{ id: add, action: click, target: { by: role, role: button, name: Add no
       { electron: inTarget(embeds) },
     )
     expect(embeds.page.frames().some((f) => f.url() === slow)).toBe(true)
+  })
+
+  it("stops a frame loading toward another site as the app opens, never in the run", async () => {
+    // Its first navigation uncommitted when the launch seals: stopped then, at the launch.
+    const slow = `${other}slow`
+    const plain = await launchElectron({
+      ...base,
+      appArgs: [fixture, "hidden", `link=${slow}`, "embed-at-start"],
+      settleMs: 300,
+    })
+    open.push(plain)
+    await runScenario(
+      plain.page,
+      parseScenarioYaml(`version: 1\nsteps: [{ id: a, action: pause, ms: 4000 }]\n`),
+      project,
+      { electron: inTarget(plain) },
+    )
+    expect(plain.page.frames().some((f) => f.url() === slow)).toBe(false)
   })
 
   it("keeps what the app embeds as it opens, and takes its window back from a site", async () => {
