@@ -121,12 +121,18 @@ export function command(
   cmd: string,
   args: string[],
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     execFile(
       cmd,
       args,
-      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } },
+      {
+        timeout: timeoutMs,
+        maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, LC_ALL: "C" },
+        ...(signal !== undefined && { signal }),
+      },
       (error, stdout, stderr) => {
         const code = error === null ? 0 : typeof error.code === "number" ? error.code : -1
         resolve({ code: error?.killed === true ? -1 : code, stdout, stderr })

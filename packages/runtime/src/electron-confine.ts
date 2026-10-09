@@ -31,7 +31,7 @@ export interface Confinement {
 }
 
 /** A string in the profile's language (quoted, its backslashes and quotes escaped). */
-const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+export const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
 /** The Seatbelt profile of a launch. Later rules win over earlier ones. */
 export function seatbeltProfile(c: Confinement): string {

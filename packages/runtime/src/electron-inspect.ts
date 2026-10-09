@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto"
-import { constants, createReadStream, lstatSync, readlinkSync } from "node:fs"
+import { constants, createReadStream } from "node:fs"
 import { access, lstat, readdir, readlink, realpath } from "node:fs/promises"
 import { basename, isAbsolute, join } from "node:path"
+import { q } from "./electron-confine.ts"
 import { command as run } from "./electron-workarea.ts"
 
 // A desktop app the user picks, inspected before Kiframe ever runs it (PR 3b, design reviewed
@@ -32,7 +33,7 @@ export interface DesktopApp {
 /** An app Kiframe won't add: said to the user as is. */
 export class InspectError extends Error {}
 
-const BUNDLE_ID = /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/
+const BUNDLE_ID = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$/
 
 /** codesign on a large bundle (a verify reads it all) can take a while: never forever. */
 const TIMEOUT = 60_000
@@ -53,8 +54,18 @@ export function placeRefusal(real: string): string | undefined {
 }
 
 /** A value of an Info.plist (undefined when it has none), read by plutil. */
-async function plistValue(plist: string, key: string): Promise<string | undefined> {
-  const out = await run("/usr/bin/plutil", ["-extract", key, "raw", "-o", "-", plist], TIMEOUT)
+async function plistValue(
+  plist: string,
+  key: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  const out = await run(
+    "/usr/bin/plutil",
+    ["-extract", key, "raw", "-o", "-", plist],
+    TIMEOUT,
+    signal,
+  )
+  signal?.throwIfAborted()
   // An empty value is no value (a build with an empty name: its fallback instead).
   const value = out.code === 0 ? out.stdout.trim() : ""
   return value === "" ? undefined : value
@@ -85,18 +96,34 @@ export function parseSigning(
 
 /** The requirement a developer's signature must meet: their team, the signed identifier. */
 export function teamRequirement(team: string, identifier: string): string {
-  const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
   return `anchor apple generic and identifier ${q(identifier)} and certificate leaf[subject.OU] = ${q(team)}`
 }
 
-/** Whether the bundle's signature is whole and its developer's (`codesign --verify --strict`). */
-export async function signatureHolds(path: string, signer: Signer): Promise<boolean> {
-  if (signer.kind !== "team") return true
+/**
+ * Whether the app at `path` is still the one approved: a developer's, its signature whole and
+ * theirs (`codesign --verify --strict`); a pinned build, the same digest.
+ */
+export async function signatureHolds(
+  path: string,
+  signer: Signer,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (signer.kind === "pinned") {
+    try {
+      return (await codeDigest(path, signal)) === signer.digest
+    } catch (error) {
+      if (signal?.aborted === true) throw signal.reason
+      if (error instanceof InspectError) return false
+      throw error
+    }
+  }
   const out = await run(
     "/usr/bin/codesign",
     ["--verify", "--strict", `-R=${teamRequirement(signer.team, signer.identifier)}`, path],
     TIMEOUT,
+    signal,
   )
+  signal?.throwIfAborted()
   return out.code === 0
 }
 
@@ -112,12 +139,12 @@ const DIGEST_VERSION = "kiframe-code-v1"
  * (absolute, or above the root at any step), or `"dangling"` (a step that isn't there: it leads
  * nowhere, so nowhere outside).
  */
-function resolveIn(
+async function resolveIn(
   root: string,
   base: readonly string[],
   target: string,
   depth: number,
-): string[] | "outside" | "dangling" {
+): Promise<string[] | "outside" | "dangling"> {
   if (depth > 40 || isAbsolute(target)) return "outside"
   const parts = [...base]
   for (const step of target.split("/")) {
@@ -130,15 +157,15 @@ function resolveIn(
     parts.push(step)
     let stat
     try {
-      stat = lstatSync(join(root, ...parts))
+      stat = await lstat(join(root, ...parts))
     } catch {
       return "dangling"
     }
     if (stat.isSymbolicLink()) {
-      const inner = resolveIn(
+      const inner = await resolveIn(
         root,
         parts.slice(0, -1),
-        readlinkSync(join(root, ...parts)),
+        await readlink(join(root, ...parts)),
         depth + 1,
       )
       if (typeof inner === "string") return inner
@@ -171,7 +198,7 @@ export async function codeDigest(picked: string, signal?: AbortSignal): Promise<
     if (entries > DIGEST_LIMITS.entries) throw tooLarge()
     if (stat.isSymbolicLink()) {
       const target = await readlink(full)
-      if (resolveIn(root, rel.slice(0, -1), target, 0) === "outside") {
+      if ((await resolveIn(root, rel.slice(0, -1), target, 0)) === "outside") {
         throw new InspectError(`that app links outside itself (${name}): Kiframe can't pin it`)
       }
       line(["link", name, target])
@@ -214,7 +241,8 @@ export async function signerOf(
   path: string,
   signal?: AbortSignal,
 ): Promise<Signer & { signed: boolean }> {
-  const signing = await run("/usr/bin/codesign", ["-dv", path], TIMEOUT)
+  const signing = await run("/usr/bin/codesign", ["-dv", path], TIMEOUT, signal)
+  signal?.throwIfAborted()
   const parsed = parseSigning(signing.code, signing.stderr)
   if (parsed.kind === "unread") throw new InspectError("that app's signature couldn't be read")
   if (parsed.kind === "team") return { ...parsed, signed: true }
@@ -241,17 +269,21 @@ export async function inspectDesktopApp(picked: string, signal?: AbortSignal): P
   const place = placeRefusal(path)
   if (place !== undefined) throw new InspectError(place)
   const plist = join(path, "Contents", "Info.plist")
-  const bundleId = await plistValue(plist, "CFBundleIdentifier")
+  const bundleId = await plistValue(plist, "CFBundleIdentifier", signal)
   if (bundleId === undefined || !BUNDLE_ID.test(bundleId)) {
     throw new InspectError("that app has no bundle id Kiframe can use")
   }
   const framework = join(path, "Contents/Frameworks/Electron Framework.framework")
-  const electron = await plistValue(join(framework, "Resources/Info.plist"), "CFBundleVersion")
+  const electron = await plistValue(
+    join(framework, "Resources/Info.plist"),
+    "CFBundleVersion",
+    signal,
+  )
   if (electron === undefined) {
     throw new InspectError("that isn't an Electron app: Kiframe drives Electron apps only")
   }
-  const exe = await plistValue(plist, "CFBundleExecutable")
-  if (exe === undefined || exe === "" || exe === "." || exe === ".." || exe.includes("/")) {
+  const exe = await plistValue(plist, "CFBundleExecutable", signal)
+  if (exe === undefined || exe === "." || exe === ".." || exe.includes("/")) {
     throw new InspectError("that app names no executable Kiframe can run")
   }
   const executable = join(path, "Contents", "MacOS", exe)
@@ -271,7 +303,9 @@ export async function inspectDesktopApp(picked: string, signal?: AbortSignal): P
       "/usr/bin/codesign",
       ["-d", "--entitlements", "-", "--xml", path],
       TIMEOUT,
+      signal,
     )
+    signal?.throwIfAborted()
     if (entitlements.code !== 0) {
       throw new InspectError("that app's entitlements couldn't be read")
     }
@@ -281,12 +315,12 @@ export async function inspectDesktopApp(picked: string, signal?: AbortSignal): P
       )
     }
   }
-  if (!(await signatureHolds(path, signer))) {
+  if (signer.kind === "team" && !(await signatureHolds(path, signer, signal))) {
     throw new InspectError("that app's signature is broken: reinstall it")
   }
   const [display, short, version] = await Promise.all(
     ["CFBundleDisplayName", "CFBundleName", "CFBundleShortVersionString"].map((key) =>
-      plistValue(plist, key),
+      plistValue(plist, key, signal),
     ),
   )
   const name = display ?? short ?? basename(path, ".app")

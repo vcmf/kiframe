@@ -90,8 +90,8 @@ async function exitedSoon(child: ChildProcess, ms: number): Promise<boolean> {
 
 /**
  * What a launch that failed says, the one rule (every failure an ElectronLaunchError with its
- * `why`, but a stop): stopped → the stop; not started → said; the app quit (whatever the attach
- * was doing) → quit; already said → as is; anything else (Playwright, CDP) → a fixed phrase (never
+ * `why`, but a stop): stopped → the stop; not started → said; already said → as is; the app quit
+ * (whatever the attach was doing) → quit; anything else (Playwright, CDP) → a fixed phrase (never
  * its message: it can carry the debugging endpoint or a page's address), its detail on stderr for
  * Kiframe's own debugging only (KIFRAME_ELECTRON_DEBUG).
  */
@@ -103,8 +103,9 @@ export function launchFailure(
   if (state.spawnError !== undefined) {
     return new ElectronLaunchError(`the app couldn't be launched (${state.spawnError.message})`)
   }
-  if (state.quit) return new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
+  // Already said (a site, a page never loaded): kept, whatever the app did next.
   if (error instanceof ElectronLaunchError) return error
+  if (state.quit) return new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
   debug("launch", error)
   return new ElectronLaunchError(
     error instanceof errors.TimeoutError
@@ -209,11 +210,8 @@ export async function attach(
         signal,
       )
     } catch (error) {
-      if (!(error instanceof errors.TimeoutError)) throw error
-      // Out of time: said as the launch's own (never Playwright's call log, its endpoint).
-      if (left <= ATTACH_TRY_MS) {
-        throw new ElectronLaunchError("the app didn't answer in time (it may refuse automation)")
-      }
+      // Out of time (or another failure): the launch's one rule words it.
+      if (!(error instanceof errors.TimeoutError) || left <= ATTACH_TRY_MS) throw error
     }
   }
 }

@@ -17,6 +17,7 @@ import { createRequire } from "node:module"
 import { tmpdir, userInfo } from "node:os"
 import { dirname, join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { errors } from "playwright"
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createServer, type Server } from "node:http"
@@ -580,8 +581,12 @@ else setInterval(() => undefined, 60_000)
     expect(
       String(launchFailure(raw, { ...none, spawnError: new Error("ENOENT"), quit: true })),
     ).toMatch(/couldn't be launched \(ENOENT\)/)
-    expect(launchFailure(said, { ...none, quit: true })).toMatchObject({ why: "quit" })
+    // Already said (a site to allow, a page never loaded) stays said, even if the app then quit.
+    const site = new ElectronLaunchError("site", { why: "site", site: "https://a.example" })
+    expect(launchFailure(site, { ...none, quit: true })).toBe(site)
     expect(launchFailure(said, none)).toBe(said)
+    // Anything unworded (an attach that stalled) and the app gone: it quit.
+    expect(launchFailure(raw, { ...none, quit: true })).toMatchObject({ why: "quit" })
     const worded = launchFailure(raw, none)
     expect(worded).toBeInstanceOf(ElectronLaunchError)
     expect(String(worded)).not.toMatch(/ws:\/\//)
@@ -601,9 +606,16 @@ else setInterval(() => undefined, 60_000)
         () => undefined,
         (e: unknown) => e,
       )
-      expect(error).toBeInstanceOf(ElectronLaunchError)
-      expect(String(error)).toMatch(/didn't answer in time/)
+      // Tried twice, then the timeout handed to the launch's one rule, which words it.
       expect(connections).toBe(2)
+      expect(error).toBeInstanceOf(errors.TimeoutError)
+      const worded = launchFailure(error, {
+        stopped: undefined,
+        spawnError: undefined,
+        quit: false,
+      })
+      expect(worded).toBeInstanceOf(ElectronLaunchError)
+      expect(String(worded)).toMatch(/didn't answer in time/)
     } finally {
       silent.close()
     }

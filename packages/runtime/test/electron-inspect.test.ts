@@ -19,6 +19,7 @@ import {
   inspectDesktopApp,
   parseSigning,
   placeRefusal,
+  signatureHolds,
   teamRequirement,
 } from "../src/electron-inspect.ts"
 import { trialDesktopApp } from "../src/electron-trial.ts"
@@ -305,6 +306,26 @@ describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 
     expect(await trialDesktopApp(quits, { workDir: work })).toEqual({ quit: true })
     // Nothing left of any trial.
     expect(readdirSync(join(work, "sandboxes"))).toEqual([])
+  })
+
+  it("holds an app to the build that was picked (a pinned one rebuilt: changed)", async () => {
+    const path = withMode("Rebuilt", "plain")
+    const app = await inspectDesktopApp(path)
+    expect(await signatureHolds(app.path, app.signer)).toBe(true)
+    writeFileSync(join(path, "Contents/Resources/app/index.html"), "<h1>rebuilt</h1>")
+    expect(await signatureHolds(app.path, app.signer)).toBe(false)
+    // Never tried as the build that was picked.
+    expect(
+      await trialDesktopApp(app, { workDir: mkdtempSync(join(tmpdir(), "kiframe-el-work-")) }),
+    ).toEqual({ failed: "the app changed since it was picked: pick it again" })
+  })
+
+  it("stops an inspection when asked", async () => {
+    const stopping = new AbortController()
+    stopping.abort()
+    await expect(inspectDesktopApp(bundle("Stop"), stopping.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    })
   })
 
   it("throws a stop as the stop", async () => {

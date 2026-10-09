@@ -63,7 +63,8 @@ export const ElectronApp = z.strictObject({
   bundleId: z
     .string()
     .max(255)
-    .regex(/^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/, "a bundle id (com.example.app)"),
+    // Underscores too: macOS runs such ids (electron-builder's com.electron.my_app).
+    .regex(/^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$/, "a bundle id (com.example.app)"),
   /**
    * What the app opens: paths in the project's files/ (`files/demo-vault`; a copy is what it gets,
    * decided 2026-10-09), positional only, never a switch.
