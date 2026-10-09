@@ -1,10 +1,28 @@
-// The project's apps: each with its exact origin (main's), and a way to remove one (never the
-// first: where scenes start). Main asks before removing, naming the scenes that use it.
-import { Globe, WarningCircle, X } from "@phosphor-icons/react"
-import { useEffect, useRef, useState } from "react"
-import { appViewIdentity, type ProjectView } from "../../../shared/ipc.ts"
+// The project's apps: each with its exact origin (main's) or its bundle id, and a way to remove one
+// (never the first: where scenes start). Main asks before removing, naming the scenes that use it.
+// On macOS, a desktop app is added here: main shows the picker and inspects it, the card tries it
+// confined, then adds it (the window holds a token, never the app's path or a site to allow).
+import { AppWindow, Globe, WarningCircle, X } from "@phosphor-icons/react"
+import { useCallback, useEffect, useRef, useState } from "react"
+import {
+  appViewIdentity,
+  type DesktopCheck,
+  type DesktopPick,
+  type DesktopStatusView,
+  type ProjectView,
+} from "../../../shared/ipc.ts"
 import { api } from "../api.ts"
 import { useChat } from "../chat-store.ts"
+
+type Card = Extract<DesktopPick, { card: unknown }>["card"]
+
+/** A desktop app's status on this Mac, in words. */
+function statusText(entry: DesktopStatusView["apps"][string] | undefined): string {
+  if (entry === undefined) return ""
+  if (entry.status === "ready") return "Ready on this Mac"
+  if (entry.status === "updated") return "Updated: tried confined before its next run"
+  return entry.why ?? ""
+}
 
 export function AppsPanel({
   project,
@@ -14,8 +32,13 @@ export function AppsPanel({
   onClose: () => void
 }) {
   const running = useChat((s) => s.running)
+  const mac = api().platform === "darwin"
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [statuses, setStatuses] = useState<DesktopStatusView["apps"]>({})
+  const [card, setCard] = useState<Card | null>(null)
+  const [outcome, setOutcome] = useState<DesktopCheck | null>(null)
+  const [checking, setChecking] = useState(false)
   const close = useRef(onClose)
   close.current = onClose
   useEffect(() => {
@@ -26,6 +49,29 @@ export function AppsPanel({
     return () => document.removeEventListener("keydown", onKey)
   }, [])
 
+  const hasDesktop = project.apps.some((a) => a.kind === "electron")
+  const refresh = useCallback(async () => {
+    if (!hasDesktop) return
+    const view = await api()
+      .invoke("apps:desktop-status", { session: project.session })
+      .catch(() => null)
+    if (view === null) return
+    setStatuses(view.apps)
+    if (view.problem !== null) setError(view.problem)
+  }, [hasDesktop, project.session])
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  // An add given up when the panel closes (its trial ended in main).
+  useEffect(
+    () => () =>
+      void api()
+        .invoke("apps:desktop-cancel")
+        .catch(() => undefined),
+    [],
+  )
+
   const remove = async (name: string, identity: string) => {
     if (busy) return
     setBusy(true)
@@ -34,6 +80,54 @@ export function AppsPanel({
       .catch((e: unknown) => String(e))
     setBusy(false)
     setError(refused)
+  }
+
+  const pick = async () => {
+    setError(null)
+    setOutcome(null)
+    const picked = await api()
+      .invoke("apps:desktop-pick", { session: project.session })
+      .catch((e: unknown) => ({ refused: String(e) }))
+    if (picked === null) return
+    if ("refused" in picked) {
+      setCard(null)
+      setError(picked.refused)
+      return
+    }
+    setCard(picked.card)
+  }
+
+  const check = async (allowSite: boolean) => {
+    if (card === null) return
+    setChecking(true)
+    setOutcome(null)
+    const result = await api()
+      .invoke("apps:desktop-check", { session: project.session, token: card.token, allowSite })
+      .catch((e: unknown) => ({ failed: String(e) }))
+    setChecking(false)
+    setOutcome(result)
+  }
+
+  const add = async () => {
+    if (card === null) return
+    const refused = await api()
+      .invoke("apps:desktop-add", { session: project.session, token: card.token })
+      .catch((e: unknown) => String(e))
+    if (refused !== null) {
+      setError(refused)
+      return
+    }
+    setCard(null)
+    setOutcome(null)
+    await refresh()
+  }
+
+  const cancel = () => {
+    setCard(null)
+    setOutcome(null)
+    void api()
+      .invoke("apps:desktop-cancel")
+      .catch(() => undefined)
   }
 
   return (
@@ -47,14 +141,18 @@ export function AppsPanel({
           </button>
         </div>
         <p className="dialog-text">
-          The sites this project’s scenes may open. Kif asks before adding one.
+          The sites and desktop apps this project’s scenes may open. Kif asks before adding a site;
+          you add desktop apps.
         </p>
         <ul className="app-list" aria-label="The project's apps">
           {project.apps.map((app, i) => (
             <li key={app.name}>
-              <Globe size={15} />
+              {app.kind === "electron" ? <AppWindow size={15} /> : <Globe size={15} />}
               <span className="mono">{app.name}</span>
               <span className="mono app-origin">{appViewIdentity(app)}</span>
+              {app.kind === "electron" && (
+                <span className="app-first">{statusText(statuses[app.name])}</span>
+              )}
               <div className="spacer" />
               {i === 0 ? (
                 <span className="app-first">Where scenes start</span>
@@ -72,6 +170,65 @@ export function AppsPanel({
             </li>
           ))}
         </ul>
+        {mac && card === null && (
+          <button
+            type="button"
+            className="btn"
+            disabled={running}
+            title={running ? "Kif is working: stop it first" : undefined}
+            onClick={() => void pick()}
+          >
+            Add desktop app…
+          </button>
+        )}
+        {card !== null && (
+          <section className="app-card" aria-label={`Adding ${card.name}`}>
+            <p>
+              <strong>{card.name}</strong> {card.version ?? ""} · Electron {card.electron} ·{" "}
+              {card.signer.kind === "team"
+                ? `signed by developer ${card.signer.team}`
+                : "not signed by a developer: pinned to this build"}
+            </p>
+            {card.existing !== undefined && (
+              <p className="app-card-why">
+                This project names it already (as {card.existing}): checking it allows it here.
+              </p>
+            )}
+            <p className="app-card-why">
+              Kiframe opens {card.name} confined (it can’t read or change your files, your own{" "}
+              {card.name}’s data or its preferences) for a few seconds, to check it works there.
+            </p>
+            {outcome !== null && <p role="status">{outcomeText(outcome, card.name)}</p>}
+            <div className="row">
+              {outcome !== null && "ok" in outcome ? (
+                <button type="button" className="btn" onClick={() => void add()}>
+                  {card.existing === undefined ? `Add ${card.name}` : `Allow ${card.name} here`}
+                </button>
+              ) : outcome !== null && "site" in outcome ? (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={checking}
+                  onClick={() => void check(true)}
+                >
+                  Allow {outcome.site} and check again
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={checking || running}
+                  onClick={() => void check(false)}
+                >
+                  {checking ? "Checking…" : "Check"}
+                </button>
+              )}
+              <button type="button" className="btn btn-ghost" onClick={cancel}>
+                Cancel
+              </button>
+            </div>
+          </section>
+        )}
         {error !== null && (
           <div className="error" role="alert">
             <WarningCircle size={16} weight="fill" />
@@ -81,4 +238,14 @@ export function AppsPanel({
       </div>
     </div>
   )
+}
+
+/** A trial's outcome, in words. */
+function outcomeText(outcome: DesktopCheck, name: string): string {
+  if ("ok" in outcome) return `${name} runs confined: Kiframe can drive it.`
+  if ("site" in outcome) {
+    return `${name}’s window is the site ${outcome.site}: if that’s ${name}’s own, allow it.`
+  }
+  if ("quit" in outcome) return `${name} quit at once: it may refuse automation.`
+  return outcome.failed
 }

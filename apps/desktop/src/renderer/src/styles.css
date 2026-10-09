@@ -1708,6 +1708,18 @@ ul.strip-cards > li {
   color: var(--muted);
 }
 
+/* A desktop app being added: what it is, its check's outcome, the next step. */
+.app-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.app-card p {
+  margin: 0 0 8px;
+}
+
 /* The app chip opens the apps panel; "+2" when there are more. */
 .chip-button {
   cursor: pointer;
