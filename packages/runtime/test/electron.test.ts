@@ -569,11 +569,9 @@ steps:
         options,
       ),
     ).rejects.toThrow(/went to 127\.0\.0\.1/)
-    expect(
-      await waitFor(
-        () => target.page.url().endsWith("index.html") || target.page.url().includes("index.html?"),
-      ),
-    ).toBe(true)
+    await waitFor(() => target.page.url().includes("index.html"), 10_000)
+    // Its address said if not (a busy CI machine: what it was on).
+    expect(target.page.url()).toMatch(/index\.html/)
     await runScenario(
       target.page,
       parseScenarioYaml(`version: 1

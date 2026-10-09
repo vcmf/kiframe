@@ -46,6 +46,8 @@ const PASSED_ENV = [
 
 /** How long an app may take to open its debugging port and its first window. */
 const LAUNCH_MS = 20_000
+/** How long the guard's "back" may take to commit (a busy machine: never a step's timeout). */
+const BACK_MS = 10_000
 /** How long closing the debugging connection may take (the group is killed after it anyway). */
 const CLOSE_MS = 2000
 /** How long an app that dropped the attach has to tell its exit. */
@@ -303,7 +305,10 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
             ? frame.goto("about:blank")
             : p !== page
               ? p.close()
-              : p.goBack().then((back) => (back === null ? frame.goto("about:blank") : back))
+              : // Committed is enough (never the page's load, nor a step's short timeout).
+                p
+                  .goBack({ waitUntil: "commit", timeout: BACK_MS })
+                  .then((back) => (back === null ? frame.goto("about:blank") : back))
         const done = action.then(
           () => undefined,
           () => undefined,
