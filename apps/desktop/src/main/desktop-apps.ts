@@ -208,6 +208,11 @@ export interface DesktopCard {
   signer: { kind: "team"; team: string } | { kind: "pinned" }
   /** The project already names it (a project from someone else): adding approves it here. */
   existing: string | undefined
+  /**
+   * What that project opens with it, shown before it's allowed: its arguments (paths in files/,
+   * not passed to the check) and the sites it shows as its own (the check runs with them).
+   */
+  opens: { args: string[]; origins: string[] } | undefined
 }
 
 interface Pending {
@@ -215,12 +220,16 @@ interface Pending {
   session: string
   app: DesktopApp
   existing: string | undefined
+  /** What the project opened the app with when picked (an add after a change: refused). */
+  opensAtPick: string | undefined
   /** The site the last trial named (kept here: the window never names one). */
   site: string | undefined
   /** Allowed by the user after a trial named it. */
   origins: string[]
   tried: boolean
   trial: AbortController | undefined
+  /** An add under way (a second click waits for nothing: refused). */
+  adding: boolean
 }
 
 /**
@@ -229,6 +238,8 @@ interface Pending {
  */
 export class DesktopAdds {
   readonly #pending = new Map<string, Pending>()
+  /** Windows whose pick is being inspected (another pick meanwhile: refused). */
+  readonly #picking = new Set<number>()
   readonly #looks: Looks
   readonly #workDir: string | undefined
 
@@ -244,24 +255,34 @@ export class DesktopAdds {
     path: string,
     project: { apps: Readonly<Record<string, App>> },
   ): Promise<DesktopCard> {
+    if (this.#picking.has(owner)) throw new Error("an app is being looked at already")
     this.dropFor(owner)
-    const app = await this.#looks.inspect(path)
+    this.#picking.add(owner)
+    let app: DesktopApp
+    try {
+      app = await this.#looks.inspect(path)
+    } finally {
+      this.#picking.delete(owner)
+    }
     const named = Object.entries(project.apps).find(
       ([, a]) => a.kind === "electron" && keyOf(a.bundleId) === keyOf(app.bundleId),
     )
     const existing = named?.[0]
-    // Named already: tried with the sites the project lists for it (what it'll run with).
-    const listed = named?.[1].kind === "electron" ? [...(named[1].origins ?? [])] : []
+    // Named already: tried with the sites the project lists for it (what it'll run with), shown.
+    const entry = named?.[1].kind === "electron" ? named[1] : undefined
+    const listed = [...(entry?.origins ?? [])]
     const token = randomUUID()
     this.#pending.set(token, {
       owner,
       session,
       app,
       existing,
+      opensAtPick: entry === undefined ? undefined : opensOf(entry),
       site: undefined,
       origins: listed,
       tried: false,
       trial: undefined,
+      adding: false,
     })
     return {
       token,
@@ -272,6 +293,7 @@ export class DesktopAdds {
       signer:
         app.signer.kind === "team" ? { kind: "team", team: app.signer.team } : { kind: "pinned" },
       existing,
+      opens: entry === undefined ? undefined : { args: [...(entry.args ?? [])], origins: listed },
     }
   }
 
@@ -321,30 +343,46 @@ export class DesktopAdds {
   ): Promise<string> {
     const pending = this.#own(owner, session, token)
     if (!pending.tried) throw new Error("check it first: it's added once it ran here")
-    const now = await this.#looks.inspect(pending.app.path)
-    if (!sameSigner(now.signer, pending.app.signer)) {
-      throw new Error("the app changed since it was checked: pick it again")
-    }
-    let name = pending.existing
-    let entry: ElectronApp
-    if (name !== undefined) {
-      const named = opened.project.apps[name]
-      if (named?.kind !== "electron")
-        throw new Error("the project changed meanwhile: pick it again")
-      entry = named
-    } else {
-      name = appNameFor(now.name, Object.keys(opened.project.apps))
-      entry = {
-        kind: "electron",
-        bundleId: now.bundleId,
-        ...(pending.origins.length > 0 && { origins: pending.origins }),
-        viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
+    if (pending.adding) throw new Error("it's being added already")
+    pending.adding = true
+    try {
+      const now = await this.#looks.inspect(pending.app.path)
+      if (!sameSigner(now.signer, pending.app.signer)) {
+        throw new Error("the app changed since it was checked: pick it again")
       }
-      saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, [name]: entry } })
+      let name = pending.existing
+      let entry: ElectronApp
+      if (name !== undefined) {
+        const named = opened.project.apps[name]
+        // What the user saw at the pick, still (a project changed meanwhile: never approved untried).
+        if (named?.kind !== "electron" || opensOf(named) !== pending.opensAtPick) {
+          throw new Error("the project changed meanwhile: pick it again")
+        }
+        entry = named
+        // A site allowed in the check: the project's too (its runs need it).
+        if ((named.origins ?? []).length !== pending.origins.length) {
+          entry = { ...named, origins: pending.origins }
+          saveProject(opened, {
+            ...opened.project,
+            apps: { ...opened.project.apps, [name]: entry },
+          })
+        }
+      } else {
+        name = appNameFor(now.name, Object.keys(opened.project.apps))
+        entry = {
+          kind: "electron",
+          bundleId: now.bundleId,
+          ...(pending.origins.length > 0 && { origins: pending.origins }),
+          viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
+        }
+        saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, [name]: entry } })
+      }
+      approvals.approve(now, scope, opensOf(entry))
+      this.#pending.delete(token)
+      return name
+    } finally {
+      pending.adding = false
     }
-    approvals.approve(now, scope, opensOf(entry))
-    this.#pending.delete(token)
-    return name
   }
 
   /** A window's add dropped (another pick, the window closed, the project changed). */

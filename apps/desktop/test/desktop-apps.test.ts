@@ -280,3 +280,83 @@ describe("an app's name in the project", () => {
     expect(appNameFor("1Password", [])).toBe("password")
   })
 })
+
+describe("adding an app a project already names", () => {
+  const at = { "/Applications/Notes.app": notes() }
+  const named = () => {
+    const opened = project()
+    saveProject(opened, {
+      ...opened.project,
+      apps: {
+        ...opened.project.apps,
+        desk: entry({ args: ["files/vault"], origins: ["https://a.example"] }),
+      },
+    })
+    return opened
+  }
+
+  it("shows what it opens, and never approves a project changed since the pick", async () => {
+    const opened = named()
+    const adds = new DesktopAdds(looks(at).looks)
+    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    expect(card.opens).toEqual({ args: ["files/vault"], origins: ["https://a.example"] })
+    await adds.check(1, "s1", card.token, false)
+    // A pull meanwhile adds a site: what the user saw isn't what would be approved.
+    const desk = opened.project.apps["desk"] as ElectronApp
+    saveProject(opened, {
+      ...opened.project,
+      apps: {
+        ...opened.project.apps,
+        desk: { ...desk, origins: ["https://a.example", "https://evil.example"] },
+      },
+    })
+    await expect(
+      adds.add(1, "s1", card.token, opened, "folder-a", new DesktopApprovals(dir())),
+    ).rejects.toThrow(/the project changed meanwhile/)
+  })
+
+  it("writes a site allowed in its check to the project, and approves that", async () => {
+    const opened = project()
+    saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, desk: entry() } })
+    const fake = looks(at, (o) =>
+      (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.slack.com" },
+    )
+    const adds = new DesktopAdds(fake.looks)
+    const approvals = new DesktopApprovals(dir())
+    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    await adds.check(1, "s1", card.token, false)
+    await adds.check(1, "s1", card.token, true)
+    expect(await adds.add(1, "s1", card.token, opened, "folder-a", approvals)).toBe("desk")
+    const desk = openProject(opened.dir).project.apps["desk"] as ElectronApp
+    expect(desk.origins).toEqual(["https://app.slack.com"])
+    expect(await desktopStatus(desk, "folder-a", approvals, fake.looks)).toEqual({
+      status: "ready",
+    })
+  })
+
+  it("refuses a second pick while one is looked at, and a second add while one runs", async () => {
+    let release: () => void = () => undefined
+    const slow = new Promise<void>((resolve) => (release = resolve))
+    const adds = new DesktopAdds({
+      inspect: async () => {
+        await slow
+        return notes()
+      },
+      trial: () => Promise.resolve({ ok: true }),
+    })
+    const opened = project()
+    const first = adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    await expect(adds.pick(1, "s1", "/Applications/Notes.app", opened.project)).rejects.toThrow(
+      /being looked at/,
+    )
+    release()
+    const card = await first
+    await adds.check(1, "s1", card.token, false)
+    const approvals = new DesktopApprovals(dir())
+    const one = adds.add(1, "s1", card.token, opened, "folder-a", approvals)
+    await expect(adds.add(1, "s1", card.token, opened, "folder-a", approvals)).rejects.toThrow(
+      /being added already/,
+    )
+    expect(await one).toBe("notes")
+  })
+})

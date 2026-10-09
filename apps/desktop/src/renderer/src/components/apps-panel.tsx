@@ -39,6 +39,11 @@ export function AppsPanel({
   const [card, setCard] = useState<Card | null>(null)
   const [outcome, setOutcome] = useState<DesktopCheck | null>(null)
   const [checking, setChecking] = useState(false)
+  const [picking, setPicking] = useState(false)
+  const [adding, setAdding] = useState(false)
+  // The card a check's answer belongs to (an answer for a card given up: dropped).
+  const current = useRef<string | null>(null)
+  current.current = card?.token ?? null
   const close = useRef(onClose)
   close.current = onClose
   useEffect(() => {
@@ -54,7 +59,10 @@ export function AppsPanel({
     if (!hasDesktop) return
     const view = await api()
       .invoke("apps:desktop-status", { session: project.session })
-      .catch(() => null)
+      .catch((e: unknown) => {
+        setError(`the desktop apps' status couldn't be read: ${String(e)}`)
+        return null
+      })
     if (view === null) return
     setStatuses(view.apps)
     if (view.problem !== null) setError(view.problem)
@@ -83,11 +91,14 @@ export function AppsPanel({
   }
 
   const pick = async () => {
+    if (picking) return
     setError(null)
     setOutcome(null)
+    setPicking(true)
     const picked = await api()
       .invoke("apps:desktop-pick", { session: project.session })
       .catch((e: unknown) => ({ refused: String(e) }))
+    setPicking(false)
     if (picked === null) return
     if ("refused" in picked) {
       setCard(null)
@@ -99,20 +110,25 @@ export function AppsPanel({
 
   const check = async (allowSite: boolean) => {
     if (card === null) return
+    const token = card.token
     setChecking(true)
     setOutcome(null)
     const result = await api()
-      .invoke("apps:desktop-check", { session: project.session, token: card.token, allowSite })
+      .invoke("apps:desktop-check", { session: project.session, token, allowSite })
       .catch((e: unknown) => ({ failed: String(e) }))
+    // Given up meanwhile (cancelled, another app picked): never shown on another card.
+    if (current.current !== token) return
     setChecking(false)
     setOutcome(result)
   }
 
   const add = async () => {
-    if (card === null) return
+    if (card === null || adding) return
+    setAdding(true)
     const refused = await api()
       .invoke("apps:desktop-add", { session: project.session, token: card.token })
       .catch((e: unknown) => String(e))
+    setAdding(false)
     if (refused !== null) {
       setError(refused)
       return
@@ -125,6 +141,7 @@ export function AppsPanel({
   const cancel = () => {
     setCard(null)
     setOutcome(null)
+    setChecking(false)
     void api()
       .invoke("apps:desktop-cancel")
       .catch(() => undefined)
@@ -174,11 +191,11 @@ export function AppsPanel({
           <button
             type="button"
             className="btn"
-            disabled={running}
+            disabled={running || picking}
             title={running ? "Kif is working: stop it first" : undefined}
             onClick={() => void pick()}
           >
-            Add desktop app…
+            {picking ? "Looking at the app…" : "Add desktop app…"}
           </button>
         )}
         {card !== null && (
@@ -191,7 +208,15 @@ export function AppsPanel({
             </p>
             {card.existing !== undefined && (
               <p className="app-card-why">
-                This project names it already (as {card.existing}): checking it allows it here.
+                This project names it already (as {card.existing}): checking it allows it here, with
+                what the project opens with it:{" "}
+                {card.opens === undefined ||
+                (card.opens.args.length === 0 && card.opens.origins.length === 0)
+                  ? "nothing more."
+                  : [
+                      ...card.opens.origins.map((o) => `the site ${o} as its own`),
+                      ...card.opens.args.map((a) => `${a} (not opened by the check)`),
+                    ].join(", ")}
               </p>
             )}
             <p className="app-card-why">
@@ -201,7 +226,7 @@ export function AppsPanel({
             {outcome !== null && <p role="status">{outcomeText(outcome, card.name)}</p>}
             <div className="row">
               {outcome !== null && "ok" in outcome ? (
-                <button type="button" className="btn" onClick={() => void add()}>
+                <button type="button" className="btn" disabled={adding} onClick={() => void add()}>
                   {card.existing === undefined ? `Add ${card.name}` : `Allow ${card.name} here`}
                 </button>
               ) : outcome !== null && "site" in outcome ? (

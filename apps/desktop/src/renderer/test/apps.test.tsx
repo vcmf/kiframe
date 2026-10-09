@@ -110,6 +110,7 @@ describe("adding a desktop app", () => {
     electron: "44.4.5",
     signer: { kind: "team" as const, team: "BQR82RBBHL" },
     existing: undefined,
+    opens: undefined,
   }
 
   it("shows each desktop app's status on this Mac (nothing launched to know it)", async () => {
@@ -190,5 +191,57 @@ describe("adding a desktop app", () => {
     render(<App />)
     fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
     expect(screen.queryByRole("button", { name: "Add desktop app…" })).toBeNull()
+  })
+
+  it("shows what a project that names the app opens with it, before it's allowed", async () => {
+    stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "apps:desktop-pick": () => ({
+        card: {
+          ...card,
+          existing: "slack",
+          opens: { args: ["files/vault"], origins: ["https://evil.example"] },
+        },
+      }),
+      "apps:desktop-cancel": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
+    const panel = screen.getByRole("dialog", { name: "Apps" })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const adding = await within(panel).findByRole("region", { name: "Adding Slack" })
+    expect(adding.textContent).toContain("the site https://evil.example as its own")
+    expect(adding.textContent).toContain("files/vault (not opened by the check)")
+  })
+
+  it("never shows a check's answer on a card picked after it was given up", async () => {
+    let answer: (v: unknown) => void = () => undefined
+    let picks = 0
+    stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "apps:desktop-pick": () => ({
+        card:
+          picks++ === 0
+            ? card
+            : { ...card, token: "7b2d6d2f-1a1c-4e6f-8b4c-3d2e1f0a9b8c", name: "Notion" },
+      }),
+      "apps:desktop-check": () => new Promise((resolve) => (answer = resolve)) as never,
+      "apps:desktop-cancel": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
+    const panel = screen.getByRole("dialog", { name: "Apps" })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const slack = await within(panel).findByRole("region", { name: "Adding Slack" })
+    fireEvent.click(within(slack).getByRole("button", { name: "Check" }))
+    fireEvent.click(within(slack).getByRole("button", { name: "Cancel" }))
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const notion = await within(panel).findByRole("region", { name: "Adding Notion" })
+    await act(async () => {
+      answer({ ok: true })
+      await Promise.resolve()
+    })
+    expect(within(notion).queryByRole("status")).toBeNull()
+    expect(within(notion).queryByRole("button", { name: "Add Notion" })).toBeNull()
   })
 })

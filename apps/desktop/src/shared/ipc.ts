@@ -312,6 +312,8 @@ export type DesktopPick =
         signer: { kind: "team"; team: string } | { kind: "pinned" }
         /** The project names it already (a project from someone else): adding approves it here. */
         existing: string | undefined
+        /** What that project opens with it (shown before it's allowed). */
+        opens: { args: string[]; origins: string[] } | undefined
       }
     }
   | { refused: string }

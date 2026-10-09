@@ -288,7 +288,10 @@ function start(): void {
   const showWindow = () => {
     if (window === null) {
       window = createWindow(join(here, "../preload"), icon, devServer)
+      const closing = window.webContents.id
       window.on("closed", () => {
+        // Its add dropped, its trial ended (macOS keeps the app open without a window).
+        adds.dropFor(closing)
         window = null
       })
       return
@@ -363,6 +366,7 @@ function start(): void {
           }),
         "project:create": (init) =>
           act(async () => {
+            adds.dropAll()
             const url = targetUrl(init.url)
             // Where the address really lands (its www. or https form), asked while the user picks.
             const resolving = resolveAppAddress(url)
@@ -538,6 +542,10 @@ function start(): void {
           }
         },
         "apps:desktop-check": async ({ session, token, allowSite }) => {
+          if (typeof sessionProject(session) === "string") {
+            adds.dropAll()
+            return { failed: "the project changed: pick the app again" }
+          }
           if (workspace.agent?.running === true) return { failed: "Kif is working: stop it first" }
           try {
             return await adds.check(owner(), session, token, allowSite)
@@ -574,14 +582,19 @@ function start(): void {
           if (typeof opened === "string") return { apps, problem: null }
           const store = desktopApprovals()
           const scope = ids().scope(opened.dir)
-          for (const [name, entry] of Object.entries(opened.project.apps)) {
-            if (entry.kind !== "electron") continue
-            apps[name] =
-              process.platform === "darwin"
-                ? await desktopStatus(entry, scope, store, looks)
-                : { status: "not-found", why: "desktop apps run on macOS only" }
-          }
-          return { apps, problem: store.problem }
+          await Promise.all(
+            Object.entries(opened.project.apps).map(async ([name, entry]) => {
+              if (entry.kind !== "electron") return
+              apps[name] =
+                process.platform === "darwin"
+                  ? await desktopStatus(entry, scope, store, looks)
+                  : { status: "not-found", why: "desktop apps run on macOS only" }
+            }),
+          )
+          // Said once (the file set aside at the first read).
+          const problem = store.problem
+          store.problem = null
+          return { apps, problem }
         },
         "preview:open": (sceneId) => {
           const opened = workspace.opened
