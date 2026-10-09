@@ -120,6 +120,8 @@ const launch = async (extra: string[] = [], options: { stateFile?: string } = {}
     executable: electron,
     bundle: fixture,
     args: [fixture, "hidden", `link=${other}`, ...extra],
+    // A plain fixture settles at once; the window-shape tests keep the real wait.
+    ...(!extra.some((e) => ["splash", "swap", "embed-at-start"].includes(e)) && { settleMs: 300 }),
     viewport,
     ...options,
   })

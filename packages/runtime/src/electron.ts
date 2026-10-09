@@ -46,8 +46,6 @@ const PASSED_ENV = [
 
 /** How long an app may take to open its debugging port and its first window. */
 const LAUNCH_MS = 20_000
-/** How long a terminated app may take to quit before it's killed. */
-const QUIT_MS = 2000
 /** How long closing the debugging connection may take (the group is killed after it anyway). */
 const CLOSE_MS = 2000
 /** How long an app that dropped the attach has to tell its exit. */
@@ -104,6 +102,11 @@ export interface ElectronLaunch {
   /** A file noting the launches still running: what a crash left is swept at the next start. */
   stateFile?: string
   signal?: AbortSignal
+  /**
+   * How long its windows must stay as they are before its main window is chosen (default 1.5 s: a
+   * splash closing, a sign-in window replaced). Tests of a plain app: shorter.
+   */
+  settleMs?: number
   /** Tests: how long to wait for the app, its port and its first window together (default 20 s). */
   timeoutMs?: number
 }
@@ -207,14 +210,16 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   const end = () =>
     (ended ??= (async () => {
       const alive = browser?.isConnected() === true
-      // Bounded: the group is killed right after (a close the app never answers never holds it).
+      // Killed first, the connection closed after (it drops with the app: never a close the app
+      // has to answer), bounded all the same.
+      const ended = await stop(child, sandbox.root, opts.stateFile, alive)
       const t0 = Date.now()
       await within(
         browser?.close().catch(() => undefined),
         CLOSE_MS,
       )
       timing("close", t0)
-      return stop(child, sandbox.root, opts.stateFile, alive)
+      return ended
     })())
   try {
     // Noted at once (a crash from here on is swept at the next start); a note that can't be
@@ -239,6 +244,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       deadline,
       opts.signal,
       () => child.exitCode !== null || child.signalCode !== null || !connected.isConnected(),
+      opts.settleMs ?? SETTLE_MS,
     )
     // Sealed now, from the main window alone: its own scheme (app:) or dev server (loopback).
     const launched = new Set<string>()
@@ -447,6 +453,7 @@ async function mainWindow(
   deadline: number,
   signal: AbortSignal | undefined,
   gone: () => boolean,
+  settleMs: number,
 ): Promise<Page> {
   const windows = () => context.pages().filter((p) => !isDevtools(p.url()) && !p.isClosed())
   let seen = ""
@@ -463,7 +470,7 @@ async function mainWindow(
     }
     const last = now.at(-1)
     const loaded = last !== undefined && last.url() !== "" && last.url() !== "about:blank"
-    if (loaded && Date.now() - since >= SETTLE_MS) {
+    if (loaded && Date.now() - since >= settleMs) {
       await last
         .waitForLoadState("domcontentloaded", { timeout: Math.max(1, deadline - Date.now()) })
         .catch(() => undefined)
@@ -573,11 +580,8 @@ async function stop(
   const leader = child.exitCode === null && child.signalCode === null
   let t0 = Date.now()
   if (pid !== undefined && (leader || alive || (await orphanedGroup(pid)))) {
-    if (leader) {
-      const exited = new Promise((resolve) => child.once("exit", resolve))
-      signalGroup(pid, "SIGTERM")
-      await Promise.race([exited, new Promise((r) => setTimeout(r, QUIT_MS))])
-    }
+    // Killed outright, never asked to quit: its sandbox is thrown away (nothing to save), and a
+    // quit can run an updater's install-on-quit over the user's real app.
     signalGroup(pid, "SIGKILL")
   }
   timing("kill", t0)
