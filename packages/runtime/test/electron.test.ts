@@ -125,9 +125,14 @@ beforeAll(async () => {
   )
   secureServer = createHttpsServer(
     { key: readFileSync(join(certs, "key.pem")), cert: readFileSync(join(certs, "cert.pem")) },
-    (_req, res) => {
-      res.writeHead(200, { "content-type": "text/html" })
-      res.end("<h1>A widget</h1>")
+    (req, res) => {
+      // "/slow": answered after a while (a widget still loading as the app opens).
+      const answer = () => {
+        res.writeHead(200, { "content-type": "text/html" })
+        res.end("<h1>A widget</h1>")
+      }
+      if (req.url === "/slow") setTimeout(answer, 3000)
+      else answer()
     },
   )
   await new Promise<void>((resolve) => secureServer.listen(0, "127.0.0.1", resolve))
@@ -490,10 +495,14 @@ steps:
     }
   }, 60_000)
 
-  it("launches an app that allows one copy only (its lock in the sandbox, never /var/folders)", async () => {
-    const target = await launch(["single"])
-    expect(await target.page.title()).toBe("Fixture notes")
-  })
+  // macOS's fix (Linux runs unconfined, its lock's socket path under its own length limit).
+  it.runIf(process.platform === "darwin")(
+    "launches an app that allows one copy only (its lock in the sandbox, never /var/folders)",
+    async () => {
+      const target = await launch(["single"])
+      expect(await target.page.title()).toBe("Fixture notes")
+    },
+  )
 
   it("names the site a wrapper app shows, even when it can't load it", async () => {
     const error = await launch(["wrapper"]).then(
@@ -761,6 +770,25 @@ steps: [{ id: add, action: click, target: { by: role, role: button, name: Add no
     expect(target.close()).toBe(first)
     expect(await first).toEqual({ unread: false })
     open = []
+  })
+
+  it("keeps a frame the app embeds that's still loading as it opens", async () => {
+    // Its first navigation uncommitted when the launch seals what's its own: read by its src.
+    const slow = `${secure}slow`
+    const embeds = await launchElectron({
+      ...base,
+      appArgs: [fixture, "hidden", `link=${slow}`, "embed-at-start", "trust-test-cert"],
+      settleMs: 300,
+    })
+    open.push(embeds)
+    expect(await waitFor(() => embeds.page.frames().some((f) => f.url() === slow), 8000)).toBe(true)
+    await runScenario(
+      embeds.page,
+      parseScenarioYaml(`version: 1\nsteps: [{ id: a, action: pause, ms: 300 }]\n`),
+      project,
+      { electron: inTarget(embeds) },
+    )
+    expect(embeds.page.frames().some((f) => f.url() === slow)).toBe(true)
   })
 
   it("keeps what the app embeds as it opens, and takes its window back from a site", async () => {

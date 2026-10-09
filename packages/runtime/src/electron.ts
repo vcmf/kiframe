@@ -486,12 +486,21 @@ export async function launchElectronWith(
     const scheme = ownScheme(shown)
     if (scheme !== undefined) schemes.add(scheme)
     // What the main window embeds as it opens (a video, a widget) is part of the app as shipped.
+    // A frame still loading (its first navigation not committed: its url empty or about:blank) is
+    // read by its element's src, resolved against the page (else it'd be stopped once it loads).
     for (const frame of page.frames()) {
-      const url = URL.parse(frame.url())
-      // https only (a listed site's rule: never plain http in the app's name).
-      if (frame !== page.mainFrame() && url !== null && url.protocol === "https:") {
-        embedded.add(url.origin)
+      if (frame === page.mainFrame()) continue
+      let shownIn = frame.url()
+      if (shownIn === "" || shownIn === "about:blank") {
+        const src = await frame
+          .frameElement()
+          .then((element) => element.getAttribute("src"))
+          .catch(() => null)
+        shownIn = src === null ? shownIn : (URL.parse(src, page.url())?.href ?? shownIn)
       }
+      const url = URL.parse(shownIn)
+      // https only (a listed site's rule: never plain http in the app's name).
+      if (url !== null && url.protocol === "https:") embedded.add(url.origin)
     }
     const own = {
       bundles,
