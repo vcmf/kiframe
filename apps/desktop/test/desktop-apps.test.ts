@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createProject, openProject, saveProject } from "@kiframe/project"
@@ -43,7 +43,7 @@ const looks = (
   return {
     trials,
     looks: {
-      inspect: (path: string) => {
+      inspect: (path: string, _signal?: AbortSignal) => {
         const app = apps[path]
         return app === undefined
           ? Promise.reject(new Error("that app can't be read (moved or removed?)"))
@@ -70,30 +70,58 @@ describe("a desktop app's approvals", () => {
     const approvals = new DesktopApprovals(data)
     approvals.approve(notes(), "folder-a", opensOf(entry()))
     const again = new DesktopApprovals(data)
-    expect(again.get("COM.EXAMPLE.NOTES")?.scopes).toEqual({
+    expect(again.copyFor("COM.EXAMPLE.NOTES", "folder-a")?.scopes).toEqual({
       "folder-a": { opens: opensOf(entry()) },
     })
     expect(readFileSync(join(data, "desktop-apps.json")).length).toBeGreaterThan(0)
     again.drop("com.example.Notes", "folder-a")
-    expect(new DesktopApprovals(data).get("com.example.Notes")?.scopes).toEqual({})
+    expect(new DesktopApprovals(data).copies("com.example.Notes")).toEqual([])
   })
 
-  it("keep other projects' approvals for the same app, drop them for another build", () => {
+  it("keep other projects' approvals for the same app, drop them for another build there", () => {
     const approvals = new DesktopApprovals(dir())
+    const scopes = () => approvals.copies("com.example.Notes").map((c) => Object.keys(c.scopes))
     approvals.approve(notes(), "folder-a", "a".repeat(64))
     // An update of the same developer's app: still theirs.
     approvals.approve(notes({ version: "1.1" }), "folder-b", "b".repeat(64))
-    expect(Object.keys(approvals.get("com.example.Notes")?.scopes ?? {})).toEqual([
-      "folder-a",
-      "folder-b",
-    ])
-    // Another developer (or another place): the others approved that one, not this.
+    expect(scopes()).toEqual([["folder-a", "folder-b"]])
+    // Another developer at that place now: the others approved that one, not this.
     approvals.approve(
       notes({ signer: { kind: "team", team: "OTHER00000", identifier: "x" } }),
       "folder-b",
       "b".repeat(64),
     )
-    expect(Object.keys(approvals.get("com.example.Notes")?.scopes ?? {})).toEqual(["folder-b"])
+    expect(scopes()).toEqual([["folder-b"]])
+  })
+
+  it("keep each copy of an app apart (a release and a dev build of one id)", () => {
+    const approvals = new DesktopApprovals(dir())
+    const release = notes()
+    const dev = notes({
+      path: "/Users/me/dev/Notes.app",
+      signer: { kind: "pinned", digest: "c".repeat(64) },
+    })
+    approvals.approve(release, "folder-a", "a".repeat(64))
+    approvals.approve(dev, "folder-b", "b".repeat(64))
+    // Each project keeps its own copy (never taken from the other).
+    expect(approvals.copyFor("com.example.Notes", "folder-a")?.path).toBe(release.path)
+    expect(approvals.copyFor("com.example.Notes", "folder-b")?.path).toBe(dev.path)
+    // A project switching copies lets the other go.
+    approvals.approve(dev, "folder-a", "a".repeat(64))
+    expect(approvals.copies("com.example.Notes").map((c) => c.path)).toEqual([dev.path])
+  })
+
+  it("change nothing when a write fails (memory as on disk)", () => {
+    const data = dir()
+    const approvals = new DesktopApprovals(data)
+    approvals.approve(notes(), "folder-a", "a".repeat(64))
+    chmodSync(data, 0o500)
+    try {
+      expect(() => approvals.approve(notes(), "folder-b", "b".repeat(64))).toThrow()
+      expect(approvals.copyFor("com.example.Notes", "folder-b")).toBeUndefined()
+    } finally {
+      chmodSync(data, 0o700)
+    }
   })
 
   it("set a file that doesn't read aside, never overwrite it", () => {
@@ -140,6 +168,18 @@ describe("a desktop app's status (static: nothing launches)", () => {
     // A pull added a site the project shows as the app's own (or an argument): asked again.
     const opens = entry({ origins: ["https://evil.example"] })
     expect((await status(at, approved, opens)).status).toBe("opens-changed")
+  })
+
+  it("never looks at the app to say what needs no look (another project's, opens changed)", async () => {
+    const approvals = new DesktopApprovals(dir())
+    approvals.approve(notes(), "folder-b", opensOf(entry()))
+    const never = {
+      inspect: () => Promise.reject(new Error("looked at the app")),
+    }
+    expect((await desktopStatus(entry(), "folder-a", approvals, never)).status).toBe("allow")
+    approvals.approve(notes(), "folder-a", opensOf(entry()))
+    const opens = entry({ origins: ["https://evil.example"] })
+    expect((await desktopStatus(opens, "folder-a", approvals, never)).status).toBe("opens-changed")
   })
 
   it("is changed for another developer or another unsigned build, not found when gone", async () => {
@@ -314,6 +354,35 @@ describe("adding a desktop app", () => {
     expect(error).not.toMatch(/"code"|\[\{/)
   })
 
+  it("approves the build that was tried (one updated since: updated, never ready)", async () => {
+    const h = harness()
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    // The developer's update lands between the check and the add.
+    h.fake.looks.inspect = () => Promise.resolve(notes({ version: "2.0" }))
+    await h.adds.add(1, "s1", card.token)
+    const desk = openProject(h.opened.dir).project.apps["notes"] as ElectronApp
+    expect(await desktopStatus(desk, "folder-a", h.approvals, h.fake.looks)).toEqual({
+      status: "updated",
+    })
+  })
+
+  it("stops looking at an app picked then given up", async () => {
+    const h = harness()
+    let signal: AbortSignal | undefined
+    h.fake.looks.inspect = (_path, s) => {
+      signal = s
+      return new Promise<DesktopApp>((_, reject) =>
+        s?.addEventListener("abort", () => reject(s.reason as Error)),
+      )
+    }
+    const picking = h.adds.pick(1, "s1")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    h.adds.dropFor(1)
+    expect(await picking).toBeNull()
+    expect(signal?.aborted).toBe(true)
+  })
+
   it("is done once written: an approval that fails then is said, never added twice", async () => {
     const h = harness()
     h.host.approve = () => {
@@ -360,7 +429,7 @@ describe("adding an app a project already names", () => {
     expect(h.fake.trials[0]?.origins).toEqual(["https://a.example"])
     expect(await h.adds.add(1, "s1", card.token)).toBe("desk")
     expect(Object.keys(openProject(h.opened.dir).project.apps)).toEqual(["app", "desk"])
-    expect(h.approvals.get("com.example.Notes")?.scopes["folder-a"]?.opens).toBe(
+    expect(h.approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.opens).toBe(
       opensOf(entry({ args: ["files/vault"], origins: ["https://a.example"] })),
     )
   })
@@ -458,15 +527,11 @@ describe("an add's lifetime: its project's, checked after every wait", () => {
     const workspace = new Workspace(() => ({ close: () => Promise.resolve(), running: false }))
     await workspace.open(project().dir)
     let signal: AbortSignal | undefined
-    const host = addHostOf(
-      workspace,
-      {
-        pickApp: () => Promise.resolve("/Applications/Notes.app"),
-        approve: () => undefined,
-        changed: () => undefined,
-      },
-      () => adds,
-    )
+    const host = addHostOf(workspace, {
+      pickApp: () => Promise.resolve("/Applications/Notes.app"),
+      approve: () => undefined,
+      changed: () => undefined,
+    })
     const adds: DesktopAdds = new DesktopAdds(
       {
         inspect: () => Promise.resolve(notes()),
@@ -479,6 +544,7 @@ describe("an add's lifetime: its project's, checked after every wait", () => {
       },
       host,
     )
+    workspace.onSwitch(() => adds.dropAll())
     const session = workspace.session ?? ""
     const card = await adds.pick(1, session)
     const checking = adds.check(1, session, card?.token ?? "", false)

@@ -275,42 +275,41 @@ function start(): void {
   const workDir = process.env.KIFRAME_WORK_DIR ?? defaultWorkDir()
   const adds: DesktopAdds = new DesktopAdds(
     looks,
-    addHostOf(
-      workspace,
-      {
-        pickApp: async () => {
-          const picked = await dialog.showOpenDialog(parent(), {
-            title: "Add a desktop app",
-            buttonLabel: "Choose",
-            defaultPath: "/Applications",
-            properties: ["openFile"],
-            filters: [{ name: "Applications", extensions: ["app"] }],
-          })
-          return picked.canceled ? undefined : picked.filePaths[0]
-        },
-        approve: (picked, opened, opens) =>
-          desktopApprovals().approve(picked, ids().scope(opened.dir), opens),
-        changed: (opened) => {
-          // Told to this project's agent only (another opened meanwhile: never its).
-          if (workspace.opened !== opened) return
-          workspace.agent?.appsChanged(opened.project.apps)
-          void status().then((now) => {
-            if (workspace.opened === opened) emit(window, "status", now)
-          })
-        },
+    addHostOf(workspace, {
+      pickApp: async () => {
+        const picked = await dialog.showOpenDialog(parent(), {
+          title: "Add a desktop app",
+          buttonLabel: "Choose",
+          defaultPath: "/Applications",
+          properties: ["openFile"],
+          filters: [{ name: "Applications", extensions: ["app"] }],
+        })
+        return picked.canceled ? undefined : picked.filePaths[0]
       },
-      () => adds,
-    ),
+      approve: (picked, opened, opens) =>
+        desktopApprovals().approve(picked, ids().scope(opened.dir), opens),
+      changed: (opened) => appsChanged(opened),
+    }),
     workDir,
   )
+  // Every add ends, its trial too, as the project switches.
+  workspace.onSwitch(() => adds.dropAll())
   let approvals: DesktopApprovals | undefined
   const desktopApprovals = (): DesktopApprovals =>
     (approvals ??= new DesktopApprovals(app.getPath("userData")))
   /** The open project, if it's this session's (else why not). */
   const sessionProject = (session: string): OpenedProject | string => {
     const opened = workspace.opened
-    if (opened === null || workspace.apps()?.session !== session) return "the project changed"
+    if (opened === null || workspace.session !== session) return "the project changed"
     return opened
+  }
+  /** The project's apps changed: its agent and the window told (never another project's). */
+  const appsChanged = (opened: OpenedProject): void => {
+    if (workspace.opened !== opened) return
+    workspace.agent?.appsChanged(opened.project.apps)
+    void status().then((now) => {
+      if (workspace.opened === opened) emit(window, "status", now)
+    })
   }
   const owner = () => window?.webContents.id ?? 0
 
@@ -547,10 +546,7 @@ function start(): void {
               say(`its approval on this Mac couldn't be removed: ${message(e)}`)
             }
           }
-          workspace.agent?.appsChanged(opened.project.apps)
-          void status().then((now) => {
-            if (workspace.opened === opened) emit(window, "status", now)
-          })
+          appsChanged(opened)
           return null
         },
         "apps:desktop-pick": async ({ session }) => {

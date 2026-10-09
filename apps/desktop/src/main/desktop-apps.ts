@@ -20,6 +20,7 @@ const SignerSchema = z.union([
   z.strictObject({ kind: z.literal("pinned"), digest: z.string().regex(/^[0-9a-f]{64}$/) }),
 ])
 
+/** One copy of an app approved on this Mac (where it was picked, who stands behind it). */
 const Approval = z.strictObject({
   /** Where the app was picked (its real path). */
   path: z.string().max(4096),
@@ -32,9 +33,13 @@ const Approval = z.strictObject({
 })
 type Approval = z.infer<typeof Approval>
 
+/**
+ * Each bundle id's copies (a release in Applications, a dev build elsewhere: one id, several
+ * apps): a project uses one of them.
+ */
 const File = z.strictObject({
   version: z.literal(1),
-  apps: z.record(z.string().regex(BUNDLE_ID), Approval),
+  apps: z.record(z.string().regex(BUNDLE_ID), z.array(Approval).max(20)),
 })
 type File = z.infer<typeof File>
 
@@ -49,8 +54,8 @@ export function opensOf(app: Pick<ElectronApp, "args" | "origins">): string {
 const keyOf = (bundleId: string) => bundleId.toLowerCase()
 
 /**
- * The approvals file (`desktop-apps.json` in app data, 0600, written whole). One that doesn't read
- * is set aside (renamed, said once), never overwritten: approvals start over, none lost silently.
+ * The approvals file (`desktop-apps.json` in app data, 0600, written whole: on disk first, then
+ * kept). One that doesn't read is set aside (renamed, said once), never overwritten.
  */
 export class DesktopApprovals {
   readonly #path: string
@@ -77,44 +82,65 @@ export class DesktopApprovals {
     }
   }
 
-  get(bundleId: string): Approval | undefined {
+  /** The app's copies approved on this Mac. */
+  copies(bundleId: string): readonly Approval[] {
     const key = keyOf(bundleId)
-    return Object.hasOwn(this.#file.apps, key) ? this.#file.apps[key] : undefined
+    return Object.hasOwn(this.#file.apps, key) ? (this.#file.apps[key] ?? []) : []
   }
 
-  /** The app as inspected now, approved for this project folder and what it opens. */
+  /** The copy this project folder uses (one at most). */
+  copyFor(bundleId: string, scope: string): Approval | undefined {
+    return this.copies(bundleId).find((copy) => Object.hasOwn(copy.scopes, scope))
+  }
+
+  /**
+   * The app (the build that was tried) approved for this project folder and what it opens: its
+   * copy (by place) kept with its other projects when it's the same build or developer, started
+   * afresh when another is there now; the project's other copy of that id let go.
+   */
   approve(app: DesktopApp, scope: string, opens: string): void {
-    const known = this.get(app.bundleId)
-    const sameApp =
-      known !== undefined && known.path === app.path && sameSigner(known.signer, app.signer)
-    this.#file.apps[keyOf(app.bundleId)] = {
+    const others = this.copies(app.bundleId)
+      .filter((copy) => copy.path !== app.path)
+      .map((copy) => ({ ...copy, scopes: without(copy.scopes, scope) }))
+      .filter((copy) => Object.keys(copy.scopes).length > 0)
+    const here = this.copies(app.bundleId).find((copy) => copy.path === app.path)
+    const kept = here !== undefined && sameSigner(here.signer, app.signer) ? here.scopes : {}
+    const copy: Approval = {
       path: app.path,
       name: app.name,
       ...(app.version !== undefined && { version: app.version }),
       signer: app.signer,
       approvedAt: new Date().toISOString(),
-      // Another build or another place: the other projects' approvals go (they approved that one).
-      scopes: { ...(sameApp ? known.scopes : {}), [scope]: { opens } },
+      scopes: { ...kept, [scope]: { opens } },
     }
-    this.#save()
+    this.#write({ ...this.#file.apps, [keyOf(app.bundleId)]: [...others, copy] })
   }
 
   /** This project folder's approval of the app taken back (the app removed from the project). */
   drop(bundleId: string, scope: string): void {
-    const known = this.get(bundleId)
-    if (known === undefined || !Object.hasOwn(known.scopes, scope)) return
-    delete known.scopes[scope]
-    this.#save()
+    if (this.copyFor(bundleId, scope) === undefined) return
+    const copies = this.copies(bundleId)
+      .map((copy) => ({ ...copy, scopes: without(copy.scopes, scope) }))
+      .filter((copy) => Object.keys(copy.scopes).length > 0)
+    this.#write({ ...this.#file.apps, [keyOf(bundleId)]: copies })
   }
 
-  #save(): void {
+  /** Written whole, then kept (a write that fails changes nothing here either). */
+  #write(apps: File["apps"]): void {
+    const next: File = { version: 1, apps }
     mkdirSync(dirname(this.#path), { recursive: true })
     const tmp = `${this.#path}.${randomBytes(6).toString("hex")}.tmp`
-    writeFileSync(tmp, `${JSON.stringify(this.#file, null, 2)}\n`, { mode: 0o600 })
+    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 })
     renameSync(tmp, this.#path)
+    this.#file = next
   }
 }
 
+function without<T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([k]) => k !== key))
+}
+
+/** The same app: its developer (a team app updated is still theirs), or the same pinned build. */
 function sameSigner(a: Signer, b: Signer): boolean {
   return a.kind === "team"
     ? b.kind === "team" && a.team === b.team && a.identifier === b.identifier
@@ -139,53 +165,43 @@ export interface Looks {
 
 /**
  * The project's desktop app's status, static only (opening the panel never launches anything): its
- * approval, the app inspected where it was picked, compared.
+ * approval here first (what needs no look at the app), then the copy it uses, inspected, compared.
  */
 export async function desktopStatus(
   entry: ElectronApp,
   scope: string,
   approvals: DesktopApprovals,
   looks: Pick<Looks, "inspect">,
+  signal?: AbortSignal,
 ): Promise<DesktopStatus> {
-  const known = approvals.get(entry.bundleId)
-  if (known === undefined) {
-    return {
-      status: "allow",
-      why: "not added on this Mac: add it from Applications to use it here",
-    }
+  const copy = approvals.copyFor(entry.bundleId, scope)
+  if (copy === undefined) {
+    return approvals.copies(entry.bundleId).length === 0
+      ? { status: "allow", why: "not added on this Mac: add it from Applications to use it here" }
+      : { status: "allow", why: "approved for another project: allow it in this one" }
   }
-  let now: DesktopApp
-  try {
-    now = await looks.inspect(known.path)
-  } catch (error) {
-    if (!existsSync(known.path)) {
-      return { status: "not-found", why: `not at ${known.path} any more: add it again` }
-    }
-    return { status: "changed", why: (error as Error).message }
-  }
-  if (keyOf(now.bundleId) !== keyOf(entry.bundleId) || !sameDeveloper(known.signer, now.signer)) {
-    return { status: "changed", why: "another app is there now (or another build): add it again" }
-  }
-  const here = Object.hasOwn(known.scopes, scope) ? known.scopes[scope] : undefined
-  if (here === undefined) {
-    return { status: "allow", why: "approved for another project: allow it in this one" }
-  }
-  if (here.opens !== opensOf(entry)) {
+  if (copy.scopes[scope]?.opens !== opensOf(entry)) {
     return {
       status: "opens-changed",
       why: "the project changed what it opens with it: allow it again",
     }
   }
-  return now.version !== known.version && now.signer.kind === "team"
+  let now: DesktopApp
+  try {
+    now = await looks.inspect(copy.path, signal)
+  } catch (error) {
+    if (signal?.aborted === true) throw error
+    if (!existsSync(copy.path)) {
+      return { status: "not-found", why: `not at ${copy.path} any more: add it again` }
+    }
+    return { status: "changed", why: (error as Error).message }
+  }
+  if (keyOf(now.bundleId) !== keyOf(entry.bundleId) || !sameSigner(copy.signer, now.signer)) {
+    return { status: "changed", why: "another app is there now (or another build): add it again" }
+  }
+  return now.version !== copy.version && now.signer.kind === "team"
     ? { status: "updated" }
     : { status: "ready" }
-}
-
-/** Same developer (a team app updated is still theirs), or the same pinned build. */
-function sameDeveloper(known: Signer, now: Signer): boolean {
-  return known.kind === "team"
-    ? now.kind === "team" && now.team === known.team && now.identifier === known.identifier
-    : now.kind === "pinned" && now.digest === known.digest
 }
 
 /** An app's name in the project: its own, in the app-name form, made unique. */
@@ -286,7 +302,7 @@ const GONE = "that app isn't being added any more: pick it again"
 export class DesktopAdds {
   readonly #pending = new Map<string, Pending>()
   /** Each window's pick in progress (a cancel ends it: its answer dropped). */
-  readonly #picks = new Map<number, number>()
+  readonly #picks = new Map<number, { generation: number; stopping: AbortController }>()
   #generation = 0
   readonly #looks: Looks
   readonly #host: AddHost
@@ -307,12 +323,20 @@ export class DesktopAdds {
     this.#current(session)
     this.dropFor(owner)
     const generation = ++this.#generation
-    this.#picks.set(owner, generation)
-    const still = () => this.#picks.get(owner) === generation && this.#isCurrent(session)
+    const stopping = new AbortController()
+    this.#picks.set(owner, { generation, stopping })
+    const still = () =>
+      this.#picks.get(owner)?.generation === generation && this.#isCurrent(session)
     try {
       const path = await this.#host.pickApp()
       if (path === undefined || !still()) return null
-      const app = await this.#looks.inspect(path)
+      let app: DesktopApp
+      try {
+        app = await this.#looks.inspect(path, stopping.signal)
+      } catch (error) {
+        if (stopping.signal.aborted) return null
+        throw error
+      }
       if (!still()) return null
       this.#current(session)
       const opened = this.#host.opened()
@@ -350,7 +374,7 @@ export class DesktopAdds {
         opens: entry === undefined ? undefined : { args: [...(entry.args ?? [])], origins: listed },
       }
     } finally {
-      if (this.#picks.get(owner) === generation) this.#picks.delete(owner)
+      if (this.#picks.get(owner)?.generation === generation) this.#picks.delete(owner)
     }
   }
 
@@ -441,7 +465,8 @@ export class DesktopAdds {
       this.#pending.delete(token)
       this.#host.changed(opened)
       try {
-        this.#host.approve(now, opened, opensOf(entry))
+        // The build that was tried (a newer one since, same developer: "updated", tried at its run).
+        this.#host.approve(pending.app, opened, opensOf(entry))
       } catch (error) {
         throw refused(
           `added as ${name}, but not approved on this Mac (${(error as Error).message}): pick it again to allow it`,
@@ -455,6 +480,7 @@ export class DesktopAdds {
 
   /** A window's pick and add given up (cancelled, the window closed or reloaded). */
   dropFor(owner: number): void {
+    this.#picks.get(owner)?.stopping.abort()
     this.#picks.delete(owner)
     for (const [token, pending] of this.#pending) {
       if (pending.owner !== owner) continue
@@ -465,6 +491,7 @@ export class DesktopAdds {
 
   /** Every pick and add given up, their trials ended (a project switch, a quit). */
   dropAll(): void {
+    for (const pick of this.#picks.values()) pick.stopping.abort()
     this.#picks.clear()
     for (const pending of this.#pending.values()) pending.trial?.abort()
     this.#pending.clear()
@@ -497,21 +524,15 @@ export class DesktopAdds {
   }
 }
 
-/**
- * The add flow's host from the workspace (main's, and tests' with a real one): every add ends as
- * the workspace switches project.
- */
+/** The add flow's host from the workspace (main's, and tests' with a real one). */
 export function addHostOf(
   workspace: {
     readonly session: string | undefined
     readonly opened: OpenedProject | null
     readonly agent: { readonly running: boolean } | undefined
-    onSwitch(listener: () => void): void
   },
   deps: Pick<AddHost, "pickApp" | "approve" | "changed">,
-  adds: () => DesktopAdds | undefined,
 ): AddHost {
-  workspace.onSwitch(() => adds()?.dropAll())
   return {
     session: () => workspace.session,
     opened: () => workspace.opened,
