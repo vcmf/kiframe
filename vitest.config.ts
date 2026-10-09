@@ -1,8 +1,11 @@
-import { defineConfig } from "vitest/config"
+import { configDefaults, defineConfig } from "vitest/config"
+
+// The desktop-app target's tests launch a real Electron app each: they run alone, after every other
+// suite (a CPU busy with them made timing-sensitive tests elsewhere flaky in CI).
+const ELECTRON = "packages/runtime/test/electron.test.ts"
 
 export default defineConfig({
   test: {
-    include: ["{packages,apps}/*/{src,test}/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
       // The shipped code (tests, fixtures and scripts aren't measured).
@@ -11,5 +14,19 @@ export default defineConfig({
       reporter: ["text-summary", "lcov"],
       reportsDirectory: "coverage",
     },
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: "kiframe",
+          include: ["{packages,apps}/*/{src,test}/**/*.test.{ts,tsx}", "tests/**/*.test.{ts,tsx}"],
+          exclude: [...configDefaults.exclude, ELECTRON],
+        },
+      },
+      {
+        extends: true,
+        test: { name: "electron", include: [ELECTRON], sequence: { groupOrder: 1 } },
+      },
+    ],
   },
 })

@@ -111,6 +111,7 @@ const inTarget = (target: ElectronTarget) => ({
   allows: target.allows,
   stopped: target.stopped,
   prepare: target.prepare,
+  quiet: target.quiet,
 })
 
 let open: ElectronTarget[] = []
@@ -119,6 +120,8 @@ const launch = async (extra: string[] = [], options: { stateFile?: string } = {}
     executable: electron,
     bundle: fixture,
     args: [fixture, "hidden", `link=${other}`, ...extra],
+    // A plain fixture settles at once; the window-shape tests keep the real wait.
+    ...(!extra.some((e) => ["splash", "swap", "embed-at-start"].includes(e)) && { settleMs: 300 }),
     viewport,
     ...options,
   })
@@ -233,6 +236,7 @@ steps:
           app: "notes",
           allows: target.allows,
           stopped: target.stopped,
+          quiet: target.quiet,
           prepare: async (p) => {
             order.push("prepare")
             await target.prepare(p)
@@ -565,11 +569,9 @@ steps:
         options,
       ),
     ).rejects.toThrow(/went to 127\.0\.0\.1/)
-    expect(
-      await waitFor(
-        () => target.page.url().endsWith("index.html") || target.page.url().includes("index.html?"),
-      ),
-    ).toBe(true)
+    await waitFor(() => target.page.url().includes("index.html"), 10_000)
+    // Its address said if not (a busy CI machine: what it was on).
+    expect(target.page.url()).toMatch(/index\.html/)
     await runScenario(
       target.page,
       parseScenarioYaml(`version: 1
@@ -722,6 +724,17 @@ steps:
     expect(warnings).toContain(
       'a frame of another window of "notes" went to a file on this computer: Kiframe stopped it',
     )
+  })
+
+  it("is quiet only once its stops are done (a read never sees a window mid-stop)", async () => {
+    const target = await launch()
+    for (let i = 0; i < 3; i++) {
+      await target.page.getByRole("button", { name: "Embed hosts" }).click()
+      // Wait for the stop to be recorded (as a step's end would), then for the guard to be done.
+      await waitFor(() => target.context.pages()[0]?.frames().length !== 1)
+      await target.quiet()
+      expect(target.page.frames().some((f) => f.url().startsWith("file:///etc"))).toBe(false)
+    }
   })
 
   it("says a window left blank (nothing to go back to): relaunch", async () => {

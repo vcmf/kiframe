@@ -132,7 +132,7 @@ export interface RunOptions {
    * The desktop app this run's page belongs to (its target, `launchElectron`): a scene starting in
    * it runs only with it, and its pages (`allows`) are the app's own. None: no desktop app runs.
    */
-  electron?: { app: string } & Pick<ElectronTarget, "allows" | "stopped" | "prepare">
+  electron?: { app: string } & Pick<ElectronTarget, "allows" | "stopped" | "prepare" | "quiet">
   /** The org interrupt rules this run's config kept from the org (their approvals are the org's). */
   orgInterrupts?: { orgId: string; ruleIds: readonly string[] }
   /** Resolves an `upload` step's project asset (`<sha256>.<ext>`) to a file path. */

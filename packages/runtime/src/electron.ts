@@ -46,8 +46,8 @@ const PASSED_ENV = [
 
 /** How long an app may take to open its debugging port and its first window. */
 const LAUNCH_MS = 20_000
-/** How long a terminated app may take to quit before it's killed. */
-const QUIT_MS = 2000
+/** How long the guard's "back" may take to commit (a busy machine: never a step's timeout). */
+const BACK_MS = 10_000
 /** How long closing the debugging connection may take (the group is killed after it anyway). */
 const CLOSE_MS = 2000
 /** How long an app that dropped the attach has to tell its exit. */
@@ -104,6 +104,11 @@ export interface ElectronLaunch {
   /** A file noting the launches still running: what a crash left is swept at the next start. */
   stateFile?: string
   signal?: AbortSignal
+  /**
+   * How long its windows must stay as they are before its main window is chosen (default 1.5 s: a
+   * splash closing, a sign-in window replaced). Tests of a plain app: shorter.
+   */
+  settleMs?: number
   /** Tests: how long to wait for the app, its port and its first window together (default 20 s). */
   timeoutMs?: number
 }
@@ -133,6 +138,8 @@ export interface ElectronTarget {
   stopped: () => GuardStop[]
   /** A window the run follows, at the scene's size first (its emulation applied). */
   prepare: (page: Page) => Promise<void>
+  /** Resolves once the guard's stops are done (a window sent back, a frame blanked). */
+  quiet: () => Promise<void>
   /**
    * Ends it (once: a second call does nothing): disconnects, kills the app's process group and
    * what still points at the sandbox, removes it. `unread`: what holds the sandbox couldn't be read.
@@ -205,14 +212,16 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   const end = () =>
     (ended ??= (async () => {
       const alive = browser?.isConnected() === true
-      // Bounded: the group is killed right after (a close the app never answers never holds it).
+      // Killed first, the connection closed after (it drops with the app: never a close the app
+      // has to answer), bounded all the same.
+      const ended = await stop(child, sandbox.root, opts.stateFile, alive)
       const t0 = Date.now()
       await within(
         browser?.close().catch(() => undefined),
         CLOSE_MS,
       )
       timing("close", t0)
-      return stop(child, sandbox.root, opts.stateFile, alive)
+      return ended
     })())
   try {
     // Noted at once (a crash from here on is swept at the next start); a note that can't be
@@ -237,6 +246,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       deadline,
       opts.signal,
       () => child.exitCode !== null || child.signalCode !== null || !connected.isConnected(),
+      opts.settleMs ?? SETTLE_MS,
     )
     // Sealed now, from the main window alone: its own scheme (app:) or dev server (loopback).
     const launched = new Set<string>()
@@ -270,6 +280,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     // The guard: every frame of every window, every navigation, at once; one that isn't the app's
     // own is stopped (a popup closed, any other frame blanked) and said.
     const stops: GuardStop[] = []
+    const stopping = new Set<Promise<void>>()
     const frameAllowed = (frame: Frame): boolean => {
       const url = frame.url()
       if (url === "" || url === "about:blank") return true
@@ -287,15 +298,23 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
         if (frameAllowed(frame)) return
         stops.push({ page: p, window: frame === p.mainFrame(), place: placeOf(frame.url()) })
         // A popup closed; the main window back to the app's page (else nothing could bring it
-        // back: no goto in a desktop app); any other frame blanked.
-        if (frame !== p.mainFrame()) void frame.goto("about:blank").catch(() => undefined)
-        else if (p !== page) void p.close().catch(() => undefined)
-        else {
-          void p
-            .goBack()
-            .then((back) => (back === null ? frame.goto("about:blank") : back))
-            .catch(() => undefined)
-        }
+        // back: no goto in a desktop app); any other frame blanked. Kept until done: a read waits
+        // for it (`quiet`), never seeing a window mid-stop.
+        const action: Promise<unknown> =
+          frame !== p.mainFrame()
+            ? frame.goto("about:blank")
+            : p !== page
+              ? p.close()
+              : // Committed is enough (never the page's load, nor a step's short timeout).
+                p
+                  .goBack({ waitUntil: "commit", timeout: BACK_MS })
+                  .then((back) => (back === null ? frame.goto("about:blank") : back))
+        const done = action.then(
+          () => undefined,
+          () => undefined,
+        )
+        stopping.add(done)
+        void done.finally(() => stopping.delete(done))
       }
       p.on("framenavigated", check)
       for (const frame of p.frames()) check(frame)
@@ -334,6 +353,10 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       allows,
       stopped: () => stops.splice(0),
       prepare: (p) => emulate(p),
+      quiet: async () => {
+        // A stop's own action may start another navigation (a goBack): until none is left.
+        while (stopping.size > 0) await Promise.all([...stopping])
+      },
       close: end,
     }
   } catch (error) {
@@ -435,6 +458,7 @@ async function mainWindow(
   deadline: number,
   signal: AbortSignal | undefined,
   gone: () => boolean,
+  settleMs: number,
 ): Promise<Page> {
   const windows = () => context.pages().filter((p) => !isDevtools(p.url()) && !p.isClosed())
   let seen = ""
@@ -451,7 +475,7 @@ async function mainWindow(
     }
     const last = now.at(-1)
     const loaded = last !== undefined && last.url() !== "" && last.url() !== "about:blank"
-    if (loaded && Date.now() - since >= SETTLE_MS) {
+    if (loaded && Date.now() - since >= settleMs) {
       await last
         .waitForLoadState("domcontentloaded", { timeout: Math.max(1, deadline - Date.now()) })
         .catch(() => undefined)
@@ -561,11 +585,8 @@ async function stop(
   const leader = child.exitCode === null && child.signalCode === null
   let t0 = Date.now()
   if (pid !== undefined && (leader || alive || (await orphanedGroup(pid)))) {
-    if (leader) {
-      const exited = new Promise((resolve) => child.once("exit", resolve))
-      signalGroup(pid, "SIGTERM")
-      await Promise.race([exited, new Promise((r) => setTimeout(r, QUIT_MS))])
-    }
+    // Killed outright, never asked to quit: its sandbox is thrown away (nothing to save), and a
+    // quit can run an updater's install-on-quit over the user's real app.
     signalGroup(pid, "SIGKILL")
   }
   timing("kill", t0)
