@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process"
 import {
+  chmodSync,
   cpSync,
   mkdirSync,
   mkdtempSync,
@@ -169,6 +170,21 @@ describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 
       ]),
     )
     expect((await inspectDesktopApp(app)).name).toBe("Kiframe Fixture")
+  })
+
+  it("refuses a pinned app that links outside itself, or can't be read whole", async () => {
+    // After signing (code a link leads to outside the bundle: what the pin couldn't cover).
+    const outside = bundle("Outside")
+    symlinkSync("/etc/hosts", join(outside, "Contents/Resources/shared.js"))
+    await expect(inspectDesktopApp(outside)).rejects.toThrow(/links outside itself/)
+    const unreadable = bundle("Unreadable")
+    const locked = join(unreadable, "Contents/Resources/app/index.html")
+    chmodSync(locked, 0o000)
+    try {
+      await expect(inspectDesktopApp(unreadable)).rejects.toThrow(/can't be read whole \(EACCES\)/)
+    } finally {
+      chmodSync(locked, 0o644)
+    }
   })
 
   it("refuses an app inside another app", async () => {

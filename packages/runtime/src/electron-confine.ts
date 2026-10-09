@@ -28,7 +28,7 @@ export interface Confinement {
    * they are (a home outside /Users on a managed Mac).
    */
   private: readonly string[]
-  /** "all": the app's backend reachable (a run); "loopback": nothing beyond this machine (a trial). */
+  /** "all": the app's backend reachable (runs and trials); "loopback": nothing beyond this machine. */
   network: "all" | "loopback"
 }
 

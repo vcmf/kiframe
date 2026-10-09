@@ -100,28 +100,49 @@ export async function signatureHolds(path: string, signer: Signer): Promise<bool
   return out.code === 0
 }
 
-/** The code an unsigned app runs, hashed: what pins the exact build (any change: a new digest). */
-export async function codeDigest(path: string): Promise<string> {
+/** A pinned build's limits (hashed when it's picked, and before each run). */
+export const DIGEST_LIMITS = { bytes: 4 * 1024 * 1024 * 1024, entries: 200_000 }
+
+/**
+ * The code an unsigned app runs, hashed: the whole bundle, what pins the exact build (any change: a
+ * new digest). A link is kept as a link only when it stays inside the bundle (its target hashed as
+ * part of it); one leading outside is refused (code the pin couldn't cover). Unreadable, too large
+ * or stopped: refused, said.
+ */
+export async function codeDigest(path: string, signal?: AbortSignal): Promise<string> {
   const hash = createHash("sha256")
+  let bytes = 0
+  let entries = 0
   const add = async (rel: string) => {
-    const full = join(path, rel)
-    let stat
-    try {
-      stat = await lstat(full)
-    } catch {
-      return
-    }
+    signal?.throwIfAborted()
+    const full = rel === "" ? path : join(path, rel)
+    const stat = await lstat(full)
+    entries += 1
+    if (entries > DIGEST_LIMITS.entries) throw new InspectError("that app is too large to pin")
     if (stat.isSymbolicLink()) {
+      const target = await realpath(full).catch(() => undefined)
+      if (target === undefined || (target !== path && !target.startsWith(`${path}/`))) {
+        throw new InspectError(`that app links outside itself (${rel}): Kiframe can't pin it`)
+      }
       hash.update(`link ${rel} ${await readlink(full)}\n`)
     } else if (stat.isDirectory()) {
-      for (const name of (await readdir(full)).sort()) await add(join(rel, name))
+      for (const name of (await readdir(full)).sort())
+        await add(rel === "" ? name : join(rel, name))
     } else if (stat.isFile()) {
+      bytes += stat.size
+      if (bytes > DIGEST_LIMITS.bytes) throw new InspectError("that app is too large to pin")
       hash.update(`file ${rel} ${stat.size}\n`)
       for await (const chunk of createReadStream(full)) hash.update(chunk as Buffer)
     }
   }
-  // All of it (helpers, frameworks, links as links): any code it could run is in the digest.
-  await add("Contents")
+  try {
+    await add("")
+  } catch (error) {
+    if (error instanceof InspectError || signal?.aborted === true) throw signal?.reason ?? error
+    throw new InspectError(
+      `that app can't be read whole (${(error as { code?: string }).code ?? "unreadable"})`,
+    )
+  }
   return hash.digest("hex")
 }
 
@@ -129,14 +150,17 @@ export async function codeDigest(path: string): Promise<string> {
  * The signer of an app at `path`, and whether it's signed at all (an unsigned one has no
  * entitlements to read). Unread: refused (never taken for unsigned).
  */
-export async function signerOf(path: string): Promise<Signer & { signed: boolean }> {
+export async function signerOf(
+  path: string,
+  signal?: AbortSignal,
+): Promise<Signer & { signed: boolean }> {
   const signing = await run("/usr/bin/codesign", ["-dv", path], TIMEOUT)
   const parsed = parseSigning(signing.code, signing.stderr)
   if (parsed.kind === "unread") throw new InspectError("that app's signature couldn't be read")
   if (parsed.kind === "team") return { ...parsed, signed: true }
   return {
     kind: "pinned",
-    digest: await codeDigest(path),
+    digest: await codeDigest(path, signal),
     signed: parsed.kind === "adhoc",
   }
 }
@@ -146,7 +170,7 @@ export async function signerOf(path: string): Promise<Signer & { signed: boolean
  * can't stay, not Electron, an executable that isn't its own file, a Mac App Store build (its own
  * sandbox), a developer signature that doesn't hold.
  */
-export async function inspectDesktopApp(picked: string): Promise<DesktopApp> {
+export async function inspectDesktopApp(picked: string, signal?: AbortSignal): Promise<DesktopApp> {
   let path: string
   try {
     path = await realpath(picked)
@@ -179,7 +203,7 @@ export async function inspectDesktopApp(picked: string): Promise<DesktopApp> {
   } catch {
     throw new InspectError("that app's executable isn't its own runnable file")
   }
-  const { signed, ...signer } = await signerOf(path)
+  const { signed, ...signer } = await signerOf(path, signal)
   // A signed app's entitlements, read (unread: refused, never taken for "not sandboxed"); an
   // unsigned one has none.
   if (signed) {

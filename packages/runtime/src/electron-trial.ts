@@ -43,9 +43,8 @@ export async function trialDesktopApp(
     return { ok: true }
   } catch (error) {
     if (opts.signal?.aborted === true) throw opts.signal.reason
-    // Anything else (a timeout while attaching): said as is, never thrown at the caller.
-    if (!(error instanceof ElectronLaunchError))
-      return { failed: String((error as Error).message ?? error) }
+    // Anything else is Kiframe's own fault: thrown, never shown as the app's.
+    if (!(error instanceof ElectronLaunchError)) throw error
     if (error.why === "site" && error.site !== undefined) return { site: error.site }
     if (error.why === "quit") return { quit: true }
     return { failed: error.message }

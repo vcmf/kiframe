@@ -128,7 +128,7 @@ export interface ElectronLaunch {
   files?: string
   /** Kiframe's work area (default `~/.kiframe`): the launches' sandboxes. */
   workDir?: string
-  /** The network: "all" (a run: the app's backend), "loopback" (a trial: nothing beyond). */
+  /** The network: "all" (the app's backend: runs and trials), "loopback" (nothing beyond). */
   network?: "all" | "loopback"
   /** The size its windows are shown at (emulated: the window itself is never moved). */
   viewport: Pick<Viewport, "width" | "height" | "deviceScaleFactor">
@@ -164,7 +164,11 @@ const ATTACH_TRY_MS = 5000
  * Attached over CDP, tried again while time is left: an attach as the app's first page turns into
  * Chromium's error page (a dev server not started) can hang (measured: 1 in 5), a second never did.
  */
-async function attach(endpoint: string, deadline: number, signal?: AbortSignal): Promise<Browser> {
+export async function attach(
+  endpoint: string,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<Browser> {
   for (;;) {
     const left = deadline - Date.now()
     try {
@@ -173,7 +177,11 @@ async function attach(endpoint: string, deadline: number, signal?: AbortSignal):
         signal,
       )
     } catch (error) {
-      if (!(error instanceof errors.TimeoutError) || left <= ATTACH_TRY_MS) throw error
+      if (!(error instanceof errors.TimeoutError)) throw error
+      // Out of time: said as the launch's own (never Playwright's call log, its endpoint).
+      if (left <= ATTACH_TRY_MS) {
+        throw new ElectronLaunchError("the app didn't answer in time (it may refuse automation)")
+      }
     }
   }
 }
@@ -456,6 +464,12 @@ export async function launchElectronWith(
       origins: [...(opts.origins ?? []), ...embedded],
     }
     const allows = (url: string) => allowedPage(url, own)
+    // Failed to load and where to unknown: its page, never loaded.
+    if (failed && shown.startsWith("chrome-error:")) {
+      throw new ElectronLaunchError(
+        "the app couldn't load its page (offline? its server not running?)",
+      )
+    }
     if (!allows(shown)) {
       const url = URL.parse(shown)
       throw new ElectronLaunchError(

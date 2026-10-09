@@ -36,7 +36,12 @@ import {
   sweepWorkArea,
 } from "../src/index.ts"
 import { checkConfinement, copyFiles } from "../src/electron-confine.ts"
-import { type ElectronLaunch, launchElectronWith, type LaunchHooks } from "../src/electron.ts"
+import {
+  attach,
+  type ElectronLaunch,
+  launchElectronWith,
+  type LaunchHooks,
+} from "../src/electron.ts"
 import { sandboxesOf } from "../src/electron-workarea.ts"
 
 // The Electron target (OBJECT-MODEL §0.9 "Electron apps"): a fixture desktop app launched in a
@@ -506,6 +511,28 @@ steps:
     const target = await launch([`wrapper=${secure}`, "trust-test-cert"], { origins: [site] })
     expect(target.page.url()).toBe(secure)
   })
+
+  it("tries a stalled attach again, then says it as the launch's own (never Playwright's)", async () => {
+    // A debugging endpoint that accepts and never answers.
+    let connections = 0
+    const silent = createNetServer(() => (connections += 1))
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve))
+    const port = (silent.address() as AddressInfo).port
+    try {
+      const error = await attach(
+        `ws://127.0.0.1:${port}/devtools/browser/x`,
+        Date.now() + 7000,
+      ).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(error).toBeInstanceOf(ElectronLaunchError)
+      expect(String(error)).toMatch(/didn't answer in time/)
+      expect(connections).toBe(2)
+    } finally {
+      silent.close()
+    }
+  }, 30_000)
 
   it("says a dev build whose server isn't running, as such (never an off-app site)", async () => {
     const closed = createNetServer()
