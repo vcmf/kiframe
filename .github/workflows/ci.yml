@@ -49,3 +49,18 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  # Desktop apps run on macOS only (Seatbelt, codesign, plutil): their suite, where it holds.
+  electron-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run --project electron
+        env:
+          KIFRAME_ELECTRON_TIMING: "1"

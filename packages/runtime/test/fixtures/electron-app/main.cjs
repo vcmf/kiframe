@@ -19,7 +19,12 @@ if (splash)
 if (process.argv.includes("trust-test-cert"))
   app.commandLine.appendSwitch("ignore-certificate-errors")
 
-if (process.argv.includes("quit-at-once")) {
+// "single": it allows one copy only (as Slack, VS Code, Discord): Chromium's lock, a unix socket
+// in its temp folder.
+if (
+  process.argv.includes("quit-at-once") ||
+  (process.argv.includes("single") && !app.requestSingleInstanceLock())
+) {
   app.quit()
 } else {
   app.whenReady().then(() => {
@@ -84,7 +89,9 @@ if (process.argv.includes("quit-at-once")) {
     // "embed-at-start": it shows that site in a frame as it opens.
     const link = process.argv.find((a) => a.startsWith("link="))?.slice(5) ?? "https://example.com/"
     const query = { link, ...(process.argv.includes("embed-at-start") && { embed: "1" }) }
-    if (process.argv.includes("elsewhere")) win.loadURL("data:text/html,<h1>Elsewhere</h1>")
+    // "wrapper": its window is a site (as Slack's app.slack.com), one that never loads (.invalid).
+    if (process.argv.includes("wrapper")) win.loadURL("https://kiframe-wrapper.invalid/client")
+    else if (process.argv.includes("elsewhere")) win.loadURL("data:text/html,<h1>Elsewhere</h1>")
     else win.loadFile(join(__dirname, "index.html"), { query })
   })
   app.on("window-all-closed", () => app.quit())

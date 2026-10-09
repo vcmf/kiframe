@@ -2,7 +2,7 @@ import { configDefaults, defineConfig } from "vitest/config"
 
 // The desktop-app target's tests launch a real Electron app each: they run alone, after every other
 // suite (a CPU busy with them made timing-sensitive tests elsewhere flaky in CI).
-const ELECTRON = "packages/runtime/test/electron.test.ts"
+const ELECTRON = "packages/runtime/test/electron*.test.ts"
 
 export default defineConfig({
   test: {

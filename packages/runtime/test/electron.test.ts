@@ -29,7 +29,6 @@ import {
   ElectronLaunchError,
   type ElectronTarget,
   FILES_LIMITS,
-  launchElectron,
   recordScenario,
   runScenario,
   StepError,
@@ -37,6 +36,7 @@ import {
   sweepWorkArea,
 } from "../src/index.ts"
 import { checkConfinement, copyFiles } from "../src/electron-confine.ts"
+import { type ElectronLaunch, launchElectronWith, type LaunchHooks } from "../src/electron.ts"
 import { sandboxesOf } from "../src/electron-workarea.ts"
 
 // The Electron target (OBJECT-MODEL §0.9 "Electron apps"): a fixture desktop app launched in a
@@ -55,6 +55,10 @@ const sandboxCount = () =>
 /** This file's work area (never the user's ~/.kiframe). */
 const work = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
 /** How every launch here runs: the fixture on the repo's Electron, confined on macOS. */
+// The tests' launches: the hooks (the fixture's folder and modes, the repo's Electron readable,
+// unconfined on Linux CI) beside a launch's own options.
+const launchElectron = (opts: ElectronLaunch & LaunchHooks) => launchElectronWith(opts, opts)
+
 const base = {
   executable: electron,
   bundle: fixture,
@@ -152,6 +156,8 @@ const launch = async (
     readable?: string[]
     timeoutMs?: number
     signal?: AbortSignal
+    network?: "all" | "loopback"
+    origins?: string[]
   } = {},
 ) => {
   const target = await launchElectron({
@@ -478,10 +484,29 @@ steps:
     }
   }, 60_000)
 
+  it("launches an app that allows one copy only (its lock in the sandbox, never /var/folders)", async () => {
+    const target = await launch(["single"])
+    expect(await target.page.title()).toBe("Fixture notes")
+  })
+
+  it("names the site a wrapper app shows, even when it can't load it (a trial's loopback)", async () => {
+    const error = await launch(["wrapper"], { network: "loopback" }).then(
+      () => undefined,
+      (e: unknown) => e as ElectronLaunchError,
+    )
+    expect(error).toBeInstanceOf(ElectronLaunchError)
+    expect(error?.why).toBe("site")
+    expect(error?.site).toBe("https://kiframe-wrapper.invalid")
+    // Listed as its own: it's driven (its page the browser's error page: no network here).
+    const target = await launch(["wrapper"], { origins: ["https://kiframe-wrapper.invalid"] })
+    expect(target.page).toBeDefined()
+  })
+
   it("says an app that quits at once, and leaves nothing behind", async () => {
     const before = sandboxCount()
     await expect(launch(["quit-at-once"])).rejects.toThrow(ElectronLaunchError)
     await expect(launch(["quit-at-once"])).rejects.toThrow(/quit before Kiframe could attach/)
+    await expect(launch(["quit-at-once"])).rejects.toMatchObject({ why: "quit" })
     expect(sandboxCount()).toBe(before)
   })
 

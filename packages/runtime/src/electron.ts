@@ -98,8 +98,23 @@ function timing(phase: string, since: number) {
 const QUIT_EARLY =
   "the app quit before Kiframe could attach (it may allow only one instance: quit it and try again; be a launcher for another program; or refuse automation)"
 
-/** An app that couldn't be launched or attached: said to the user as is. */
-export class ElectronLaunchError extends Error {}
+/**
+ * An app that couldn't be launched or attached: said to the user as is. `why` read structurally (a
+ * trial's outcome): it quit at once, its main window showed a site (`site`: the https origin it
+ * showed or failed to load: a wrapper's own, to allow), or anything else.
+ */
+export class ElectronLaunchError extends Error {
+  readonly why: "quit" | "site" | "other"
+  readonly site: string | undefined
+  constructor(
+    message: string,
+    detail: { why: "quit" | "other" } | { why: "site"; site: string } = { why: "other" },
+  ) {
+    super(message)
+    this.why = detail.why
+    this.site = detail.why === "site" ? detail.site : undefined
+  }
+}
 
 export interface ElectronLaunch {
   /** The app's executable (`X.app/Contents/MacOS/X`), resolved and approved by the host. */
@@ -114,18 +129,6 @@ export interface ElectronLaunch {
   workDir?: string
   /** The network: "all" (a run: the app's backend), "loopback" (a trial: nothing beyond). */
   network?: "all" | "loopback"
-  /**
-   * Tests: arguments given as they are, before `args` (the fixture app's folder, its modes): never
-   * a project's (those name files/ only).
-   */
-  appArgs?: readonly string[]
-  /** Tests: more it may read (the repo's Electron). */
-  readable?: readonly string[]
-  /**
-   * Off macOS only (Linux CI): launched without the Seatbelt confinement (there's none). Never in
-   * the app: desktop apps are macOS-only.
-   */
-  allowUnconfined?: boolean
   /** The size its windows are shown at (emulated: the window itself is never moved). */
   viewport: Pick<Viewport, "width" | "height" | "deviceScaleFactor">
   /** The https sites a wrapper app shows as its own (the project's `origins`). */
@@ -138,6 +141,34 @@ export interface ElectronLaunch {
   settleMs?: number
   /** Tests: how long to wait for the app, its port and its first window together (default 20 s). */
   timeoutMs?: number
+}
+
+/** Tests only (never the package's: its launches take none of these). */
+export interface LaunchHooks {
+  /**
+   * Arguments given as they are, before `args` (the fixture app's folder, its modes): never a
+   * project's (those name files/ only).
+   */
+  appArgs?: readonly string[]
+  /** More it may read (the repo's Electron). */
+  readable?: readonly string[]
+  /** Off macOS only (Linux CI): launched without the Seatbelt confinement (there's none). */
+  allowUnconfined?: boolean
+}
+
+/** Where a page that failed to load was going (Chromium's error page keeps it, over CDP). */
+async function unreachableUrl(page: Page): Promise<string | undefined> {
+  try {
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      const { frameTree } = await cdp.send("Page.getFrameTree")
+      return frameTree.frame.unreachableUrl
+    } finally {
+      await cdp.detach().catch(() => undefined)
+    }
+  } catch {
+    return undefined
+  }
 }
 
 /** A page the guard stopped: in which window, whether it was the window itself, and where. */
@@ -233,6 +264,9 @@ async function makeSandbox(work: string): Promise<{
     XDG_CACHE_HOME: dirs.cache,
     XDG_STATE_HOME: dirs.state,
     TMPDIR: `${dirs.tmp}${sep}`,
+    // Chromium on macOS: its temp folder (the single-instance lock's socket) in the sandbox too,
+    // never the user's /var/folders (denied by the confinement: such an app would quit).
+    MAC_CHROMIUM_TMPDIR: dirs.tmp,
   })
   return {
     root,
@@ -247,8 +281,16 @@ async function makeSandbox(work: string): Promise<{
 /** How long the app's windows must stay as they are before its main window is chosen. */
 const SETTLE_MS = 1500
 
-/** Launches `opts.executable` in a fresh sandbox and attaches to its main window. */
-export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarget> {
+/** Launches `opts.executable` in a fresh sandbox, confined, and attaches to its main window. */
+export function launchElectron(opts: ElectronLaunch): Promise<ElectronTarget> {
+  return launchElectronWith(opts, {})
+}
+
+/** `launchElectron` with the tests' hooks (not exported by the package). */
+export async function launchElectronWith(
+  opts: ElectronLaunch,
+  hooks: LaunchHooks,
+): Promise<ElectronTarget> {
   opts.signal?.throwIfAborted()
   // Before anything runs: an app moved since it was approved is said, never half-launched.
   let bundles: string[]
@@ -267,7 +309,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   }
   // Never unconfined in the app: off macOS (no Seatbelt) only where asked (Linux CI).
   const confined = process.platform === "darwin"
-  if (!confined && opts.allowUnconfined !== true) {
+  if (!confined && hooks.allowUnconfined !== true) {
     throw new ElectronLaunchError("desktop apps run only on macOS (they're confined there)")
   }
   const work = opts.workDir ?? defaultWorkDir()
@@ -280,7 +322,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     if (confined) {
       const confinement = {
         sandbox: sandbox.root,
-        readable: [...bundles.map(realpathOr), ...(opts.readable ?? []).map(realpathOr)],
+        readable: [...bundles.map(realpathOr), ...(hooks.readable ?? []).map(realpathOr)],
         // The home and the work area wherever they are, and the one temp folder left (/var/tmp).
         private: [realpathOr(userInfo().homedir), realpathOr(work), "/private/var/tmp"],
         network: opts.network ?? "all",
@@ -309,7 +351,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   // The app's own time to start (the copy and the canary never count against it).
   const deadline = Date.now() + (opts.timeoutMs ?? LAUNCH_MS)
   const launchArgs = [
-    ...(opts.appArgs ?? []),
+    ...(hooks.appArgs ?? []),
     ...args,
     `--user-data-dir=${sandbox.profile}`,
     "--remote-debugging-port=0",
@@ -391,9 +433,16 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       origins: [...(opts.origins ?? []), ...embedded],
     }
     const allows = (url: string) => allowedPage(url, own)
-    if (!allows(page.url())) {
+    // A load that failed (no network in a trial) still names where it went (CDP's unreachable
+    // URL): judged by that, a wrapper's site said even unreached.
+    const shown = page.url().startsWith("chrome-error:")
+      ? ((await unreachableUrl(page)) ?? page.url())
+      : page.url()
+    if (!allows(shown)) {
+      const url = URL.parse(shown)
       throw new ElectronLaunchError(
-        `the app shows ${placeOf(page.url())}: if that's the app's own, list it in its origins`,
+        `the app shows ${placeOf(shown)}: if that's the app's own, list it in its origins`,
+        url?.protocol === "https:" ? { why: "site", site: url.origin } : { why: "other" },
       )
     }
     // The guard: every frame of every window, every navigation, at once; one that isn't the app's
@@ -487,7 +536,8 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     if (spawnError !== undefined) {
       throw new ElectronLaunchError(`the app couldn't be launched (${spawnError.message})`)
     }
-    if (quit && !(error instanceof ElectronLaunchError)) throw new ElectronLaunchError(QUIT_EARLY)
+    if (quit && !(error instanceof ElectronLaunchError))
+      throw new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
     throw error
   }
 }
@@ -550,7 +600,7 @@ function debuggingEndpoint(
         // not yet
       }
     }, 100)
-    const exited = () => finish(new ElectronLaunchError(QUIT_EARLY))
+    const exited = () => finish(new ElectronLaunchError(QUIT_EARLY, { why: "quit" }))
     const aborted = () => finish(signal?.reason as Error)
     child.once("exit", exited)
     signal?.addEventListener("abort", aborted, { once: true })
@@ -585,7 +635,7 @@ async function mainWindow(
   for (;;) {
     signal?.throwIfAborted()
     // Quit (or dropped its port) before showing a window: said at once, never a wait to the end.
-    if (gone()) throw new ElectronLaunchError(QUIT_EARLY)
+    if (gone()) throw new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
     const now = windows()
     const key = now.map((p) => p.url()).join("\n")
     if (key !== seen) {
