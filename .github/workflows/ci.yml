@@ -37,8 +37,10 @@ jobs:
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: xvfb-run -a pnpm test:coverage
         env:
-          # Slow shutdown phases of a desktop app's launch, said (the Electron target's evidence).
+          # Slow shutdown phases of a desktop app's launch, and its failures' detail, said (the
+          # Electron target's evidence).
           KIFRAME_ELECTRON_TIMING: "1"
+          KIFRAME_ELECTRON_DEBUG: "1"
       # The desktop app, built and launched under a virtual display.
       - name: Desktop end-to-end
         run: xvfb-run -a pnpm --filter @kiframe/desktop e2e
@@ -49,3 +51,21 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  # Desktop apps run on macOS only (Seatbelt, codesign, plutil): their suite, where it holds.
+  electron-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # A desktop app's takes are encoded with ffmpeg (as on Linux).
+      - run: brew install ffmpeg
+      - run: pnpm exec vitest run --project electron
+        env:
+          KIFRAME_ELECTRON_TIMING: "1"
+          KIFRAME_ELECTRON_DEBUG: "1"

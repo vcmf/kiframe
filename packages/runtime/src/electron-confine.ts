@@ -28,28 +28,28 @@ export interface Confinement {
    * they are (a home outside /Users on a managed Mac).
    */
   private: readonly string[]
-  /** "all": the app's backend reachable (a run); "loopback": nothing beyond this machine (a trial). */
-  network: "all" | "loopback"
 }
 
-/** A string in the profile's language (quoted, its backslashes and quotes escaped). */
-const q = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
+/**
+ * A double-quoted string, its backslashes and quotes escaped: what Seatbelt's profile language and
+ * codesign's requirement language both read (a change here must hold for both).
+ */
+export const quoted = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
 /** The Seatbelt profile of a launch. Later rules win over earlier ones. */
 export function seatbeltProfile(c: Confinement): string {
-  const readable = [c.sandbox, ...c.readable].map((p) => `(subpath ${q(p)})`).join(" ")
+  const readable = [c.sandbox, ...c.readable].map((p) => `(subpath ${quoted(p)})`).join(" ")
   return `(version 1)
 (allow default)
 (deny file-write*)
-(allow file-write* (subpath ${q(c.sandbox)}) (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))
-(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders") (subpath "/private/tmp") (subpath "/var/folders") (subpath "/tmp")${c.private.map((p) => ` (subpath ${q(p)})`).join("")})
+(allow file-write* (subpath ${quoted(c.sandbox)}) (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))
+(deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders") (subpath "/private/tmp") (subpath "/var/folders") (subpath "/tmp")${c.private.map((p) => ` (subpath ${quoted(p)})`).join("")})
 (allow file-read-data ${readable})
 (deny network-outbound (remote unix-socket))
 (allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
 (deny appleevent-send)
-(deny process-exec* (subpath ${q(c.sandbox)}) (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/bin/launchctl"))
+(deny process-exec* (subpath ${quoted(c.sandbox)}) (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/bin/launchctl"))
 (deny mach-lookup (global-name "com.apple.cfprefsd.agent") (global-name "com.apple.SecurityServer") (global-name "com.apple.pasteboard.1"))
-${c.network === "loopback" ? '(deny network-outbound)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))' : ""}
 `
 }
 

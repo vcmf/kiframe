@@ -16,6 +16,16 @@ export {
   launchElectron,
 } from "./electron.ts"
 export { defaultWorkDir, sweepWorkArea, WorkAreaError } from "./electron-workarea.ts"
+export {
+  buildHolds,
+  codeDigest,
+  type DesktopApp,
+  inspectDesktopApp,
+  InspectError,
+  type Signer,
+  signerOf,
+} from "./electron-inspect.ts"
+export { trialDesktopApp, type TrialOptions, type TrialOutcome } from "./electron-trial.ts"
 export { ConfinementError, FILES_LIMITS, seatbeltProfile } from "./electron-confine.ts"
 export { LookRefusal, maskedScreenshot, type MaskedShot } from "./look.ts"
 export {

@@ -26,6 +26,7 @@ import {
 import { untilStopped } from "./look.ts"
 import {
   chromium,
+  errors,
   type Browser,
   type BrowserContext,
   type CDPSession,
@@ -87,6 +88,45 @@ async function exitedSoon(child: ChildProcess, ms: number): Promise<boolean> {
   })
 }
 
+/**
+ * What a launch that failed says, the one rule (every failure an ElectronLaunchError with its
+ * `why`, but a stop): stopped → the stop; not started → said; what the app showed (a site, a
+ * page never loaded) → as is; the app quit → quit (whatever else was said); already said → as is;
+ * anything else (Playwright, CDP) → a fixed phrase (never
+ * its message: it can carry the debugging endpoint or a page's address), its detail on stderr for
+ * Kiframe's own debugging only (KIFRAME_ELECTRON_DEBUG).
+ */
+export function launchFailure(
+  error: unknown,
+  state: { stopped: unknown; spawnError: Error | undefined; quit: boolean },
+): unknown {
+  if (state.stopped !== undefined) return state.stopped
+  if (state.spawnError !== undefined) {
+    return new ElectronLaunchError(`the app couldn't be launched (${state.spawnError.message})`)
+  }
+  // What the app showed (a site, a page it never loaded): kept, whatever the app did next.
+  if (error instanceof ElectronLaunchError && (error.why === "site" || error.why === "unloaded")) {
+    return error
+  }
+  if (state.quit) return new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
+  if (error instanceof ElectronLaunchError) return error
+  debug("launch", error)
+  return new ElectronLaunchError(
+    error instanceof errors.TimeoutError
+      ? "the app didn't answer in time (it may refuse automation)"
+      : "the app couldn't be driven (its debugging connection failed)",
+  )
+}
+
+/** A failure's detail, for Kiframe's own debugging: stderr, only when asked (never a tool's). */
+function debug(phase: string, error: unknown) {
+  if (process.env.KIFRAME_ELECTRON_DEBUG !== undefined) {
+    process.stderr.write(
+      `[electron] ${phase}: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+    )
+  }
+}
+
 /** Shutdown phases that took long, said on stderr (KIFRAME_ELECTRON_TIMING): CI's evidence. */
 function timing(phase: string, since: number) {
   const took = Date.now() - since
@@ -98,8 +138,25 @@ function timing(phase: string, since: number) {
 const QUIT_EARLY =
   "the app quit before Kiframe could attach (it may allow only one instance: quit it and try again; be a launcher for another program; or refuse automation)"
 
-/** An app that couldn't be launched or attached: said to the user as is. */
-export class ElectronLaunchError extends Error {}
+/**
+ * An app that couldn't be launched or attached: said to the user as is. `why` read structurally (a
+ * trial's outcome): it quit at once, its main window showed a site (`site`: the https origin it
+ * showed or failed to load: a wrapper's own, to allow), or anything else.
+ */
+export class ElectronLaunchError extends Error {
+  readonly why: "quit" | "site" | "unloaded" | "other"
+  readonly site: string | undefined
+  constructor(
+    message: string,
+    detail: { why: "quit" | "unloaded" | "other" } | { why: "site"; site: string } = {
+      why: "other",
+    },
+  ) {
+    super(message)
+    this.why = detail.why
+    this.site = detail.why === "site" ? detail.site : undefined
+  }
+}
 
 export interface ElectronLaunch {
   /** The app's executable (`X.app/Contents/MacOS/X`), resolved and approved by the host. */
@@ -112,20 +169,6 @@ export interface ElectronLaunch {
   files?: string
   /** Kiframe's work area (default `~/.kiframe`): the launches' sandboxes. */
   workDir?: string
-  /** The network: "all" (a run: the app's backend), "loopback" (a trial: nothing beyond). */
-  network?: "all" | "loopback"
-  /**
-   * Tests: arguments given as they are, before `args` (the fixture app's folder, its modes): never
-   * a project's (those name files/ only).
-   */
-  appArgs?: readonly string[]
-  /** Tests: more it may read (the repo's Electron). */
-  readable?: readonly string[]
-  /**
-   * Off macOS only (Linux CI): launched without the Seatbelt confinement (there's none). Never in
-   * the app: desktop apps are macOS-only.
-   */
-  allowUnconfined?: boolean
   /** The size its windows are shown at (emulated: the window itself is never moved). */
   viewport: Pick<Viewport, "width" | "height" | "deviceScaleFactor">
   /** The https sites a wrapper app shows as its own (the project's `origins`). */
@@ -138,6 +181,60 @@ export interface ElectronLaunch {
   settleMs?: number
   /** Tests: how long to wait for the app, its port and its first window together (default 20 s). */
   timeoutMs?: number
+}
+
+/** Tests only (never the package's: its launches take none of these). */
+export interface LaunchHooks {
+  /**
+   * Arguments given as they are, before `args` (the fixture app's folder, its modes): never a
+   * project's (those name files/ only).
+   */
+  appArgs?: readonly string[]
+  /** More it may read (the repo's Electron). */
+  readable?: readonly string[]
+  /** Off macOS only (Linux CI): launched without the Seatbelt confinement (there's none). */
+  allowUnconfined?: boolean
+}
+
+/** How long one attach may take before it's tried again. */
+const ATTACH_TRY_MS = 5000
+
+/**
+ * Attached over CDP, tried again while time is left: an attach as the app's first page turns into
+ * Chromium's error page (a dev server not started) can hang (measured: 1 in 5), a second never did.
+ */
+export async function attach(
+  endpoint: string,
+  deadline: number,
+  signal?: AbortSignal,
+): Promise<Browser> {
+  for (;;) {
+    const left = deadline - Date.now()
+    try {
+      return await untilStopped(
+        chromium.connectOverCDP(endpoint, { timeout: Math.max(1, Math.min(left, ATTACH_TRY_MS)) }),
+        signal,
+      )
+    } catch (error) {
+      // Out of time (or another failure): the launch's one rule words it.
+      if (!(error instanceof errors.TimeoutError) || left <= ATTACH_TRY_MS) throw error
+    }
+  }
+}
+
+/** Where a page that failed to load was going (Chromium's error page keeps it, over CDP). */
+async function unreachableUrl(page: Page): Promise<string | undefined> {
+  try {
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      const { frameTree } = await cdp.send("Page.getFrameTree")
+      return frameTree.frame.unreachableUrl
+    } finally {
+      await cdp.detach().catch(() => undefined)
+    }
+  } catch {
+    return undefined
+  }
 }
 
 /** A page the guard stopped: in which window, whether it was the window itself, and where. */
@@ -233,6 +330,9 @@ async function makeSandbox(work: string): Promise<{
     XDG_CACHE_HOME: dirs.cache,
     XDG_STATE_HOME: dirs.state,
     TMPDIR: `${dirs.tmp}${sep}`,
+    // Chromium on macOS: its temp folder (the single-instance lock's socket) in the sandbox too,
+    // never the user's /var/folders (denied by the confinement: such an app would quit).
+    MAC_CHROMIUM_TMPDIR: dirs.tmp,
   })
   return {
     root,
@@ -247,8 +347,16 @@ async function makeSandbox(work: string): Promise<{
 /** How long the app's windows must stay as they are before its main window is chosen. */
 const SETTLE_MS = 1500
 
-/** Launches `opts.executable` in a fresh sandbox and attaches to its main window. */
-export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarget> {
+/** Launches `opts.executable` in a fresh sandbox, confined, and attaches to its main window. */
+export function launchElectron(opts: ElectronLaunch): Promise<ElectronTarget> {
+  return launchElectronWith(opts, {})
+}
+
+/** `launchElectron` with the tests' hooks (not exported by the package). */
+export async function launchElectronWith(
+  opts: ElectronLaunch,
+  hooks: LaunchHooks,
+): Promise<ElectronTarget> {
   opts.signal?.throwIfAborted()
   // Before anything runs: an app moved since it was approved is said, never half-launched.
   let bundles: string[]
@@ -267,7 +375,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   }
   // Never unconfined in the app: off macOS (no Seatbelt) only where asked (Linux CI).
   const confined = process.platform === "darwin"
-  if (!confined && opts.allowUnconfined !== true) {
+  if (!confined && hooks.allowUnconfined !== true) {
     throw new ElectronLaunchError("desktop apps run only on macOS (they're confined there)")
   }
   const work = opts.workDir ?? defaultWorkDir()
@@ -280,10 +388,9 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     if (confined) {
       const confinement = {
         sandbox: sandbox.root,
-        readable: [...bundles.map(realpathOr), ...(opts.readable ?? []).map(realpathOr)],
+        readable: [...bundles.map(realpathOr), ...(hooks.readable ?? []).map(realpathOr)],
         // The home and the work area wherever they are, and the one temp folder left (/var/tmp).
         private: [realpathOr(userInfo().homedir), realpathOr(work), "/private/var/tmp"],
-        network: opts.network ?? "all",
       }
       // Its own canary, beside its sandbox (never inside: that's readable) and named after it:
       // launches at once never touch each other's, and a crash's is swept with its sandbox.
@@ -301,15 +408,18 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     opts.signal?.throwIfAborted()
   } catch (error) {
     await rm(sandbox.root, { recursive: true, force: true }).catch(() => undefined)
+    if (opts.signal?.aborted === true) throw opts.signal.reason as Error
     if (error instanceof FilesError || error instanceof ConfinementError) {
       throw new ElectronLaunchError(error.message)
     }
-    throw error
+    if (error instanceof ElectronLaunchError) throw error
+    debug("prepare", error)
+    throw new ElectronLaunchError("the app's sandbox couldn't be prepared")
   }
   // The app's own time to start (the copy and the canary never count against it).
   const deadline = Date.now() + (opts.timeoutMs ?? LAUNCH_MS)
   const launchArgs = [
-    ...(opts.appArgs ?? []),
+    ...(hooks.appArgs ?? []),
     ...args,
     `--user-data-dir=${sandbox.profile}`,
     "--remote-debugging-port=0",
@@ -352,10 +462,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       opts.signal,
       () => spawnError,
     )
-    browser = await untilStopped(
-      chromium.connectOverCDP(endpoint, { timeout: Math.max(1, deadline - Date.now()) }),
-      opts.signal,
-    )
+    browser = await attach(endpoint, deadline, opts.signal)
     const context = browser.contexts()[0]
     if (context === undefined) throw new ElectronLaunchError("the app opened no window")
     const connected = browser
@@ -366,21 +473,39 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       () => child.exitCode !== null || child.signalCode !== null || !connected.isConnected(),
       opts.settleMs ?? SETTLE_MS,
     )
+    // Where the main window is, or went: a load that failed (offline, a dev server not started)
+    // still names it (CDP's unreachable URL), judged and said by that.
+    const failed = page.url().startsWith("chrome-error:")
+    const shown = failed ? ((await unreachableUrl(page)) ?? page.url()) : page.url()
     // Sealed now, from the main window alone: its own scheme (app:) or dev server (loopback).
     const launched = new Set<string>()
     const schemes = new Set<string>()
     const embedded = new Set<string>()
-    const origin = loopbackOrigin(page.url())
+    const origin = loopbackOrigin(shown)
     if (origin !== undefined) launched.add(origin)
-    const scheme = ownScheme(page.url())
+    const scheme = ownScheme(shown)
     if (scheme !== undefined) schemes.add(scheme)
     // What the main window embeds as it opens (a video, a widget) is part of the app as shipped.
+    // A frame still loading (its first navigation not committed: its url empty or about:blank) is
+    // read by its element's src, resolved against the page (else it'd be stopped once it loads).
+    const loading: { frame: Frame; url: string }[] = []
     for (const frame of page.frames()) {
-      const url = URL.parse(frame.url())
-      // https only (a listed site's rule: never plain http in the app's name).
-      if (frame !== page.mainFrame() && url !== null && url.protocol === "https:") {
-        embedded.add(url.origin)
+      if (frame === page.mainFrame()) continue
+      let shownIn = frame.url()
+      if (shownIn === "" || shownIn === "about:blank") {
+        const src = await frame
+          .frameElement()
+          .then((element) => element.getAttribute("src"))
+          .catch(() => null)
+        const resolved = src === null ? undefined : URL.parse(src, page.url())?.href
+        if (resolved !== undefined) {
+          shownIn = resolved
+          loading.push({ frame, url: resolved })
+        }
       }
+      const url = URL.parse(shownIn)
+      // https only (a listed site's rule: never plain http in the app's name).
+      if (url !== null && url.protocol === "https:") embedded.add(url.origin)
     }
     const own = {
       bundles,
@@ -391,9 +516,24 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       origins: [...(opts.origins ?? []), ...embedded],
     }
     const allows = (url: string) => allowedPage(url, own)
-    if (!allows(page.url())) {
+    // A frame still loading toward what isn't the app's: stopped now, at the launch (never as it
+    // lands in a run's first step).
+    for (const { frame, url } of loading) {
+      if (!allows(url)) await frame.goto("about:blank", { timeout: BACK_MS }).catch(() => undefined)
+    }
+    if (!shown.startsWith("chrome-error:") && !allows(shown)) {
+      const url = URL.parse(shown)
       throw new ElectronLaunchError(
-        `the app shows ${placeOf(page.url())}: if that's the app's own, list it in its origins`,
+        `the app shows ${placeOf(shown)}: if that's the app's own, list it in its origins`,
+        url?.protocol === "https:" ? { why: "site", site: url.origin } : { why: "other" },
+      )
+    }
+    // Its own page, never loaded: said (never a window driven on Chromium's error page).
+    if (failed) {
+      const where = shown.startsWith("chrome-error:") ? "its page" : placeOf(shown)
+      throw new ElectronLaunchError(
+        `the app couldn't load ${where} (offline? its server not running?)`,
+        { why: "unloaded" },
       )
     }
     // The guard: every frame of every window, every navigation, at once; one that isn't the app's
@@ -410,6 +550,9 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       }
       // A load that failed (Chromium's error page): said as such by the step, never a place.
       if (url.startsWith("chrome-error:")) return true
+      // The app's own DevTools (a dev build opens them, at once or later: a window that appears
+      // blank, then shows them): never a page a run drives or films (no web page can show them).
+      if (isDevtools(url)) return true
       return allows(url)
     }
     const watch = (p: Page) => {
@@ -424,10 +567,16 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
             ? frame.goto("about:blank")
             : p !== page
               ? p.close()
-              : // Committed is enough (never the page's load, nor a step's short timeout).
+              : // Committed is enough (never the page's load, nor a step's short timeout). No
+                // history, or a back that failed: blank (never left showing the site; the run
+                // then says to relaunch).
                 p
                   .goBack({ waitUntil: "commit", timeout: BACK_MS })
                   .then((back) => (back === null ? frame.goto("about:blank") : back))
+                  .catch((error: unknown) => {
+                    debug("back", error)
+                    return frame.goto("about:blank")
+                  })
         const done = action.then(
           () => undefined,
           () => undefined,
@@ -483,12 +632,11 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     // A moment for its exit to be told (it may quit as the attach drops: the drop comes first).
     const quit = await exitedSoon(child, EXIT_TELL_MS)
     await end()
-    if (opts.signal?.aborted === true) throw opts.signal.reason as Error
-    if (spawnError !== undefined) {
-      throw new ElectronLaunchError(`the app couldn't be launched (${spawnError.message})`)
-    }
-    if (quit && !(error instanceof ElectronLaunchError)) throw new ElectronLaunchError(QUIT_EARLY)
-    throw error
+    throw launchFailure(error, {
+      stopped: opts.signal?.aborted === true ? (opts.signal.reason as unknown) : undefined,
+      spawnError,
+      quit,
+    })
   }
 }
 
@@ -550,7 +698,7 @@ function debuggingEndpoint(
         // not yet
       }
     }, 100)
-    const exited = () => finish(new ElectronLaunchError(QUIT_EARLY))
+    const exited = () => finish(new ElectronLaunchError(QUIT_EARLY, { why: "quit" }))
     const aborted = () => finish(signal?.reason as Error)
     child.once("exit", exited)
     signal?.addEventListener("abort", aborted, { once: true })
@@ -585,7 +733,7 @@ async function mainWindow(
   for (;;) {
     signal?.throwIfAborted()
     // Quit (or dropped its port) before showing a window: said at once, never a wait to the end.
-    if (gone()) throw new ElectronLaunchError(QUIT_EARLY)
+    if (gone()) throw new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
     const now = windows()
     const key = now.map((p) => p.url()).join("\n")
     if (key !== seen) {

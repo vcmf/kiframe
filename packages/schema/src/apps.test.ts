@@ -298,6 +298,8 @@ describe("a desktop Electron app (design 2026-10-08)", () => {
     expect(issue({ x: desk({ args: ["--inspect=9229"] }) })).toMatch(/positional arguments only/)
     expect(issue({ x: desk({ args: ["-e"] }) })).toMatch(/positional arguments only/)
     expect(issue({ x: desk({ bundleId: "/Applications/Notes.app" }) })).toMatch(/a bundle id/)
+    // An underscore is a bundle id's (electron-builder's com.electron.my_app).
+    expect(issue({ x: desk({ bundleId: "com.electron.my_app" }) })).toBe("parsed")
     expect(issue({ x: desk({ bundleId: "notes" }) })).toMatch(/a bundle id/)
     expect(issue({ x: desk({ url: "https://a.dev" }) })).not.toBe("parsed")
     // Chromium trims an argument before telling a switch: spaces and control characters too.

@@ -41,6 +41,9 @@ const HttpsOrigin = z
     return url !== null && url.protocol === "https:" && url.origin === s
   }, "an https origin (https://host, no path)")
 
+/** A macOS bundle id's form (underscores too: macOS runs electron-builder's com.electron.my_app). */
+export const BUNDLE_ID = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$/
+
 /**
  * A desktop app's argument as a path in the project's files/ (`files/a/b` → ["a", "b"]); undefined
  * for anything else (files/ itself, an empty, "." or ".." part: never outside it).
@@ -60,10 +63,7 @@ export function filesPath(arg: string): string[] | undefined {
 export const ElectronApp = z.strictObject({
   kind: z.literal("electron"),
   /** The macOS bundle id (`com.example.app`). */
-  bundleId: z
-    .string()
-    .max(255)
-    .regex(/^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z0-9-]+)+$/, "a bundle id (com.example.app)"),
+  bundleId: z.string().max(255).regex(BUNDLE_ID, "a bundle id (com.example.app)"),
   /**
    * What the app opens: paths in the project's files/ (`files/demo-vault`; a copy is what it gets,
    * decided 2026-10-09), positional only, never a switch.

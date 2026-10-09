@@ -17,6 +17,7 @@ import { createRequire } from "node:module"
 import { tmpdir, userInfo } from "node:os"
 import { dirname, join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { errors } from "playwright"
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createServer, type Server } from "node:http"
@@ -29,7 +30,6 @@ import {
   ElectronLaunchError,
   type ElectronTarget,
   FILES_LIMITS,
-  launchElectron,
   recordScenario,
   runScenario,
   StepError,
@@ -37,6 +37,13 @@ import {
   sweepWorkArea,
 } from "../src/index.ts"
 import { checkConfinement, copyFiles } from "../src/electron-confine.ts"
+import {
+  attach,
+  type ElectronLaunch,
+  launchFailure,
+  launchElectronWith,
+  type LaunchHooks,
+} from "../src/electron.ts"
 import { sandboxesOf } from "../src/electron-workarea.ts"
 
 // The Electron target (OBJECT-MODEL §0.9 "Electron apps"): a fixture desktop app launched in a
@@ -55,6 +62,10 @@ const sandboxCount = () =>
 /** This file's work area (never the user's ~/.kiframe). */
 const work = mkdtempSync(join(tmpdir(), "kiframe-el-work-"))
 /** How every launch here runs: the fixture on the repo's Electron, confined on macOS. */
+// The tests' launches: the hooks (the fixture's folder and modes, the repo's Electron readable,
+// unconfined on Linux CI) beside a launch's own options.
+const launchElectron = (opts: ElectronLaunch & LaunchHooks) => launchElectronWith(opts, opts)
+
 const base = {
   executable: electron,
   bundle: fixture,
@@ -114,16 +125,26 @@ beforeAll(async () => {
   )
   secureServer = createHttpsServer(
     { key: readFileSync(join(certs, "key.pem")), cert: readFileSync(join(certs, "cert.pem")) },
-    (_req, res) => {
-      res.writeHead(200, { "content-type": "text/html" })
-      res.end("<h1>A widget</h1>")
+    (req, res) => {
+      // "/slow": answered after a while (a widget still loading as the app opens).
+      const answer = () => {
+        res.writeHead(200, { "content-type": "text/html" })
+        res.end("<h1>A widget</h1>")
+      }
+      if (req.url === "/slow") setTimeout(answer, 3000)
+      else answer()
     },
   )
   await new Promise<void>((resolve) => secureServer.listen(0, "127.0.0.1", resolve))
   secure = `https://127.0.0.1:${(secureServer.address() as AddressInfo).port}/`
-  server = createServer((_req, res) => {
-    res.writeHead(200, { "content-type": "text/html" })
-    res.end("<h1>Another site</h1>")
+  server = createServer((req, res) => {
+    // "/slow": answered after a while (a frame still loading as the app opens).
+    const answer = () => {
+      res.writeHead(200, { "content-type": "text/html" })
+      res.end("<h1>Another site</h1>")
+    }
+    if (req.url === "/slow") setTimeout(answer, 3000)
+    else answer()
   })
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
   other = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`
@@ -152,6 +173,7 @@ const launch = async (
     readable?: string[]
     timeoutMs?: number
     signal?: AbortSignal
+    origins?: string[]
   } = {},
 ) => {
   const target = await launchElectron({
@@ -478,10 +500,162 @@ steps:
     }
   }, 60_000)
 
+  // macOS's fix (Linux runs unconfined, its lock's socket path under its own length limit).
+  it.runIf(process.platform === "darwin")(
+    "launches an app that allows one copy only (its lock in the sandbox, never /var/folders)",
+    async () => {
+      const target = await launch(["single"])
+      expect(await target.page.title()).toBe("Fixture notes")
+    },
+  )
+
+  it("names the site a wrapper app shows, even when it can't load it", async () => {
+    const error = await launch(["wrapper"]).then(
+      () => undefined,
+      (e: unknown) => e as ElectronLaunchError,
+    )
+    expect(error).toBeInstanceOf(ElectronLaunchError)
+    expect(error?.why).toBe("site")
+    expect(error?.site).toBe("https://kiframe-wrapper.invalid")
+    // Listed as its own but never loaded: said (never a window driven on an error page).
+    await expect(
+      launch(["wrapper"], { origins: ["https://kiframe-wrapper.invalid"] }),
+    ).rejects.toThrow(/couldn't load kiframe-wrapper\.invalid/)
+    // Listed and loaded: driven.
+    const site = new URL(secure).origin
+    const target = await launch([`wrapper=${secure}`, "trust-test-cert"], { origins: [site] })
+    expect(target.page.url()).toBe(secure)
+  })
+
+  // A fake app: announces a debugging endpoint (a test's server) and, asked, quits after a while.
+  const fakeApp = () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-el-fake-"))
+    const script = join(dir, "fake-app")
+    writeFileSync(
+      script,
+      `#!${process.execPath}
+const [port, quitAfter] = process.argv.slice(2)
+process.stderr.write("DevTools listening on ws://127.0.0.1:" + port + "/devtools/browser/0f0e0d0c-0000-4000-8000-000000000000\\n")
+if (quitAfter !== "never") setTimeout(() => process.exit(0), Number(quitAfter))
+else setInterval(() => undefined, 60_000)
+`,
+      { mode: 0o755 },
+    )
+    return { script, readable: [realpathSync(dir), realpathSync(dirname(process.execPath))] }
+  }
+  const fakeLaunch = (port: number, quitAfter: string, timeoutMs: number) => {
+    const fake = fakeApp()
+    return launchElectron({
+      executable: fake.script,
+      appArgs: [String(port), quitAfter],
+      readable: fake.readable,
+      workDir: work,
+      allowUnconfined: true,
+      viewport,
+      timeoutMs,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+  }
+
+  it("says a broken debugging connection in its own words (never Playwright's, its endpoint)", async () => {
+    // An endpoint that refuses the WebSocket (a CDP it can't speak).
+    const refusing = createServer((_req, res) => res.writeHead(404).end())
+    await new Promise<void>((resolve) => refusing.listen(0, "127.0.0.1", resolve))
+    try {
+      const error = await fakeLaunch((refusing.address() as AddressInfo).port, "never", 8000)
+      expect(error).toBeInstanceOf(ElectronLaunchError)
+      expect(String(error)).toMatch(/couldn't be driven \(its debugging connection failed\)/)
+      expect(String(error)).not.toMatch(/ws:\/\/|127\.0\.0\.1/)
+    } finally {
+      refusing.close()
+    }
+  }, 30_000)
+
+  it("says an app that quits while its attach stalls as quit (never 'didn't answer')", async () => {
+    const silent = createNetServer(() => undefined)
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve))
+    try {
+      // It quits just after the launch's time: the attach times out, its exit lands after.
+      const error = await fakeLaunch((silent.address() as AddressInfo).port, "3300", 3000)
+      expect(error).toBeInstanceOf(ElectronLaunchError)
+      expect((error as ElectronLaunchError).why).toBe("quit")
+    } finally {
+      silent.close()
+    }
+  }, 30_000)
+
+  it("words every failure by one rule: a stop, not started, quit, said, anything else", () => {
+    const stop = new DOMException("stopped", "AbortError")
+    const said = new ElectronLaunchError("said")
+    const raw = new Error("connect ECONNREFUSED ws://127.0.0.1:9/devtools/browser/x")
+    const none = { stopped: undefined, spawnError: undefined, quit: false }
+    expect(launchFailure(raw, { ...none, stopped: stop, quit: true })).toBe(stop)
+    expect(
+      String(launchFailure(raw, { ...none, spawnError: new Error("ENOENT"), quit: true })),
+    ).toMatch(/couldn't be launched \(ENOENT\)/)
+    // Already said (a site to allow, a page never loaded) stays said, even if the app then quit.
+    const site = new ElectronLaunchError("site", { why: "site", site: "https://a.example" })
+    expect(launchFailure(site, { ...none, quit: true })).toBe(site)
+    expect(launchFailure(said, none)).toBe(said)
+    // Anything else said (no window in time) or unworded (an attach that stalled), the app gone:
+    // it quit (the one-copy advice kept).
+    expect(launchFailure(said, { ...none, quit: true })).toMatchObject({ why: "quit" })
+    const unloaded = new ElectronLaunchError("unloaded", { why: "unloaded" })
+    expect(launchFailure(unloaded, { ...none, quit: true })).toBe(unloaded)
+    expect(launchFailure(raw, { ...none, quit: true })).toMatchObject({ why: "quit" })
+    const worded = launchFailure(raw, none)
+    expect(worded).toBeInstanceOf(ElectronLaunchError)
+    expect(String(worded)).not.toMatch(/ws:\/\//)
+  })
+
+  it("tries a stalled attach again, then says it as the launch's own (never Playwright's)", async () => {
+    // A debugging endpoint that accepts and never answers.
+    let connections = 0
+    const silent = createNetServer(() => (connections += 1))
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve))
+    const port = (silent.address() as AddressInfo).port
+    try {
+      const error = await attach(
+        `ws://127.0.0.1:${port}/devtools/browser/x`,
+        Date.now() + 7000,
+      ).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      // Tried twice, then the timeout handed to the launch's one rule, which words it.
+      expect(connections).toBe(2)
+      expect(error).toBeInstanceOf(errors.TimeoutError)
+      const worded = launchFailure(error, {
+        stopped: undefined,
+        spawnError: undefined,
+        quit: false,
+      })
+      expect(worded).toBeInstanceOf(ElectronLaunchError)
+      expect(String(worded)).toMatch(/didn't answer in time/)
+    } finally {
+      silent.close()
+    }
+  }, 30_000)
+
+  it("says a dev build whose server isn't running, as such (never an off-app site)", async () => {
+    const closed = createNetServer()
+    await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve))
+    const port = (closed.address() as AddressInfo).port
+    await new Promise((resolve) => closed.close(resolve))
+    await expect(launch([`dev-down=http://127.0.0.1:${port}/`])).rejects.toThrow(
+      new RegExp(
+        `couldn't load 127\\.0\\.0\\.1:${port} \\(offline\\? its server not running\\?\\)`,
+      ),
+    )
+  })
+
   it("says an app that quits at once, and leaves nothing behind", async () => {
     const before = sandboxCount()
     await expect(launch(["quit-at-once"])).rejects.toThrow(ElectronLaunchError)
     await expect(launch(["quit-at-once"])).rejects.toThrow(/quit before Kiframe could attach/)
+    await expect(launch(["quit-at-once"])).rejects.toMatchObject({ why: "quit" })
     expect(sandboxCount()).toBe(before)
   })
 
@@ -601,6 +775,43 @@ steps: [{ id: add, action: click, target: { by: role, role: button, name: Add no
     expect(target.close()).toBe(first)
     expect(await first).toEqual({ unread: false })
     open = []
+  })
+
+  it("keeps a frame the app embeds that's still loading as it opens", async () => {
+    // Its first navigation uncommitted when the launch seals what's its own: read by its src.
+    const slow = `${secure}slow`
+    const embeds = await launchElectron({
+      ...base,
+      appArgs: [fixture, "hidden", `link=${slow}`, "embed-at-start", "trust-test-cert"],
+      settleMs: 300,
+    })
+    open.push(embeds)
+    expect(await waitFor(() => embeds.page.frames().some((f) => f.url() === slow), 8000)).toBe(true)
+    await runScenario(
+      embeds.page,
+      parseScenarioYaml(`version: 1\nsteps: [{ id: a, action: pause, ms: 300 }]\n`),
+      project,
+      { electron: inTarget(embeds) },
+    )
+    expect(embeds.page.frames().some((f) => f.url() === slow)).toBe(true)
+  })
+
+  it("stops a frame loading toward another site as the app opens, never in the run", async () => {
+    // Its first navigation uncommitted when the launch seals: stopped then, at the launch.
+    const slow = `${other}slow`
+    const plain = await launchElectron({
+      ...base,
+      appArgs: [fixture, "hidden", `link=${slow}`, "embed-at-start"],
+      settleMs: 300,
+    })
+    open.push(plain)
+    await runScenario(
+      plain.page,
+      parseScenarioYaml(`version: 1\nsteps: [{ id: a, action: pause, ms: 4000 }]\n`),
+      project,
+      { electron: inTarget(plain) },
+    )
+    expect(plain.page.frames().some((f) => f.url() === slow)).toBe(false)
   })
 
   it("keeps what the app embeds as it opens, and takes its window back from a site", async () => {
@@ -754,18 +965,20 @@ steps:
     )
   })
 
-  it("never counts the app's own DevTools as leaving it", async () => {
-    const target = await launch(["devtools"])
-    await runScenario(
-      target.page,
-      parseScenarioYaml(`version: 1
+  it("never counts the app's own DevTools as leaving it, opened at once or later", async () => {
+    for (const mode of ["devtools", "devtools-late"]) {
+      const target = await launch([mode])
+      await runScenario(
+        target.page,
+        parseScenarioYaml(`version: 1
 steps:
-  - { id: wait, action: pause, ms: 1500 }
-  - { id: add, action: click, target: { by: role, role: button, name: Add note } }
+  - { id: wait, action: pause, ms: 3500 }
+  - { id: still, action: expect, that: { visible: { by: role, role: button, name: Add note } } }
 `),
-      project,
-      { electron: inTarget(target), timeoutMs: 5000 },
-    )
+        project,
+        { electron: inTarget(target), timeoutMs: 5000 },
+      )
+    }
   })
 
   it("follows a window that opens blank and loads later; a frame of another window is said only", async () => {
@@ -1072,7 +1285,7 @@ steps:
       expect(linked).not.toBe(real)
       await expect(
         checkConfinement(
-          { sandbox: linked, readable: [], private: [], network: "all" },
+          { sandbox: linked, readable: [], private: [] },
           join(mkdtempSync(join(tmpdir(), "kiframe-el-work-")), "canary.txt"),
         ),
       ).rejects.toThrow(/doesn't run programs/)
@@ -1082,7 +1295,7 @@ steps:
       // /var/tmp: outside every folder the profile denies by itself (as a /Network/Users home).
       const home = mkdtempSync("/private/var/tmp/kiframe-el-home-")
       const sandbox = mkdtempSync(join(realpathSync(tmpdir()), "kiframe-el-sb-"))
-      const confinement = { sandbox, readable: [], network: "all" } as const
+      const confinement = { sandbox, readable: [] } as const
       try {
         // Denied (the canary unread) only as one of the user's own folders.
         await expect(
@@ -1096,18 +1309,10 @@ steps:
       }
     })
 
-    it("keeps a trial off the network but this machine (no updater fetch)", () => {
-      const profile = seatbeltProfile({
-        sandbox: "/s",
-        readable: [],
-        private: [],
-        network: "loopback",
-      })
-      expect(profile).toContain("(deny network-outbound)")
-      expect(profile).toContain('(allow network-outbound (remote ip "localhost:*"))')
-      expect(
-        seatbeltProfile({ sandbox: "/s", readable: [], private: [], network: "all" }),
-      ).not.toContain("(deny network-outbound)\n")
+    it("leaves the network to the app (its backend), never other programs' sockets", () => {
+      const profile = seatbeltProfile({ sandbox: "/s", readable: [], private: [] })
+      expect(profile).not.toContain("(deny network-outbound)\n")
+      expect(profile).toContain("(deny network-outbound (remote unix-socket))")
     })
   },
 )

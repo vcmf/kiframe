@@ -19,7 +19,12 @@ if (splash)
 if (process.argv.includes("trust-test-cert"))
   app.commandLine.appendSwitch("ignore-certificate-errors")
 
-if (process.argv.includes("quit-at-once")) {
+// "single": it allows one copy only (as Slack, VS Code, Discord): Chromium's lock, a unix socket
+// in its temp folder.
+if (
+  process.argv.includes("quit-at-once") ||
+  (process.argv.includes("single") && !app.requestSingleInstanceLock())
+) {
   app.quit()
 } else {
   app.whenReady().then(() => {
@@ -73,18 +78,31 @@ if (process.argv.includes("quit-at-once")) {
         prefs.loadFile(join(__dirname, "other.html"))
       }, 2500)
     }
-    // "devtools": it opens DevTools itself (a dev build).
+    // "devtools": it opens DevTools itself (a dev build); "devtools-late": a while after it opens
+    // (once Kiframe is attached: a window that appears, then shows DevTools).
     if (process.argv.includes("devtools")) {
       win.webContents.once("did-finish-load", () =>
         win.webContents.openDevTools({ mode: "detach" }),
       )
+    }
+    if (process.argv.includes("devtools-late")) {
+      setTimeout(() => win.webContents.openDevTools({ mode: "detach" }), 2500)
     }
     // "elsewhere": its window shows a page that's never an app's own (a data: page).
     // "link=<url>": the other site its links and windows go to (a test's local server);
     // "embed-at-start": it shows that site in a frame as it opens.
     const link = process.argv.find((a) => a.startsWith("link="))?.slice(5) ?? "https://example.com/"
     const query = { link, ...(process.argv.includes("embed-at-start") && { embed: "1" }) }
-    if (process.argv.includes("elsewhere")) win.loadURL("data:text/html,<h1>Elsewhere</h1>")
+    // "wrapper[=<url>]": its window is a site (as Slack's app.slack.com); by default one that never
+    // loads (.invalid). "dev-down=<url>": its dev server, not running.
+    const wrapper = process.argv.find((a) => a === "wrapper" || a.startsWith("wrapper="))
+    const devDown = process.argv.find((a) => a.startsWith("dev-down="))?.slice(9)
+    if (wrapper !== undefined) {
+      win.loadURL(
+        wrapper === "wrapper" ? "https://kiframe-wrapper.invalid/client" : wrapper.slice(8),
+      )
+    } else if (devDown !== undefined) win.loadURL(devDown)
+    else if (process.argv.includes("elsewhere")) win.loadURL("data:text/html,<h1>Elsewhere</h1>")
     else win.loadFile(join(__dirname, "index.html"), { query })
   })
   app.on("window-all-closed", () => app.quit())
