@@ -1,17 +1,28 @@
-import { execFile, spawn, type ChildProcess } from "node:child_process"
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { posix } from "node:path"
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs"
-import { readdir, readlink, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
-import { basename, dirname, join, sep } from "node:path"
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
+import { rm } from "node:fs/promises"
+import { userInfo } from "node:os"
+import { join, sep } from "node:path"
 import { sameApp, type Viewport } from "@kiframe/schema"
+import {
+  ConfinementError,
+  CONFINED_SWITCHES,
+  argumentIn,
+  checkConfinement,
+  copyFiles,
+  FilesError,
+  SANDBOX_EXEC,
+  seatbeltProfile,
+} from "./electron-confine.ts"
+import {
+  defaultWorkDir,
+  newSandbox,
+  realpathOr,
+  run,
+  sweepProcesses,
+  WorkAreaError,
+} from "./electron-workarea.ts"
 import { untilStopped } from "./look.ts"
 import {
   chromium,
@@ -95,14 +106,30 @@ export interface ElectronLaunch {
   executable: string
   /** Its `.app` bundle: a `file:` page inside it is the app's own. */
   bundle?: string
-  /** What the app opens (positional: the project's `args`). */
+  /** What the app opens: paths in the project's files/ (`files/demo-vault`), given as the copy's. */
   args?: readonly string[]
+  /** The project's files/ folder: copied into the sandbox at each launch (what `args` name). */
+  files?: string
+  /** Kiframe's work area (default `~/.kiframe`): the launches' sandboxes. */
+  workDir?: string
+  /** The network: "all" (a run: the app's backend), "loopback" (a trial: nothing beyond). */
+  network?: "all" | "loopback"
+  /**
+   * Tests: arguments given as they are, before `args` (the fixture app's folder, its modes): never
+   * a project's (those name files/ only).
+   */
+  appArgs?: readonly string[]
+  /** Tests: more it may read (the repo's Electron). */
+  readable?: readonly string[]
+  /**
+   * Off macOS only (Linux CI): launched without the Seatbelt confinement (there's none). Never in
+   * the app: desktop apps are macOS-only.
+   */
+  allowUnconfined?: boolean
   /** The size its windows are shown at (emulated: the window itself is never moved). */
   viewport: Pick<Viewport, "width" | "height" | "deviceScaleFactor">
   /** The https sites a wrapper app shows as its own (the project's `origins`). */
   origins?: readonly string[]
-  /** A file noting the launches still running: what a crash left is swept at the next start. */
-  stateFile?: string
   signal?: AbortSignal
   /**
    * How long its windows must stay as they are before its main window is chosen (default 1.5 s: a
@@ -147,10 +174,35 @@ export interface ElectronTarget {
   close: () => Promise<{ unread: boolean }>
 }
 
-/** A fresh sandbox: the app's HOME (and macOS's), its XDG folders, its temp and its profile. */
-function makeSandbox(): { root: string; env: NodeJS.ProcessEnv; profile: string } {
-  // The real path: macOS's /var is a link (a file: page's path is compared with it).
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "kiframe-app-")))
+/** Its own process group (killed whole), no terminal; its output read for the port only. */
+function spawnOptions(sandbox: { root: string; env: NodeJS.ProcessEnv }): SpawnOptions {
+  return {
+    detached: true,
+    env: sandbox.env,
+    stdio: ["ignore", "ignore", "pipe"],
+    cwd: sandbox.root,
+  }
+}
+
+/**
+ * A fresh sandbox in the work area: the app's HOME (and macOS's), XDG, temp, profile, files. One
+ * that can't be made is said (and nothing of it kept).
+ */
+async function makeSandbox(work: string): Promise<{
+  root: string
+  env: NodeJS.ProcessEnv
+  profile: string
+  home: string
+  tmp: string
+  files: string
+}> {
+  let root: string
+  try {
+    root = await newSandbox(work)
+  } catch (error) {
+    if (error instanceof WorkAreaError) throw new ElectronLaunchError(error.message)
+    throw new ElectronLaunchError(`Kiframe's work area can't be used (${String(error)})`)
+  }
   const dirs = {
     home: join(root, "home"),
     config: join(root, "home", ".config"),
@@ -160,7 +212,12 @@ function makeSandbox(): { root: string; env: NodeJS.ProcessEnv; profile: string 
     tmp: join(root, "tmp"),
     profile: join(root, "profile"),
   }
-  for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true })
+  try {
+    for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true })
+  } catch (error) {
+    await rm(root, { recursive: true, force: true }).catch(() => undefined)
+    throw new ElectronLaunchError(`the app's sandbox can't be made (${String(error)})`)
+  }
   const env: NodeJS.ProcessEnv = {}
   for (const name of PASSED_ENV) if (process.env[name] !== undefined) env[name] = process.env[name]
   for (const [name, value] of Object.entries(process.env)) {
@@ -169,7 +226,7 @@ function makeSandbox(): { root: string; env: NodeJS.ProcessEnv; profile: string 
   Object.assign(env, {
     HOME: dirs.home,
     // macOS: what reads NSHomeDirectory follows it (not appData, not the app's preferences: those
-    // stay the user's, checked by the trial launch).
+    // stay the user's, out of reach under the confinement).
     CFFIXED_USER_HOME: dirs.home,
     XDG_CONFIG_HOME: dirs.config,
     XDG_DATA_HOME: dirs.data,
@@ -177,7 +234,14 @@ function makeSandbox(): { root: string; env: NodeJS.ProcessEnv; profile: string 
     XDG_STATE_HOME: dirs.state,
     TMPDIR: `${dirs.tmp}${sep}`,
   })
-  return { root, env, profile: dirs.profile }
+  return {
+    root,
+    env,
+    profile: dirs.profile,
+    home: dirs.home,
+    tmp: dirs.tmp,
+    files: join(root, "files"),
+  }
 }
 
 /** How long the app's windows must stay as they are before its main window is chosen. */
@@ -194,14 +258,71 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
   } catch {
     throw new ElectronLaunchError(`the app isn't at ${opts.bundle ?? ""} any more`)
   }
+  // The executable there and runnable (under Seatbelt the spawned program is sandbox-exec: a
+  // missing app would otherwise read as one that quit).
+  try {
+    accessSync(opts.executable, constants.X_OK)
+  } catch {
+    throw new ElectronLaunchError(`the app couldn't be launched (${opts.executable} isn't there)`)
+  }
+  // Never unconfined in the app: off macOS (no Seatbelt) only where asked (Linux CI).
+  const confined = process.platform === "darwin"
+  if (!confined && opts.allowUnconfined !== true) {
+    throw new ElectronLaunchError("desktop apps run only on macOS (they're confined there)")
+  }
+  const work = opts.workDir ?? defaultWorkDir()
+  const sandbox = await makeSandbox(work)
+  // Its files and its confinement ready before it starts (said, its sandbox removed, if not).
+  let args: string[]
+  let profile: string | undefined
+  try {
+    // The confinement first (cheap): a broken one never costs the files' copy.
+    if (confined) {
+      const confinement = {
+        sandbox: sandbox.root,
+        readable: [...bundles.map(realpathOr), ...(opts.readable ?? []).map(realpathOr)],
+        // The home and the work area wherever they are, and the one temp folder left (/var/tmp).
+        private: [realpathOr(userInfo().homedir), realpathOr(work), "/private/var/tmp"],
+        network: opts.network ?? "all",
+      }
+      // Its own canary, beside its sandbox (never inside: that's readable) and named after it:
+      // launches at once never touch each other's, and a crash's is swept with its sandbox.
+      await checkConfinement(confinement, `${sandbox.root}.canary`, opts.signal)
+      profile = seatbeltProfile(confinement)
+    }
+    if (opts.files !== undefined) await copyFiles(opts.files, sandbox.files, opts.signal)
+    args = (opts.args ?? []).map((a) => argumentIn(a, sandbox.files))
+    for (const arg of args) {
+      if (!existsSync(arg)) {
+        throw new ElectronLaunchError(`${arg.slice(sandbox.files.length + 1)} isn't in files/`)
+      }
+    }
+    // Stopped meanwhile: never started.
+    opts.signal?.throwIfAborted()
+  } catch (error) {
+    await rm(sandbox.root, { recursive: true, force: true }).catch(() => undefined)
+    if (error instanceof FilesError || error instanceof ConfinementError) {
+      throw new ElectronLaunchError(error.message)
+    }
+    throw error
+  }
+  // The app's own time to start (the copy and the canary never count against it).
   const deadline = Date.now() + (opts.timeoutMs ?? LAUNCH_MS)
-  const sandbox = makeSandbox()
-  const child = spawn(
-    opts.executable,
-    [...(opts.args ?? []), `--user-data-dir=${sandbox.profile}`, "--remote-debugging-port=0"],
-    // Its own process group (killed whole), no terminal; its output read for the port only.
-    { detached: true, env: sandbox.env, stdio: ["ignore", "ignore", "pipe"], cwd: sandbox.root },
-  )
+  const launchArgs = [
+    ...(opts.appArgs ?? []),
+    ...args,
+    `--user-data-dir=${sandbox.profile}`,
+    "--remote-debugging-port=0",
+  ]
+  const child =
+    profile === undefined
+      ? spawn(opts.executable, launchArgs, spawnOptions(sandbox))
+      : // Seatbelt runs the app itself (one process: its group, its pid), Kiframe's switches last.
+        spawn(
+          SANDBOX_EXEC,
+          ["-p", profile, opts.executable, ...launchArgs, ...CONFINED_SWITCHES],
+          spawnOptions(sandbox),
+        )
   // Its spawn failing is said by the launch (never an unhandled 'error' event).
   let spawnError: Error | undefined
   child.on("error", (error) => (spawnError = error))
@@ -214,7 +335,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       const alive = browser?.isConnected() === true
       // Killed first, the connection closed after (it drops with the app: never a close the app
       // has to answer), bounded all the same.
-      const ended = await stop(child, sandbox.root, opts.stateFile, alive)
+      const ended = await stop(child, sandbox.root, alive)
       const t0 = Date.now()
       await within(
         browser?.close().catch(() => undefined),
@@ -224,9 +345,6 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       return ended
     })())
   try {
-    // Noted at once (a crash from here on is swept at the next start); a note that can't be
-    // written ends the launch (never an app left running unnoted).
-    note(opts.stateFile, sandbox.root, true)
     const endpoint = await debuggingEndpoint(
       child,
       sandbox.profile,
@@ -266,7 +384,8 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     }
     const own = {
       bundles,
-      sandbox: sandbox.root,
+      // Its home, profile and temp (its own data): never the files/ copy (a project's content).
+      trusted: [sandbox.home, sandbox.profile, sandbox.tmp],
       launched,
       schemes,
       origins: [...(opts.origins ?? []), ...embedded],
@@ -529,7 +648,8 @@ export function allowedPage(
   url: string,
   own: {
     bundles: readonly string[]
-    sandbox: string
+    /** The sandbox's folders that are the app's own data (its home, its profile). */
+    trusted: readonly string[]
     launched: ReadonlySet<string>
     schemes: ReadonlySet<string>
     origins: readonly string[]
@@ -558,7 +678,7 @@ export function allowedPage(
     path = posix.normalize(path)
     const inside = (dir: string) =>
       path === dir || path.startsWith(dir.endsWith("/") ? dir : `${dir}/`)
-    return own.bundles.some(inside) || inside(own.sandbox)
+    return own.bundles.some(inside) || own.trusted.some(inside)
   }
   if (parsed.protocol === "http:" || parsed.protocol === "https:") {
     return (
@@ -578,7 +698,6 @@ export function allowedPage(
 async function stop(
   child: ChildProcess,
   sandbox: string,
-  stateFile: string | undefined,
   alive: boolean,
 ): Promise<{ unread: boolean }> {
   const pid = child.pid
@@ -592,18 +711,13 @@ async function stop(
   timing("kill", t0)
   // Helpers that left the group (a daemon, a pty host) still point at the sandbox.
   t0 = Date.now()
-  const swept = await sweepSandbox(sandbox)
+  const swept = await sweepProcesses(sandbox)
   timing("sweep", t0)
   t0 = Date.now()
   await rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
     () => undefined,
   )
   timing("remove", t0)
-  try {
-    note(stateFile, sandbox, false)
-  } catch {
-    // kept: swept at the next start
-  }
   return { unread: swept.unread }
 }
 
@@ -629,118 +743,4 @@ function signalGroup(pid: number, signal: NodeJS.Signals) {
   } catch {
     // gone
   }
-}
-
-/** A command's output (empty when it fails: said by the caller's next check). */
-function run(command: string, args: string[]): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    execFile(command, args, { timeout: 5000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
-      // lsof exits 1 when nothing matches: its output (empty) is still the answer.
-      resolve(error !== null && (error as { code?: unknown }).code !== 1 ? undefined : stdout)
-    })
-  })
-}
-
-/**
- * Every process's working folder: Linux's /proc (quick), else `lsof` (macOS: no /proc); undefined
- * when it can't be read.
- */
-async function workingDirs(): Promise<[number, string][] | undefined> {
-  if (process.platform === "linux") {
-    const out: [number, string][] = []
-    try {
-      for (const entry of await readdir("/proc")) {
-        if (!/^\d+$/.test(entry)) continue
-        try {
-          out.push([Number(entry), await readlink(`/proc/${entry}/cwd`)])
-        } catch {
-          // gone, or another user's
-        }
-      }
-      return out
-    } catch {
-      return undefined
-    }
-  }
-  const listed = await run("lsof", ["-a", "-d", "cwd", "-Fpn"])
-  if (listed === undefined) return undefined
-  const out: [number, string][] = []
-  let pid: number | undefined
-  for (const line of listed.split("\n")) {
-    if (line.startsWith("p")) pid = Number(line.slice(1))
-    else if (line.startsWith("n") && pid !== undefined) out.push([pid, line.slice(1)])
-  }
-  return out
-}
-
-/**
- * Kills every process (never this one) that points at `sandbox`: its command line names it (the
- * app's helpers carry `--user-data-dir=<sandbox>/profile`), or it works in it (a helper detached
- * with its cwd there). Both are quick to read (never a walk of every file). Unread: said.
- */
-export async function sweepSandbox(sandbox: string): Promise<{ swept: number; unread: boolean }> {
-  if (!existsSync(sandbox)) return { swept: 0, unread: false }
-  const [ps, cwds] = await Promise.all([run("ps", ["-axo", "pid=,command="]), workingDirs()])
-  const pids = new Set<number>()
-  const within = (path: string) => path === sandbox || path.startsWith(`${sandbox}/`)
-  for (const line of ps?.split("\n") ?? []) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(line)
-    if (match !== null && match[2]?.includes(sandbox) === true) pids.add(Number(match[1]))
-  }
-  for (const [pid, cwd] of cwds ?? []) if (within(cwd)) pids.add(pid)
-  pids.delete(process.pid)
-  for (const p of pids) {
-    try {
-      process.kill(p, "SIGKILL")
-    } catch {
-      // gone
-    }
-  }
-  return { swept: pids.size, unread: ps === undefined || cwds === undefined }
-}
-
-/** Adds (or removes) a running launch's sandbox in the state file. */
-function note(stateFile: string | undefined, sandbox: string, running: boolean) {
-  if (stateFile === undefined) return
-  const all = readState(stateFile).filter((s) => s !== sandbox)
-  if (running) all.push(sandbox)
-  writeFileSync(stateFile, JSON.stringify(all))
-}
-
-/** A sandbox this module made: a `kiframe-app-*` folder directly in the temp folder, nothing else. */
-function isSandbox(path: string): boolean {
-  try {
-    const real = realpathSync(path)
-    return dirname(real) === realpathSync(tmpdir()) && basename(real).startsWith("kiframe-app-")
-  } catch {
-    return false
-  }
-}
-
-function readState(stateFile: string): string[] {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(stateFile, "utf8"))
-    return Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : []
-  } catch {
-    return []
-  }
-}
-
-/**
- * What a crash left (launches still noted): every process pointing at their sandboxes killed (by
- * the sandbox, never a process id that may be another program's by now), the sandboxes removed.
- * Only folders this module makes are touched. Called at the host's start.
- */
-export async function sweepElectronOrphans(stateFile: string): Promise<number> {
-  const left = readState(stateFile).filter(isSandbox)
-  for (const sandbox of left) {
-    await sweepSandbox(sandbox)
-    await rm(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch(
-      () => undefined,
-    )
-  }
-  // Only what was swept: a launch noted meanwhile (a run started during the sweep) stays.
-  const now = readState(stateFile).filter((s) => !left.includes(s))
-  writeFileSync(stateFile, JSON.stringify(now))
-  return left.length
 }
