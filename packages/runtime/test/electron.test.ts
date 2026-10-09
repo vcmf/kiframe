@@ -39,6 +39,7 @@ import { checkConfinement, copyFiles } from "../src/electron-confine.ts"
 import {
   attach,
   type ElectronLaunch,
+  launchFailure,
   launchElectronWith,
   type LaunchHooks,
 } from "../src/electron.ts"
@@ -161,7 +162,6 @@ const launch = async (
     readable?: string[]
     timeoutMs?: number
     signal?: AbortSignal
-    network?: "all" | "loopback"
     origins?: string[]
   } = {},
 ) => {
@@ -494,8 +494,8 @@ steps:
     expect(await target.page.title()).toBe("Fixture notes")
   })
 
-  it("names the site a wrapper app shows, even when it can't load it (a trial's loopback)", async () => {
-    const error = await launch(["wrapper"], { network: "loopback" }).then(
+  it("names the site a wrapper app shows, even when it can't load it", async () => {
+    const error = await launch(["wrapper"]).then(
       () => undefined,
       (e: unknown) => e as ElectronLaunchError,
     )
@@ -510,6 +510,81 @@ steps:
     const site = new URL(secure).origin
     const target = await launch([`wrapper=${secure}`, "trust-test-cert"], { origins: [site] })
     expect(target.page.url()).toBe(secure)
+  })
+
+  // A fake app: announces a debugging endpoint (a test's server) and, asked, quits after a while.
+  const fakeApp = () => {
+    const dir = mkdtempSync(join(tmpdir(), "kiframe-el-fake-"))
+    const script = join(dir, "fake-app")
+    writeFileSync(
+      script,
+      `#!${process.execPath}
+const [port, quitAfter] = process.argv.slice(2)
+process.stderr.write("DevTools listening on ws://127.0.0.1:" + port + "/devtools/browser/0f0e0d0c-0000-4000-8000-000000000000\\n")
+if (quitAfter !== "never") setTimeout(() => process.exit(0), Number(quitAfter))
+else setInterval(() => undefined, 60_000)
+`,
+      { mode: 0o755 },
+    )
+    return { script, readable: [realpathSync(dir), realpathSync(dirname(process.execPath))] }
+  }
+  const fakeLaunch = (port: number, quitAfter: string, timeoutMs: number) => {
+    const fake = fakeApp()
+    return launchElectron({
+      executable: fake.script,
+      appArgs: [String(port), quitAfter],
+      readable: fake.readable,
+      workDir: work,
+      allowUnconfined: true,
+      viewport,
+      timeoutMs,
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    )
+  }
+
+  it("says a broken debugging connection in its own words (never Playwright's, its endpoint)", async () => {
+    // An endpoint that refuses the WebSocket (a CDP it can't speak).
+    const refusing = createServer((_req, res) => res.writeHead(404).end())
+    await new Promise<void>((resolve) => refusing.listen(0, "127.0.0.1", resolve))
+    try {
+      const error = await fakeLaunch((refusing.address() as AddressInfo).port, "never", 8000)
+      expect(error).toBeInstanceOf(ElectronLaunchError)
+      expect(String(error)).toMatch(/couldn't be driven \(its debugging connection failed\)/)
+      expect(String(error)).not.toMatch(/ws:\/\/|127\.0\.0\.1/)
+    } finally {
+      refusing.close()
+    }
+  }, 30_000)
+
+  it("says an app that quits while its attach stalls as quit (never 'didn't answer')", async () => {
+    const silent = createNetServer(() => undefined)
+    await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve))
+    try {
+      // It quits just after the launch's time: the attach times out, its exit lands after.
+      const error = await fakeLaunch((silent.address() as AddressInfo).port, "3300", 3000)
+      expect(error).toBeInstanceOf(ElectronLaunchError)
+      expect((error as ElectronLaunchError).why).toBe("quit")
+    } finally {
+      silent.close()
+    }
+  }, 30_000)
+
+  it("words every failure by one rule: a stop, not started, quit, said, anything else", () => {
+    const stop = new DOMException("stopped", "AbortError")
+    const said = new ElectronLaunchError("said")
+    const raw = new Error("connect ECONNREFUSED ws://127.0.0.1:9/devtools/browser/x")
+    const none = { stopped: undefined, spawnError: undefined, quit: false }
+    expect(launchFailure(raw, { ...none, stopped: stop, quit: true })).toBe(stop)
+    expect(
+      String(launchFailure(raw, { ...none, spawnError: new Error("ENOENT"), quit: true })),
+    ).toMatch(/couldn't be launched \(ENOENT\)/)
+    expect(launchFailure(said, { ...none, quit: true })).toMatchObject({ why: "quit" })
+    expect(launchFailure(said, none)).toBe(said)
+    const worded = launchFailure(raw, none)
+    expect(worded).toBeInstanceOf(ElectronLaunchError)
+    expect(String(worded)).not.toMatch(/ws:\/\//)
   })
 
   it("tries a stalled attach again, then says it as the launch's own (never Playwright's)", async () => {
@@ -1141,7 +1216,7 @@ steps:
       expect(linked).not.toBe(real)
       await expect(
         checkConfinement(
-          { sandbox: linked, readable: [], private: [], network: "all" },
+          { sandbox: linked, readable: [], private: [] },
           join(mkdtempSync(join(tmpdir(), "kiframe-el-work-")), "canary.txt"),
         ),
       ).rejects.toThrow(/doesn't run programs/)
@@ -1151,7 +1226,7 @@ steps:
       // /var/tmp: outside every folder the profile denies by itself (as a /Network/Users home).
       const home = mkdtempSync("/private/var/tmp/kiframe-el-home-")
       const sandbox = mkdtempSync(join(realpathSync(tmpdir()), "kiframe-el-sb-"))
-      const confinement = { sandbox, readable: [], network: "all" } as const
+      const confinement = { sandbox, readable: [] } as const
       try {
         // Denied (the canary unread) only as one of the user's own folders.
         await expect(
@@ -1165,18 +1240,10 @@ steps:
       }
     })
 
-    it("keeps a trial off the network but this machine (no updater fetch)", () => {
-      const profile = seatbeltProfile({
-        sandbox: "/s",
-        readable: [],
-        private: [],
-        network: "loopback",
-      })
-      expect(profile).toContain("(deny network-outbound)")
-      expect(profile).toContain('(allow network-outbound (remote ip "localhost:*"))')
-      expect(
-        seatbeltProfile({ sandbox: "/s", readable: [], private: [], network: "all" }),
-      ).not.toContain("(deny network-outbound)\n")
+    it("leaves the network to the app (its backend), never other programs' sockets", () => {
+      const profile = seatbeltProfile({ sandbox: "/s", readable: [], private: [] })
+      expect(profile).not.toContain("(deny network-outbound)\n")
+      expect(profile).toContain("(deny network-outbound (remote unix-socket))")
     })
   },
 )

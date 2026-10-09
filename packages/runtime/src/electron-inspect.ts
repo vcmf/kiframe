@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
-import { constants, createReadStream } from "node:fs"
+import { constants, createReadStream, lstatSync, readlinkSync } from "node:fs"
 import { access, lstat, readdir, readlink, realpath } from "node:fs/promises"
-import { basename, join } from "node:path"
+import { basename, isAbsolute, join } from "node:path"
 import { command as run } from "./electron-workarea.ts"
 
 // A desktop app the user picks, inspected before Kiframe ever runs it (PR 3b, design reviewed
@@ -100,45 +100,105 @@ export async function signatureHolds(path: string, signer: Signer): Promise<bool
   return out.code === 0
 }
 
-/** A pinned build's limits (hashed when it's picked, and before each run). */
+/** A pinned build's limits (it's read whole when picked). */
 export const DIGEST_LIMITS = { bytes: 4 * 1024 * 1024 * 1024, entries: 200_000 }
+
+/** The digest's own version (a cache keyed by it, a future encoding: never confused). */
+const DIGEST_VERSION = "kiframe-code-v1"
+
+/**
+ * Where a link leads, resolved inside the bundle one step at a time (inner links followed, so a
+ * chain like `d -> .` then `e -> d/../x` is seen leaving): its parts under the root, `"outside"`
+ * (absolute, or above the root at any step), or `"dangling"` (a step that isn't there: it leads
+ * nowhere, so nowhere outside).
+ */
+function resolveIn(
+  root: string,
+  base: readonly string[],
+  target: string,
+  depth: number,
+): string[] | "outside" | "dangling" {
+  if (depth > 40 || isAbsolute(target)) return "outside"
+  const parts = [...base]
+  for (const step of target.split("/")) {
+    if (step === "" || step === ".") continue
+    if (step === "..") {
+      if (parts.length === 0) return "outside"
+      parts.pop()
+      continue
+    }
+    parts.push(step)
+    let stat
+    try {
+      stat = lstatSync(join(root, ...parts))
+    } catch {
+      return "dangling"
+    }
+    if (stat.isSymbolicLink()) {
+      const inner = resolveIn(
+        root,
+        parts.slice(0, -1),
+        readlinkSync(join(root, ...parts)),
+        depth + 1,
+      )
+      if (typeof inner === "string") return inner
+      parts.splice(0, parts.length, ...inner)
+    }
+  }
+  return parts
+}
 
 /**
  * The code an unsigned app runs, hashed: the whole bundle, what pins the exact build (any change: a
- * new digest). A link is kept as a link only when it stays inside the bundle (its target hashed as
- * part of it); one leading outside is refused (code the pin couldn't cover). Unreadable, too large
- * or stopped: refused, said.
+ * new digest). Each entry a JSON line (no name can pass for another entry); a link kept as a link
+ * when it leads inside the bundle (or nowhere), refused when it leads outside (code the pin
+ * couldn't cover); a socket or a device refused. Unreadable, changed while read, too large or
+ * stopped: refused, said.
  */
-export async function codeDigest(path: string, signal?: AbortSignal): Promise<string> {
+export async function codeDigest(picked: string, signal?: AbortSignal): Promise<string> {
   const hash = createHash("sha256")
+  const line = (entry: readonly unknown[]) => hash.update(`${JSON.stringify(entry)}\n`)
+  line([DIGEST_VERSION])
   let bytes = 0
   let entries = 0
-  const add = async (rel: string) => {
+  const tooLarge = () => new InspectError("that app is too large to pin")
+  const walk = async (root: string, rel: readonly string[]) => {
     signal?.throwIfAborted()
-    const full = rel === "" ? path : join(path, rel)
+    const full = join(root, ...rel)
+    const name = rel.join("/")
     const stat = await lstat(full)
     entries += 1
-    if (entries > DIGEST_LIMITS.entries) throw new InspectError("that app is too large to pin")
+    if (entries > DIGEST_LIMITS.entries) throw tooLarge()
     if (stat.isSymbolicLink()) {
-      const target = await realpath(full).catch(() => undefined)
-      if (target === undefined || (target !== path && !target.startsWith(`${path}/`))) {
-        throw new InspectError(`that app links outside itself (${rel}): Kiframe can't pin it`)
+      const target = await readlink(full)
+      if (resolveIn(root, rel.slice(0, -1), target, 0) === "outside") {
+        throw new InspectError(`that app links outside itself (${name}): Kiframe can't pin it`)
       }
-      hash.update(`link ${rel} ${await readlink(full)}\n`)
+      line(["link", name, target])
     } else if (stat.isDirectory()) {
-      for (const name of (await readdir(full)).sort())
-        await add(rel === "" ? name : join(rel, name))
+      line(["dir", name])
+      for (const entry of (await readdir(full)).sort()) await walk(root, [...rel, entry])
     } else if (stat.isFile()) {
       bytes += stat.size
-      if (bytes > DIGEST_LIMITS.bytes) throw new InspectError("that app is too large to pin")
-      hash.update(`file ${rel} ${stat.size}\n`)
-      for await (const chunk of createReadStream(full)) hash.update(chunk as Buffer)
+      if (bytes > DIGEST_LIMITS.bytes) throw tooLarge()
+      line(["file", name, stat.size, (stat.mode & 0o111) !== 0])
+      let read = 0
+      for await (const chunk of createReadStream(full)) {
+        signal?.throwIfAborted()
+        read += (chunk as Buffer).length
+        hash.update(chunk as Buffer)
+      }
+      if (read !== stat.size)
+        throw new InspectError("that app changed while it was read: try again")
+    } else {
+      throw new InspectError(`that app holds what isn't a file (${name}): Kiframe can't pin it`)
     }
   }
   try {
-    await add("")
+    await walk(await realpath(picked), [])
   } catch (error) {
-    if (error instanceof InspectError || signal?.aborted === true) throw signal?.reason ?? error
+    if (signal?.aborted === true) throw signal.reason
+    if (error instanceof InspectError) throw error
     throw new InspectError(
       `that app can't be read whole (${(error as { code?: string }).code ?? "unreadable"})`,
     )

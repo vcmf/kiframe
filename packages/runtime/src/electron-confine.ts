@@ -28,8 +28,6 @@ export interface Confinement {
    * they are (a home outside /Users on a managed Mac).
    */
   private: readonly string[]
-  /** "all": the app's backend reachable (runs and trials); "loopback": nothing beyond this machine. */
-  network: "all" | "loopback"
 }
 
 /** A string in the profile's language (quoted, its backslashes and quotes escaped). */
@@ -49,7 +47,6 @@ export function seatbeltProfile(c: Confinement): string {
 (deny appleevent-send)
 (deny process-exec* (subpath ${q(c.sandbox)}) (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/bin/launchctl"))
 (deny mach-lookup (global-name "com.apple.cfprefsd.agent") (global-name "com.apple.SecurityServer") (global-name "com.apple.pasteboard.1"))
-${c.network === "loopback" ? '(deny network-outbound)\n(allow network-outbound (remote ip "localhost:*"))\n(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))' : ""}
 `
 }
 

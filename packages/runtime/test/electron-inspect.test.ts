@@ -15,6 +15,7 @@ import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import {
   codeDigest,
+  DIGEST_LIMITS,
   inspectDesktopApp,
   parseSigning,
   placeRefusal,
@@ -67,6 +68,80 @@ describe("a signature", () => {
     expect(teamRequirement("BQR82RBBHL", 'a"b')).toBe(
       'anchor apple generic and identifier "a\\"b" and certificate leaf[subject.OU] = "BQR82RBBHL"',
     )
+  })
+})
+
+// A pinned build's digest (any platform: plain folders).
+describe("a pinned build's digest", () => {
+  const tree = (entries: Record<string, string>, links: Record<string, string> = {}) => {
+    const root = mkdtempSync(join(tmpdir(), "kiframe-el-digest-"))
+    for (const [rel, content] of Object.entries(entries)) {
+      mkdirSync(join(root, rel, ".."), { recursive: true })
+      writeFileSync(join(root, rel), content)
+    }
+    for (const [rel, target] of Object.entries(links)) {
+      mkdirSync(join(root, rel, ".."), { recursive: true })
+      symlinkSync(target, join(root, rel))
+    }
+    return root
+  }
+
+  it("keeps links inside the bundle, and one leading nowhere", async () => {
+    const root = tree(
+      { "Versions/A/code": "x" },
+      { "Versions/Current": "A", code: "Versions/Current/code", "bin/gone": "../pruned/cli.js" },
+    )
+    expect(await codeDigest(root)).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it("refuses a link leading outside, however it gets there", async () => {
+    for (const links of [
+      { "lib.js": "/etc/hosts" },
+      { "a/lib.js": "../../outside.js" },
+      // Through an inner link: d is the root itself, so d/../x is above it.
+      { d: ".", e: "d/../x" },
+    ]) {
+      await expect(
+        codeDigest(tree({ "a/code": "x" }, links)),
+        JSON.stringify(links),
+      ).rejects.toThrow(/links outside itself/)
+    }
+  })
+
+  it("never lets one tree pass for another (names can't forge entries)", async () => {
+    const two = tree({ A: "X", B: "Y" })
+    // One file whose name spells A's entry, A's byte and B's entry (in a plain "file name size
+    // exec" encoding the two trees would read the same).
+    const one = tree({ ["A 1 false\nXfile B"]: "Y" })
+    expect(await codeDigest(two)).not.toBe(await codeDigest(one))
+  })
+
+  it("is the same through a link to the bundle, and changes with the code", async () => {
+    const root = tree({ "a/code": "x" })
+    const linked = join(mkdtempSync(join(tmpdir(), "kiframe-el-digest-link-")), "App.app")
+    symlinkSync(root, linked)
+    const digest = await codeDigest(root)
+    expect(await codeDigest(linked)).toBe(digest)
+    writeFileSync(join(root, "a/code"), "y")
+    expect(await codeDigest(root)).not.toBe(digest)
+  })
+
+  it("refuses what isn't a file, what's too large, and stops when asked", async () => {
+    const fifo = tree({ "a/code": "x" })
+    execFileSync("mkfifo", [join(fifo, "a/pipe")])
+    await expect(codeDigest(fifo)).rejects.toThrow(/isn't a file/)
+    const limit = DIGEST_LIMITS.entries
+    DIGEST_LIMITS.entries = 2
+    try {
+      await expect(codeDigest(tree({ "a/b": "1", "a/c": "2" }))).rejects.toThrow(/too large/)
+    } finally {
+      DIGEST_LIMITS.entries = limit
+    }
+    const stopping = new AbortController()
+    stopping.abort()
+    await expect(codeDigest(tree({ a: "1" }), stopping.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    })
   })
 })
 

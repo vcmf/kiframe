@@ -26,27 +26,27 @@ export async function trialDesktopApp(
   opts: TrialOptions = {},
 ): Promise<TrialOutcome> {
   const origins = opts.origins ?? []
+  let target
   try {
-    const target = await launchElectron({
+    target = await launchElectron({
       executable: app.executable,
       bundle: app.path,
       // The network as in a run (its site shown even behind its own offline page): an updater
       // can't touch the real app all the same (nothing outside the sandbox is written).
-      network: "all",
       origins,
       viewport: opts.viewport ?? { width: 1440, height: 900, deviceScaleFactor: 1 },
       ...(opts.workDir !== undefined && { workDir: opts.workDir }),
       ...(opts.signal !== undefined && { signal: opts.signal }),
       ...(opts.timeoutMs !== undefined && { timeoutMs: opts.timeoutMs }),
     })
-    await target.close()
-    return { ok: true }
   } catch (error) {
-    if (opts.signal?.aborted === true) throw opts.signal.reason
-    // Anything else is Kiframe's own fault: thrown, never shown as the app's.
+    // The launch says every failure as an ElectronLaunchError (but a stop: thrown as is).
     if (!(error instanceof ElectronLaunchError)) throw error
     if (error.why === "site" && error.site !== undefined) return { site: error.site }
     if (error.why === "quit") return { quit: true }
     return { failed: error.message }
   }
+  // Its close is bounded and never fails a trial that worked.
+  await target.close().catch(() => undefined)
+  return { ok: true }
 }
