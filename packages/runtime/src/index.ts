@@ -17,12 +17,12 @@ export {
 } from "./electron.ts"
 export { defaultWorkDir, sweepWorkArea, WorkAreaError } from "./electron-workarea.ts"
 export {
+  buildHolds,
   codeDigest,
   type DesktopApp,
   inspectDesktopApp,
   InspectError,
   type Signer,
-  signatureHolds,
   signerOf,
 } from "./electron-inspect.ts"
 export { trialDesktopApp, type TrialOptions, type TrialOutcome } from "./electron-trial.ts"

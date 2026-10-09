@@ -7,6 +7,7 @@ import {
   readdirSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs"
 import { createRequire } from "node:module"
@@ -14,12 +15,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import {
+  buildHolds,
   codeDigest,
   DIGEST_LIMITS,
   inspectDesktopApp,
   parseSigning,
   placeRefusal,
-  signatureHolds,
   teamRequirement,
 } from "../src/electron-inspect.ts"
 import { trialDesktopApp } from "../src/electron-trial.ts"
@@ -143,7 +144,24 @@ describe("a pinned build's digest", () => {
     await expect(codeDigest(tree({ a: "1" }), stopping.signal)).rejects.toMatchObject({
       name: "AbortError",
     })
-  })
+    // In the middle of one large file (400 MB, sparse): ended at once, never at its end.
+    const large = tree({})
+    const file = join(large, "framework")
+    writeFileSync(file, "")
+    truncateSync(file, 400 * 1024 * 1024)
+    try {
+      const t0 = Date.now()
+      await codeDigest(large)
+      const full = Date.now() - t0
+      const midway = new AbortController()
+      setTimeout(() => midway.abort(), full / 4)
+      const t1 = Date.now()
+      await expect(codeDigest(large, midway.signal)).rejects.toMatchObject({ name: "AbortError" })
+      expect(Date.now() - t1).toBeLessThan(full / 2 + 50)
+    } finally {
+      rmSync(large, { recursive: true, force: true })
+    }
+  }, 60_000)
 })
 
 describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 60_000 }, () => {
@@ -311,21 +329,58 @@ describe.runIf(process.platform === "darwin")("an app's inspection", { timeout: 
   it("holds an app to the build that was picked (a pinned one rebuilt: changed)", async () => {
     const path = withMode("Rebuilt", "plain")
     const app = await inspectDesktopApp(path)
-    expect(await signatureHolds(app.path, app.signer)).toBe(true)
+    expect(await buildHolds(app.path, app.signer)).toBe("holds")
     writeFileSync(join(path, "Contents/Resources/app/index.html"), "<h1>rebuilt</h1>")
-    expect(await signatureHolds(app.path, app.signer)).toBe(false)
+    expect(await buildHolds(app.path, app.signer)).toBe("changed")
     // Never tried as the build that was picked.
     expect(
       await trialDesktopApp(app, { workDir: mkdtempSync(join(tmpdir(), "kiframe-el-work-")) }),
     ).toEqual({ failed: "the app changed since it was picked: pick it again" })
   })
 
-  it("stops an inspection when asked", async () => {
+  it("stops an inspection when asked, even in the middle of reading it", async () => {
     const stopping = new AbortController()
     stopping.abort()
     await expect(inspectDesktopApp(bundle("Stop"), stopping.signal)).rejects.toMatchObject({
       name: "AbortError",
     })
+    // Mid-read (the whole build hashed: hundreds of MB): ended at once.
+    const path = bundle("Midway")
+    const t0 = Date.now()
+    const full = await codeDigest(path).then(() => Date.now() - t0)
+    const midway = new AbortController()
+    setTimeout(() => midway.abort(), full / 4)
+    const t1 = Date.now()
+    await expect(codeDigest(path, midway.signal)).rejects.toMatchObject({ name: "AbortError" })
+    expect(Date.now() - t1).toBeLessThan(full / 2 + 100)
+  })
+
+  it("says a build it can't read as unread, never as changed", async () => {
+    const path = withMode("Locked", "plain")
+    const app = await inspectDesktopApp(path)
+    const locked = join(path, "Contents/Resources/app/index.html")
+    chmodSync(locked, 0o000)
+    try {
+      expect(await buildHolds(app.path, app.signer)).toBe("unread")
+      expect(
+        await trialDesktopApp(app, { workDir: mkdtempSync(join(tmpdir(), "kiframe-el-work-")) }),
+      ).toEqual({ failed: "the app couldn't be checked (busy or unreadable): try again" })
+    } finally {
+      chmodSync(locked, 0o644)
+    }
+  })
+
+  it("takes a bundle id with underscores (electron-builder's own)", async () => {
+    const app = bundle("Underscore", (a) =>
+      execFileSync("plutil", [
+        "-replace",
+        "CFBundleIdentifier",
+        "-string",
+        "com.electron.my_app",
+        join(a, "Contents/Info.plist"),
+      ]),
+    )
+    expect((await inspectDesktopApp(app)).bundleId).toBe("com.electron.my_app")
   })
 
   it("throws a stop as the stop", async () => {

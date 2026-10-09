@@ -90,8 +90,9 @@ async function exitedSoon(child: ChildProcess, ms: number): Promise<boolean> {
 
 /**
  * What a launch that failed says, the one rule (every failure an ElectronLaunchError with its
- * `why`, but a stop): stopped → the stop; not started → said; already said → as is; the app quit
- * (whatever the attach was doing) → quit; anything else (Playwright, CDP) → a fixed phrase (never
+ * `why`, but a stop): stopped → the stop; not started → said; what the app showed (a site, a
+ * page never loaded) → as is; the app quit → quit (whatever else was said); already said → as is;
+ * anything else (Playwright, CDP) → a fixed phrase (never
  * its message: it can carry the debugging endpoint or a page's address), its detail on stderr for
  * Kiframe's own debugging only (KIFRAME_ELECTRON_DEBUG).
  */
@@ -103,9 +104,12 @@ export function launchFailure(
   if (state.spawnError !== undefined) {
     return new ElectronLaunchError(`the app couldn't be launched (${state.spawnError.message})`)
   }
-  // Already said (a site, a page never loaded): kept, whatever the app did next.
-  if (error instanceof ElectronLaunchError) return error
+  // What the app showed (a site, a page it never loaded): kept, whatever the app did next.
+  if (error instanceof ElectronLaunchError && (error.why === "site" || error.why === "unloaded")) {
+    return error
+  }
   if (state.quit) return new ElectronLaunchError(QUIT_EARLY, { why: "quit" })
+  if (error instanceof ElectronLaunchError) return error
   debug("launch", error)
   return new ElectronLaunchError(
     error instanceof errors.TimeoutError
@@ -140,11 +144,13 @@ const QUIT_EARLY =
  * showed or failed to load: a wrapper's own, to allow), or anything else.
  */
 export class ElectronLaunchError extends Error {
-  readonly why: "quit" | "site" | "other"
+  readonly why: "quit" | "site" | "unloaded" | "other"
   readonly site: string | undefined
   constructor(
     message: string,
-    detail: { why: "quit" | "other" } | { why: "site"; site: string } = { why: "other" },
+    detail: { why: "quit" | "unloaded" | "other" } | { why: "site"; site: string } = {
+      why: "other",
+    },
   ) {
     super(message)
     this.why = detail.why
@@ -508,6 +514,7 @@ export async function launchElectronWith(
       const where = shown.startsWith("chrome-error:") ? "its page" : placeOf(shown)
       throw new ElectronLaunchError(
         `the app couldn't load ${where} (offline? its server not running?)`,
+        { why: "unloaded" },
       )
     }
     // The guard: every frame of every window, every navigation, at once; one that isn't the app's

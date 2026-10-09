@@ -585,7 +585,11 @@ else setInterval(() => undefined, 60_000)
     const site = new ElectronLaunchError("site", { why: "site", site: "https://a.example" })
     expect(launchFailure(site, { ...none, quit: true })).toBe(site)
     expect(launchFailure(said, none)).toBe(said)
-    // Anything unworded (an attach that stalled) and the app gone: it quit.
+    // Anything else said (no window in time) or unworded (an attach that stalled), the app gone:
+    // it quit (the one-copy advice kept).
+    expect(launchFailure(said, { ...none, quit: true })).toMatchObject({ why: "quit" })
+    const unloaded = new ElectronLaunchError("unloaded", { why: "unloaded" })
+    expect(launchFailure(unloaded, { ...none, quit: true })).toBe(unloaded)
     expect(launchFailure(raw, { ...none, quit: true })).toMatchObject({ why: "quit" })
     const worded = launchFailure(raw, none)
     expect(worded).toBeInstanceOf(ElectronLaunchError)

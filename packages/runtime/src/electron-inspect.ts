@@ -2,7 +2,8 @@ import { createHash } from "node:crypto"
 import { constants, createReadStream } from "node:fs"
 import { access, lstat, readdir, readlink, realpath } from "node:fs/promises"
 import { basename, isAbsolute, join } from "node:path"
-import { q } from "./electron-confine.ts"
+import { BUNDLE_ID } from "@kiframe/schema"
+import { quoted } from "./electron-confine.ts"
 import { command as run } from "./electron-workarea.ts"
 
 // A desktop app the user picks, inspected before Kiframe ever runs it (PR 3b, design reviewed
@@ -32,8 +33,6 @@ export interface DesktopApp {
 
 /** An app Kiframe won't add: said to the user as is. */
 export class InspectError extends Error {}
-
-const BUNDLE_ID = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$/
 
 /** codesign on a large bundle (a verify reads it all) can take a while: never forever. */
 const TIMEOUT = 60_000
@@ -96,24 +95,24 @@ export function parseSigning(
 
 /** The requirement a developer's signature must meet: their team, the signed identifier. */
 export function teamRequirement(team: string, identifier: string): string {
-  return `anchor apple generic and identifier ${q(identifier)} and certificate leaf[subject.OU] = ${q(team)}`
+  return `anchor apple generic and identifier ${quoted(identifier)} and certificate leaf[subject.OU] = ${quoted(team)}`
 }
 
 /**
  * Whether the app at `path` is still the one approved: a developer's, its signature whole and
- * theirs (`codesign --verify --strict`); a pinned build, the same digest.
+ * theirs (`codesign --verify --strict`); a pinned build, the same digest. "unread" when that can't
+ * be told (codesign timed out or couldn't run; the bundle unreadable): never taken for a change.
  */
-export async function signatureHolds(
+export async function buildHolds(
   path: string,
   signer: Signer,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<"holds" | "changed" | "unread"> {
   if (signer.kind === "pinned") {
     try {
-      return (await codeDigest(path, signal)) === signer.digest
+      return (await codeDigest(path, signal)) === signer.digest ? "holds" : "changed"
     } catch (error) {
-      if (signal?.aborted === true) throw signal.reason
-      if (error instanceof InspectError) return false
+      if (error instanceof InspectError) return "unread"
       throw error
     }
   }
@@ -124,7 +123,7 @@ export async function signatureHolds(
     signal,
   )
   signal?.throwIfAborted()
-  return out.code === 0
+  return out.code === 0 ? "holds" : out.code === -1 ? "unread" : "changed"
 }
 
 /** A pinned build's limits (it's read whole when picked). */
@@ -315,7 +314,7 @@ export async function inspectDesktopApp(picked: string, signal?: AbortSignal): P
       )
     }
   }
-  if (signer.kind === "team" && !(await signatureHolds(path, signer, signal))) {
+  if (signer.kind === "team" && (await buildHolds(path, signer, signal)) !== "holds") {
     throw new InspectError("that app's signature is broken: reinstall it")
   }
   const [display, short, version] = await Promise.all(

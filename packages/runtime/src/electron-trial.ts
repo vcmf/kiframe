@@ -1,6 +1,6 @@
 import type { Viewport } from "@kiframe/schema"
 import { ElectronLaunchError, launchElectron } from "./electron.ts"
-import { type DesktopApp, signatureHolds } from "./electron-inspect.ts"
+import { buildHolds, type DesktopApp } from "./electron-inspect.ts"
 
 /**
  * A trial's outcome, read structurally: it runs confined and is driven (`ok`); its window is a site
@@ -26,10 +26,12 @@ export async function trialDesktopApp(
   opts: TrialOptions = {},
 ): Promise<TrialOutcome> {
   const origins = opts.origins ?? []
-  // The build that was picked, nothing else (a dev build rebuilt meanwhile: said).
-  if (!(await signatureHolds(app.path, app.signer, opts.signal))) {
-    return { failed: "the app changed since it was picked: pick it again" }
-  }
+  // The build that was picked, nothing else (a dev build rebuilt meanwhile: said). Checked before
+  // the launch only: a change in between is the user's own build tool's (stated).
+  const holds = await buildHolds(app.path, app.signer, opts.signal)
+  if (holds === "changed") return { failed: "the app changed since it was picked: pick it again" }
+  if (holds === "unread")
+    return { failed: "the app couldn't be checked (busy or unreadable): try again" }
   let target
   try {
     target = await launchElectron({
