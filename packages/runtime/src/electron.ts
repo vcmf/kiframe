@@ -133,6 +133,8 @@ export interface ElectronTarget {
   stopped: () => GuardStop[]
   /** A window the run follows, at the scene's size first (its emulation applied). */
   prepare: (page: Page) => Promise<void>
+  /** Resolves once the guard's stops are done (a window sent back, a frame blanked). */
+  quiet: () => Promise<void>
   /**
    * Ends it (once: a second call does nothing): disconnects, kills the app's process group and
    * what still points at the sandbox, removes it. `unread`: what holds the sandbox couldn't be read.
@@ -270,6 +272,7 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
     // The guard: every frame of every window, every navigation, at once; one that isn't the app's
     // own is stopped (a popup closed, any other frame blanked) and said.
     const stops: GuardStop[] = []
+    const stopping = new Set<Promise<void>>()
     const frameAllowed = (frame: Frame): boolean => {
       const url = frame.url()
       if (url === "" || url === "about:blank") return true
@@ -287,15 +290,20 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
         if (frameAllowed(frame)) return
         stops.push({ page: p, window: frame === p.mainFrame(), place: placeOf(frame.url()) })
         // A popup closed; the main window back to the app's page (else nothing could bring it
-        // back: no goto in a desktop app); any other frame blanked.
-        if (frame !== p.mainFrame()) void frame.goto("about:blank").catch(() => undefined)
-        else if (p !== page) void p.close().catch(() => undefined)
-        else {
-          void p
-            .goBack()
-            .then((back) => (back === null ? frame.goto("about:blank") : back))
-            .catch(() => undefined)
-        }
+        // back: no goto in a desktop app); any other frame blanked. Kept until done: a read waits
+        // for it (`quiet`), never seeing a window mid-stop.
+        const action: Promise<unknown> =
+          frame !== p.mainFrame()
+            ? frame.goto("about:blank")
+            : p !== page
+              ? p.close()
+              : p.goBack().then((back) => (back === null ? frame.goto("about:blank") : back))
+        const done = action.then(
+          () => undefined,
+          () => undefined,
+        )
+        stopping.add(done)
+        void done.finally(() => stopping.delete(done))
       }
       p.on("framenavigated", check)
       for (const frame of p.frames()) check(frame)
@@ -334,6 +342,10 @@ export async function launchElectron(opts: ElectronLaunch): Promise<ElectronTarg
       allows,
       stopped: () => stops.splice(0),
       prepare: (p) => emulate(p),
+      quiet: async () => {
+        // A stop's own action may start another navigation (a goBack): until none is left.
+        while (stopping.size > 0) await Promise.all([...stopping])
+      },
       close: end,
     }
   } catch (error) {

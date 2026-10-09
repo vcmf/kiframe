@@ -111,6 +111,7 @@ const inTarget = (target: ElectronTarget) => ({
   allows: target.allows,
   stopped: target.stopped,
   prepare: target.prepare,
+  quiet: target.quiet,
 })
 
 let open: ElectronTarget[] = []
@@ -233,6 +234,7 @@ steps:
           app: "notes",
           allows: target.allows,
           stopped: target.stopped,
+          quiet: target.quiet,
           prepare: async (p) => {
             order.push("prepare")
             await target.prepare(p)
@@ -722,6 +724,17 @@ steps:
     expect(warnings).toContain(
       'a frame of another window of "notes" went to a file on this computer: Kiframe stopped it',
     )
+  })
+
+  it("is quiet only once its stops are done (a read never sees a window mid-stop)", async () => {
+    const target = await launch()
+    for (let i = 0; i < 3; i++) {
+      await target.page.getByRole("button", { name: "Embed hosts" }).click()
+      // Wait for the stop to be recorded (as a step's end would), then for the guard to be done.
+      await waitFor(() => target.context.pages()[0]?.frames().length !== 1)
+      await target.quiet()
+      expect(target.page.frames().some((f) => f.url().startsWith("file:///etc"))).toBe(false)
+    }
   })
 
   it("says a window left blank (nothing to go back to): relaunch", async () => {

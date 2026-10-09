@@ -81,6 +81,8 @@ export async function confine(ctx: Ctx, step: StepRef): Promise<void> {
   if (electron !== undefined) {
     // A stop counts against the step when it was the driven window's (or a frame in it), or a
     // window itself (one the step opened, sent back); a frame of another window is said only.
+    // The guard's stops done first: never a window read mid-stop.
+    await electron.quiet()
     const stops = electron.stopped()
     for (const s of stops) {
       if (s.page !== ctx.page && !s.window) {
