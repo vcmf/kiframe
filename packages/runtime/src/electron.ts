@@ -540,6 +540,9 @@ export async function launchElectronWith(
       }
       // A load that failed (Chromium's error page): said as such by the step, never a place.
       if (url.startsWith("chrome-error:")) return true
+      // The app's own DevTools (a dev build opens them, at once or later: a window that appears
+      // blank, then shows them): never a page a run drives or films (no web page can show them).
+      if (isDevtools(url)) return true
       return allows(url)
     }
     const watch = (p: Page) => {

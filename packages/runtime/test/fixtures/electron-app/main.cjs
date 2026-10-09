@@ -78,11 +78,15 @@ if (
         prefs.loadFile(join(__dirname, "other.html"))
       }, 2500)
     }
-    // "devtools": it opens DevTools itself (a dev build).
+    // "devtools": it opens DevTools itself (a dev build); "devtools-late": a while after it opens
+    // (once Kiframe is attached: a window that appears, then shows DevTools).
     if (process.argv.includes("devtools")) {
       win.webContents.once("did-finish-load", () =>
         win.webContents.openDevTools({ mode: "detach" }),
       )
+    }
+    if (process.argv.includes("devtools-late")) {
+      setTimeout(() => win.webContents.openDevTools({ mode: "detach" }), 2500)
     }
     // "elsewhere": its window shows a page that's never an app's own (a data: page).
     // "link=<url>": the other site its links and windows go to (a test's local server);

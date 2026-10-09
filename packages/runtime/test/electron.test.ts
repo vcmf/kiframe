@@ -942,18 +942,20 @@ steps:
     )
   })
 
-  it("never counts the app's own DevTools as leaving it", async () => {
-    const target = await launch(["devtools"])
-    await runScenario(
-      target.page,
-      parseScenarioYaml(`version: 1
+  it("never counts the app's own DevTools as leaving it, opened at once or later", async () => {
+    for (const mode of ["devtools", "devtools-late"]) {
+      const target = await launch([mode])
+      await runScenario(
+        target.page,
+        parseScenarioYaml(`version: 1
 steps:
-  - { id: wait, action: pause, ms: 1500 }
+  - { id: wait, action: pause, ms: 3500 }
   - { id: add, action: click, target: { by: role, role: button, name: Add note } }
 `),
-      project,
-      { electron: inTarget(target), timeoutMs: 5000 },
-    )
+        project,
+        { electron: inTarget(target), timeoutMs: 5000 },
+      )
+    }
   })
 
   it("follows a window that opens blank and loads later; a frame of another window is said only", async () => {
