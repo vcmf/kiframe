@@ -267,7 +267,9 @@ function start(): void {
   const looks: Looks = { inspect: inspectDesktopApp, trial: trialDesktopApp }
   // Kiframe's work area (~/.kiframe); a test's own (never the user's) when it names one.
   const workDir = process.env.KIFRAME_WORK_DIR ?? defaultWorkDir()
-  const adds = new DesktopAdds(looks, workDir)
+  const adds = new DesktopAdds(looks, () => workspace.apps()?.session, workDir)
+  // One app picker at a time (a second while it's open: nothing).
+  let picking = false
   let approvals: DesktopApprovals | undefined
   const desktopApprovals = (): DesktopApprovals =>
     (approvals ??= new DesktopApprovals(app.getPath("userData")))
@@ -366,7 +368,6 @@ function start(): void {
           }),
         "project:create": (init) =>
           act(async () => {
-            adds.dropAll()
             const url = targetUrl(init.url)
             // Where the address really lands (its www. or https form), asked while the user picks.
             const resolving = resolveAppAddress(url)
@@ -385,7 +386,6 @@ function start(): void {
           }),
         "project:open": () =>
           act(async () => {
-            adds.dropAll()
             const picked = await dialog.showOpenDialog(parent(), {
               title: "Open a project",
               buttonLabel: "Open",
@@ -400,10 +400,7 @@ function start(): void {
         "project:close": () =>
           // The browser's close isn't waited for (one that hangs never holds the window); a quit
           // waits for it.
-          act(() => {
-            adds.dropAll()
-            return workspace.close(dropBrowser)
-          }),
+          act(() => workspace.close(dropBrowser)),
         "external:open": async (url) => {
           if (isSafeExternal(url)) await shell.openExternal(url)
         },
@@ -526,13 +523,17 @@ function start(): void {
           const opened = sessionProject(session)
           if (typeof opened === "string") return { refused: opened }
           if (workspace.agent?.running === true) return { refused: "Kif is working: stop it first" }
-          const picked = await dialog.showOpenDialog(parent(), {
-            title: "Add a desktop app",
-            buttonLabel: "Choose",
-            defaultPath: "/Applications",
-            properties: ["openFile"],
-            filters: [{ name: "Applications", extensions: ["app"] }],
-          })
+          if (picking) return null
+          picking = true
+          const picked = await dialog
+            .showOpenDialog(parent(), {
+              title: "Add a desktop app",
+              buttonLabel: "Choose",
+              defaultPath: "/Applications",
+              properties: ["openFile"],
+              filters: [{ name: "Applications", extensions: ["app"] }],
+            })
+            .finally(() => (picking = false))
           const path = picked.filePaths[0]
           if (picked.canceled || path === undefined) return null
           try {
@@ -542,10 +543,6 @@ function start(): void {
           }
         },
         "apps:desktop-check": async ({ session, token, allowSite }) => {
-          if (typeof sessionProject(session) === "string") {
-            adds.dropAll()
-            return { failed: "the project changed: pick the app again" }
-          }
           if (workspace.agent?.running === true) return { failed: "Kif is working: stop it first" }
           try {
             return await adds.check(owner(), session, token, allowSite)
@@ -569,6 +566,8 @@ function start(): void {
           } catch (e) {
             return message(e)
           }
+          // Told to this project's agent only (another opened meanwhile: never its).
+          if (workspace.opened !== opened) return null
           workspace.agent?.appsChanged(opened.project.apps)
           void status().then((now) => {
             if (workspace.opened === opened) emit(window, "status", now)
@@ -591,10 +590,7 @@ function start(): void {
                   : { status: "not-found", why: "desktop apps run on macOS only" }
             }),
           )
-          // Said once (the file set aside at the first read).
-          const problem = store.problem
-          store.problem = null
-          return { apps, problem }
+          return { apps, problem: store.takeProblem() }
         },
         "preview:open": (sceneId) => {
           const opened = workspace.opened

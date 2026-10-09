@@ -90,14 +90,19 @@ export function AppsPanel({
     setError(refused)
   }
 
+  // Busy flags read at once (a double click within one frame sees the first).
+  const pickingNow = useRef(false)
+  const addingNow = useRef(false)
   const pick = async () => {
-    if (picking) return
+    if (pickingNow.current || addingNow.current) return
+    pickingNow.current = true
     setError(null)
     setOutcome(null)
     setPicking(true)
     const picked = await api()
       .invoke("apps:desktop-pick", { session: project.session })
       .catch((e: unknown) => ({ refused: String(e) }))
+    pickingNow.current = false
     setPicking(false)
     if (picked === null) return
     if ("refused" in picked) {
@@ -123,12 +128,20 @@ export function AppsPanel({
   }
 
   const add = async () => {
-    if (card === null || adding) return
+    if (card === null || addingNow.current) return
+    const token = card.token
+    addingNow.current = true
     setAdding(true)
     const refused = await api()
-      .invoke("apps:desktop-add", { session: project.session, token: card.token })
+      .invoke("apps:desktop-add", { session: project.session, token })
       .catch((e: unknown) => String(e))
+    addingNow.current = false
     setAdding(false)
+    // Given up meanwhile (cancelled, another app picked): never said on another card.
+    if (current.current !== token) {
+      if (refused === null) await refresh()
+      return
+    }
     if (refused !== null) {
       setError(refused)
       return
@@ -191,7 +204,7 @@ export function AppsPanel({
           <button
             type="button"
             className="btn"
-            disabled={running || picking}
+            disabled={running || picking || adding}
             title={running ? "Kif is working: stop it first" : undefined}
             onClick={() => void pick()}
           >

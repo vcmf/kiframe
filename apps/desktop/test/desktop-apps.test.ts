@@ -97,7 +97,7 @@ describe("a desktop app's approvals", () => {
     const data = dir()
     writeFileSync(join(data, "desktop-apps.json"), "{ not json")
     const approvals = new DesktopApprovals(data)
-    expect(approvals.problem).toMatch(/set aside as .*desktop-apps\.json\.bad-\d+/)
+    expect(approvals.takeProblem()).toMatch(/set aside as .*desktop-apps\.json\.bad-\d+/)
     expect(readdirSync(data).some((n) => n.startsWith("desktop-apps.json.bad-"))).toBe(true)
     approvals.approve(notes(), "folder-a", "a".repeat(64))
     const aside = readdirSync(data).find((n) => n.startsWith("desktop-apps.json.bad-"))
@@ -163,7 +163,7 @@ describe("adding a desktop app", () => {
   it("adds it once it ran confined: named, written to the project, approved here", async () => {
     const opened = project()
     const approvals = new DesktopApprovals(dir())
-    const adds = new DesktopAdds(looks(at).looks)
+    const adds = new DesktopAdds(looks(at).looks, () => "s1")
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     expect(card).toMatchObject({
       name: "Notes",
@@ -196,7 +196,7 @@ describe("adding a desktop app", () => {
     const fake = looks(at, (o) =>
       (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.slack.com" },
     )
-    const adds = new DesktopAdds(fake.looks)
+    const adds = new DesktopAdds(fake.looks, () => "s1")
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     await expect(adds.check(1, "s1", card.token, true)).rejects.toThrow(/no site to allow/)
     expect(await adds.check(1, "s1", card.token, false)).toEqual({ site: "https://app.slack.com" })
@@ -216,7 +216,7 @@ describe("adding a desktop app", () => {
     })
     const approvals = new DesktopApprovals(dir())
     const fake = looks(at)
-    const adds = new DesktopAdds(fake.looks)
+    const adds = new DesktopAdds(fake.looks, () => "s1")
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     expect(card.existing).toBe("desk")
     await adds.check(1, "s1", card.token, false)
@@ -232,7 +232,7 @@ describe("adding a desktop app", () => {
   it("refuses a token of another window or project, and a build changed since its trial", async () => {
     const opened = project()
     const apps = { ...at }
-    const adds = new DesktopAdds(looks(apps).looks)
+    const adds = new DesktopAdds(looks(apps).looks, () => "s1")
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     await expect(adds.check(2, "s1", card.token, false)).rejects.toThrow(
       /isn't being added any more/,
@@ -252,15 +252,18 @@ describe("adding a desktop app", () => {
   it("ends a trial when its add is dropped (another pick, the project closed, a quit)", async () => {
     const opened = project()
     let signal: AbortSignal | undefined
-    const adds = new DesktopAdds({
-      inspect: () => Promise.resolve(notes()),
-      trial: (_app, o) => {
-        signal = o.signal
-        return new Promise<TrialOutcome>((_, reject) =>
-          o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
-        )
+    const adds = new DesktopAdds(
+      {
+        inspect: () => Promise.resolve(notes()),
+        trial: (_app, o) => {
+          signal = o.signal
+          return new Promise<TrialOutcome>((_, reject) =>
+            o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
+          )
+        },
       },
-    })
+      () => "s1",
+    )
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     const checking = adds.check(1, "s1", card.token, false)
     adds.dropAll()
@@ -297,7 +300,7 @@ describe("adding an app a project already names", () => {
 
   it("shows what it opens, and never approves a project changed since the pick", async () => {
     const opened = named()
-    const adds = new DesktopAdds(looks(at).looks)
+    const adds = new DesktopAdds(looks(at).looks, () => "s1")
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     expect(card.opens).toEqual({ args: ["files/vault"], origins: ["https://a.example"] })
     await adds.check(1, "s1", card.token, false)
@@ -321,7 +324,7 @@ describe("adding an app a project already names", () => {
     const fake = looks(at, (o) =>
       (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.slack.com" },
     )
-    const adds = new DesktopAdds(fake.looks)
+    const adds = new DesktopAdds(fake.looks, () => "s1")
     const approvals = new DesktopApprovals(dir())
     const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     await adds.check(1, "s1", card.token, false)
@@ -337,13 +340,16 @@ describe("adding an app a project already names", () => {
   it("refuses a second pick while one is looked at, and a second add while one runs", async () => {
     let release: () => void = () => undefined
     const slow = new Promise<void>((resolve) => (release = resolve))
-    const adds = new DesktopAdds({
-      inspect: async () => {
-        await slow
-        return notes()
+    const adds = new DesktopAdds(
+      {
+        inspect: async () => {
+          await slow
+          return notes()
+        },
+        trial: () => Promise.resolve({ ok: true }),
       },
-      trial: () => Promise.resolve({ ok: true }),
-    })
+      () => "s1",
+    )
     const opened = project()
     const first = adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
     await expect(adds.pick(1, "s1", "/Applications/Notes.app", opened.project)).rejects.toThrow(
@@ -358,5 +364,83 @@ describe("adding an app a project already names", () => {
       /being added already/,
     )
     expect(await one).toBe("notes")
+  })
+})
+
+describe("an add's lifetime: its project's, whatever changes it", () => {
+  const at = { "/Applications/Notes.app": notes() }
+
+  it("never writes an add given up while the app was looked at (cancelled, project changed)", async () => {
+    const opened = project()
+    let session = "s1"
+    let looking = false
+    let release: () => void = () => undefined
+    const adds = new DesktopAdds(
+      {
+        inspect: async () => {
+          if (looking) await new Promise<void>((resolve) => (release = resolve))
+          return notes()
+        },
+        trial: () => Promise.resolve({ ok: true }),
+      },
+      () => session,
+    )
+    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    await adds.check(1, "s1", card.token, false)
+    looking = true
+    const approvals = new DesktopApprovals(dir())
+    const adding = adds.add(1, "s1", card.token, opened, "folder-a", approvals)
+    // Another project opened while the app was looked at.
+    session = "s2"
+    release()
+    await expect(adding).rejects.toThrow(/isn't being added any more/)
+    expect(openProject(opened.dir).project.apps["notes"]).toBeUndefined()
+    expect(approvals.get("com.example.Notes")).toBeUndefined()
+    // And cancelled (the window's add dropped) the same way.
+    session = "s1"
+    looking = false
+    const again = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    await adds.check(1, "s1", again.token, false)
+    looking = true
+    const cancelled = adds.add(1, "s1", again.token, opened, "folder-a", approvals)
+    adds.dropFor(1)
+    release()
+    await expect(cancelled).rejects.toThrow(/isn't being added any more/)
+    expect(openProject(opened.dir).project.apps["notes"]).toBeUndefined()
+  })
+
+  it("ends a check whose project closed, and refuses a pick for a project no longer open", async () => {
+    const opened = project()
+    let session: string | undefined = "s1"
+    const adds = new DesktopAdds(looks(at).looks, () => session)
+    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    session = undefined
+    await expect(adds.check(1, "s1", card.token, false)).rejects.toThrow(
+      /isn't being added any more/,
+    )
+    await expect(adds.pick(1, "s1", "/Applications/Notes.app", opened.project)).rejects.toThrow(
+      /project changed/,
+    )
+  })
+
+  it("says a site the project can't take in words, after a check that worked", async () => {
+    const opened = project()
+    // The site is a web app's of the project already (one app per site).
+    saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, desk: entry() } })
+    const fake = looks(at, (o) =>
+      (o.origins ?? []).length > 0 ? { ok: true } : { site: "https://app.test" },
+    )
+    const adds = new DesktopAdds(fake.looks, () => "s1")
+    const card = await adds.pick(1, "s1", "/Applications/Notes.app", opened.project)
+    await adds.check(1, "s1", card.token, false)
+    await adds.check(1, "s1", card.token, true)
+    const error = await adds
+      .add(1, "s1", card.token, opened, "folder-a", new DesktopApprovals(dir()))
+      .then(
+        () => "",
+        (e: unknown) => (e as Error).message,
+      )
+    expect(error).toMatch(/^the project can't take it so/)
+    expect(error).not.toMatch(/"code"|\[\{/)
   })
 })

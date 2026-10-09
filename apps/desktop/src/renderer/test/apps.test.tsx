@@ -244,4 +244,41 @@ describe("adding a desktop app", () => {
     expect(within(notion).queryByRole("status")).toBeNull()
     expect(within(notion).queryByRole("button", { name: "Add Notion" })).toBeNull()
   })
+
+  it("never says an add given up on the card picked after it", async () => {
+    let answer: (v: unknown) => void = () => undefined
+    let picks = 0
+    stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "apps:desktop-pick": () => ({
+        card:
+          picks++ === 0
+            ? card
+            : { ...card, token: "7b2d6d2f-1a1c-4e6f-8b4c-3d2e1f0a9b8c", name: "Notion" },
+      }),
+      "apps:desktop-check": () => ({ ok: true }),
+      "apps:desktop-add": () => new Promise((resolve) => (answer = resolve)) as never,
+      "apps:desktop-cancel": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
+    const panel = screen.getByRole("dialog", { name: "Apps" })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const slack = await within(panel).findByRole("region", { name: "Adding Slack" })
+    fireEvent.click(within(slack).getByRole("button", { name: "Check" }))
+    fireEvent.click(await within(slack).findByRole("button", { name: "Add Slack" }))
+    fireEvent.click(within(slack).getByRole("button", { name: "Cancel" }))
+    // Picking waits for the add under way.
+    expect(
+      within(panel).getByRole("button", { name: "Add desktop app…" }).hasAttribute("disabled"),
+    ).toBe(true)
+    await act(async () => {
+      answer("the project can't take it so")
+      await Promise.resolve()
+    })
+    // The add given up: its answer said nowhere.
+    expect(within(panel).queryByRole("alert")).toBeNull()
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    await within(panel).findByRole("region", { name: "Adding Notion" })
+  })
 })

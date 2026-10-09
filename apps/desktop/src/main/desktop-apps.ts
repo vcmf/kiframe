@@ -55,8 +55,14 @@ const keyOf = (bundleId: string) => bundleId.toLowerCase()
 export class DesktopApprovals {
   readonly #path: string
   #file: File
-  /** Why the file was set aside, once (shown by the panel). */
-  problem: string | null = null
+  #problem: string | null = null
+
+  /** Why the file was set aside: given once (the panel says it), then null. */
+  takeProblem(): string | null {
+    const problem = this.#problem
+    this.#problem = null
+    return problem
+  }
 
   constructor(dir: string) {
     this.#path = join(dir, "desktop-apps.json")
@@ -67,7 +73,7 @@ export class DesktopApprovals {
     } catch {
       const aside = `${this.#path}.bad-${Date.now()}`
       renameSync(this.#path, aside)
-      this.problem = `the desktop apps' approvals didn't read: set aside as ${aside}; add them again`
+      this.#problem = `the desktop apps' approvals didn't read: set aside as ${aside}; add them again`
     }
   }
 
@@ -197,6 +203,18 @@ export function appNameFor(name: string, taken: readonly string[]): string {
   for (let i = 2; ; i++) if (!taken.includes(`${base}-${i}`)) return `${base}-${i}`
 }
 
+/** The app written to the project as `name` (refused by the project's rules: said in words). */
+function save(opened: OpenedProject, name: string, entry: ElectronApp): void {
+  try {
+    saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, [name]: entry } })
+  } catch (error) {
+    const issue = (error as { issues?: { message: string }[] }).issues?.[0]?.message
+    throw new Error(`the project can't take it so${issue === undefined ? "" : ` (${issue})`}`, {
+      cause: error,
+    })
+  }
+}
+
 /** What the window shows of a picked app (never its path). */
 export interface DesktopCard {
   token: string
@@ -224,8 +242,10 @@ interface Pending {
   opensAtPick: string | undefined
   /** The site the last trial named (kept here: the window never names one). */
   site: string | undefined
-  /** Allowed by the user after a trial named it. */
+  /** The sites it runs with (the project's, and any the user allowed after a trial named one). */
   origins: string[]
+  /** Sites the user allowed in its checks (written to the project with it). */
+  allowed: string[]
   tried: boolean
   trial: AbortController | undefined
   /** An add under way (a second click waits for nothing: refused). */
@@ -242,9 +262,12 @@ export class DesktopAdds {
   readonly #picking = new Set<number>()
   readonly #looks: Looks
   readonly #workDir: string | undefined
+  /** The open project's session (none: no project): an add lives only while its own is open. */
+  readonly #session: () => string | undefined
 
-  constructor(looks: Looks, workDir?: string) {
+  constructor(looks: Looks, session: () => string | undefined, workDir?: string) {
     this.#looks = looks
+    this.#session = session
     this.#workDir = workDir
   }
 
@@ -256,6 +279,7 @@ export class DesktopAdds {
     project: { apps: Readonly<Record<string, App>> },
   ): Promise<DesktopCard> {
     if (this.#picking.has(owner)) throw new Error("an app is being looked at already")
+    if (this.#session() !== session) throw new Error("the project changed: pick it again")
     this.dropFor(owner)
     this.#picking.add(owner)
     let app: DesktopApp
@@ -264,6 +288,7 @@ export class DesktopAdds {
     } finally {
       this.#picking.delete(owner)
     }
+    if (this.#session() !== session) throw new Error("the project changed: pick it again")
     const named = Object.entries(project.apps).find(
       ([, a]) => a.kind === "electron" && keyOf(a.bundleId) === keyOf(app.bundleId),
     )
@@ -280,6 +305,7 @@ export class DesktopAdds {
       opensAtPick: entry === undefined ? undefined : opensOf(entry),
       site: undefined,
       origins: listed,
+      allowed: [],
       tried: false,
       trial: undefined,
       adding: false,
@@ -312,6 +338,7 @@ export class DesktopAdds {
     if (allowSite) {
       if (pending.site === undefined) throw new Error("no site to allow: check it first")
       pending.origins = [...new Set([...pending.origins, pending.site])]
+      pending.allowed = [...new Set([...pending.allowed, pending.site])]
     }
     const stopping = new AbortController()
     pending.trial = stopping
@@ -321,6 +348,7 @@ export class DesktopAdds {
         signal: stopping.signal,
         ...(this.#workDir !== undefined && { workDir: this.#workDir }),
       })
+      this.#own(owner, session, token)
       pending.tried = "ok" in outcome
       pending.site = "site" in outcome ? outcome.site : undefined
       return outcome
@@ -347,6 +375,8 @@ export class DesktopAdds {
     pending.adding = true
     try {
       const now = await this.#looks.inspect(pending.app.path)
+      // Still this add (never written once it was given up while the app was looked at).
+      this.#own(owner, session, token)
       if (!sameSigner(now.signer, pending.app.signer)) {
         throw new Error("the app changed since it was checked: pick it again")
       }
@@ -359,13 +389,13 @@ export class DesktopAdds {
           throw new Error("the project changed meanwhile: pick it again")
         }
         entry = named
-        // A site allowed in the check: the project's too (its runs need it).
-        if ((named.origins ?? []).length !== pending.origins.length) {
-          entry = { ...named, origins: pending.origins }
-          saveProject(opened, {
-            ...opened.project,
-            apps: { ...opened.project.apps, [name]: entry },
-          })
+        // A site allowed in a check: the project's too (its runs need it).
+        if (pending.allowed.length > 0) {
+          entry = {
+            ...named,
+            origins: [...new Set([...(named.origins ?? []), ...pending.allowed])],
+          }
+          save(opened, name, entry)
         }
       } else {
         name = appNameFor(now.name, Object.keys(opened.project.apps))
@@ -375,7 +405,7 @@ export class DesktopAdds {
           ...(pending.origins.length > 0 && { origins: pending.origins }),
           viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
         }
-        saveProject(opened, { ...opened.project, apps: { ...opened.project.apps, [name]: entry } })
+        save(opened, name, entry)
       }
       approvals.approve(now, scope, opensOf(entry))
       this.#pending.delete(token)
@@ -400,9 +430,22 @@ export class DesktopAdds {
     this.#pending.clear()
   }
 
+  /**
+   * The add of this window and session, still under way, its project still the open one (checked
+   * at every step and after every wait: a project changed meanwhile ends it, whatever changed it).
+   */
   #own(owner: number, session: string, token: string): Pending {
     const pending = this.#pending.get(token)
-    if (pending === undefined || pending.owner !== owner || pending.session !== session) {
+    if (pending !== undefined && this.#session() !== pending.session) {
+      pending.trial?.abort()
+      this.#pending.delete(token)
+    }
+    if (
+      this.#pending.get(token) !== pending ||
+      pending === undefined ||
+      pending.owner !== owner ||
+      pending.session !== session
+    ) {
       throw new Error("that app isn't being added any more: pick it again")
     }
     return pending
