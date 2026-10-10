@@ -1,4 +1,4 @@
-import { defineTool, isWithImages, type Tool, withImages } from "@kiframe/agent"
+import { defineTool, isWithImages, needsUser, type Tool, withImages } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { AppName, firstApp, RuleName, SceneId, webAppsOf } from "@kiframe/schema"
 import { parse as parseYaml } from "yaml"
@@ -58,7 +58,8 @@ const snapshot = defineTool({
         "Text to look for: only the elements that mention it, with where they are and their refs (as a reader: case, dashes and quotes don't matter; a phrase may run over a paragraph's links; with no exact match, the blocks holding all its words). For content further down a long page, past the snapshot's cut",
       ),
   }),
-  run: async ({ within, find }, studio: Studio) => said(await studio.snapshot(within, find)),
+  run: async ({ within, find }, studio: Studio, signal) =>
+    said(await studio.snapshot(within, find, signal)),
 })
 
 const look = defineTool({
@@ -370,6 +371,8 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
         const scrub = studio.scrubber()
         const scrubbed = new Error(scrub(error instanceof Error ? error.message : String(error)))
         if (error instanceof Error) scrubbed.name = error.name
+        // Whether the user settles it (an app to allow): the agent tells them, never retries.
+        if (needsUser(error)) Object.assign(scrubbed, { needsUser: true })
         throw scrubbed
       }
       // A tool's images are made safe where they're made (a screenshot masked; a project's image

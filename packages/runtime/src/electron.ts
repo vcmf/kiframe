@@ -102,7 +102,10 @@ export function launchFailure(
 ): unknown {
   if (state.stopped !== undefined) return state.stopped
   if (state.spawnError !== undefined) {
-    return new ElectronLaunchError(`the app couldn't be launched (${state.spawnError.message})`)
+    // Its code only (an OS message names the executable's path: never said to the agent).
+    return new ElectronLaunchError(
+      `the app couldn't be launched (${(state.spawnError as { code?: string }).code ?? "it couldn't run"})`,
+    )
   }
   // What the app showed (a site, a page it never loaded): kept, whatever the app did next.
   if (error instanceof ElectronLaunchError && (error.why === "site" || error.why === "unloaded")) {
@@ -298,7 +301,9 @@ async function makeSandbox(work: string): Promise<{
     root = await newSandbox(work)
   } catch (error) {
     if (error instanceof WorkAreaError) throw new ElectronLaunchError(error.message)
-    throw new ElectronLaunchError(`Kiframe's work area can't be used (${String(error)})`)
+    throw new ElectronLaunchError(
+      `Kiframe's work area can't be used (${(error as { code?: string }).code ?? "unusable"})`,
+    )
   }
   const dirs = {
     home: join(root, "home"),
@@ -313,7 +318,9 @@ async function makeSandbox(work: string): Promise<{
     for (const dir of Object.values(dirs)) mkdirSync(dir, { recursive: true })
   } catch (error) {
     await rm(root, { recursive: true, force: true }).catch(() => undefined)
-    throw new ElectronLaunchError(`the app's sandbox can't be made (${String(error)})`)
+    throw new ElectronLaunchError(
+      `the app's sandbox can't be made (${(error as { code?: string }).code ?? "unwritable"})`,
+    )
   }
   const env: NodeJS.ProcessEnv = {}
   for (const name of PASSED_ENV) if (process.env[name] !== undefined) env[name] = process.env[name]
@@ -364,14 +371,14 @@ export async function launchElectronWith(
     // As given and as it really is: an app may build its pages' paths either way.
     bundles = opts.bundle === undefined ? [] : [opts.bundle, realpathSync(opts.bundle)]
   } catch {
-    throw new ElectronLaunchError(`the app isn't at ${opts.bundle ?? ""} any more`)
+    throw new ElectronLaunchError("the app isn't where it was approved any more")
   }
   // The executable there and runnable (under Seatbelt the spawned program is sandbox-exec: a
   // missing app would otherwise read as one that quit).
   try {
     accessSync(opts.executable, constants.X_OK)
   } catch {
-    throw new ElectronLaunchError(`the app couldn't be launched (${opts.executable} isn't there)`)
+    throw new ElectronLaunchError("the app couldn't be launched (its executable isn't there)")
   }
   // Never unconfined in the app: off macOS (no Seatbelt) only where asked (Linux CI).
   const confined = process.platform === "darwin"
@@ -681,7 +688,11 @@ function debuggingEndpoint(
     const poll = setInterval(() => {
       const failed = spawnError()
       if (failed !== undefined) {
-        finish(new ElectronLaunchError(`the app couldn't be launched (${failed.message})`))
+        finish(
+          new ElectronLaunchError(
+            `the app couldn't be launched (${(failed as { code?: string }).code ?? "it couldn't run"})`,
+          ),
+        )
         return
       }
       try {

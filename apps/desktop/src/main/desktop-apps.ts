@@ -7,7 +7,13 @@ import { createHash, randomBytes, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { type OpenedProject, saveProject } from "@kiframe/project"
-import type { DesktopApp, Signer, TrialOptions, TrialOutcome } from "@kiframe/runtime"
+import {
+  type DesktopApp,
+  InspectError,
+  type Signer,
+  type TrialOptions,
+  type TrialOutcome,
+} from "@kiframe/runtime"
 import { BUNDLE_ID, type ElectronApp } from "@kiframe/schema"
 import { z } from "zod"
 
@@ -216,9 +222,13 @@ export async function desktopStatus(
   } catch (error) {
     if (signal?.aborted === true) throw error
     if (!existsSync(copy.path)) {
-      return { status: "not-found", why: `not at ${copy.path} any more: add it again` }
+      return { status: "not-found", why: "not where it was picked any more: add it again" }
     }
-    return { status: "changed", why: (error as Error).message }
+    // An inspection's own refusal (worded, path-free), else just that it changed.
+    return {
+      status: "changed",
+      why: error instanceof InspectError ? error.message : "it can't be looked at any more",
+    }
   }
   if (keyOf(now.bundleId) !== keyOf(entry.bundleId) || !sameSigner(copy.signer, now.signer)) {
     return { status: "changed", why: "another app is there now (or another build): add it again" }

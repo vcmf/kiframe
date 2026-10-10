@@ -65,6 +65,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # A desktop app's takes are encoded with ffmpeg (as on Linux).
       - run: brew install ffmpeg
+      # The studio's desktop tests drive a web page beside the app too.
+      - run: pnpm --filter @kiframe/runtime exec playwright install chromium
       - run: pnpm exec vitest run --project electron
         env:
           KIFRAME_ELECTRON_TIMING: "1"

@@ -6,6 +6,8 @@ import type { DesktopApp, ElectronLaunch, ElectronTarget, TrialOutcome } from "@
 import type { ElectronApp } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
 import { DesktopApprovals, opensOf } from "../src/main/desktop-apps.ts"
+import { ElectronLaunchError } from "@kiframe/runtime"
+import { homedir } from "node:os"
 import { DesktopLauncher, DesktopRefused } from "../src/main/desktop-launch.ts"
 
 // A desktop app launched for the agent (PR 4): from its approval only, an updated build tried
@@ -292,7 +294,10 @@ describe("a desktop app launched for the agent", () => {
         Object.assign(Object.create(approvals) as DesktopApprovals, {
           copyFor: approvals.copyFor.bind(approvals),
           approve: () => {
-            throw new Error("EACCES")
+            // As a write fails: its message names the approvals file.
+            throw Object.assign(new Error("EACCES: permission denied, open '/Users/a/x.json'"), {
+              code: "EACCES",
+            })
           },
         }),
       looks: {
@@ -306,6 +311,7 @@ describe("a desktop app launched for the agent", () => {
     const error = await failing.launch("notes").catch((e: unknown) => e)
     expect(error).toBeInstanceOf(DesktopRefused)
     expect(String(error)).toMatch(/couldn't be approved here \(EACCES\)/)
+    expect(String(error)).not.toContain("/Users")
   })
 
   it("never approves an update for another project opened while it was tried", async () => {
@@ -343,5 +349,43 @@ describe("a desktop app launched for the agent", () => {
     looking.resolve(notes())
     await expect(launching).rejects.toThrow(/changed meanwhile/)
     expect(state.launches).toEqual([])
+  })
+
+  it("says every launch failure for the user, never a local path", async () => {
+    const failing = (error: Error) => {
+      const { state, approvals } = setup()
+      return new DesktopLauncher({
+        approvals: () => approvals,
+        looks: {
+          inspect: () => Promise.resolve(state.installed),
+          trial: () => Promise.resolve({ ok: true }),
+        },
+        launch: () => Promise.reject(error),
+        opened: () => state.opened,
+        scope: () => "folder-a",
+      })
+    }
+    // An OS error (its message names a path): said by its code only.
+    const os = Object.assign(new Error("spawn /Users/alice/Apps/My App.app/x ENOENT"), {
+      code: "ENOENT",
+    })
+    const fromOs = await failing(os)
+      .launch("notes")
+      .catch((e: unknown) => e)
+    expect(fromOs).toBeInstanceOf(DesktopRefused)
+    expect(String(fromOs)).toContain("notes couldn't be launched (ENOENT)")
+    expect(String(fromOs)).not.toContain("/Users")
+    // The runtime's own launch errors (worded, path-free): as they are.
+    const said = await failing(new ElectronLaunchError("the app quit before Kiframe could attach"))
+      .launch("notes")
+      .catch((e: unknown) => e)
+    expect(String(said)).toContain("notes: the app quit before")
+    expect((said as DesktopRefused).needsUser).toBe(true)
+    // A message naming a folder Kiframe knows (never meant to): replaced whole.
+    const leaked = await failing(new ElectronLaunchError(`odd: ${homedir()}/x`))
+      .launch("notes")
+      .catch((e: unknown) => e)
+    expect(String(leaked)).not.toContain(homedir())
+    expect(String(leaked)).toContain("details kept out")
   })
 })

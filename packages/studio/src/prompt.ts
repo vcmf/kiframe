@@ -143,8 +143,13 @@ function appsPart(studio: Studio): string {
     .join("\n")
   return `Apps of the project (a scene may use several; never any other site):
 ${list}
-- A desktop app (one listed as "the desktop app …") can't be grounded or run yet: give every scene
-  and preset a web app (\`app: <name>\` when the first app is a desktop one).
+- A desktop app (one listed as "the desktop app …") is grounded and filmed like a web app (snapshot,
+  run_step, save_scene, record_scene), in its own window: its scene starts in it (\`app: <name>\`
+  and \`start_app\`); it shows its own pages, so no goto, URL condition or web preset there; one app
+  per scene (switching a scene to another app starts that app afresh: what earlier steps did there
+  is gone). Nothing in a desktop app is handed to the user yet (no handover step: sign-in by hand
+  comes next). A desktop app that won't open says why: the user settles it (the Apps panel); tell
+  them, never retry.
 - A scene starts in the first app unless it says another at the top level, next to version:
   \`app: <name>\`. Pass the same as \`start_app\` to run_step and run_steps while you ground it.
 - A step without an app means the scene's start app, NEVER the app the page went to (a link, a
@@ -152,5 +157,7 @@ ${list}
   condition \`{ action: waitFor, until: { url: /path, app: <name> } }\` (same in expect's \`that\`).
   Only goto and URL conditions take an app (never a click).
 - Where a step leaves the page says its app: \`url: docs: /install\`.
+- snapshot and look show the app that's open: with none open yet, open the scene's app first (a
+  run_step with its start_app; a pause step does nothing else).
 ${adding}`
 }
