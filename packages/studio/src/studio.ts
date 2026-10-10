@@ -1,4 +1,4 @@
-import { USER_SETTLES } from "@kiframe/agent"
+import { needsUser, USER_SETTLES } from "@kiframe/agent"
 import { generate } from "@kiframe/generators"
 import {
   type OpenedProject,
@@ -294,12 +294,9 @@ export class Studio {
   #checked: Map<string, SnapshotNode> | undefined
   /** Aborted when the studio closes: every tool and dialog stops (the tools' signal includes it). */
   readonly #lifetime = new AbortController()
-  /**
-   * Where the live page opens: the first web app, as the project's apps are now (a desktop app has
-   * its own driver, next).
-   */
+  /** The project's first web app, as its apps are now (where a web-only default opens). */
   get #start(): WebApp | undefined {
-    return Object.values(this.options.config.apps).find((a): a is WebApp => a.kind === "web")
+    return Object.values(webAppsOf(this.options.config.apps))[0]
   }
   #files: ProjectFiles | undefined
   #fileReads: Map<string, FileNote> | undefined
@@ -438,7 +435,7 @@ export class Studio {
   }
 
   /** The live page being opened: for which app, and the call that owns it (its stop ends it). */
-  #opening: { app: string; page: Promise<Page>; owner: AbortSignal } | undefined
+  #opening: { app: string; desktop: boolean; page: Promise<Page>; owner: AbortSignal } | undefined
 
   constructor(options: StudioOptions) {
     this.options = options
@@ -692,7 +689,7 @@ export class Studio {
       }
       const masked = shot.masked > 0.5 ? " Most of it is masked (it shows secrets)." : ""
       return {
-        text: `The live page (url: ${this.#where(page.url())}), ${what}.${masked}`,
+        text: `The live page (url: ${this.#where(page.url())}), ${what}.${masked}${this.#told()}`,
         image: `data:image/png;base64,${shot.png.toString("base64")}`,
       }
     } catch (error) {
@@ -906,7 +903,7 @@ export class Studio {
       app ??
       this.#live?.app ??
       (this.options.launchDesktop === undefined
-        ? Object.entries(this.options.config.apps).find(([, a]) => a.kind === "web")?.[0]
+        ? Object.keys(webAppsOf(this.options.config.apps))[0]
         : undefined) ??
       firstApp(this.options.config).name
     )
@@ -922,18 +919,10 @@ export class Studio {
   async livePage(app: string | undefined, signal: AbortSignal): Promise<Page> {
     const wanted = this.#appFor(app)
     const opening = this.#opening
-    if (opening !== undefined) {
-      // A web page opening (at once, never stopped midway): one page for callers at once.
-      if (appOf(this.options.config, opening.app)?.kind !== "electron" && opening.app === wanted) {
-        return opening.page
-      }
-      // A desktop launch: owned, never joined. The agent's calls come one at a time: one still
-      // going is one whose caller stopped (waited out: it never becomes live).
-      if (!opening.owner.aborted) {
-        throw new Error(`"${opening.app}" is still opening: try again in a moment`)
-      }
-      await opening.page.catch(() => undefined)
-    }
+    // A web page opening (at once, never stopped midway): one page for callers at once.
+    if (opening !== undefined && !opening.desktop && opening.app === wanted) return opening.page
+    // Never yields when none is (callers at once see each other's opening).
+    if (opening !== undefined) await this.#launchSettled(true)
     const desktop = appOf(this.options.config, wanted)?.kind === "electron"
     if (
       this.#live !== undefined &&
@@ -956,7 +945,7 @@ export class Studio {
         return opened
       },
     )
-    this.#opening = { app: wanted, page, owner: signal }
+    this.#opening = { app: wanted, desktop, page, owner: signal }
     void page
       .finally(() => {
         if (this.#opening?.page === page) this.#opening = undefined
@@ -966,8 +955,7 @@ export class Studio {
   }
 
   /** Whether the project still lists the live page's app, the same one it opened. */
-  #listed(live: { app: string | undefined; identity?: string }): boolean {
-    if (live.app === undefined || live.identity === undefined) return true
+  #listed(live: { app: string; identity: string }): boolean {
     const now = appOf(this.options.config, live.app)
     return now !== undefined && appIdentity(now) === live.identity
   }
@@ -976,11 +964,10 @@ export class Studio {
    * A desktop launch still going ended first: one whose caller stopped waited out, one still owned
    * refused (never two launches at once).
    */
-  async #launchSettled(): Promise<void> {
+  async #launchSettled(anyOpening = false): Promise<void> {
     const opening = this.#opening
-    if (opening === undefined || appOf(this.options.config, opening.app)?.kind !== "electron") {
-      return
-    }
+    if (opening === undefined || (!opening.desktop && !anyOpening)) return
+    // The agent's calls come one at a time: one still going is one whose caller stopped.
     if (!opening.owner.aborted) {
       throw new Error(`"${opening.app}" is still opening: try again in a moment`)
     }
@@ -1368,6 +1355,13 @@ export class Studio {
       return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
     // Before any of its refs is looked at: it never runs anyway.
     if (typeof raw === "object" && raw !== null && "ensure" in raw) return failed(NO_CLEANUP)
+    // Its shape too, each ref as a plain locator (what it becomes is checked once it's written).
+    const shaped = refsAt(raw).reduce<unknown>(
+      (item, at) => withAt(item, at.path, { by: "role", role: "button" }),
+      raw,
+    )
+    const invalid = invalidItem(shaped, part)
+    if (invalid !== undefined) return invalid
     // The scene's app live first: its refs are that page's (another app's: a new snapshot asked).
     if (starts.kind === "electron" || this.#live?.target !== undefined) {
       try {
@@ -1456,40 +1450,16 @@ export class Studio {
     part: ScenarioPart,
     app: string,
   ): Promise<StepResult> {
-    if (typeof raw !== "object" || raw === null) {
-      return failed(
-        "invalid step: expected an object like {id: open-new, action: click, target: {...}}",
-      )
+    const invalid = invalidItem(raw, part)
+    if (invalid !== undefined || typeof raw !== "object" || raw === null) {
+      return invalid ?? failed("invalid step")
     }
     // Run in the part it's for: its approvals are keyed there, as the replay's will be (A1).
     const step = part === "steps" ? Step.safeParse(raw) : { success: false as const }
-    // In the steps, only a preset runs as the setup (it's setup-only).
     const setupItem =
       step.success || (part === "steps" && !("preset" in raw))
         ? undefined
         : SetupItem.safeParse(raw)
-    if (!step.success && setupItem?.success !== true) {
-      const r = raw as Record<string, unknown>
-      // An off-camera-only kind (a handover) on camera: said as such (an id would never do).
-      if (part === "steps" && typeof r.action === "string" && isOffCameraOnly(r.action)) {
-        return failed(`invalid step: ${OFF_CAMERA_MESSAGE}: give its part (setup)`)
-      }
-      if (part === "steps" && !("id" in r) && Action.safeParse(raw).success) {
-        return failed("invalid step: an on-camera step needs an id (a setup action: give its part)")
-      }
-      // Parsed against the shape the agent meant (a union's error only says "Invalid input").
-      const [what, schema] =
-        "preset" in r
-          ? (["preset", PresetRef] as const)
-          : "id" in r && part === "steps"
-            ? (["step", Step] as const)
-            : (["setup action", Action] as const)
-      const result = schema.safeParse(raw)
-      // The issue, then the forms of the action it meant (never a guess at the field names).
-      return failed(
-        `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}${shapeOf(raw)}`,
-      )
-    }
     // As in the scene: started in its start app (its steps without an app mean that one).
     const scenario: Scenario = {
       ...(step.success || setupItem?.data === undefined
@@ -1740,9 +1710,12 @@ export class Studio {
       if (launch === undefined) {
         throw new Error(`"${start.name}" is a desktop app: none can be run here`)
       }
-      // One copy of a desktop app at a time (an app may allow only one): the live one closed
+      // One copy of a desktop app at a time (an app may allow only one): its live one closed
       // first, said with the next step (what earlier steps did there is gone).
-      const live = this.#live?.target !== undefined ? this.#live.app : undefined
+      const live =
+        this.#live?.target !== undefined && this.#live.app === start.name
+          ? this.#live.app
+          : undefined
       await this.#launchSettled()
       if (live !== undefined) {
         await this.#closeLive()
@@ -1904,13 +1877,50 @@ interface Fresh {
   close: () => Promise<void>
 }
 
+/** Why an item can't run in its part (its shape: never its page), or undefined when it can. */
+function invalidItem(raw: unknown, part: ScenarioPart): StepResult | undefined {
+  if (typeof raw !== "object" || raw === null) {
+    return failed(
+      "invalid step: expected an object like {id: open-new, action: click, target: {...}}",
+    )
+  }
+  // Run in the part it's for: its approvals are keyed there, as the replay's will be (A1).
+  const step = part === "steps" ? Step.safeParse(raw) : { success: false as const }
+  // In the steps, only a preset runs as the setup (it's setup-only).
+  const setupItem =
+    step.success || (part === "steps" && !("preset" in raw)) ? undefined : SetupItem.safeParse(raw)
+  if (!step.success && setupItem?.success !== true) {
+    const r = raw as Record<string, unknown>
+    // An off-camera-only kind (a handover) on camera: said as such (an id would never do).
+    if (part === "steps" && typeof r.action === "string" && isOffCameraOnly(r.action)) {
+      return failed(`invalid step: ${OFF_CAMERA_MESSAGE}: give its part (setup)`)
+    }
+    if (part === "steps" && !("id" in r) && Action.safeParse(raw).success) {
+      return failed("invalid step: an on-camera step needs an id (a setup action: give its part)")
+    }
+    // Parsed against the shape the agent meant (a union's error only says "Invalid input").
+    const [what, schema] =
+      "preset" in r
+        ? (["preset", PresetRef] as const)
+        : "id" in r && part === "steps"
+          ? (["step", Step] as const)
+          : (["setup action", Action] as const)
+    const result = schema.safeParse(raw)
+    // The issue, then the forms of the action it meant (never a guess at the field names).
+    return failed(
+      `invalid ${what}: ${result.success ? "?" : formatIssue(result.error.issues[0])}${shapeOf(raw)}`,
+    )
+  }
+  return undefined
+}
+
 /** The live page: its context and page, the app it's at, and a desktop app's launched target. */
 type Live = {
   context: BrowserContext
   page: Page
-  app: string | undefined
+  app: string
   /** The app as it was opened (`appIdentity`): another under its name is another app. */
-  identity?: string
+  identity: string
   target?: ElectronTarget
 }
 
@@ -1931,8 +1941,9 @@ function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptio
  */
 function refusal(error: unknown): string {
   // A launch's error names no local path (said so at its source, and by the launcher).
-  const why = failure(error)
-  return (error as { needsUser?: unknown }).needsUser === true ? `${why}. ${USER_SETTLES}` : why
+  if (!needsUser(error)) return failure(error)
+  // Its own words (a refusal is no crash: no "Error:").
+  return `${error instanceof Error ? error.message : String(error)}. ${USER_SETTLES}`
 }
 
 /** Why a scene never has a teardown or an `ensure` (OBJECT-MODEL §0.4). */

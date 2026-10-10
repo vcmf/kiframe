@@ -379,7 +379,7 @@ describe("a desktop app launched for the agent", () => {
     const said = await failing(new ElectronLaunchError("the app quit before Kiframe could attach"))
       .launch("notes")
       .catch((e: unknown) => e)
-    expect(String(said)).toContain("notes couldn't be launched: the app quit before")
+    expect(String(said)).toContain("notes: the app quit before")
     expect((said as DesktopRefused).needsUser).toBe(true)
     // A message naming a folder Kiframe knows (never meant to): replaced whole.
     const leaked = await failing(new ElectronLaunchError(`odd: ${homedir()}/x`))

@@ -393,6 +393,82 @@ steps:
       expect(fake.pending).toEqual([])
     })
 
+    it("checks a step's shape before launching anything for it (its refs as locators)", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      // No id: an on-camera step needs one (said before any app opens or closes).
+      const step = await studio.runStep(
+        { action: "click", target: { ref: "e3" } },
+        "s",
+        new AbortController().signal,
+        "steps",
+        "notes",
+      )
+      expect(step).toMatchObject({
+        ok: false,
+        text: expect.stringMatching(/needs an id/) as string,
+      })
+      expect(fake.pending).toEqual([])
+    })
+
+    it("keeps another desktop app live while a scene's check launches its own", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const live = studio.livePage("notes", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      fake.pending[0]?.go()
+      await live
+      const checked = studio.check(`version: 1
+app: other
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
+  - { id: c, action: pause, ms: 1 }
+  - { id: d, action: pause, ms: 1 }
+  - { id: e, action: pause, ms: 1 }
+`)
+      if ("error" in checked) throw new Error(checked.error)
+      const replay = studio.replay(checked.scenario, "s", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(2)
+      expect(fake.closed).toEqual([])
+      expect(studio.currentPage?.url()).toBe("app://notes/")
+      fake.pending[1]?.fail(new Error("done"))
+      await replay
+    })
+
+    it("waits out a stopped launch of an app removed meanwhile before a check launches", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const stopping = new AbortController()
+      const stopped = studio.livePage("notes", stopping.signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      stopping.abort()
+      studio.setApps(
+        parseProjectYaml(
+          "version: 2\napps:\n  other: { kind: electron, bundleId: com.example.other }\n",
+        ).apps,
+      )
+      const checked = studio.check(`version: 1
+app: other
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
+  - { id: c, action: pause, ms: 1 }
+  - { id: d, action: pause, ms: 1 }
+  - { id: e, action: pause, ms: 1 }
+`)
+      if ("error" in checked) throw new Error(checked.error)
+      const replay = studio.replay(checked.scenario, "s", new AbortController().signal)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      // Still a desktop launch, though its app is gone from the project: never two at once.
+      expect(fake.pending).toHaveLength(1)
+      fake.pending[0]?.fail(stopping.signal.reason as Error)
+      await expect(stopped).rejects.toMatchObject({ name: "AbortError" })
+      await expect.poll(() => fake.pending.length).toBe(2)
+      fake.pending[1]?.fail(new Error("done"))
+      await replay
+    })
+
     it("refuses a handover before launching anything", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)

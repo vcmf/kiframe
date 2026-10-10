@@ -3,6 +3,7 @@ import {
   CUT_SHORT,
   isToolFailure,
   isToolSoftError,
+  needsUser,
   toolAborted,
   toolNotRun,
   toolRejected,
@@ -350,14 +351,7 @@ async function* modelTurn(
 /** What a tool threw, readable (its text, and whether the user settles it): never throws itself. */
 function readable(err: unknown): Error {
   const said = new Error(errorMessage(err))
-  try {
-    if ((err as { needsUser?: unknown } | null)?.needsUser === true) {
-      return Object.assign(said, { needsUser: true })
-    }
-  } catch {
-    // A throwing getter: said as a plain failure.
-  }
-  return said
+  return needsUser(err) ? Object.assign(said, { needsUser: true }) : said
 }
 
 /** An error's text, whatever was thrown (never throws itself). */

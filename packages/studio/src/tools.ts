@@ -1,4 +1,4 @@
-import { defineTool, isWithImages, type Tool, withImages } from "@kiframe/agent"
+import { defineTool, isWithImages, needsUser, type Tool, withImages } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
 import { AppName, firstApp, RuleName, SceneId, webAppsOf } from "@kiframe/schema"
 import { parse as parseYaml } from "yaml"
@@ -372,9 +372,7 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
         const scrubbed = new Error(scrub(error instanceof Error ? error.message : String(error)))
         if (error instanceof Error) scrubbed.name = error.name
         // Whether the user settles it (an app to allow): the agent tells them, never retries.
-        if ((error as { needsUser?: unknown } | null)?.needsUser === true) {
-          Object.assign(scrubbed, { needsUser: true })
-        }
+        if (needsUser(error)) Object.assign(scrubbed, { needsUser: true })
         throw scrubbed
       }
       // A tool's images are made safe where they're made (a screenshot masked; a project's image

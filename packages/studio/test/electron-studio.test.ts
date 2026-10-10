@@ -155,6 +155,10 @@ describe("Kif in a desktop app", { timeout: 120_000 }, () => {
     )
     expect(step).toContain("notes quit: launched again fresh")
     expect(launches).toEqual(["notes", "notes"])
+    // Said with a look too (the image is of a fresh window).
+    await studio.currentPage?.close()
+    const looked = JSON.stringify(await run(studio, "look", {}))
+    expect(looked).toContain("notes quit: launched again fresh")
   })
 
   it("checks and records a scene in a fresh launch each, its take keeping the build", async () => {
@@ -213,6 +217,8 @@ steps:
       }),
     )
     expect(step).toContain(USER_SETTLES)
+    // Said in its own words (a refusal, no crash).
+    expect(step).not.toContain("Error:")
     const saved = studio.check(`version: 1
 app: notes
 setup:

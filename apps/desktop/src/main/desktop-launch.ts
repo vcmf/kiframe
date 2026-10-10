@@ -87,7 +87,7 @@ export class DesktopLauncher {
       error instanceof DesktopRefused
         ? error.message
         : error instanceof ElectronLaunchError
-          ? `${name} couldn't be launched: ${error.message}`
+          ? `${name}: ${error.message}`
           : `${name} couldn't be launched (${(error as { code?: string }).code ?? "an error"})`
     const opened = this.#deps.opened()
     const known = [
