@@ -4,6 +4,7 @@
 // build approved for the project only if nothing changed meanwhile. Anything else is refused for
 // the user to settle in the Apps panel (never something the agent can fix).
 import { existsSync } from "node:fs"
+import { homedir } from "node:os"
 import { join } from "node:path"
 import type { OpenedProject } from "@kiframe/project"
 import type { DesktopApp, ElectronLaunch, ElectronTarget, TrialOutcome } from "@kiframe/runtime"
@@ -53,8 +54,38 @@ export class DesktopLauncher {
     this.#lifetime = new AbortController()
   }
 
-  /** The app `name` of the open project, launched confined; refused: `DesktopRefused`. */
+  /**
+   * The app `name` of the open project, launched confined; refused (anything but a stop, said
+   * without a local path: the agent reads it): `DesktopRefused`.
+   */
   async launch(
+    name: string,
+    signal?: AbortSignal,
+  ): Promise<{ target: ElectronTarget; build: AppBuild }> {
+    try {
+      return await this.#launch(name, signal)
+    } catch (error) {
+      if (signal?.aborted === true) throw error
+      // Its own paths named first (whole: spaces in them), then any other.
+      const opened = this.#deps.opened()
+      const entry = opened?.project.apps[name]
+      const copy =
+        opened !== null && entry?.kind === "electron"
+          ? this.#deps.approvals().copyFor(entry.bundleId, this.#deps.scope(opened.dir))
+          : undefined
+      const known = [
+        ...(copy !== undefined ? [copy.path] : []),
+        ...(this.#deps.workDir !== undefined ? [this.#deps.workDir] : []),
+        ...(opened !== null ? [opened.dir] : []),
+        homedir(),
+      ]
+      const said = withoutPaths(error instanceof Error ? error.message : String(error), known)
+      if (error instanceof DesktopRefused) throw new DesktopRefused(said)
+      throw new DesktopRefused(`${name} couldn't be launched: ${said} (in the Apps panel)`)
+    }
+  }
+
+  async #launch(
     name: string,
     signal?: AbortSignal,
   ): Promise<{ target: ElectronTarget; build: AppBuild }> {
@@ -179,4 +210,13 @@ function refusalOf(outcome: Exclude<TrialOutcome, { ok: true }>): string {
   if ("quit" in outcome)
     return "it quit at once when tried confined: check it again (in the Apps panel)"
   return `it couldn't be tried confined (${outcome.failed}): check it again (in the Apps panel)`
+}
+
+/** A message with every local path (a user's folder, an app's place) taken out. */
+export function withoutPaths(text: string, known: readonly string[] = []): string {
+  let said = text
+  for (const path of [...known].sort((a, b) => b.length - a.length)) {
+    if (path.length > 1) said = said.split(path).join("<a local path>")
+  }
+  return said.replace(/(?<![:\w/.>])(?:~\/|\/)(?:[^\s'"()/]+\/)+[^\s'"(),]*/g, "<a local path>")
 }

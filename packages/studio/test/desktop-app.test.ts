@@ -15,8 +15,10 @@ function studioWith(appsYaml: string) {
   const project = createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
   const secretsAsked: string[] = []
   const opened: string[] = []
+  const contexts: number[] = []
   const browser = {
-    newContext: () =>
+    newContext: () => (
+      contexts.push(1),
       Promise.resolve({
         newPage: () =>
           Promise.resolve({
@@ -24,9 +26,11 @@ function studioWith(appsYaml: string) {
               opened.push(url)
               return Promise.resolve(null)
             },
+            isClosed: () => false,
           }),
         close: () => Promise.resolve(),
-      }),
+      })
+    ),
   } as unknown as Browser
   const studio = new Studio({
     project,
@@ -42,7 +46,7 @@ function studioWith(appsYaml: string) {
     },
     stopRun: () => undefined,
   })
-  return { studio, secretsAsked, opened }
+  return { studio, secretsAsked, opened, contexts }
 }
 
 describe("a desktop app in the studio", () => {
@@ -93,5 +97,36 @@ describe("a desktop app in the studio", () => {
     const apps = { app: { url: "https://app.test" } }
     expect(whereOf("https://app.test/dash", apps, "app", true)).toBe("app: /dash")
     expect(whereOf("https://app.test/dash", apps, "app")).toBe("/dash")
+  })
+
+  it("keeps the live page between web apps' scenes (a sign-in by hand kept)", async () => {
+    const two = studioWith(
+      '  app: { kind: web, url: "https://app.test" }\n  docs: { kind: web, url: "https://docs.test" }\n',
+    )
+    await two.studio.livePage("app")
+    await two.studio.livePage("docs")
+    expect(two.contexts).toHaveLength(1)
+  })
+
+  it("never saves a desktop scene that hands something over, in a preset too", () => {
+    const { studio } = studioWith(`  notes: { kind: electron, bundleId: com.example.notes }
+presets:
+  sign-in:
+    app: notes
+    steps:
+      - { action: handover, task: Sign in }
+`)
+    const saved = studio.check(`version: 1
+app: notes
+setup:
+  - { preset: sign-in }
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
+  - { id: c, action: pause, ms: 1 }
+  - { id: d, action: pause, ms: 1 }
+  - { id: e, action: pause, ms: 1 }
+`)
+    expect(saved).toMatchObject({ error: expect.stringMatching(/no handover step/) as string })
   })
 })

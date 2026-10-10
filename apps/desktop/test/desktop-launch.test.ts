@@ -6,7 +6,7 @@ import type { DesktopApp, ElectronLaunch, ElectronTarget, TrialOutcome } from "@
 import type { ElectronApp } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
 import { DesktopApprovals, opensOf } from "../src/main/desktop-apps.ts"
-import { DesktopLauncher, DesktopRefused } from "../src/main/desktop-launch.ts"
+import { DesktopLauncher, DesktopRefused, withoutPaths } from "../src/main/desktop-launch.ts"
 
 // A desktop app launched for the agent (PR 4): from its approval only, an updated build tried
 // quietly first and approved compare-and-set. Fakes for the runtime's looks and launch.
@@ -343,5 +343,46 @@ describe("a desktop app launched for the agent", () => {
     looking.resolve(notes())
     await expect(launching).rejects.toThrow(/changed meanwhile/)
     expect(state.launches).toEqual([])
+  })
+
+  it("says any launch failure for the user, without a local path", async () => {
+    const { state, approvals } = setup()
+    const launcher = new DesktopLauncher({
+      approvals: () => approvals,
+      looks: {
+        inspect: () => Promise.resolve(state.installed),
+        trial: () => Promise.resolve({ ok: true }),
+      },
+      launch: () =>
+        Promise.reject(
+          new Error(
+            "the app couldn't be launched (/Applications/Notes.app/Contents/MacOS/Notes isn't there)",
+          ),
+        ),
+      opened: () => state.opened,
+      scope: () => "folder-a",
+    })
+    const error = await launcher.launch("notes").catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(DesktopRefused)
+    expect(String(error)).not.toContain("/Applications")
+    expect(String(error)).toContain("<a local path>")
+  })
+})
+
+describe("a local path in a message", () => {
+  it("is taken out, never a URL", () => {
+    expect(withoutPaths("not at /Users/alice/dev/My App.app any more")).toBe(
+      "not at <a local path> App.app any more",
+    )
+    expect(withoutPaths("see ~/Library/Preferences/x.plist")).toBe("see <a local path>")
+    // A known path whole, spaces and all.
+    expect(
+      withoutPaths("(/Applications/Visual Studio Code.app/Contents/MacOS/Electron isn't there)", [
+        "/Applications/Visual Studio Code.app",
+      ]),
+    ).toBe("(<a local path>/Contents/MacOS/Electron isn't there)")
+    expect(withoutPaths("the site https://app.slack.com/client")).toBe(
+      "the site https://app.slack.com/client",
+    )
   })
 })

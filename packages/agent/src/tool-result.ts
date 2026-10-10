@@ -85,9 +85,13 @@ export const toolThrew = (tool: string, err: unknown): ToolFailure => ({
   error: "tool_error",
   tool,
   message:
-    `The "${tool}" tool failed with an error: ${err instanceof Error ? err.message : String(err)}. ` +
-    `You may retry once if this looks transient; otherwise continue without it and ` +
-    `tell the user what could not be completed.`,
+    // Something the user settles (an app they must allow): never retried.
+    (err as { needsUser?: unknown } | null)?.needsUser === true
+      ? `The "${tool}" tool can't go on: ${err instanceof Error ? err.message : String(err)}. ` +
+        `The user settles this: tell them, and don't retry.`
+      : `The "${tool}" tool failed with an error: ${err instanceof Error ? err.message : String(err)}. ` +
+        `You may retry once if this looks transient; otherwise continue without it and ` +
+        `tell the user what could not be completed.`,
 })
 
 /** The user stopped the run before or while this call ran: not a failure of the tool. */

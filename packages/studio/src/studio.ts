@@ -37,7 +37,7 @@ import {
   fitImage,
   type FittedImage,
   ImageRefusal,
-  viewportOf,
+  viewportWithin,
   type ElectronTarget,
   placeOf,
   type RunOptions,
@@ -413,6 +413,11 @@ export class Studio {
    */
   setApps(apps: ProjectConfig["apps"]): void {
     this.options.config = { ...this.options.config, apps }
+    // A live app the project no longer lists (removed: its approval dropped): closed.
+    const live = this.#live?.app
+    if (live !== undefined && appOf(this.options.config, live) === undefined) {
+      void this.#closeLive()
+    }
     // The page may be on the removed site: its refs are never used (the agent looks again).
     this.#snapshot = undefined
     this.#checked = undefined
@@ -655,7 +660,7 @@ export class Studio {
       measure = async () => {
         const box = await target.boundingBox({ timeout: 2000 }).catch(() => null)
         // Read from the page when the context sets none (a desktop app's window).
-        const view = await viewportOf(page).catch(() => null)
+        const view = (await viewportWithin(page, 3000)) ?? null
         if (box === null || view === null) return null
         whole = box
         const x1 = Math.max(0, box.x)
@@ -676,10 +681,10 @@ export class Studio {
         const box = whole
         const range = (from: number, size: number, total: number) =>
           `${(Math.max(0, -from) / size).toFixed(2)}–${(Math.min(size, total - from) / size).toFixed(2)}`
-        const view = await viewportOf(page).catch(() => ({
+        const view = (await viewportWithin(page, 3000)) ?? {
           width: shot.width,
           height: shot.height,
-        }))
+        }
         const all = shot.width >= Math.floor(box.width) && shot.height >= Math.floor(box.height)
         what = all
           ? `ref ${ref}, ${Math.round(box.width)}×${Math.round(box.height)}: an \`at\` fraction on it is a position in this image`
@@ -719,6 +724,7 @@ export class Studio {
     await this.livePage()
     const live = this.#live
     if (live === undefined) return { error: "there's no live page to hand over" }
+    if (live.target !== undefined) return { error: NO_DESKTOP_HANDOVER }
     const started = Date.now()
     let answer: UserAnswer
     try {
@@ -888,8 +894,17 @@ export class Studio {
    * The page the agent explores and grounds on, at `app` (none: what's live, else the project's
    * first app); another app's live page is closed first (one app live at a time).
    */
-  async livePage(app?: string): Promise<Page> {
-    if (this.#live !== undefined && app !== undefined && this.#live.app !== app) {
+  async livePage(app?: string, signal?: AbortSignal): Promise<Page> {
+    // Another app's scene: a desktop app's live launch closed first (one app per window); between
+    // web apps the live context stays (its sign-in kept: a step there goes where it needs).
+    const desktop = (name: string | undefined) =>
+      name !== undefined && appOf(this.options.config, name)?.kind === "electron"
+    if (
+      this.#live !== undefined &&
+      app !== undefined &&
+      this.#live.app !== app &&
+      (this.#live.target !== undefined || desktop(app))
+    ) {
       await this.#closeLive()
     }
     if (this.#live !== undefined && !this.#live.page.isClosed()) return this.#live.page
@@ -901,7 +916,7 @@ export class Studio {
       this.#notice = `${this.#live.app ?? "the app"} quit: launched again fresh (what earlier steps did is gone)`
     }
     const wanted = app ?? this.#live?.app
-    this.#opening ??= this.#open(wanted).finally(() => {
+    this.#opening ??= this.#open(wanted, signal).finally(() => {
       this.#opening = undefined
     })
     return this.#opening
@@ -914,12 +929,15 @@ export class Studio {
     // A handover on it still reading its fields: done first (what the user typed made known).
     await this.#settled()
     this.#live = undefined
+    // Its refs went with it (a step's on another app's page: never resolved there).
+    this.#snapshot = undefined
+    this.#checked = undefined
     await (live.target !== undefined ? live.target.close() : live.context.close()).catch(
       () => undefined,
     )
   }
 
-  async #open(app?: string): Promise<Page> {
+  async #open(app?: string, signal?: AbortSignal): Promise<Page> {
     await this.#closeLive()
     // None asked: the first app (with no desktop launcher here, the first web app, as ever).
     const name =
@@ -934,7 +952,12 @@ export class Studio {
       const launch = this.options.launchDesktop
       if (launch === undefined)
         throw new Error(`"${name}" is a desktop app: none can be opened here`)
-      const { target } = await launch(name, this.#lifetime.signal)
+      // Stopped with the tool that asked (a stop, a quit) or the studio.
+      const stops =
+        signal === undefined
+          ? this.#lifetime.signal
+          : AbortSignal.any([signal, this.#lifetime.signal])
+      const { target } = await launch(name, stops)
       // Closed meanwhile: never kept (nothing would close it).
       if (this.#lifetime.signal.aborted) {
         await target.close().catch(() => undefined)
@@ -1243,6 +1266,15 @@ export class Studio {
     if (starts.kind !== "web" && this.options.launchDesktop === undefined) {
       return failed(`start_app: "${app}" is a desktop app: none can be grounded here`)
     }
+    // The scene's app live first: its refs are that page's (another app's: a new snapshot asked).
+    if (starts.kind === "electron" || this.#live?.target !== undefined) {
+      try {
+        await this.livePage(app, signal)
+      } catch (error) {
+        if (isStopped(error) || signal.aborted) throw error
+        return failed(refusal(error))
+      }
+    }
     const raw = asObject(input)
     if (isCyclic(raw))
       return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
@@ -1370,8 +1402,9 @@ export class Studio {
     }
     let page: Page
     try {
-      page = await this.livePage(app)
+      page = await this.livePage(app, signal)
     } catch (error) {
+      if (isStopped(error) || signal.aborted) throw error
       return failed(refusal(error))
     }
     try {
@@ -1406,7 +1439,7 @@ export class Studio {
               `failed (page-closed): ${(error as StepError).message}; the rest of it didn't run (back on the page that opened it, url: ${this.#where(back.url())}): run its remaining steps one by one`,
             )
       }
-      return failed(failure(error))
+      return failed(`${failure(error)}${this.#told()}`)
     }
   }
 
@@ -1435,7 +1468,13 @@ export class Studio {
     // A desktop app's scene: nothing handed to the user yet (it could never be checked or filmed).
     if (
       startAppOf(scenario, this.options.config).app.kind === "electron" &&
-      JSON.stringify(scenario.setup ?? []).includes('"action":"handover"')
+      JSON.stringify([
+        ...(scenario.setup ?? []),
+        // The presets its setup runs (a sign-in preset with a handover).
+        ...(scenario.setup ?? []).flatMap((item) =>
+          "preset" in item ? [this.options.config.presets[item.preset] ?? {}] : [],
+        ),
+      ]).includes('"action":"handover"')
     ) {
       return { error: `invalid scenario: ${NO_DESKTOP_HANDOVER}` }
     }
@@ -1762,7 +1801,11 @@ function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptio
  * approval) says so, for the agent to tell them and never retry.
  */
 function refusal(error: unknown): string {
-  const why = failure(error)
+  // A launch's error can name the user's own folders: never to the agent.
+  const why = failure(error).replace(
+    /(?<![:\w/.>])(?:~\/|\/)(?:[^\s'"()/]+\/)+[^\s'"(),]*/g,
+    "<a local path>",
+  )
   return (error as { needsUser?: unknown }).needsUser === true
     ? `${why}. The user settles this (the Apps panel): tell them, don't retry`
     : why
