@@ -3,13 +3,20 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { type LlmClient, OpenAiCompatibleClient } from "@kiframe/agent"
 import { type OpenedProject, TakeStore } from "@kiframe/project"
-import { defaultWorkDir, inspectDesktopApp, sweepWorkArea, trialDesktopApp } from "@kiframe/runtime"
+import {
+  defaultWorkDir,
+  inspectDesktopApp,
+  launchElectron,
+  sweepWorkArea,
+  trialDesktopApp,
+} from "@kiframe/runtime"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import { type Browser, chromium } from "playwright"
 import type { AppStatus, DesktopStatusView } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
+import { DesktopLauncher } from "./desktop-launch.ts"
 import {
   addHostOf,
   DesktopAdds,
@@ -238,6 +245,10 @@ function start(): void {
         sceneKey: (sceneId) => registry.sceneKey(opened.dir, sceneId),
         takes,
         browser: launch,
+        // Desktop apps (macOS): launched from their approval for this project, confined.
+        ...(process.platform === "darwin" && {
+          launchDesktop: (name: string, signal: AbortSignal) => launcher.launch(name, signal),
+        }),
         llm: model,
         model: DEFAULT_MODEL,
         seesImages,
@@ -297,11 +308,22 @@ function start(): void {
     workDir,
   )
   // Every add ends, its trial too, as the project switches.
-  // Every add ends, its trial too, as the project switches.
+  // Every add ends, its trial too, as the project switches; every launch's quiet trial too.
   workspace.onSwitch(() => adds.dropAll())
   let approvals: DesktopApprovals | undefined
   const desktopApprovals = (): DesktopApprovals =>
     (approvals ??= new DesktopApprovals(app.getPath("userData")))
+  // Launches a project's desktop app for the agent, from its approval (every launch's quiet
+  // trial of an update ends as the project switches).
+  const launcher = new DesktopLauncher({
+    approvals: desktopApprovals,
+    looks,
+    launch: launchElectron,
+    opened: () => workspace.opened,
+    scope: (dir) => ids().scope(dir),
+    workDir,
+  })
+  workspace.onSwitch(() => launcher.stopAll())
   /** A status as the window has it (never the app's path or details). */
   const view = (s: Awaited<ReturnType<typeof desktopStatus>>) =>
     "why" in s ? { status: s.status, why: s.why } : { status: s.status }
@@ -364,6 +386,7 @@ function start(): void {
     cleanup = "running"
     // Every desktop app's trial ended (its confined app killed with it).
     adds.dropAll()
+    launcher.stopAll()
     const work = (async () => {
       // The browser let go within the close, as for project:close (an open in flight never comes
       // between); a close refused still lets it go: the app is quitting.

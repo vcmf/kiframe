@@ -449,8 +449,9 @@ async function resolveSecret(
  * screen, shown to them only (APPROACHES §0: never masked; it never reaches the agent or a take).
  */
 async function pageShot(page: Page): Promise<ApprovalRequest["shot"]> {
-  const size = page.viewportSize()
-  if (size === null) return undefined
+  // Read from the page when the context sets none (a desktop app's: never shown without a shot).
+  const size = await viewportWithin(page, 3000)
+  if (size === undefined) return undefined
   const jpeg = await page
     .screenshot({ type: "jpeg", quality: 75, timeout: 3000, caret: "initial", animations: "allow" })
     .catch(() => undefined)

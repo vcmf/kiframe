@@ -64,9 +64,11 @@ describe("a desktop app in the studio", () => {
     expect(secretsAsked).toEqual(["https://app.test"])
   })
 
-  it("is never grounded as a web page (its driver comes next): said, never a page opened", async () => {
+  it("is never grounded as a web page without a desktop launcher: said, never a page opened", async () => {
     const alone = studioWith("  notes: { kind: electron, bundleId: com.example.notes }\n")
-    await expect(alone.studio.livePage()).rejects.toThrow(/desktop apps can't be grounded yet/)
+    await expect(alone.studio.livePage()).rejects.toThrow(
+      /"notes" is a desktop app: none can be opened here/,
+    )
     expect(alone.opened).toEqual([])
     // Listed first, beside a web app: the live page opens on the web app.
     const both = studioWith(
@@ -83,8 +85,7 @@ describe("a desktop app in the studio", () => {
         new AbortController().signal,
       ),
     ).toEqual({
-      error:
-        'start_app: "notes" is a desktop app: desktop apps can\'t be grounded yet (the Electron target comes next)',
+      error: 'start_app: "notes" is a desktop app: none can be grounded here',
     })
   })
 

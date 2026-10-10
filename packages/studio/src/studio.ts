@@ -37,6 +37,10 @@ import {
   fitImage,
   type FittedImage,
   ImageRefusal,
+  viewportOf,
+  type ElectronTarget,
+  placeOf,
+  type RunOptions,
 } from "@kiframe/runtime"
 import {
   ACTION_REFERENCE,
@@ -63,6 +67,7 @@ import {
   webAppsOf,
   firstApp,
   startAppOf,
+  type TakeMeta,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
@@ -232,6 +237,15 @@ export interface StudioOptions {
    * None: nothing is ever evicted (tests, a CLI that knows one project only).
    */
   afterRecord?: () => void
+  /**
+   * Launches the project's desktop app `app` (the host's: from its approval, confined), with the
+   * build a take keeps. A refusal the user settles (in the Apps panel) has `needsUser`. None:
+   * desktop apps can't be grounded or recorded (a CLI, tests of web apps).
+   */
+  launchDesktop?: (
+    app: string,
+    signal: AbortSignal,
+  ) => Promise<{ target: ElectronTarget; build: NonNullable<TakeMeta["appBuild"]> }>
 }
 
 /** How long a step may take on a real app (Cal.com's login hydrates in more than 6 s). */
@@ -241,7 +255,15 @@ export const SNAPSHOT_MAX = 20_000
 
 export class Studio {
   readonly options: StudioOptions
-  #live: { context: BrowserContext; page: Page } | undefined
+  /**
+   * The live page: its context and page, the app it's at, and (a desktop app) its launched target,
+   * closed whole with it.
+   */
+  #live:
+    | { context: BrowserContext; page: Page; app: string | undefined; target?: ElectronTarget }
+    | undefined
+  /** Said with the next tool's result once (a desktop app that quit, launched again). */
+  #notice: string | undefined
   /**
    * The saved sign-in (memory only, gone with the studio: it holds a session's cookies): one
    * browser state, and the session presets it holds (each its key: its steps and the apps as they
@@ -632,7 +654,8 @@ export class Studio {
       }
       measure = async () => {
         const box = await target.boundingBox({ timeout: 2000 }).catch(() => null)
-        const view = page.viewportSize()
+        // Read from the page when the context sets none (a desktop app's window).
+        const view = await viewportOf(page).catch(() => null)
         if (box === null || view === null) return null
         whole = box
         const x1 = Math.max(0, box.x)
@@ -653,7 +676,10 @@ export class Studio {
         const box = whole
         const range = (from: number, size: number, total: number) =>
           `${(Math.max(0, -from) / size).toFixed(2)}–${(Math.min(size, total - from) / size).toFixed(2)}`
-        const view = page.viewportSize() ?? { width: shot.width, height: shot.height }
+        const view = await viewportOf(page).catch(() => ({
+          width: shot.width,
+          height: shot.height,
+        }))
         const all = shot.width >= Math.floor(box.width) && shot.height >= Math.floor(box.height)
         what = all
           ? `ref ${ref}, ${Math.round(box.width)}×${Math.round(box.height)}: an \`at\` fraction on it is a position in this image`
@@ -858,27 +884,64 @@ export class Studio {
     return this.#live !== undefined && !this.#live.page.isClosed() ? this.#live.page : undefined
   }
 
-  /** The page the agent explores and grounds on (opened at the app on first use). */
-  async livePage(): Promise<Page> {
+  /**
+   * The page the agent explores and grounds on, at `app` (none: what's live, else the project's
+   * first app); another app's live page is closed first (one app live at a time).
+   */
+  async livePage(app?: string): Promise<Page> {
+    if (this.#live !== undefined && app !== undefined && this.#live.app !== app) {
+      await this.#closeLive()
+    }
     if (this.#live !== undefined && !this.#live.page.isClosed()) return this.#live.page
     // The page the runner followed may have closed (a popup): back on another page still open.
     const back = this.#backPage()
     if (back !== undefined) return back
-    this.#opening ??= this.#open().finally(() => {
+    // A desktop app with no window left: it quit (launched again, said: its state is gone).
+    if (this.#live?.target !== undefined) {
+      this.#notice = `${this.#live.app ?? "the app"} quit: launched again fresh (what earlier steps did is gone)`
+    }
+    const wanted = app ?? this.#live?.app
+    this.#opening ??= this.#open(wanted).finally(() => {
       this.#opening = undefined
     })
     return this.#opening
   }
 
-  async #open(): Promise<Page> {
+  /** The live page closed whole (a desktop app's target: its process and sandbox too). */
+  async #closeLive(): Promise<void> {
+    const live = this.#live
+    if (live === undefined) return
     // A handover on it still reading its fields: done first (what the user typed made known).
-    if (this.#live !== undefined) await this.#settled()
-    await this.#live?.context.close().catch(() => undefined)
+    await this.#settled()
     this.#live = undefined
-    // A desktop app has its own driver (the Electron target, next): never a page here.
-    const start = this.#start
-    if (start === undefined) {
-      throw new Error("desktop apps can't be grounded yet: the Electron target comes next")
+    await (live.target !== undefined ? live.target.close() : live.context.close()).catch(
+      () => undefined,
+    )
+  }
+
+  async #open(app?: string): Promise<Page> {
+    await this.#closeLive()
+    // None asked: the first app (with no desktop launcher here, the first web app, as ever).
+    const name =
+      app ??
+      (this.options.launchDesktop === undefined
+        ? Object.entries(this.options.config.apps).find(([, a]) => a.kind === "web")?.[0]
+        : undefined) ??
+      firstApp(this.options.config).name
+    const start = appOf(this.options.config, name)
+    if (start === undefined) throw new Error(`"${name}" isn't one of the project's apps`)
+    if (start.kind === "electron") {
+      const launch = this.options.launchDesktop
+      if (launch === undefined)
+        throw new Error(`"${name}" is a desktop app: none can be opened here`)
+      const { target } = await launch(name, this.#lifetime.signal)
+      // Closed meanwhile: never kept (nothing would close it).
+      if (this.#lifetime.signal.aborted) {
+        await target.close().catch(() => undefined)
+        throw new Error("the studio was closed")
+      }
+      this.#live = { context: target.context, page: target.page, app: name, target }
+      return target.page
     }
     const { width, height } = start.viewport
     const context = await this.options.browser.newContext({ viewport: { width, height } })
@@ -888,7 +951,7 @@ export class Studio {
       // Closed meanwhile: never kept (nothing would close it).
       if (this.#lifetime.signal.aborted) throw new Error("the studio was closed")
       // Kept only once it's at the app (a failed first visit is tried again next time).
-      this.#live = { context, page }
+      this.#live = { context, page, app: name }
       return page
     } catch (error) {
       await context.close().catch(() => undefined)
@@ -907,13 +970,35 @@ export class Studio {
   }
 
   #where(url: string, site?: Site): string {
+    // A desktop app's page: its own or not, by its guard (never its file path: the user's).
+    const target = this.#live?.target
+    if (target !== undefined) {
+      return target.allows(url)
+        ? `${this.#live?.app ?? "the app"}'s own page`
+        : `${placeOf(url)} (not the app's own)`
+    }
     // Named whenever the project has several apps (a desktop one too: the prompt lists them all).
     const { apps } = this.options.config
     return whereOf(url, webAppsOf(apps), site, Object.keys(apps).length > 1)
   }
 
+  /** A note once (a desktop app launched again), then nothing. */
+  #told(): string {
+    const notice = this.#notice
+    this.#notice = undefined
+    return notice === undefined ? "" : `\nnote: ${notice}`
+  }
+
   /** A step done, and where its page is: a page that failed to load makes it a failure. */
   #landed(url: string, said: string): StepResult {
+    if (this.#live?.target !== undefined) {
+      const own = this.#live.target.allows(url)
+      return {
+        ok: true,
+        text: `${said}. url: ${this.#where(url)}${this.#told()}`,
+        site: own ? "app" : "other",
+      }
+    }
     const site = siteOf(url, webAppsOf(this.options.config.apps))
     if (site === "unloaded") {
       return {
@@ -1005,7 +1090,7 @@ export class Studio {
         : `\n(${unusable}: its refs can't be used; snapshot again to point at them, or write locators)`
     return {
       ok: true,
-      text: `url: ${this.#where(page.url())}${within === undefined ? await this.#view(page) : ""}${note}${nearly}\n${cut}`,
+      text: `url: ${this.#where(page.url())}${within === undefined ? await this.#view(page) : ""}${note}${nearly}${this.#told()}\n${cut}`,
     }
   }
 
@@ -1155,10 +1240,8 @@ export class Studio {
         `start_app: "${app}" isn't one of the project's apps (${Object.keys(this.options.config.apps).join(", ")})`,
       )
     }
-    if (starts.kind !== "web") {
-      return failed(
-        `start_app: "${app}" is a desktop app: desktop apps can't be grounded yet (the Electron target comes next)`,
-      )
+    if (starts.kind !== "web" && this.options.launchDesktop === undefined) {
+      return failed(`start_app: "${app}" is a desktop app: none can be grounded here`)
     }
     const raw = asObject(input)
     if (isCyclic(raw))
@@ -1285,10 +1368,16 @@ export class Studio {
         : { version: 1, setup: [setupItem.data], steps: [] }),
       app,
     }
-    const page = await this.livePage()
+    let page: Page
+    try {
+      page = await this.livePage(app)
+    } catch (error) {
+      return failed(refusal(error))
+    }
     try {
       await runScenario(page, scenario, this.#quick, {
         ...this.#run(scene, signal),
+        ...this.#guarded(app),
         // Live: a step may go anywhere (it says where: the moment to add a site, `add_app`).
         confineToApps: false,
         // The live page follows the tab or popup the runner switched to (the next step acts there).
@@ -1343,6 +1432,13 @@ export class Studio {
     }
     const issues = checkScenarioAgainstProject(scenario, this.options.config)
     if (issues.length > 0) return { error: `invalid scenario: ${issues.join("; ")}` }
+    // A desktop app's scene: nothing handed to the user yet (it could never be checked or filmed).
+    if (
+      startAppOf(scenario, this.options.config).app.kind === "electron" &&
+      JSON.stringify(scenario.setup ?? []).includes('"action":"handover"')
+    ) {
+      return { error: `invalid scenario: ${NO_DESKTOP_HANDOVER}` }
+    }
     if (scenario.steps.length < SCENE_STEPS.min || scenario.steps.length > SCENE_STEPS.max) {
       return {
         error: `a scene has ${SCENE_STEPS.min}-${SCENE_STEPS.max} on-camera steps (this one has ${scenario.steps.length})`,
@@ -1364,11 +1460,13 @@ export class Studio {
     } catch (error) {
       return `replay failed: ${failure(error)}`
     }
-    const reuse = this.#reuse(scenario)
-    const context = await this.options.browser.newContext({
-      ...filmed,
-      ...(reuse.storageState !== undefined && { storageState: reuse.storageState }),
-    })
+    let fresh: Fresh
+    try {
+      fresh = await this.#freshPage(scenario, filmed, signal)
+    } catch (error) {
+      if (isStopped(error)) throw error
+      return `replay failed: ${refusal(error)}`
+    }
     try {
       // The pointer at once, also over the scene's own pacing (its typing and settling stay).
       const paced: Scenario = {
@@ -1378,12 +1476,10 @@ export class Studio {
           pacing: { ...scenario.overrides?.pacing, cursor: "instant" },
         },
       }
-      await runScenario(await context.newPage(), paced, this.options.config, {
-        ...this.#run(scene, signal, "check"),
+      await runScenario(fresh.page, paced, this.options.config, {
+        ...this.#run(scene, signal, "check", fresh.desktop),
         fresh: true,
-        skipSessionPresets: reuse.skipSessionPresets,
-        sessionLandings: reuse.sessionLandings,
-        onSessionReady: this.#sessionHooks(),
+        ...fresh.run,
       })
       return "ok"
     } catch (error) {
@@ -1392,7 +1488,7 @@ export class Studio {
       return `replay failed: ${failure(error)}`
     } finally {
       await this.#settled()
-      await context.close().catch(() => undefined)
+      await fresh.close().catch(() => undefined)
     }
   }
 
@@ -1417,22 +1513,23 @@ export class Studio {
     } catch (error) {
       return failed(`can't record "${sceneId}": ${failure(error)}`)
     }
+    let fresh: Fresh
+    try {
+      fresh = await this.#freshPage(scenario, filmed, signal)
+    } catch (error) {
+      if (isStopped(error)) throw error
+      return failed(`can't record "${sceneId}": ${refusal(error)}`)
+    }
     const dir = takes.newTakeDir(this.project.project.id, sceneId)
-    const reuse = this.#reuse(scenario)
-    const context = await this.options.browser.newContext({
-      ...filmed,
-      ...(reuse.storageState !== undefined && { storageState: reuse.storageState }),
-    })
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
     let why: string | undefined
     let stopped: StepError | undefined
     try {
-      recorded = await recordScenario(await context.newPage(), scenario, config, {
-        ...this.#run(sceneId, signal, "record"),
+      recorded = await recordScenario(fresh.page, scenario, config, {
+        ...this.#run(sceneId, signal, "record", fresh.desktop),
         fresh: true,
-        skipSessionPresets: reuse.skipSessionPresets,
-        sessionLandings: reuse.sessionLandings,
-        onSessionReady: this.#sessionHooks(),
+        ...fresh.run,
+        ...(fresh.build !== undefined && { appBuild: fresh.build }),
         outDir: dir,
         // A failed take's video is dropped as it settles: never encoded.
         encodeFailed: false,
@@ -1443,7 +1540,7 @@ export class Studio {
       why = failure(error)
     } finally {
       await this.#settled()
-      await context.close().catch(() => undefined)
+      await fresh.close().catch(() => undefined)
     }
     let take: Awaited<ReturnType<TakeStore["settle"]>>
     try {
@@ -1486,14 +1583,71 @@ export class Studio {
     }
   }
 
+  /**
+   * A fresh page for a check or a recording, in the scene's start app: a web app's in a new context
+   * (its saved sign-in reused when it holds); a desktop app's in a fresh launch (its own sandbox:
+   * the same files and state every time; no saved sign-in), closed whole after.
+   */
+  async #freshPage(scenario: Scenario, filmed: Filmed, signal: AbortSignal): Promise<Fresh> {
+    const start = startAppOf(scenario, this.options.config)
+    if (start.app.kind === "electron") {
+      const launch = this.options.launchDesktop
+      if (launch === undefined) {
+        throw new Error(`"${start.name}" is a desktop app: none can be run here`)
+      }
+      const { target, build } = await launch(
+        start.name,
+        AbortSignal.any([signal, this.#lifetime.signal]),
+      )
+      return {
+        page: target.page,
+        run: { electron: electronHook(start.name, target) },
+        build,
+        desktop: true,
+        close: () => target.close().then(() => undefined),
+      }
+    }
+    const reuse = this.#reuse(scenario)
+    const context = await this.options.browser.newContext({
+      ...filmed,
+      ...(reuse.storageState !== undefined && { storageState: reuse.storageState }),
+    })
+    try {
+      return {
+        page: await context.newPage(),
+        run: {
+          skipSessionPresets: reuse.skipSessionPresets,
+          sessionLandings: reuse.sessionLandings,
+          onSessionReady: this.#sessionHooks(),
+        },
+        desktop: false,
+        close: () => context.close(),
+      }
+    } catch (error) {
+      await context.close().catch(() => undefined)
+      throw error
+    }
+  }
+
   /** Closes the live page (the browser is the host's); every tool and dialog still running stops. */
   async close(): Promise<void> {
     this.#lifetime.abort()
-    await this.#live?.context.close().catch(() => undefined)
-    this.#live = undefined
+    await this.#closeLive()
   }
 
-  #run(sceneId: string, signal: AbortSignal, where: "live" | "check" | "record" = "live") {
+  /** A desktop app's guard for a run in it (its live target's), when the live page is one. */
+  #guarded(app: string): Pick<RunOptions, "electron"> {
+    const target = this.#live?.target
+    if (target === undefined || this.#live?.app !== app) return {}
+    return { electron: electronHook(app, target) }
+  }
+
+  #run(
+    sceneId: string,
+    signal: AbortSignal,
+    where: "live" | "check" | "record" = "live",
+    desktop = this.#live?.target !== undefined,
+  ) {
     const { resolveSecret, requestUser, requestApproval, scope, sceneKey, knownValues } =
       this.options
     const key = sceneKey(sceneId)
@@ -1511,6 +1665,8 @@ export class Studio {
       // A handover step: the user does a part themselves, on this run's page (the live view
       // follows it), never filmed.
       requestHandover: async (request: HandoverRequest) => {
+        // A desktop app's window isn't handed to the user yet (measured first: PR 5).
+        if (desktop) return { outcome: "declined" as const, note: NO_DESKTOP_HANDOVER }
         const context = request.page.context()
         this.#handoverPage = request.page
         const answer = await ask(signal, () =>
@@ -1559,10 +1715,13 @@ export class Studio {
 
 /** A context's latest page still open (the one a closed popup's opener most likely is). */
 function latestOpen(context: BrowserContext): Page | undefined {
-  return context
-    .pages()
-    .filter((p) => !p.isClosed())
-    .at(-1)
+  return (
+    context
+      .pages()
+      // A desktop app's DevTools: never a page the agent works on.
+      .filter((p) => !p.isClosed() && !p.url().startsWith("devtools://"))
+      .at(-1)
+  )
 }
 
 /**
@@ -1572,6 +1731,41 @@ function latestOpen(context: BrowserContext): Page | undefined {
 async function ask<T>(signal: AbortSignal, open: () => T | Promise<T>): Promise<T> {
   signal.throwIfAborted()
   return open()
+}
+
+/** Why a desktop app's scene hands nothing to the user (decided 2026-10-10: measured in PR 5). */
+const NO_DESKTOP_HANDOVER =
+  "a desktop app's window isn't handed to the user yet (signing in by hand comes next): a desktop scene has no handover step"
+
+/** A fresh page for a check or a recording, and how its run goes and ends. */
+interface Fresh {
+  page: Page
+  run: Partial<RunOptions>
+  build?: NonNullable<TakeMeta["appBuild"]>
+  desktop: boolean
+  close: () => Promise<void>
+}
+
+/** A desktop app's run hook from its launched target (its guard, its windows). */
+function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptions["electron"]> {
+  return {
+    app,
+    allows: target.allows,
+    stopped: target.stopped,
+    prepare: target.prepare,
+    quiet: target.quiet,
+  }
+}
+
+/**
+ * Why something couldn't start, for the agent: a refusal the user settles (a desktop app's
+ * approval) says so, for the agent to tell them and never retry.
+ */
+function refusal(error: unknown): string {
+  const why = failure(error)
+  return (error as { needsUser?: unknown }).needsUser === true
+    ? `${why}. The user settles this (the Apps panel): tell them, don't retry`
+    : why
 }
 
 /** Why a scene never has a teardown or an `ensure` (OBJECT-MODEL §0.4). */

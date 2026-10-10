@@ -3,7 +3,7 @@
 // dialog (stubbed), inspected, tried confined, written to the project and approved. Its work area
 // is a test's own (never ~/.kiframe).
 import { execFileSync } from "node:child_process"
-import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -53,6 +53,33 @@ beforeAll(async () => {
   )
   env.KIFRAME_TEST_KEYCHAIN = "memory"
   env.KIFRAME_WORK_DIR = work
+  // Kif, scripted: a step in the desktop app once it's added (launched from its approval).
+  const model = join(root, "model.json")
+  writeFileSync(
+    model,
+    JSON.stringify([
+      {
+        kind: "tool_calls",
+        calls: [
+          {
+            id: "d1",
+            name: "run_step",
+            arguments: JSON.stringify({
+              scene: "tour",
+              start_app: "notes",
+              step: {
+                id: "add",
+                action: "click",
+                target: { by: "role", role: "button", name: "Add note" },
+              },
+            }),
+          },
+        ],
+      },
+      { kind: "text", text: "Added a note in Notes." },
+    ]),
+  )
+  env.KIFRAME_TEST_MODEL = model
   app = await electron.launch({ args: [appDir, `--user-data-dir=${profile}`], cwd: appDir, env })
   page = await app.firstWindow()
   await page.getByLabel("OpenRouter API key").fill("sk-or-test-not-a-real-key")
@@ -100,5 +127,23 @@ describe.runIf(mac)("adding a desktop app", () => {
     })
     // The trial's sandbox gone; nothing of it in the user's own work area.
     expect(readdirSync(join(work, "sandboxes")).filter((n) => !n.endsWith(".canary"))).toEqual([])
+  }, 120_000)
+
+  it("lets Kif work in it: launched from its approval, confined, closed with the project", async () => {
+    // The Apps panel closed (the chat beside it).
+    await page.keyboard.press("Escape")
+    const box = page.getByLabel("Message Kif")
+    await box.fill("Add a note in Notes")
+    await box.press("Enter")
+    await expect
+      .poll(() => page.getByText("Added a note in Notes.").count(), { timeout: 60_000 })
+      .toBeGreaterThan(0)
+    // Its live app: one confined launch in the test's work area.
+    const live = () => readdirSync(join(work, "sandboxes")).filter((n) => !n.endsWith(".canary"))
+    expect(live()).toHaveLength(1)
+    // The project closed: Kif's app ends with it.
+    await page.getByRole("button", { name: /Desktop demo/ }).click()
+    await page.getByRole("menuitem", { name: "Close project" }).click()
+    await expect.poll(() => live().length, { timeout: 20_000 }).toBe(0)
   }, 120_000)
 })

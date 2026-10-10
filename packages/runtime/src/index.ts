@@ -14,6 +14,7 @@ export {
   ElectronLaunchError,
   type ElectronTarget,
   launchElectron,
+  placeOf,
 } from "./electron.ts"
 export { defaultWorkDir, sweepWorkArea, WorkAreaError } from "./electron-workarea.ts"
 export {
