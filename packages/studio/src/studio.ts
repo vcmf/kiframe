@@ -1,3 +1,4 @@
+import { USER_SETTLES } from "@kiframe/agent"
 import { generate } from "@kiframe/generators"
 import {
   type OpenedProject,
@@ -260,11 +261,11 @@ export class Studio {
    * The live page: its context and page, the app it's at, and (a desktop app) its launched target,
    * closed whole with it.
    */
-  #live:
-    | { context: BrowserContext; page: Page; app: string | undefined; target?: ElectronTarget }
-    | undefined
+  #live: Live | undefined
   /** Said with the next tool's result once (a desktop app that quit, launched again). */
   #notice: string | undefined
+  /** The live page's close under way (one close, however many ask). */
+  #closing: { live: Live; done: Promise<void> } | undefined
   /**
    * The saved sign-in (memory only, gone with the studio: it holds a session's cookies): one
    * browser state, and the session presets it holds (each its key: its steps and the apps as they
@@ -414,11 +415,9 @@ export class Studio {
    */
   setApps(apps: ProjectConfig["apps"]): void {
     this.options.config = { ...this.options.config, apps }
-    // A live app the project no longer lists (removed: its approval dropped): closed.
-    const live = this.#live?.app
-    if (live !== undefined && appOf(this.options.config, live) === undefined) {
-      void this.#closeLive()
-    }
+    // A live app the project no longer lists, or lists as another app (removed: its approval
+    // dropped): closed (a tool meanwhile never gets its page: `livePage` checks it too).
+    if (this.#live !== undefined && !this.#listed(this.#live)) void this.#closeLive()
     // The page may be on the removed site: its refs are never used (the agent looks again).
     this.#snapshot = undefined
     this.#checked = undefined
@@ -938,8 +937,8 @@ export class Studio {
     const desktop = appOf(this.options.config, wanted)?.kind === "electron"
     if (
       this.#live !== undefined &&
-      this.#live.app !== wanted &&
-      (this.#live.target !== undefined || desktop)
+      (!this.#listed(this.#live) ||
+        (this.#live.app !== wanted && (this.#live.target !== undefined || desktop)))
     ) {
       await this.#closeLive()
     }
@@ -966,16 +965,52 @@ export class Studio {
     return page
   }
 
+  /** Whether the project still lists the live page's app, the same one it opened. */
+  #listed(live: { app: string | undefined; identity?: string }): boolean {
+    if (live.app === undefined || live.identity === undefined) return true
+    const now = appOf(this.options.config, live.app)
+    return now !== undefined && appIdentity(now) === live.identity
+  }
+
+  /**
+   * A desktop launch still going ended first: one whose caller stopped waited out, one still owned
+   * refused (never two launches at once).
+   */
+  async #launchSettled(): Promise<void> {
+    const opening = this.#opening
+    if (opening === undefined || appOf(this.options.config, opening.app)?.kind !== "electron") {
+      return
+    }
+    if (!opening.owner.aborted) {
+      throw new Error(`"${opening.app}" is still opening: try again in a moment`)
+    }
+    await opening.page.catch(() => undefined)
+  }
+
   /** The live page closed whole (a desktop app's target: its process and sandbox too). */
   async #closeLive(): Promise<void> {
     const live = this.#live
     if (live === undefined) return
+    // Closed once (the user's removal and a tool's call at once): every caller waits for it.
+    if (this.#closing?.live !== live) {
+      const done = this.#closeOf(live)
+      this.#closing = { live, done }
+      void done.finally(() => {
+        if (this.#closing?.done === done) this.#closing = undefined
+      })
+    }
+    await this.#closing.done
+  }
+
+  async #closeOf(live: Live): Promise<void> {
     // A handover on it still reading its fields: done first (what the user typed made known).
     await this.#settled()
-    this.#live = undefined
-    // Its refs went with it (a step's on another app's page: never resolved there).
-    this.#snapshot = undefined
-    this.#checked = undefined
+    if (this.#live === live) {
+      this.#live = undefined
+      // Its refs went with it (a step's on another app's page: never resolved there).
+      this.#snapshot = undefined
+      this.#checked = undefined
+    }
     await (live.target !== undefined ? live.target.close() : live.context.close()).catch(
       () => undefined,
     )
@@ -991,10 +1026,7 @@ export class Studio {
     const start = appOf(this.options.config, name)
     if (start === undefined) throw new Error(`"${name}" isn't one of the project's apps`)
     const identity = appIdentity(start)
-    const stillListed = () => {
-      const now = appOf(this.options.config, name)
-      return now !== undefined && appIdentity(now) === identity
-    }
+    const stillListed = () => this.#listed({ app: name, identity })
     if (start.kind === "electron") {
       const launch = this.options.launchDesktop
       if (launch === undefined) {
@@ -1005,7 +1037,7 @@ export class Studio {
         await target.close().catch(() => undefined)
         throw stops.aborted ? (stops.reason as Error) : new Error(`"${name}" was removed`)
       }
-      this.#live = { context: target.context, page: target.page, app: name, target }
+      this.#live = { context: target.context, page: target.page, app: name, identity, target }
       return target.page
     }
     const { width, height } = start.viewport
@@ -1017,7 +1049,7 @@ export class Studio {
       if (this.#lifetime.signal.aborted) throw new Error("the studio was closed")
       if (!stillListed()) throw new Error(`"${name}" was removed`)
       // Kept only once it's at the app (a failed first visit is tried again next time).
-      this.#live = { context, page, app: name }
+      this.#live = { context, page, app: name, identity }
       return page
     } catch (error) {
       await context.close().catch(() => undefined)
@@ -1048,6 +1080,20 @@ export class Studio {
     return whereOf(url, webAppsOf(apps), site, Object.keys(apps).length > 1)
   }
 
+  /**
+   * A snapshot's link addresses: a desktop app's said by its guard as its page is (a `file:` link
+   * names the user's folders: never to the agent); a web app's as they are.
+   */
+  #linksSaid(text: string, base: string): string {
+    if (this.#live?.target === undefined) return text
+    return text.replace(/^(\s*- \/url: )(.*)$/gm, (_line, lead: string, raw: string) => {
+      // As written in the page (a relative one too): read against the page's own address.
+      const href = raw.replace(/^(["'])(.*)\1$/, "$2")
+      const url = URL.parse(href, base)?.href ?? href
+      return `${lead}${JSON.stringify(this.#where(url))}`
+    })
+  }
+
   /** A note once (a desktop app launched again), then nothing. */
   #told(): string {
     const notice = this.#notice
@@ -1058,6 +1104,13 @@ export class Studio {
   /** A step done, and where its page is: a page that failed to load makes it a failure. */
   #landed(url: string, said: string): StepResult {
     if (this.#live?.target !== undefined) {
+      if (url.startsWith("chrome-error:")) {
+        return {
+          ok: false,
+          text: "failed (page-not-loaded): the page failed to load: try again",
+          site: "unloaded",
+        }
+      }
       const own = this.#live.target.allows(url)
       return {
         ok: true,
@@ -1131,7 +1184,7 @@ export class Studio {
     }
     // Scrubbed whole, then searched and cut: a value the cut splits would pass the scrubber in
     // part, and a search before scrubbing would tell a guess of a value from a miss.
-    const scrubbed = this.scrub(text)
+    const scrubbed = this.#linksSaid(this.scrub(text), page.url())
     const found = find === undefined ? undefined : findInSnapshot(scrubbed, find)
     const shown = found === undefined ? scrubbed : found.text
     const where = within === undefined ? "page" : "region"
@@ -1309,6 +1362,12 @@ export class Studio {
     if (starts.kind !== "web" && this.options.launchDesktop === undefined) {
       return failed(`start_app: "${app}" is a desktop app: none can be grounded here`)
     }
+    // Checked before any launch (a step that never runs never closes or opens an app).
+    const raw = asObject(input)
+    if (isCyclic(raw))
+      return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
+    // Before any of its refs is looked at: it never runs anyway.
+    if (typeof raw === "object" && raw !== null && "ensure" in raw) return failed(NO_CLEANUP)
     // The scene's app live first: its refs are that page's (another app's: a new snapshot asked).
     if (starts.kind === "electron" || this.#live?.target !== undefined) {
       try {
@@ -1318,11 +1377,6 @@ export class Studio {
         return failed(refusal(error))
       }
     }
-    const raw = asObject(input)
-    if (isCyclic(raw))
-      return failed("invalid step: a YAML alias refers to itself (or it nests too deep)")
-    // Before any of its refs is looked at: it never runs anyway.
-    if (typeof raw === "object" && raw !== null && "ensure" in raw) return failed(NO_CLEANUP)
     const refs = refsAt(raw)
     if (refs.length === 0) {
       this.#checked = undefined
@@ -1546,7 +1600,8 @@ export class Studio {
     try {
       fresh = await this.#freshPage(scenario, filmed, signal)
     } catch (error) {
-      if (isStopped(error)) throw error
+      // A stop during a desktop launch comes as the signal's own reason: a stop all the same.
+      if (isStopped(error) || signal.aborted) throw error
       return `replay failed: ${refusal(error)}`
     }
     try {
@@ -1599,10 +1654,18 @@ export class Studio {
     try {
       fresh = await this.#freshPage(scenario, filmed, signal)
     } catch (error) {
-      if (isStopped(error)) throw error
+      // A stop during a desktop launch comes as the signal's own reason: a stop all the same.
+      if (isStopped(error) || signal.aborted) throw error
       return failed(`can't record "${sceneId}": ${refusal(error)}`)
     }
-    const dir = takes.newTakeDir(this.project.project.id, sceneId)
+    let dir: string
+    try {
+      dir = takes.newTakeDir(this.project.project.id, sceneId)
+    } catch (error) {
+      // Never left running (a desktop app's process and sandbox).
+      await fresh.close().catch(() => undefined)
+      return failed(`can't record "${sceneId}": ${failure(error)}`)
+    }
     let recorded: Awaited<ReturnType<typeof recordScenario>> | undefined
     let why: string | undefined
     let stopped: StepError | undefined
@@ -1677,13 +1740,20 @@ export class Studio {
       if (launch === undefined) {
         throw new Error(`"${start.name}" is a desktop app: none can be run here`)
       }
+      // One copy of a desktop app at a time (an app may allow only one): the live one closed
+      // first, said with the next step (what earlier steps did there is gone).
+      const live = this.#live?.target !== undefined ? this.#live.app : undefined
+      await this.#launchSettled()
+      if (live !== undefined) {
+        await this.#closeLive()
+        this.#notice = `${live} was closed for the check or recording: launched again fresh (what earlier steps did is gone)`
+      }
       const { target, build } = await launch(
         start.name,
         AbortSignal.any([signal, this.#lifetime.signal]),
       )
       // Removed or changed while it launched: never run (its approval may be gone).
-      const now = appOf(this.options.config, start.name)
-      if (now === undefined || appIdentity(now) !== appIdentity(start.app)) {
+      if (!this.#listed({ app: start.name, identity: appIdentity(start.app) })) {
         await target.close().catch(() => undefined)
         throw new Error(`"${start.name}" was removed`)
       }
@@ -1834,6 +1904,16 @@ interface Fresh {
   close: () => Promise<void>
 }
 
+/** The live page: its context and page, the app it's at, and a desktop app's launched target. */
+type Live = {
+  context: BrowserContext
+  page: Page
+  app: string | undefined
+  /** The app as it was opened (`appIdentity`): another under its name is another app. */
+  identity?: string
+  target?: ElectronTarget
+}
+
 /** A desktop app's run hook from its launched target (its guard, its windows). */
 function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptions["electron"]> {
   return {
@@ -1850,11 +1930,9 @@ function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptio
  * approval) says so, for the agent to tell them and never retry.
  */
 function refusal(error: unknown): string {
-  // A launch's error can name the user's own folders: never to the agent.
+  // A launch's error names no local path (said so at its source, and by the launcher).
   const why = failure(error)
-  return (error as { needsUser?: unknown }).needsUser === true
-    ? `${why}. The user settles this: tell them, don't retry`
-    : why
+  return (error as { needsUser?: unknown }).needsUser === true ? `${why}. ${USER_SETTLES}` : why
 }
 
 /** Why a scene never has a teardown or an `ensure` (OBJECT-MODEL §0.4). */

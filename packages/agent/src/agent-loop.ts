@@ -67,9 +67,7 @@ export async function executeToolCall<C>(
     const result = await tool.run(args, ctx, signal)
     return isToolSoftError(result) ? toolRejected(tool.name, result.error) : result
   } catch (err) {
-    return signal.aborted
-      ? toolAborted(tool.name)
-      : toolThrew(tool.name, new Error(errorMessage(err)))
+    return signal.aborted ? toolAborted(tool.name) : toolThrew(tool.name, readable(err))
   }
 }
 
@@ -347,6 +345,19 @@ async function* modelTurn(
   // A stream that ended without its turn is cut short: never taken as a complete answer.
   if (final === undefined) throw new Error(CUT_SHORT)
   return final
+}
+
+/** What a tool threw, readable (its text, and whether the user settles it): never throws itself. */
+function readable(err: unknown): Error {
+  const said = new Error(errorMessage(err))
+  try {
+    if ((err as { needsUser?: unknown } | null)?.needsUser === true) {
+      return Object.assign(said, { needsUser: true })
+    }
+  } catch {
+    // A throwing getter: said as a plain failure.
+  }
+  return said
 }
 
 /** An error's text, whatever was thrown (never throws itself). */

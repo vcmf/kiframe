@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { USER_SETTLES } from "@kiframe/agent"
 import { createProject, saveScene, TakeStore } from "@kiframe/project"
 import { parseProjectYaml } from "@kiframe/schema"
 import { chromium, type Browser } from "playwright"
@@ -90,6 +91,11 @@ describe("Kif in a desktop app", { timeout: 120_000 }, () => {
     // content, a link to a file, is the page's).
     expect(text).not.toContain(fixture)
     expect(text).not.toContain("index.html")
+    // Its links too: said by the guard, never their address on this computer.
+    expect(text).not.toContain("file:")
+    expect(text).not.toContain("/etc/hosts")
+    expect(text).toContain(String.raw`/url: \"notes's own page\"`)
+    expect(text).toContain(String.raw`/url: \"a file on this computer (not the app's own)\"`)
     const step = (await run(studio, "run_step", {
       scene: "s",
       start_app: "notes",
@@ -108,6 +114,22 @@ describe("Kif in a desktop app", { timeout: 120_000 }, () => {
     expect(JSON.stringify(checked)).not.toContain("error")
     // One launch for the live session (never one per step).
     expect(launches).toEqual(["notes"])
+  })
+
+  it("fails a step whose page never loaded (never ok on Chromium's error page)", async () => {
+    const { studio } = studioWith()
+    const step = (await run(studio, "run_step", {
+      scene: "s",
+      start_app: "notes",
+      step: {
+        id: "dead",
+        action: "click",
+        target: { by: "role", role: "link", name: "A dead link" },
+      },
+    })) as object
+    expect(step).toMatchObject({
+      error: expect.stringMatching(/the page failed to load/) as string,
+    })
   })
 
   it("looks at a ref in its window (its size read from the page)", async () => {
@@ -190,7 +212,7 @@ steps:
         step: { id: "a", action: "pause", ms: 1 },
       }),
     )
-    expect(step).toContain("The user settles this: tell them, don't retry")
+    expect(step).toContain(USER_SETTLES)
     const saved = studio.check(`version: 1
 app: notes
 setup:

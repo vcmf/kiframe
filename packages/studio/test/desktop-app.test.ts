@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createProject, TakeStore } from "@kiframe/project"
+import { createProject, saveScene, TakeStore } from "@kiframe/project"
 import { parseProjectYaml } from "@kiframe/schema"
 import type { Browser } from "playwright"
 import { describe, expect, it } from "vitest"
@@ -186,6 +186,21 @@ steps:
       expect((await notes).url()).toBe("app://notes/")
     })
 
+    it("keeps a refusal the user settles through the tool (the agent tells them, never retries)", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const snapshot = studioTools.find((t) => t.name === "snapshot")!
+      const seen = snapshot.run({}, studio, new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      fake.pending[0]?.fail(
+        Object.assign(new Error("notes: approved for another project"), { needsUser: true }),
+      )
+      await expect(seen).rejects.toMatchObject({
+        message: expect.stringMatching(/approved for another project/) as string,
+        needsUser: true,
+      })
+    })
+
     it("ends a launch its caller stopped (never live), and the next call goes on", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)
@@ -274,6 +289,108 @@ steps:
       fake.pending[0]?.go()
       expect(await replay).toMatch(/was removed/)
       expect(fake.closed).toEqual(["notes"])
+    })
+
+    const fiveSteps = `version: 1
+app: notes
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
+  - { id: c, action: pause, ms: 1 }
+  - { id: d, action: pause, ms: 1 }
+  - { id: e, action: pause, ms: 1 }
+`
+
+    it("ends a check stopped while its app launched as a stop, never as a failed check", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const checked = studio.check(fiveSteps)
+      if ("error" in checked) throw new Error(checked.error)
+      const stopping = new AbortController()
+      const replay = studio.replay(checked.scenario, "s", stopping.signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      stopping.abort()
+      fake.pending[0]?.fail(stopping.signal.reason as Error)
+      await expect(replay).rejects.toMatchObject({ name: "AbortError" })
+    })
+
+    it("closes the live copy of the app before a check launches another (one at a time)", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const live = studio.livePage("notes", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      fake.pending[0]?.go()
+      await live
+      const checked = studio.check(fiveSteps)
+      if ("error" in checked) throw new Error(checked.error)
+      const replay = studio.replay(checked.scenario, "s", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(2)
+      // The live one closed before the check's launch began.
+      expect(fake.closed).toEqual(["notes"])
+      expect(studio.currentPage).toBeUndefined()
+      fake.pending[1]?.fail(new Error("done"))
+      await replay
+    })
+
+    it("leaves no app running when a recording's take folder can't be made", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const checked = studio.check(fiveSteps)
+      if ("error" in checked) throw new Error(checked.error)
+      saveScene(
+        studio.project,
+        {
+          version: 1,
+          id: "s",
+          title: "S",
+          source: { kind: "recording" },
+          duration: { mode: "auto" },
+        },
+        { scenario: checked.scenario },
+      )
+      studio.options.takes.newTakeDir = () => {
+        throw Object.assign(new Error("no space"), { code: "ENOSPC" })
+      }
+      const recording = studio.record("s", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      fake.pending[0]?.go()
+      expect(await recording).toMatchObject({ ok: false })
+      expect(fake.closed).toEqual(["notes"])
+    })
+
+    it("closes a live app the project now lists as another app under its name", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const live = studio.livePage("notes", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      fake.pending[0]?.go()
+      await live
+      studio.setApps(
+        parseProjectYaml(
+          "version: 2\napps:\n  notes: { kind: electron, bundleId: com.example.another }\n",
+        ).apps,
+      )
+      // A call meanwhile never gets the old one's page: a new launch, of the app now listed.
+      const next = studio.livePage("notes", new AbortController().signal)
+      await expect.poll(() => fake.closed).toEqual(["notes"])
+      await expect.poll(() => fake.pending.length).toBe(2)
+      fake.pending[1]?.go()
+      await next
+      expect(fake.closed).toEqual(["notes"])
+    })
+
+    it("checks a step before launching anything for it", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const step = await studio.runStep(
+        { ensure: [{ action: "pause", ms: 1 }] },
+        "s",
+        new AbortController().signal,
+        "steps",
+        "notes",
+      )
+      expect(step.ok).toBe(false)
+      expect(fake.pending).toEqual([])
     })
 
     it("refuses a handover before launching anything", async () => {

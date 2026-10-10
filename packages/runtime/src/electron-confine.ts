@@ -211,7 +211,7 @@ export async function copyFiles(from: string, to: string, signal?: AbortSignal):
           ? // Something in it gone while it was copied (moved, swapped): said as such.
             "files/ changed while it was copied: ask again in a moment"
           : "the project has no files/ folder (what its arguments name)"
-        : `files/ couldn't be copied (${code ?? String(error)})`,
+        : `files/ couldn't be copied (${code ?? "an error"})`,
     )
   }
 }
