@@ -36,19 +36,18 @@ export interface LauncherDeps {
 }
 
 /**
- * Launches the project's desktop apps, each from its approval: one quiet trial of an updated
- * build at a time per app and project (two launches meanwhile share it).
+ * Launches the project's desktop apps, each from its approval (an updated build tried quietly by
+ * the launch itself first).
  */
 export class DesktopLauncher {
   readonly #deps: LauncherDeps
-  readonly #trials = new Map<string, Promise<void>>()
   #lifetime = new AbortController()
 
   constructor(deps: LauncherDeps) {
     this.#deps = deps
   }
 
-  /** Every quiet trial ended (a project switch, a quit): their confined apps killed with them. */
+  /** Every launch's quiet trial ended (a project switch, a quit): their confined apps killed. */
   stopAll(): void {
     this.#lifetime.abort()
     this.#lifetime = new AbortController()
@@ -65,10 +64,13 @@ export class DesktopLauncher {
       throw new DesktopRefused(`"${name}" isn't a desktop app of the open project`)
     }
     const scope = this.#deps.scope(opened.dir)
+    // The launcher's stop as it was when this launch began (a switch meanwhile ends it too).
+    const lifetime = this.#lifetime.signal
     let status = await desktopStatus(entry, scope, this.#deps.approvals(), this.#deps.looks, signal)
     if (status.status === "updated") {
       signal?.throwIfAborted()
-      await waitFor(this.#quietTrial(name, entry, opened, scope, status.app), signal)
+      const stops = signal === undefined ? lifetime : AbortSignal.any([signal, lifetime])
+      await this.#quietTrial(name, entry, opened, scope, status.app, stops, signal)
       // Asked again: what's there now must be the build just approved (an update landing during
       // the trial, an app moved or replaced: refused for the user, never launched untried).
       status = await desktopStatus(entry, scope, this.#deps.approvals(), this.#deps.looks, signal)
@@ -126,41 +128,46 @@ export class DesktopLauncher {
   }
 
   /**
-   * An updated build tried confined (one trial per build, app and project: launches meanwhile wait
-   * for it; a launch stopped stops only its own wait), then approved for this project
-   * compare-and-set. Its own stop: none (it ends by itself, bounded).
+   * An updated build tried confined by this launch, then approved for its project compare-and-set
+   * (the same copy, developer and opens, the project still the one it looked at: two launches that
+   * both tried it approve the same thing; anything changed: refused). Its stop: the launch's own
+   * (thrown as it is), or the launcher's (refused: the project closed).
    */
-  #quietTrial(
+  async #quietTrial(
     name: string,
     entry: ElectronApp,
     opened: OpenedProject,
     scope: string,
     app: DesktopApp,
+    stops: AbortSignal,
+    own: AbortSignal | undefined,
   ): Promise<void> {
-    const key = `${entry.bundleId.toLowerCase()} ${scope}`
-    const running = this.#trials.get(key)
-    if (running !== undefined) return running
-    const trial = (async () => {
-      const outcome = await this.#deps.looks.trial(app, {
+    let outcome: TrialOutcome
+    try {
+      outcome = await this.#deps.looks.trial(app, {
         origins: entry.origins ?? [],
-        // Ended with the launcher (a project switch, a quit), never by one launch's stop.
-        signal: this.#lifetime.signal,
+        signal: stops,
         ...(this.#deps.workDir !== undefined && { workDir: this.#deps.workDir }),
       })
-      if (!("ok" in outcome)) throw new DesktopRefused(`${name} updated: ${refusalOf(outcome)}`)
-      // The launch's own project, compare-and-set (another opened meanwhile: never approved for it).
-      this.#still(name, entry, opened, scope, app, false)
-      try {
-        this.#deps.approvals().approve(app, scope, opensOf(entry))
-      } catch (error) {
-        throw new DesktopRefused(
-          `${name} ran confined but couldn't be approved here (${(error as Error).message})`,
-        )
-      }
-    })()
-    this.#trials.set(key, trial)
-    void trial.finally(() => this.#trials.delete(key)).catch(() => undefined)
-    return trial
+    } catch (error) {
+      if (own?.aborted === true) throw error
+      if (stops.aborted)
+        throw new DesktopRefused(`${name}: the project closed while it was checked`)
+      throw error
+    }
+    if (stops.aborted && own?.aborted !== true) {
+      throw new DesktopRefused(`${name}: the project closed while it was checked`)
+    }
+    own?.throwIfAborted()
+    if (!("ok" in outcome)) throw new DesktopRefused(`${name} updated: ${refusalOf(outcome)}`)
+    this.#still(name, entry, opened, scope, app, false)
+    try {
+      this.#deps.approvals().approve(app, scope, opensOf(entry))
+    } catch (error) {
+      throw new DesktopRefused(
+        `${name} ran confined but couldn't be approved here (${(error as Error).message})`,
+      )
+    }
   }
 }
 
@@ -172,24 +179,4 @@ function refusalOf(outcome: Exclude<TrialOutcome, { ok: true }>): string {
   if ("quit" in outcome)
     return "it quit at once when tried confined: check it again (in the Apps panel)"
   return `it couldn't be tried confined (${outcome.failed}): check it again (in the Apps panel)`
-}
-
-/** A wait ended by its own stop only (what it waits for goes on for others). */
-function waitFor<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (signal === undefined) return work
-  signal.throwIfAborted()
-  return new Promise<T>((resolve, reject) => {
-    const stop = () => reject(signal.reason as Error)
-    signal.addEventListener("abort", stop, { once: true })
-    work.then(
-      (value) => {
-        signal.removeEventListener("abort", stop)
-        resolve(value)
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", stop)
-        reject(error instanceof Error ? error : new Error(String(error)))
-      },
-    )
-  })
 }

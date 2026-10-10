@@ -645,4 +645,16 @@ describe("Kif starting during an add", () => {
     h.adds.endChecks()
     await expect(checking).rejects.toThrow(/Kif is working/)
   })
+
+  it("says a check ended after Kif already stopped in words too", async () => {
+    const h = harness()
+    h.fake.looks.trial = (_app, o) =>
+      new Promise<TrialOutcome>((_, reject) =>
+        o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
+      )
+    const card = await h.pick()
+    const checking = h.adds.check(1, "s1", card.token, false)
+    h.adds.endChecks()
+    await expect(checking).rejects.toThrow(/the check was ended/)
+  })
 })

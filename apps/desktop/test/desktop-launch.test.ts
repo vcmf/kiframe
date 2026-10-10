@@ -161,17 +161,14 @@ describe("a desktop app launched for the agent", () => {
     }
   })
 
-  it("tries an update once for two launches at once", async () => {
-    const { launcher, state } = setup(notes({ version: "1.1" }))
-    const trial = deferred<TrialOutcome>()
-    state.trial = () => trial.promise
-    const one = launcher.launch("notes")
-    const two = launcher.launch("notes")
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    trial.resolve({ ok: true })
-    await Promise.all([one, two])
-    expect(state.trials).toBe(1)
+  it("lets two launches of an update at once each try it, both approving the same build", async () => {
+    const { launcher, state, approvals } = setup(notes({ version: "1.1" }))
+    await Promise.all([launcher.launch("notes"), launcher.launch("notes")])
+    expect(state.trials).toBe(2)
     expect(state.launches).toHaveLength(2)
+    expect(approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.version).toBe(
+      "1.1",
+    )
   })
 
   it("never launches an app removed or a project switched while it was looked at", async () => {
@@ -208,8 +205,9 @@ describe("a desktop app launched for the agent", () => {
         inspect: () => Promise.resolve(notes({ version: "1.1" })),
         trial: (_app, o) => {
           signal = o.signal
-          return new Promise<TrialOutcome>((resolve) =>
-            o.signal?.addEventListener("abort", () => resolve({ failed: "stopped" })),
+          // As the runtime's: a stop thrown as the stop.
+          return new Promise<TrialOutcome>((_, reject) =>
+            o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
           )
         },
       },
@@ -220,7 +218,10 @@ describe("a desktop app launched for the agent", () => {
     const launching = trialing.launch("notes")
     await new Promise((resolve) => setTimeout(resolve, 0))
     trialing.stopAll()
-    await expect(launching).rejects.toThrow(/couldn't be tried confined \(stopped\)/)
+    // Refused for the user (never a raw stop the agent takes for its own).
+    const error = await launching.catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(DesktopRefused)
+    expect(String(error)).toMatch(/the project closed while it was checked/)
     expect(signal?.aborted).toBe(true)
     // A launch already stopped: no trial at all.
     const stopped = new AbortController()
@@ -244,19 +245,32 @@ describe("a desktop app launched for the agent", () => {
     expect(state.launches).toEqual([])
   })
 
-  it("stops only the launch that was stopped, never the trial others wait for", async () => {
-    const { launcher, state } = setup(notes({ version: "1.1" }))
-    const trial = deferred<TrialOutcome>()
-    state.trial = () => trial.promise
+  it("stops only the launch that was stopped (its own trial), never another's", async () => {
+    const { state, approvals } = setup(notes({ version: "1.1" }))
+    const launcher = new DesktopLauncher({
+      approvals: () => approvals,
+      looks: {
+        inspect: () => Promise.resolve(state.installed),
+        trial: (_app, o) =>
+          new Promise<TrialOutcome>((resolve, reject) => {
+            o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error))
+            setTimeout(() => resolve({ ok: true }), 20)
+          }),
+      },
+      launch: (opts) => {
+        state.launches.push(opts)
+        return Promise.resolve({ close: () => Promise.resolve() } as unknown as ElectronTarget)
+      },
+      opened: () => state.opened,
+      scope: () => "folder-a",
+    })
     const stopping = new AbortController()
     const stopped = launcher.launch("notes", stopping.signal)
-    const waiting = launcher.launch("notes")
+    const going = launcher.launch("notes")
     await new Promise((resolve) => setTimeout(resolve, 0))
     stopping.abort()
     await expect(stopped).rejects.toMatchObject({ name: "AbortError" })
-    trial.resolve({ ok: true })
-    await waiting
-    expect(state.trials).toBe(1)
+    await going
     expect(state.launches).toHaveLength(1)
   })
 
@@ -292,5 +306,42 @@ describe("a desktop app launched for the agent", () => {
     const error = await failing.launch("notes").catch((e: unknown) => e)
     expect(error).toBeInstanceOf(DesktopRefused)
     expect(String(error)).toMatch(/couldn't be approved here \(EACCES\)/)
+  })
+
+  it("never approves an update for another project opened while it was tried", async () => {
+    const { launcher, state, approvals } = setup(notes({ version: "1.1" }))
+    const trial = deferred<TrialOutcome>()
+    state.trial = () => trial.promise
+    const launching = launcher.launch("notes")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    // Another project naming the app the same (same scope), opened during the trial.
+    state.opened = setup().opened
+    trial.resolve({ ok: true })
+    await expect(launching).rejects.toThrow(/changed meanwhile/)
+    expect(approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.version).toBe(
+      "1.0",
+    )
+    expect(state.launches).toEqual([])
+  })
+
+  it("launches only the build approved now (another launch's approval meanwhile: refused)", async () => {
+    const { state, approvals } = setup()
+    const looking = deferred<DesktopApp>()
+    const launcher = new DesktopLauncher({
+      approvals: () => approvals,
+      looks: { inspect: () => looking.promise, trial: () => Promise.resolve({ ok: true }) },
+      launch: (opts) => {
+        state.launches.push(opts)
+        return Promise.resolve({ close: () => Promise.resolve() } as unknown as ElectronTarget)
+      },
+      opened: () => state.opened,
+      scope: () => "folder-a",
+    })
+    const launching = launcher.launch("notes")
+    // Another launch approved 1.1 meanwhile: this one's 1.0 is no longer the approved build.
+    approvals.approve(notes({ version: "1.1" }), "folder-a", opensOf(entry()))
+    looking.resolve(notes())
+    await expect(launching).rejects.toThrow(/changed meanwhile/)
+    expect(state.launches).toEqual([])
   })
 })

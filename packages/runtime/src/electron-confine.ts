@@ -206,8 +206,11 @@ export async function copyFiles(from: string, to: string, signal?: AbortSignal):
     if (error instanceof FilesError) throw error
     const code = (error as { code?: string }).code
     throw new FilesError(
-      code === "ENOENT" && !existsSync(from)
-        ? "the project has no files/ folder (what its arguments name)"
+      code === "ENOENT"
+        ? existsSync(from)
+          ? // Something in it gone while it was copied (moved, swapped): said as such.
+            "files/ changed while it was copied: try again"
+          : "the project has no files/ folder (what its arguments name)"
         : `files/ couldn't be copied (${code ?? String(error)})`,
     )
   }

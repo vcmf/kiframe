@@ -1374,10 +1374,15 @@ describe("a desktop app's files", { timeout: 60_000 }, () => {
     }
 
     beforeAll(async () => {
-      // The app's own time to start, measured: it's given twice that and a second.
-      const t0 = Date.now()
-      await (await launch()).close()
-      budget = 2 * (Date.now() - t0) + 1000
+      // The app's own time to start, measured twice (one slow start: never the budget's undoing):
+      // it's given three times the slower and two seconds.
+      let slowest = 0
+      for (let i = 0; i < 2; i++) {
+        const t0 = Date.now()
+        await (await launch()).close()
+        slowest = Math.max(slowest, Date.now() - t0)
+      }
+      budget = 3 * slowest + 2000
       root = mkdtempSync(join(tmpdir(), "kiframe-el-slow-"))
       files = join(root, "files")
       FILES_LIMITS.files = 400_000
@@ -1432,7 +1437,9 @@ describe("a desktop app's files", { timeout: 60_000 }, () => {
         symlinkSync(mirror, vault)
       }, 300)
       try {
-        await expect(launching).rejects.toThrow(/files\/vault.* changed while it was copied/)
+        // Refused as a change, whichever moment of the swap the copy met (a link in its place, or the
+        // folder gone between the rename and the link).
+        await expect(launching).rejects.toThrow(/files.* changed while it was copied/)
       } finally {
         rmSync(vault, { force: true })
         renameSync(join(root, "vault-moved"), vault)
