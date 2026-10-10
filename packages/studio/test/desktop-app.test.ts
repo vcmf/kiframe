@@ -170,6 +170,8 @@ steps:
     }
     const two =
       "  notes: { kind: electron, bundleId: com.example.notes }\n  other: { kind: electron, bundleId: com.example.other }\n"
+    // One app: nothing to guess (a bare snapshot or handover opens it).
+    const one = "  notes: { kind: electron, bundleId: com.example.notes }\n"
 
     it("refuses a call while another call's launch goes on (never joined)", async () => {
       const fake = launcher()
@@ -188,7 +190,7 @@ steps:
 
     it("keeps a refusal the user settles through the tool (the agent tells them, never retries)", async () => {
       const fake = launcher()
-      const studio = desktopStudio(fake, two)
+      const studio = desktopStudio(fake, one)
       const snapshot = studioTools.find((t) => t.name === "snapshot")!
       const seen = snapshot.run({}, studio, new AbortController().signal)
       await expect.poll(() => fake.pending.length).toBe(1)
@@ -256,7 +258,7 @@ steps:
 
     it("stops a snapshot's launch with the snapshot (the agent's first call)", async () => {
       const fake = launcher()
-      const studio = desktopStudio(fake, two)
+      const studio = desktopStudio(fake, one)
       const stopping = new AbortController()
       const shot = studioTools.find((t) => t.name === "snapshot")!.run({}, studio, stopping.signal)
       await expect.poll(() => fake.pending.length).toBe(1)
@@ -469,9 +471,39 @@ steps:
       await replay
     })
 
-    it("refuses a handover before launching anything", async () => {
+    it("never guesses which of several apps to open: says to open one with a step", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)
+      const signal = new AbortController().signal
+      const asked = /no app is open yet .*start_app/
+      expect(await studio.snapshot(undefined, undefined, signal)).toMatchObject({
+        ok: false,
+        text: expect.stringMatching(asked) as string,
+      })
+      expect(await studio.look(undefined, signal)).toMatchObject({
+        error: expect.stringMatching(asked) as string,
+      })
+      expect(await studio.handOver("Sign in", undefined, signal)).toMatchObject({
+        error: expect.stringMatching(asked) as string,
+      })
+      expect(fake.pending).toEqual([])
+      // Once a step opened one, a bare snapshot is of it.
+      const opened = studio.runStep(
+        { id: "a", action: "pause", ms: 1 },
+        "s",
+        signal,
+        "steps",
+        "other",
+      )
+      await expect.poll(() => fake.pending.length).toBe(1)
+      expect(fake.pending[0]?.app).toBe("other")
+      fake.pending[0]?.fail(new Error("done"))
+      await opened
+    })
+
+    it("refuses a handover before launching anything", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, one)
       expect(
         await studio.handOver("Sign in", undefined, new AbortController().signal),
       ).toMatchObject({

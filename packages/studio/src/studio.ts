@@ -634,6 +634,7 @@ export class Studio {
     ref?: string,
     signal?: AbortSignal,
   ): Promise<{ text: string; image: string } | { error: string }> {
+    if (this.#appFor(undefined) === undefined) return { error: NO_APP_OPEN }
     const page = await this.livePage(undefined, signal ?? this.#lifetime.signal)
     // A ref's box, measured in both scans around the capture (it must not move); the image is its
     // part on screen (an `at` fraction maps onto the image only when it's whole). Never scrolled
@@ -698,6 +699,12 @@ export class Studio {
       // Said when it's how the look was asked (it won't change); else never why (a retry's reason
       // could tell what changed on the page).
       if (error instanceof LookRefusal) return { error: `couldn't look: ${error.message}` }
+      // Why, for Kiframe's own debugging only (stderr, when asked): never the agent's.
+      if (process.env.KIFRAME_ELECTRON_DEBUG !== undefined) {
+        process.stderr.write(
+          `[look] ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
+        )
+      }
       return { error: "couldn't look at the page now: try again in a moment" }
     }
   }
@@ -719,10 +726,11 @@ export class Studio {
     | { error: string }
   > {
     // A desktop app's (live, or the one that would open): refused before anything launches.
+    const opens = this.#appFor(undefined)
+    if (opens === undefined) return { error: NO_APP_OPEN }
     if (
       this.#live?.target !== undefined ||
-      (this.#live === undefined &&
-        appOf(this.options.config, this.#appFor(undefined))?.kind === "electron")
+      (this.#live === undefined && appOf(this.options.config, opens)?.kind === "electron")
     ) {
       return { error: NO_DESKTOP_HANDOVER }
     }
@@ -895,18 +903,18 @@ export class Studio {
   }
 
   /**
-   * The app a live page is for: the one asked, else what's live, else the default (the first app;
-   * with no desktop launcher here, the first web app, as ever). Decided once, before anything opens.
+   * The app a live page is for: the one asked, else what's live, else the only app that can open
+   * here (a desktop app only with a launcher). Several and none asked: undefined, never a guess
+   * (the agent opens the scene's app with a step first). Decided once, before anything opens.
    */
-  #appFor(app: string | undefined): string {
-    return (
-      app ??
-      this.#live?.app ??
-      (this.options.launchDesktop === undefined
-        ? Object.keys(webAppsOf(this.options.config.apps))[0]
-        : undefined) ??
-      firstApp(this.options.config).name
-    )
+  #appFor(app: string | undefined): string | undefined {
+    if (app !== undefined) return app
+    if (this.#live !== undefined) return this.#live.app
+    const { apps } = this.options.config
+    const openable = Object.keys(this.options.launchDesktop === undefined ? webAppsOf(apps) : apps)
+    if (openable.length === 1) return openable[0]
+    // None openable here (a desktop-only project, no launcher): its first, said as such on opening.
+    return openable.length === 0 ? firstApp(this.options.config).name : undefined
   }
 
   /**
@@ -918,6 +926,7 @@ export class Studio {
    */
   async livePage(app: string | undefined, signal: AbortSignal): Promise<Page> {
     const wanted = this.#appFor(app)
+    if (wanted === undefined) throw new NoAppOpen()
     const opening = this.#opening
     // A web page opening (at once, never stopped midway): one page for callers at once.
     if (opening !== undefined && !opening.desktop && opening.app === wanted) return opening.page
@@ -1124,6 +1133,7 @@ export class Studio {
     // Its refs are gone whatever this one gives (as Playwright's are).
     this.#snapshot = undefined
     this.#checked = undefined
+    if (this.#appFor(undefined) === undefined) return failed(NO_APP_OPEN)
     const page = await this.livePage(undefined, signal ?? this.#lifetime.signal)
     let root = page.locator("body")
     if (within !== undefined) {
@@ -1944,6 +1954,17 @@ function refusal(error: unknown): string {
   if (!needsUser(error)) return failure(error)
   // Its own words (a refusal is no crash: no "Error:").
   return `${error instanceof Error ? error.message : String(error)}. ${USER_SETTLES}`
+}
+
+/** Said when a tool needs the live page, none is open, and the project has several apps. */
+const NO_APP_OPEN =
+  "no app is open yet (the project has several): open the scene's app with a run_step first, its start_app named (a pause step opens it and does nothing else)"
+
+/** Thrown by `livePage` rather than guessing which of several apps to open. */
+class NoAppOpen extends Error {
+  constructor() {
+    super(NO_APP_OPEN)
+  }
 }
 
 /** Why a scene never has a teardown or an `ensure` (OBJECT-MODEL §0.4). */

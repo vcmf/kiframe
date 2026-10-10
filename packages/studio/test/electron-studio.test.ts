@@ -269,6 +269,12 @@ steps:
       "  notes: { kind: electron, bundleId: com.kiframe.fixture, viewport: { width: 800, height: 600, deviceScaleFactor: 1 } }\n" +
       "  other: { kind: electron, bundleId: com.kiframe.other, viewport: { width: 800, height: 600, deviceScaleFactor: 1 } }\n"
     const { studio } = studioWith(undefined, twice)
+    // Opened by a step first (with several apps, a bare snapshot never guesses).
+    await run(studio, "run_step", {
+      scene: "s",
+      start_app: "notes",
+      step: { id: "a", action: "pause", ms: 1 },
+    })
     const shot = JSON.stringify(await run(studio, "snapshot", {}))
     // The snapshot as the agent gets it (JSON: its quotes escaped).
     const ref = /button \\?"Add note\\?" \[ref=(e\d+)\]/.exec(shot)?.[1]

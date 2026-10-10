@@ -157,5 +157,7 @@ ${list}
   condition \`{ action: waitFor, until: { url: /path, app: <name> } }\` (same in expect's \`that\`).
   Only goto and URL conditions take an app (never a click).
 - Where a step leaves the page says its app: \`url: docs: /install\`.
+- snapshot and look show the app that's open: with none open yet, open the scene's app first (a
+  run_step with its start_app; a pause step does nothing else).
 ${adding}`
 }
