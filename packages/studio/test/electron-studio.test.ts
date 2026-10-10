@@ -63,7 +63,13 @@ ${appsYaml}defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant }
         launches.push(app)
         const target = await launchElectronWith(
           { executable: electron, bundle: fixture, workDir: work, viewport, signal, settleMs: 300 },
-          { appArgs: [fixture, "hidden"], readable: [electronApp], allowUnconfined: true },
+          // Hidden where it still paints (macOS); shown on Linux (xvfb): a hidden window there never
+          // paints, so a look's screenshot would wait forever.
+          {
+            appArgs: process.platform === "linux" ? [fixture] : [fixture, "hidden"],
+            readable: [electronApp],
+            allowUnconfined: true,
+          },
         )
         closing.push(() => target.close().then(() => undefined))
         return { target, build: { version: "44.4.5", opens: "a".repeat(64) } }
