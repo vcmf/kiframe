@@ -22,15 +22,102 @@ import { sameApp } from "./site.ts"
 // - `ProjectConfig`: what the runtime reads, resolved from org settings + the project
 //   (`resolveProjectConfig` in resolve.ts): the rule bank from the org.
 
-/** An app a demo shows: v0 drives web apps (pages and desktop apps come with their drivers). */
-export const App = z.strictObject({
+/** A web app, opened at its address in a fresh browser. */
+export const WebApp = z.strictObject({
   kind: z.literal("web"),
   /** http(s) only, and no embedded credentials (use the vault). */
   url: withoutCredentials(z.url({ protocol: /^https?$/ })),
   /** The size its takes are recorded at. */
   viewport: Viewport.prefault({ width: 1440, height: 900 }),
 })
+export type WebApp = z.infer<typeof WebApp>
+
+/** An https origin (a wrapper app's pages: Slack's, Notion's). */
+const HttpsOrigin = z
+  .string()
+  .max(255)
+  .refine((s) => {
+    const url = URL.parse(s)
+    return url !== null && url.protocol === "https:" && url.origin === s
+  }, "an https origin (https://host, no path)")
+
+/** A macOS bundle id's form (underscores too: macOS runs electron-builder's com.electron.my_app). */
+export const BUNDLE_ID = /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$/
+
+/**
+ * A desktop app's argument as a path in the project's files/ (`files/a/b` → ["a", "b"]); undefined
+ * for anything else (files/ itself, an empty, "." or ".." part: never outside it).
+ */
+export function filesPath(arg: string): string[] | undefined {
+  const parts = arg.split("/")
+  if (parts[0] !== "files" || parts.length < 2) return undefined
+  if (parts.some((p) => p === "" || p === "." || p === "..")) return undefined
+  return parts.slice(1)
+}
+
+/**
+ * A desktop Electron app (OBJECT-MODEL §0.9, design 2026-10-08), named by its bundle id: never a
+ * path or a program (a project may come from someone else: the app a bundle id means is found and
+ * approved on each machine, by the desktop app). Launched sandboxed for each run.
+ */
+export const ElectronApp = z.strictObject({
+  kind: z.literal("electron"),
+  /** The macOS bundle id (`com.example.app`). */
+  bundleId: z.string().max(255).regex(BUNDLE_ID, "a bundle id (com.example.app)"),
+  /**
+   * What the app opens: paths in the project's files/ (`files/demo-vault`; a copy is what it gets,
+   * decided 2026-10-09), positional only, never a switch.
+   */
+  args: z
+    .array(
+      z
+        .string()
+        .min(1)
+        .max(1024)
+        // Chromium trims an argument before telling a switch: no space or control character at
+        // either end, none inside, never a leading dash.
+        .refine(
+          (a) =>
+            !a.startsWith("-") &&
+            !/^\s|\s$/.test(a) &&
+            ![...a].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127),
+          "positional arguments only (no switches, no spaces at the ends)",
+        )
+        .refine(
+          (a) => filesPath(a) !== undefined,
+          "a path in the project's files/ (files/<name>): a desktop app opens only those",
+        ),
+    )
+    .max(20)
+    .optional(),
+  /** The sites a wrapper app shows as its own (Slack's app.slack.com): its pages, never another's. */
+  origins: z.array(HttpsOrigin).max(10).optional(),
+  /** The size its takes are recorded at (emulated: the window itself is never moved). */
+  viewport: Viewport.prefault({ width: 1440, height: 900 }),
+})
+export type ElectronApp = z.infer<typeof ElectronApp>
+
+/** An app a demo shows: a web app, or a desktop Electron app. */
+export const App = z.discriminatedUnion("kind", [WebApp, ElectronApp])
 export type App = z.infer<typeof App>
+
+/** The web apps of a project (the ones with an address), by name. */
+export function webAppsOf(apps: Readonly<Record<string, App>>): Record<string, WebApp> {
+  return Object.fromEntries(
+    Object.entries(apps).filter((e): e is [string, WebApp] => e[1].kind === "web"),
+  )
+}
+
+/** A web app's address (a harness that drives web apps only); a desktop app has none: said. */
+export function urlOf(app: App): string {
+  if (app.kind !== "web") throw new Error(`a desktop app (${app.bundleId}) has no address`)
+  return app.url
+}
+
+/** What an app is, as one string (a take's key, a label): its address, or `electron:<bundle id>`. */
+export function appIdentity(app: App): string {
+  return app.kind === "web" ? app.url : `electron:${app.bundleId}`
+}
 
 /** The apps of a project, in order (the first is where a scene starts), never two on one site. */
 export const Apps = z.record(AppName, App).superRefine((apps, ctx) => {
@@ -41,16 +128,33 @@ export const Apps = z.record(AppName, App).superRefine((apps, ctx) => {
     ctx.addIssue({ code: "custom", message: "at most 20 apps" })
     return
   }
+  // One app per site: two web apps on one site, a wrapper app's site (`origins`) that's a web app's
+  // or another wrapper's; one entry per desktop app (its bundle id, in any case).
+  const sites = (app: App): string[] => (app.kind === "web" ? [app.url] : (app.origins ?? []))
+  const overlap = (a: App, b: App) =>
+    sites(a).some((x) => sites(b).some((y) => sameApp(x, y) || sameApp(y, x)))
   entries.forEach(([name, app], i) => {
-    const other = entries
-      .slice(0, i)
-      .find(([, o]) => sameApp(app.url, o.url) || sameApp(o.url, app.url))
-    if (other !== undefined) {
-      ctx.addIssue({
-        code: "custom",
-        message: `apps "${other[0]}" and "${name}" are on the same site: one app per site`,
-        path: [name, "url"],
-      })
+    for (const [otherName, other] of entries.slice(0, i)) {
+      if (
+        app.kind === "electron" &&
+        other.kind === "electron" &&
+        app.bundleId.toLowerCase() === other.bundleId.toLowerCase()
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: `apps "${otherName}" and "${name}" are the same desktop app: one app each`,
+          path: [name, "bundleId"],
+        })
+        return
+      }
+      if (overlap(app, other)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `apps "${otherName}" and "${name}" are on the same site: one app per site`,
+          path: [name, app.kind === "web" ? "url" : "origins"],
+        })
+        return
+      }
     }
   })
 })
@@ -81,7 +185,7 @@ export function appOf(project: { apps: Apps }, name: string): App | undefined {
 
 /** A shared off-camera setup. Presets are flat: they can't reference other presets (no recursion). */
 export const Preset = z.strictObject({
-  /** The app its steps start in, by name (default: the project's first). */
+  /** The app its steps start in, by name (default: the project's first; never a desktop app yet). */
   app: AppName.optional(),
   /** Run once per recording batch, then reuse its browser session (login presets). */
   session: z.boolean().default(false),

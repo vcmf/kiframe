@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Settings</title>
+  </head>
+  <body>
+    <h1>Settings</h1>
+    <p>Settings width: <span id="w"></span></p>
+    <script>
+      const w = () => (document.getElementById("w").textContent = String(innerWidth))
+      w()
+      addEventListener("resize", w)
+    </script>
+  </body>
+</html>

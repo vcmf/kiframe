@@ -12,6 +12,7 @@ import {
 import { writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import {
+  appIdentity,
   CursorSample,
   startAppOf,
   TakeEvent,
@@ -52,6 +53,8 @@ export interface RecordOptions extends RunOptions {
   encodeFailed?: boolean
   /** Version string written into meta.json. */
   kiframeVersion?: string
+  /** A desktop app's build and what it opened (its take keeps them: shown, never a key). */
+  appBuild?: TakeMeta["appBuild"]
 }
 
 export interface Take {
@@ -465,11 +468,12 @@ export async function recordScenario(
       const start = startAppOf(scenario, project)
       meta = TakeMeta.parse({
         version: 1,
-        takeKey: `${sha256(`${scenarioHash}|${start.app.url}|${JSON.stringify(start.app.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
+        takeKey: `${sha256(`${scenarioHash}|${appIdentity(start.app)}|${JSON.stringify(start.app.viewport)}|q${options.quality ?? 85}`).slice(0, 16)}-${recordedAt.getTime()}`,
         scenarioHash,
         recordedAt: recordedAt.toISOString(),
-        appUrl: start.app.url,
+        appUrl: appIdentity(start.app),
         app: start.name,
+        ...(options.appBuild !== undefined && { appBuild: options.appBuild }),
         // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
         viewport: {
           width: viewport.width,

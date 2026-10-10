@@ -12,8 +12,7 @@ const project: ProjectView = {
   session: "s1",
   name: "Demo",
   dir: "/tmp/demo.kiframe",
-  url: "https://app.test",
-  apps: [{ name: "app", origin: "https://app.test" }],
+  apps: [{ name: "app", kind: "web", origin: "https://app.test" }],
   scenes: [],
   problems: [],
 }

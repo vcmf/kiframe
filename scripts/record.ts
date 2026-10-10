@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { recordScenario } from "@kiframe/runtime"
-import { firstApp, parseProjectYaml, parseScenarioYaml, startAppOf } from "@kiframe/schema"
+import { firstApp, urlOf, parseProjectYaml, parseScenarioYaml, startAppOf } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { sceneIdOf } from "./lib/scenes.ts"
 import { envSecretResolver, loadDotEnv } from "./lib/secrets.ts"
@@ -46,7 +46,7 @@ const start = startAppOf(scenario, project).app
 // The `.env` secrets are the first app's (its login, as a preset without an app runs there).
 const resolveSecret = envSecretResolver(
   values.secrets.split(",").filter(Boolean),
-  firstApp(project).app.url,
+  urlOf(firstApp(project).app),
 )
 // A high DPR only helps headed (headless frames stay at CSS resolution, F1): the project's DPR
 // headed, 1 headless, unless --dpr says otherwise.

@@ -506,3 +506,90 @@ steps: [{ id: dead, action: click, target: { by: role, role: link, name: Nowhere
     ])
   })
 })
+
+describe("a desktop app among the project's apps (design 2026-10-08)", () => {
+  const withDesk = () =>
+    parseProjectYaml(`version: 2
+apps:
+  app: { kind: web, url: "${app.origin}", viewport: { width: 800, height: 600 } }
+  notes: { kind: electron, bundleId: com.example.notes }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+  const failure = async (yaml: string) => {
+    try {
+      await runScenario(page, parseScenarioYaml(`version: 1\n${yaml}`), withDesk(), {
+        timeoutMs: 1000,
+        fresh: true,
+      })
+    } catch (error) {
+      if (error instanceof StepError) return error
+      throw error
+    }
+    throw new Error("expected a failure")
+  }
+
+  it("refuses a goto or a URL condition on it, saying it has no address", async () => {
+    const goto = await failure(`steps:
+  - { id: a, action: goto, app: notes, url: / }`)
+    expect(goto.reason).toBe("invalid-setup")
+    expect(goto.message).toMatch(/a goto needs a web app: "notes" is a desktop app/)
+    const waits = await failure(`steps:
+  - { id: a, action: waitFor, until: { url: /, app: notes } }`)
+    expect(waits.message).toMatch(/a URL condition needs a web app: "notes" is a desktop app/)
+  })
+
+  it("refuses a scene starting in it (never filmed on a page), and never counts as a page's app", async () => {
+    const started = await failure(`app: notes
+steps: [{ id: a, action: pause, ms: 1 }]`)
+    expect(started.reason).toBe("invalid-setup")
+    expect(started.message).toMatch(/app "notes" is a desktop app: it runs only in its own launch/)
+    expect(page.url()).toBe("about:blank")
+    // The web app is still its own (a desktop app never matches a page's address).
+    await runScenario(
+      page,
+      parseScenarioYaml(
+        `version: 1\napp: app\nsteps: [{ id: a, action: expect, that: { url: / } }]\n`,
+      ),
+      withDesk(),
+      { fresh: true },
+    )
+    expect(page.url()).toBe(`${app.origin}/`)
+  })
+
+  it("refuses a preset that would run in it (named, or the first app), said why", async () => {
+    const deskFirst = parseProjectYaml(`version: 2
+apps:
+  notes: { kind: electron, bundleId: com.example.notes }
+  app: { kind: web, url: "${app.origin}", viewport: { width: 800, height: 600 } }
+presets:
+  home: { steps: [{ action: click, target: { by: role, role: link, name: Projects } }] }
+  named: { app: notes, steps: [{ action: pause, ms: 1 }] }
+  web: { app: app, steps: [{ action: goto, url: /projects }] }
+defaults: { pacing: { settleMs: 0, cursor: instant, typing: instant } }
+`)
+    const run = (preset: string) =>
+      runScenario(
+        page,
+        parseScenarioYaml(`version: 1
+app: app
+setup: [{ preset: ${preset} }]
+steps: [{ id: a, action: pause, ms: 1 }]
+`),
+        deskFirst,
+        { fresh: true, timeoutMs: 3000 },
+      )
+    for (const preset of ["home", "named"]) {
+      const error = await run(preset).then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+      expect(error, preset).toBeInstanceOf(StepError)
+      expect((error as StepError).message, preset).toMatch(
+        new RegExp(`preset "${preset}" runs in "notes", a desktop app`),
+      )
+    }
+    // Named to the web app: runs.
+    await run("web")
+    expect(page.url()).toBe(`${app.origin}/projects`)
+  })
+})

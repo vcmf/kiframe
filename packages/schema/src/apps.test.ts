@@ -15,6 +15,9 @@ import {
   Project,
   ProjectConfig,
   SchemaError,
+  appIdentity,
+  urlOf,
+  webAppsOf,
 } from "./index.ts"
 
 // B1 (OBJECT-MODEL §0.9): a project's named apps replace its one target (project v2), and a v1
@@ -102,7 +105,7 @@ describe("a project's apps", () => {
 
   it("finds an app by name, never a key every object has", () => {
     const p = Project.parse(v2({ app: app("https://a.dev") }))
-    expect(appOf(p, "app")?.url).toBe("https://a.dev")
+    expect(appOf(p, "app")).toMatchObject({ url: "https://a.dev" })
     expect(appOf(p, "docs")).toBeUndefined()
     expect(appOf(p, "constructor")).toBeUndefined()
     expect(appOf(p, "__proto__")).toBeUndefined()
@@ -174,7 +177,7 @@ describe("a v1 project, read", () => {
     const config = parseProjectYaml(
       'version: 1\nenvironment: staging\ntarget: { kind: web, url: "https://s.dev", viewport: { width: 1280, height: 800 } }\n',
     )
-    expect(ProjectConfig.parse(config).apps.app?.url).toBe("https://s.dev")
+    expect(ProjectConfig.parse(config).apps.app).toMatchObject({ url: "https://s.dev" })
     expect(firstApp(config).app.viewport.width).toBe(1280)
   })
 })
@@ -259,5 +262,112 @@ teardown:
       startAppOf(scene("app: docs\nsteps: [{ id: a, action: pause, ms: 1 }]"), config).name,
     ).toBe("docs")
     expect(() => startAppOf({ app: "nope" }, config)).toThrow(/isn't one of the project's apps/)
+  })
+})
+
+describe("a desktop Electron app (design 2026-10-08)", () => {
+  const desk = (extra: object = {}) => ({
+    kind: "electron",
+    bundleId: "com.example.notes",
+    ...extra,
+  })
+  const parse = (apps: object) => Project.safeParse(v2(apps))
+
+  it("is named by its bundle id, beside web apps (the viewport defaulted)", () => {
+    const parsed = parse({ web: app("https://a.dev"), notes: desk({ args: ["files/demo"] }) })
+    expect(parsed.success).toBe(true)
+    const notes = parsed.data?.apps.notes
+    expect(notes).toEqual({
+      kind: "electron",
+      bundleId: "com.example.notes",
+      args: ["files/demo"],
+      viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
+    })
+    expect(appIdentity(notes!)).toBe("electron:com.example.notes")
+    expect(Object.keys(webAppsOf(parsed.data!.apps))).toEqual(["web"])
+    expect(() => urlOf(notes!)).toThrow("a desktop app (com.example.notes) has no address")
+    expect(urlOf(parsed.data!.apps.web!)).toBe("https://a.dev")
+  })
+
+  it("never names a program: no path, no switch, a bundle id's form only", () => {
+    const issue = (apps: object) => {
+      const r = parse(apps)
+      return r.success ? "parsed" : r.error.issues.map((i) => i.message).join("; ")
+    }
+    expect(issue({ x: desk({ path: "/bin/sh" }) })).not.toBe("parsed")
+    expect(issue({ x: desk({ args: ["--inspect=9229"] }) })).toMatch(/positional arguments only/)
+    expect(issue({ x: desk({ args: ["-e"] }) })).toMatch(/positional arguments only/)
+    expect(issue({ x: desk({ bundleId: "/Applications/Notes.app" }) })).toMatch(/a bundle id/)
+    // An underscore is a bundle id's (electron-builder's com.electron.my_app).
+    expect(issue({ x: desk({ bundleId: "com.electron.my_app" }) })).toBe("parsed")
+    expect(issue({ x: desk({ bundleId: "notes" }) })).toMatch(/a bundle id/)
+    expect(issue({ x: desk({ url: "https://a.dev" }) })).not.toBe("parsed")
+    // Chromium trims an argument before telling a switch: spaces and control characters too.
+    for (const sneaky of [
+      " --user-data-dir=/x",
+      "\t--remote-debugging-address=0.0.0.0",
+      "a\nb",
+      "a ",
+    ]) {
+      expect(issue({ x: desk({ args: [sneaky] }) }), JSON.stringify(sneaky)).toMatch(
+        /positional arguments only/,
+      )
+    }
+    expect(issue({ x: desk({ args: ["files/My Demo"] }) })).toBe("parsed")
+    // Only the project's files/ (never the user's own folders, never out of it).
+    for (const outside of [
+      "~/Demo",
+      "/Users/me/Demo",
+      "files",
+      "files/../x",
+      "files//x",
+      "./files/x",
+    ]) {
+      expect(issue({ x: desk({ args: [outside] }) }), outside).toMatch(
+        /a path in the project's files/,
+      )
+    }
+    expect(issue({ x: desk({ bundleId: "1.0" }) })).toMatch(/a bundle id/)
+  })
+
+  it("takes a wrapper app's sites as https origins only", () => {
+    expect(parse({ x: desk({ origins: ["https://app.slack.com"] }) }).success).toBe(true)
+    for (const bad of ["http://app.slack.com", "https://app.slack.com/client", "file:///"]) {
+      expect(parse({ x: desk({ origins: [bad] }) }).success, bad).toBe(false)
+    }
+  })
+
+  it("is listed once per project (its bundle id in any case), its sites never a web app's", () => {
+    const r = parse({ a: desk(), b: desk({ bundleId: "com.Example.Notes" }) })
+    expect(r.success).toBe(false)
+    expect(r.error?.issues[0]?.message).toBe(
+      'apps "a" and "b" are the same desktop app: one app each',
+    )
+    const site = parse({
+      slack: desk({ bundleId: "com.tinyspeck.slackmacgap", origins: ["https://app.slack.com"] }),
+      web: app("https://app.slack.com"),
+    })
+    expect(site.error?.issues[0]?.message).toBe(
+      'apps "slack" and "web" are on the same site: one app per site',
+    )
+    // Either order: the web app listed first too.
+    const webFirst = parse({
+      web: app("https://app.slack.com"),
+      slack: desk({ bundleId: "com.tinyspeck.slackmacgap", origins: ["https://app.slack.com"] }),
+    })
+    expect(webFirst.error?.issues[0]?.message).toBe(
+      'apps "web" and "slack" are on the same site: one app per site',
+    )
+  })
+
+  it("never lets two wrapper apps claim one site (the issue on their origins)", () => {
+    const both = parse({
+      a: desk({ bundleId: "com.a.slack", origins: ["https://app.slack.com"] }),
+      b: desk({ bundleId: "com.b.slack", origins: ["https://app.slack.com"] }),
+    })
+    expect(both.error?.issues[0]).toMatchObject({
+      message: 'apps "a" and "b" are on the same site: one app per site',
+      path: ["apps", "b", "origins"],
+    })
   })
 })

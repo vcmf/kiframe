@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto"
 import { realpathSync } from "node:fs"
 import { createProject, openProject, type OpenedProject } from "@kiframe/project"
 import type { ProjectView } from "../shared/ipc.ts"
-import { projectView } from "./project.ts"
+import { appView, projectView } from "./project.ts"
 
 /** What the workspace needs of an agent. */
 export interface Agent {
@@ -18,6 +18,7 @@ export class Workspace<A extends Agent> {
   #session = ""
   #agent: A | undefined
   #switching: Promise<unknown> = Promise.resolve()
+  readonly #onSwitch: (() => void)[] = []
 
   readonly #ready: () => void
 
@@ -39,15 +40,22 @@ export class Workspace<A extends Agent> {
     return this.#opened
   }
 
+  /** This opening's session; none when no project is open. */
+  get session(): string | undefined {
+    return this.#opened === null ? undefined : this.#session
+  }
+
+  /** Told as a project is opened, created or closed (what belonged to the last one ends). */
+  onSwitch(listener: () => void): void {
+    this.#onSwitch.push(listener)
+  }
+
   /** The open project's apps and this opening's session, without building its whole view. */
   apps(): Pick<ProjectView, "session" | "apps"> | undefined {
     if (this.#opened === null) return undefined
     return {
       session: this.#session,
-      apps: Object.entries(this.#opened.project.apps).map(([name, app]) => ({
-        name,
-        origin: new URL(app.url).origin,
-      })),
+      apps: Object.entries(this.#opened.project.apps).map(([name, app]) => appView(name, app)),
     }
   }
 
@@ -89,6 +97,14 @@ export class Workspace<A extends Agent> {
       this.#opened = opened
       this.#agent = agent
       this.#session = randomBytes(6).toString("hex")
+      // A listener that fails never keeps the old agent from closing.
+      for (const listener of this.#onSwitch) {
+        try {
+          listener()
+        } catch {
+          // said by the listener itself, if anywhere
+        }
+      }
       try {
         await old?.close()
       } finally {

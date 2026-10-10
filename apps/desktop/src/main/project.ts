@@ -3,15 +3,22 @@
 import { createHash } from "node:crypto"
 import { existsSync, readdirSync, statSync } from "node:fs"
 import { type OpenedProject, saveProject, scenesNaming } from "@kiframe/project"
-import { App, appOf, appsNamedByPreset, firstApp, unlistedApps } from "@kiframe/schema"
-import type { ProjectView, SceneView } from "../shared/ipc.ts"
+import { type App, appOf, appsNamedByPreset, firstApp, unlistedApps, WebApp } from "@kiframe/schema"
+import { type AppView, appViewIdentity, type ProjectView, type SceneView } from "../shared/ipc.ts"
 
 /** A project folder's extension (a new project's folder gets it). */
 export const PROJECT_EXTENSION = ".kiframe"
 
+/** An app as the window has it: a web app by its exact origin, a desktop app by its bundle id. */
+export function appView(name: string, app: App): AppView {
+  return app.kind === "web"
+    ? { name, kind: "web", origin: new URL(app.url).origin }
+    : { name, kind: "electron", bundleId: app.bundleId }
+}
+
 /** The app's address, by the project schema's own rule (http(s), no credentials in it). */
 export function targetUrl(url: string): string {
-  const parsed = App.shape.url.safeParse(url.trim())
+  const parsed = WebApp.shape.url.safeParse(url.trim())
   if (!parsed.success) {
     throw new Error(`App address: ${parsed.error.issues[0]?.message ?? "not a URL"}`)
   }
@@ -122,11 +129,7 @@ export function projectView(opened: OpenedProject, session: string): ProjectView
     session,
     name: project.name,
     dir: opened.dir,
-    url: firstApp(project).app.url,
-    apps: Object.entries(project.apps).map(([name, app]) => ({
-      name,
-      origin: new URL(app.url).origin,
-    })),
+    apps: Object.entries(project.apps).map(([name, app]) => appView(name, app)),
     scenes: views,
     problems: problems.map((p) => `${p.sceneId}: ${p.message}`),
   }
@@ -141,11 +144,28 @@ export function appOriginOf(
   view: Pick<ProjectView, "session" | "apps"> | undefined,
   session: string,
   app: string,
-): { origin: string } | { why: string } {
+): AppView | { why: string } {
   if (view === undefined) return { why: "open a project first" }
   if (view.session !== session) return { why: "the project changed meanwhile: try again" }
   const found = view.apps.find((a) => a.name === app)
   return found === undefined ? { why: `"${app}" isn't one of the project's apps` } : found
+}
+
+/**
+ * The origin a secret of `app` is kept for: a web app's; a desktop app takes none in v0 (the user
+ * signs in by hand there), said.
+ */
+export function secretOriginOf(
+  view: Pick<ProjectView, "session" | "apps"> | undefined,
+  session: string,
+  app: string,
+): { origin: string } | { why: string } {
+  const at = appOriginOf(view, session, app)
+  if ("why" in at) return at
+  if (at.kind !== "web") {
+    return { why: `"${app}" is a desktop app: it takes no secrets (sign in by hand when Kif asks)` }
+  }
+  return { origin: at.origin }
 }
 
 /** The titles of the scenes that name `app` (`scenesNaming`: every stored scene). */
@@ -175,13 +195,13 @@ export function removeApp(opened: OpenedProject, app: string): void {
  */
 export function appRemovalRefused(
   view: Pick<ProjectView, "session" | "apps"> | undefined,
-  request: { session: string; name: string; origin: string },
+  request: { session: string; name: string; identity: string },
   running: boolean,
 ): string | null {
   if (running) return "Kif is working: stop it first"
   const at = appOriginOf(view, request.session, request.name)
   if ("why" in at) return at.why
-  if (at.origin !== request.origin) return "that app changed meanwhile: try again"
+  if (appViewIdentity(at) !== request.identity) return "that app changed meanwhile: try again"
   if (view?.apps[0]?.name === request.name) {
     return `"${request.name}" is where scenes start: it can't be removed`
   }

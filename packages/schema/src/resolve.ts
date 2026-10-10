@@ -1,5 +1,5 @@
 import type { OrgSettings } from "./org.ts"
-import { firstApp, ProjectConfig, type Output, type Project } from "./project.ts"
+import { appIdentity, firstApp, ProjectConfig, type Output, type Project } from "./project.ts"
 import { secretRefName } from "./common.ts"
 import type { Scenario } from "./scenario.ts"
 import type { SceneId } from "./scene.ts"
@@ -61,7 +61,7 @@ export function resolveProjectConfig(
     config,
     orgInterrupts: orgRules.filter((r) => !own.has(r.id)).map((r) => r.id),
     environment: {
-      url: firstApp(config).app.url,
+      url: appIdentity(firstApp(config).app),
       requiredSecrets: [],
     },
   }

@@ -11,3 +11,15 @@ export function upsert<T extends { id: string }>(items: readonly T[], item: T): 
   next[at] = item
   return next
 }
+
+/** An app as the window names it: a web app by its host, a desktop app by its bundle id. */
+export function appLabel(
+  app: { kind: "web"; origin: string } | { kind: "electron"; bundleId: string },
+): string {
+  if (app.kind !== "web") return app.bundleId
+  try {
+    return new URL(app.origin).host
+  } catch {
+    return app.origin
+  }
+}

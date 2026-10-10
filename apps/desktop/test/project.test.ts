@@ -4,7 +4,10 @@ import { join } from "node:path"
 import { createProject, openProject, saveScene } from "@kiframe/project"
 import { parseScenarioYaml } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
+import { appLabel } from "../src/shared/util.ts"
 import {
+  appView,
+  secretOriginOf,
   appOriginOf,
   appRemovalRefused,
   interruptsUsing,
@@ -42,7 +45,6 @@ describe("the open project", () => {
     })
     expect(projectView(project, "s1")).toMatchObject({
       name: "Demo",
-      url: "https://app.test",
       scenes: [
         { id: "empty", status: "empty" },
         { id: "grounded", status: "grounded" },
@@ -130,13 +132,17 @@ describe("a request of the window for one of the project's apps", () => {
   const view = {
     session: "s1",
     apps: [
-      { name: "app", origin: "https://app.test" },
-      { name: "docs", origin: "https://docs.test" },
+      { name: "app", kind: "web" as const, origin: "https://app.test" },
+      { name: "docs", kind: "web" as const, origin: "https://docs.test" },
     ],
   }
 
   it("gives the app's exact origin, found by its name in the project (never the window's)", () => {
-    expect(appOriginOf(view, "s1", "docs")).toEqual({ name: "docs", origin: "https://docs.test" })
+    expect(appOriginOf(view, "s1", "docs")).toEqual({
+      name: "docs",
+      kind: "web",
+      origin: "https://docs.test",
+    })
   })
 
   it("refuses an app the project doesn't list, a request from another opening, or no project", () => {
@@ -156,7 +162,7 @@ describe("a request of the window for one of the project's apps", () => {
       url: "https://www.app.test/home",
     })
     expect(projectView(project, "s1").apps).toEqual([
-      { name: "app", origin: "https://www.app.test" },
+      { name: "app", kind: "web" as const, origin: "https://www.app.test" },
     ])
   })
 })
@@ -242,19 +248,60 @@ describe("removing one of the project's apps (B5)", () => {
     const view = {
       session: "s1",
       apps: [
-        { name: "app", origin: "https://app.test" },
-        { name: "docs", origin: "https://docs.test" },
+        { name: "app", kind: "web" as const, origin: "https://app.test" },
+        { name: "docs", kind: "web" as const, origin: "https://docs.test" },
       ],
     }
-    const docs = { session: "s1", name: "docs", origin: "https://docs.test" }
+    const docs = { session: "s1", name: "docs", identity: "https://docs.test" }
     expect(appRemovalRefused(view, docs, false)).toBeNull()
     expect(appRemovalRefused(view, docs, true)).toMatch(/Kif is working/)
     expect(appRemovalRefused(view, { ...docs, session: "s0" }, false)).toMatch(/project changed/)
-    expect(appRemovalRefused(view, { ...docs, origin: "https://other.test" }, false)).toMatch(
+    expect(appRemovalRefused(view, { ...docs, identity: "https://other.test" }, false)).toMatch(
       /changed meanwhile/,
     )
     expect(
-      appRemovalRefused(view, { session: "s1", name: "app", origin: "https://app.test" }, false),
+      appRemovalRefused(view, { session: "s1", name: "app", identity: "https://app.test" }, false),
     ).toMatch(/where scenes start/)
+  })
+})
+
+describe("a desktop app in the window's view (design 2026-10-08)", () => {
+  it("is shown by its kind and bundle id (no address: never parsed as a URL)", () => {
+    const viewport = { width: 1440, height: 900, deviceScaleFactor: 2 }
+    expect(appView("notes", { kind: "electron", bundleId: "com.example.notes", viewport })).toEqual(
+      {
+        name: "notes",
+        kind: "electron",
+        bundleId: "com.example.notes",
+      },
+    )
+    expect(appView("app", { kind: "web", url: "https://app.test/dashboard", viewport })).toEqual({
+      name: "app",
+      kind: "web",
+      origin: "https://app.test",
+    })
+  })
+})
+
+describe("a desktop app takes no secrets (design 2026-10-08)", () => {
+  const view = {
+    session: "s1",
+    apps: [
+      { name: "app", kind: "web" as const, origin: "https://app.test" },
+      { name: "notes", kind: "electron" as const, bundleId: "com.example.notes" },
+    ],
+  }
+  it("refuses one for it, said why; a web app's origin as before", () => {
+    expect(secretOriginOf(view, "s1", "notes")).toEqual({
+      why: '"notes" is a desktop app: it takes no secrets (sign in by hand when Kif asks)',
+    })
+    expect(secretOriginOf(view, "s1", "app")).toEqual({ origin: "https://app.test" })
+  })
+
+  it("shows it by its bundle id, a web app by its host", () => {
+    expect(appLabel({ kind: "electron" as const, bundleId: "com.example.notes" })).toBe(
+      "com.example.notes",
+    )
+    expect(appLabel({ kind: "web" as const, origin: "https://app.test" })).toBe("app.test")
   })
 })
