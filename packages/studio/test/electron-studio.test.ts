@@ -256,7 +256,7 @@ steps:
     expect(step).not.toContain("Notes: 1")
   })
 
-  it("stops a launch with the tool that asked for it", async () => {
+  it("stops the tool that asked at once, and the launch with the studio (a quit, a switch)", async () => {
     let seen: AbortSignal | undefined
     const { studio } = studioWith((_app, signal) => {
       seen = signal
@@ -273,6 +273,9 @@ steps:
     await new Promise((resolve) => setTimeout(resolve, 10))
     stopping.abort()
     await expect(step).rejects.toMatchObject({ name: "AbortError" })
+    // The launch is the studio's: ended as it closes (never left running past a quit).
+    expect(seen?.aborted).toBe(false)
+    await studio.close()
     expect(seen?.aborted).toBe(true)
   })
 })

@@ -129,4 +129,103 @@ steps:
 `)
     expect(saved).toMatchObject({ error: expect.stringMatching(/no handover step/) as string })
   })
+
+  describe("its live launch (a fake launcher)", () => {
+    /** A launcher whose launches the test lets go of; each one's page and its close counted. */
+    const launcher = () => {
+      const pending: {
+        app: string
+        go: () => void
+        fail: (e: Error) => void
+        signal: AbortSignal
+      }[] = []
+      const closed: string[] = []
+      const launch = (app: string, signal: AbortSignal) =>
+        new Promise<never>((resolve, reject) => {
+          const page = { isClosed: () => false, url: () => `app://${app}/`, context: () => context }
+          const context = { pages: () => [page] }
+          const target = {
+            page,
+            context,
+            allows: () => true,
+            stopped: () => [],
+            prepare: () => Promise.resolve(),
+            quiet: () => Promise.resolve(),
+            close: () => (closed.push(app), Promise.resolve({ unread: false })),
+          }
+          pending.push({
+            app,
+            signal,
+            go: () => resolve({ target, build: { opens: "a".repeat(64) } } as never),
+            fail: reject,
+          })
+        })
+      return { pending, closed, launch }
+    }
+    const desktopStudio = (fake: ReturnType<typeof launcher>, appsYaml: string) => {
+      const made = studioWith(appsYaml)
+      ;(made.studio as unknown as { options: { launchDesktop: unknown } }).options.launchDesktop =
+        fake.launch
+      return made.studio
+    }
+    const two =
+      "  notes: { kind: electron, bundleId: com.example.notes }\n  other: { kind: electron, bundleId: com.example.other }\n"
+
+    it("opens the app asked for, never another app's launch in progress", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const notes = studio.livePage("notes")
+      const other = studio.livePage("other")
+      await Promise.resolve()
+      fake.pending[0]?.go()
+      await notes
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(fake.pending.map((p) => p.app)).toEqual(["notes", "other"])
+      fake.pending[1]?.go()
+      expect((await other).url()).toBe("app://other/")
+      // notes closed before other opened (one app live at a time).
+      expect(fake.closed).toEqual(["notes"])
+    })
+
+    it("stops only the caller that stopped (the launch goes on for the other)", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const stopping = new AbortController()
+      const stopped = studio.livePage("notes", stopping.signal)
+      const going = studio.livePage("notes")
+      stopping.abort()
+      await expect(stopped).rejects.toMatchObject({ name: "AbortError" })
+      fake.pending[0]?.go()
+      expect((await going).url()).toBe("app://notes/")
+      expect(fake.pending[0]?.signal.aborted).toBe(false)
+    })
+
+    it("keeps no app removed while it launched", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const opening = studio.livePage("notes")
+      // Removed once the launch is under way.
+      await expect.poll(() => fake.pending.length).toBe(1)
+      studio.setApps(
+        parseProjectYaml(
+          "version: 2\napps:\n  other: { kind: electron, bundleId: com.example.other }\n",
+        ).apps,
+      )
+      await Promise.resolve()
+      fake.pending[0]?.go()
+      await expect(opening).rejects.toThrow(/was removed/)
+      expect(fake.closed).toEqual(["notes"])
+    })
+
+    it("refuses a handover before launching anything", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      expect(
+        await studio.handOver("Sign in", undefined, new AbortController().signal),
+      ).toMatchObject({
+        error: expect.stringMatching(/isn't handed to the user yet/) as string,
+      })
+      expect(fake.pending).toEqual([])
+    })
+  })
 })

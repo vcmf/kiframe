@@ -7,7 +7,13 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { OpenedProject } from "@kiframe/project"
-import type { DesktopApp, ElectronLaunch, ElectronTarget, TrialOutcome } from "@kiframe/runtime"
+import {
+  type DesktopApp,
+  type ElectronLaunch,
+  type ElectronTarget,
+  type TrialOutcome,
+  withoutPaths,
+} from "@kiframe/runtime"
 import type { ElectronApp, TakeMeta } from "@kiframe/schema"
 import {
   type DesktopApprovals,
@@ -55,8 +61,9 @@ export class DesktopLauncher {
   }
 
   /**
-   * The app `name` of the open project, launched confined; refused (anything but a stop, said
-   * without a local path: the agent reads it): `DesktopRefused`.
+   * The app `name` of the open project, launched confined. Refused by its approval:
+   * `DesktopRefused` (the user's to settle); any other failure an Error; either said without a
+   * local path (the agent reads it); a stop thrown as the stop.
    */
   async launch(
     name: string,
@@ -80,8 +87,11 @@ export class DesktopLauncher {
         homedir(),
       ]
       const said = withoutPaths(error instanceof Error ? error.message : String(error), known)
-      if (error instanceof DesktopRefused) throw new DesktopRefused(said)
-      throw new DesktopRefused(`${name} couldn't be launched: ${said} (in the Apps panel)`)
+      // The approval's to settle: the user's. Anything else (a launch that timed out): said, the
+      // agent may try once more.
+      // The original kept as the cause (logs only: the agent reads the message).
+      if (error instanceof DesktopRefused) throw new DesktopRefused(said, { cause: error })
+      throw new Error(`${name} couldn't be launched: ${said}`, { cause: error })
     }
   }
 
@@ -210,13 +220,4 @@ function refusalOf(outcome: Exclude<TrialOutcome, { ok: true }>): string {
   if ("quit" in outcome)
     return "it quit at once when tried confined: check it again (in the Apps panel)"
   return `it couldn't be tried confined (${outcome.failed}): check it again (in the Apps panel)`
-}
-
-/** A message with every local path (a user's folder, an app's place) taken out. */
-export function withoutPaths(text: string, known: readonly string[] = []): string {
-  let said = text
-  for (const path of [...known].sort((a, b) => b.length - a.length)) {
-    if (path.length > 1) said = said.split(path).join("<a local path>")
-  }
-  return said.replace(/(?<![:\w/.>])(?:~\/|\/)(?:[^\s'"()/]+\/)+[^\s'"(),]*/g, "<a local path>")
 }
