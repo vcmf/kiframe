@@ -1834,6 +1834,7 @@ steps:
       ["interrupt_start:cookies:go", "interrupt_end:cookies:go"],
       ["interrupt_start:cookies:wait", "interrupt_end:cookies:wait"],
     ]).toContainEqual(kinds)
+  })
 
   it("doesn't re-run a rule on a dialog that is still fading out", async () => {
     const events = await runWith(`setup: [{ action: goto, url: "/banner?late&fade" }]
