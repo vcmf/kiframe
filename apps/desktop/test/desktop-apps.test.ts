@@ -610,8 +610,39 @@ describe("an add's lifetime: its project's, checked after every wait", () => {
     const card = await adds.pick(1, session)
     const checking = adds.check(1, session, card?.token ?? "", false)
     await workspace.close()
-    await expect(checking).rejects.toMatchObject({ name: "AbortError" })
+    // Said in words (never a raw stop).
+    await expect(checking).rejects.toThrow(/isn't being added any more/)
     expect(signal?.aborted).toBe(true)
     expect(workspace.session).toBeUndefined()
+  })
+})
+
+describe("Kif starting during an add", () => {
+  it("ends a check in progress, keeping the card to check again", async () => {
+    const h = harness()
+    const trial = deferred<TrialOutcome>()
+    h.fake.looks.trial = (_app, o) => {
+      o.signal?.addEventListener("abort", () => trial.resolve({ failed: "stopped" }))
+      return trial.promise
+    }
+    const card = await h.pick()
+    const checking = h.adds.check(1, "s1", card.token, false)
+    h.adds.endChecks()
+    expect(await checking).toEqual({ failed: "stopped" })
+    h.fake.looks.trial = () => Promise.resolve({ ok: true })
+    expect(await h.adds.check(1, "s1", card.token, false)).toEqual({ ok: true })
+  })
+
+  it("says a check it ended as Kif working, never a raw stop", async () => {
+    const h = harness()
+    h.fake.looks.trial = (_app, o) =>
+      new Promise<TrialOutcome>((_, reject) =>
+        o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
+      )
+    const card = await h.pick()
+    const checking = h.adds.check(1, "s1", card.token, false)
+    h.state.busy = "Kif is working: stop it first"
+    h.adds.endChecks()
+    await expect(checking).rejects.toThrow(/Kif is working/)
   })
 })

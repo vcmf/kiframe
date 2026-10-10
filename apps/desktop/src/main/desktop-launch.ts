@@ -42,9 +42,16 @@ export interface LauncherDeps {
 export class DesktopLauncher {
   readonly #deps: LauncherDeps
   readonly #trials = new Map<string, Promise<void>>()
+  #lifetime = new AbortController()
 
   constructor(deps: LauncherDeps) {
     this.#deps = deps
+  }
+
+  /** Every quiet trial ended (a project switch, a quit): their confined apps killed with them. */
+  stopAll(): void {
+    this.#lifetime.abort()
+    this.#lifetime = new AbortController()
   }
 
   /** The app `name` of the open project, launched confined; refused: `DesktopRefused`. */
@@ -60,16 +67,14 @@ export class DesktopLauncher {
     const scope = this.#deps.scope(opened.dir)
     let status = await desktopStatus(entry, scope, this.#deps.approvals(), this.#deps.looks, signal)
     if (status.status === "updated") {
-      const tried = status.app
-      await waitFor(this.#quietTrial(name, entry, scope, tried), signal)
-      // The build that launches is the build that was tried (an update landing meanwhile: never).
-      const now = await this.#deps.looks.inspect(tried.path, signal)
-      if (versionOf(now) !== versionOf(tried) || !sameSigner(now.signer, tried.signer)) {
-        throw new DesktopRefused(
-          `${name} updated again while it was checked: start again (it's checked once more)`,
-        )
+      signal?.throwIfAborted()
+      await waitFor(this.#quietTrial(name, entry, opened, scope, status.app), signal)
+      // Asked again: what's there now must be the build just approved (an update landing during
+      // the trial, an app moved or replaced: refused for the user, never launched untried).
+      status = await desktopStatus(entry, scope, this.#deps.approvals(), this.#deps.looks, signal)
+      if (status.status === "updated") {
+        throw new DesktopRefused(`${name} updated again while it was checked: start again`)
       }
-      status = { status: "ready", app: tried }
     }
     if ("why" in status) throw new DesktopRefused(`${name}: ${status.why} (in the Apps panel)`)
     signal?.throwIfAborted()
@@ -99,6 +104,7 @@ export class DesktopLauncher {
     opened: OpenedProject,
     scope: string,
     app: DesktopApp,
+    approvedBuild = true,
   ): void {
     const copy = this.#deps.approvals().copyFor(entry.bundleId, scope)
     const now = this.#deps.opened()
@@ -108,6 +114,9 @@ export class DesktopLauncher {
       copy.path === app.path &&
       sameSigner(copy.signer, app.signer) &&
       copy.scopes[scope]?.opens === opensOf(entry) &&
+      (!approvedBuild ||
+        app.signer.kind !== "team" ||
+        copy.scopes[scope]?.version === versionOf(app)) &&
       now === opened &&
       named?.kind === "electron" &&
       opensOf(named) === opensOf(entry)
@@ -121,22 +130,26 @@ export class DesktopLauncher {
    * for it; a launch stopped stops only its own wait), then approved for this project
    * compare-and-set. Its own stop: none (it ends by itself, bounded).
    */
-  #quietTrial(name: string, entry: ElectronApp, scope: string, app: DesktopApp): Promise<void> {
-    const opened = this.#deps.opened()
-    const build =
-      app.signer.kind === "team" ? `${app.signer.team} ${versionOf(app) ?? ""}` : app.signer.digest
-    const key = `${entry.bundleId.toLowerCase()} ${scope} ${build}`
+  #quietTrial(
+    name: string,
+    entry: ElectronApp,
+    opened: OpenedProject,
+    scope: string,
+    app: DesktopApp,
+  ): Promise<void> {
+    const key = `${entry.bundleId.toLowerCase()} ${scope}`
     const running = this.#trials.get(key)
     if (running !== undefined) return running
     const trial = (async () => {
       const outcome = await this.#deps.looks.trial(app, {
         origins: entry.origins ?? [],
+        // Ended with the launcher (a project switch, a quit), never by one launch's stop.
+        signal: this.#lifetime.signal,
         ...(this.#deps.workDir !== undefined && { workDir: this.#deps.workDir }),
       })
       if (!("ok" in outcome)) throw new DesktopRefused(`${name} updated: ${refusalOf(outcome)}`)
-      if (opened === null)
-        throw new DesktopRefused(`${name} changed meanwhile: allow it again (in the Apps panel)`)
-      this.#still(name, entry, opened, scope, app)
+      // The launch's own project, compare-and-set (another opened meanwhile: never approved for it).
+      this.#still(name, entry, opened, scope, app, false)
       try {
         this.#deps.approvals().approve(app, scope, opensOf(entry))
       } catch (error) {

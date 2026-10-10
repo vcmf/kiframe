@@ -175,10 +175,10 @@ describe("a desktop app launched for the agent", () => {
   })
 
   it("never launches an app removed or a project switched while it was looked at", async () => {
-    for (const change of ["removed", "switched"] as const) {
-      const { launcher, state, approvals } = setup()
+    for (const change of ["removed", "closed", "another"] as const) {
+      const { state, approvals } = setup()
       const looking = deferred<DesktopApp>()
-      const launcherWith = new DesktopLauncher({
+      const launcher = new DesktopLauncher({
         approvals: () => approvals,
         looks: { inspect: () => looking.promise, trial: () => Promise.resolve({ ok: true }) },
         launch: (opts) => {
@@ -188,14 +188,48 @@ describe("a desktop app launched for the agent", () => {
         opened: () => state.opened,
         scope: () => "folder-a",
       })
-      void launcher
-      const launching = launcherWith.launch("notes")
+      const launching = launcher.launch("notes")
       if (change === "removed") approvals.drop("com.example.Notes", "folder-a")
-      else state.opened = null
+      if (change === "closed") state.opened = null
+      // Another project naming the app the same, opened meanwhile (same scope: never its approval).
+      if (change === "another") state.opened = setup().opened
       looking.resolve(notes())
       await expect(launching, change).rejects.toThrow(/changed meanwhile/)
       expect(state.launches, change).toEqual([])
     }
+  })
+
+  it("ends a quiet trial with the launcher (a project switch, a quit), and never starts one stopped", async () => {
+    const { launcher, state } = setup(notes({ version: "1.1" }))
+    let signal: AbortSignal | undefined
+    const trialing = new DesktopLauncher({
+      approvals: () => setup().approvals,
+      looks: {
+        inspect: () => Promise.resolve(notes({ version: "1.1" })),
+        trial: (_app, o) => {
+          signal = o.signal
+          return new Promise<TrialOutcome>((resolve) =>
+            o.signal?.addEventListener("abort", () => resolve({ failed: "stopped" })),
+          )
+        },
+      },
+      launch: () => Promise.reject(new Error("never")),
+      opened: () => state.opened,
+      scope: () => "folder-a",
+    })
+    const launching = trialing.launch("notes")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    trialing.stopAll()
+    await expect(launching).rejects.toThrow(/couldn't be tried confined \(stopped\)/)
+    expect(signal?.aborted).toBe(true)
+    // A launch already stopped: no trial at all.
+    const stopped = new AbortController()
+    stopped.abort()
+    const before = state.trials
+    await expect(launcher.launch("notes", stopped.signal)).rejects.toMatchObject({
+      name: "AbortError",
+    })
+    expect(state.trials).toBe(before)
   })
 
   it("never launches a build other than the one tried (an update landing during its trial)", async () => {

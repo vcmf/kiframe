@@ -428,11 +428,17 @@ export class DesktopAdds {
     const stopping = new AbortController()
     pending.trial = stopping
     try {
-      const outcome = await this.#looks.trial(pending.app, {
-        origins: pending.origins,
-        signal: stopping.signal,
-        ...(this.#workDir !== undefined && { workDir: this.#workDir }),
-      })
+      const outcome = await this.#looks
+        .trial(pending.app, {
+          origins: pending.origins,
+          signal: stopping.signal,
+          ...(this.#workDir !== undefined && { workDir: this.#workDir }),
+        })
+        .catch((error: unknown) => {
+          // Ended (Kif started, given up): said by the gate's words, never a raw stop.
+          if (stopping.signal.aborted) this.#own(owner, session, token)
+          throw error
+        })
       this.#own(owner, session, token)
       pending.tried = "ok" in outcome
       pending.site = "site" in outcome ? outcome.site : undefined
