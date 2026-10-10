@@ -7,7 +7,7 @@ import { defaultWorkDir, inspectDesktopApp, sweepWorkArea, trialDesktopApp } fro
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import { type Browser, chromium } from "playwright"
-import type { AppStatus } from "../shared/ipc.ts"
+import type { AppStatus, DesktopStatusView } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
 import {
@@ -245,7 +245,11 @@ function start(): void {
         // The files the agent replaces or deletes, kept first (by the host's scope for the folder).
         versions: new FileVersions(join(app.getPath("userData"), "versions", scope)),
         item: (item) => current() && emit(window, "chat:item", item),
-        running: (running) => current() && emit(window, "chat:running", running),
+        running: (running) => {
+          // Kif starting ends an "Add desktop app…" check in progress (never beside its run).
+          if (running && current()) adds.endChecks()
+          return current() && emit(window, "chat:running", running)
+        },
         frame: (frame) => current() && emit(window, "live:frame", frame),
         projectChanged: () => {
           // Checked again once read: a switch meanwhile makes this one stale.
@@ -298,6 +302,9 @@ function start(): void {
   let approvals: DesktopApprovals | undefined
   const desktopApprovals = (): DesktopApprovals =>
     (approvals ??= new DesktopApprovals(app.getPath("userData")))
+  /** A status as the window has it (never the app's path or details). */
+  const view = (s: Awaited<ReturnType<typeof desktopStatus>>) =>
+    "why" in s ? { status: s.status, why: s.why } : { status: s.status }
   /** The open project, if it's this session's (else why not). */
   const sessionProject = (session: string): OpenedProject | string => {
     const opened = workspace.opened
@@ -579,7 +586,7 @@ function start(): void {
         "apps:desktop-cancel": () => adds.dropFor(owner()),
         "apps:desktop-status": async ({ session }) => {
           const opened = sessionProject(session)
-          const apps: Record<string, Awaited<ReturnType<typeof desktopStatus>>> = {}
+          const apps: DesktopStatusView["apps"] = {}
           if (typeof opened === "string") return { apps, problem: null }
           const store = desktopApprovals()
           const scope = ids().scope(opened.dir)
@@ -588,7 +595,7 @@ function start(): void {
               if (entry.kind !== "electron") return
               apps[name] =
                 process.platform === "darwin"
-                  ? await desktopStatus(entry, scope, store, looks)
+                  ? view(await desktopStatus(entry, scope, store, looks))
                   : { status: "not-found", why: "desktop apps run on macOS only" }
             }),
           )

@@ -25,7 +25,14 @@ export default defineConfig({
       },
       {
         extends: true,
-        test: { name: "electron", include: [ELECTRON], sequence: { groupOrder: 1 } },
+        // Its files one after another too (launching Electron while another file clones and
+        // re-signs it: a binary busy on Linux, slow starts on macOS, seen in CI on #61).
+        test: {
+          name: "electron",
+          include: [ELECTRON],
+          sequence: { groupOrder: 1 },
+          fileParallelism: false,
+        },
       },
     ],
   },

@@ -133,7 +133,7 @@ describe("a desktop app's approvals", () => {
     // A long version compares as it was kept (never "updated" for being long).
     const team = notes({ path: "/Users/me/dev/w24/Notes.app", version: "9".repeat(150) })
     return desktopStatus(entry(), "folder-24", again, looks({ [team.path]: team }).looks).then(
-      (status) => expect(status).toEqual({ status: "ready" }),
+      (status) => expect(status).toMatchObject({ status: "ready" }),
     )
   })
 
@@ -175,14 +175,14 @@ describe("a desktop app's status (static: nothing launches)", () => {
   const approved = (a: DesktopApprovals) => a.approve(notes(), "folder-a", opensOf(entry()))
 
   it("is ready when approved here for what it opens, updated when its developer shipped a new build", async () => {
+    // With the app as inspected now, at the approved copy's place (what a launch starts).
     expect(await status({ "/Applications/Notes.app": notes() }, approved)).toEqual({
       status: "ready",
+      app: notes(),
     })
     expect(
       await status({ "/Applications/Notes.app": notes({ version: "2.0" }) }, approved),
-    ).toEqual({
-      status: "updated",
-    })
+    ).toEqual({ status: "updated", app: notes({ version: "2.0" }) })
   })
 
   it("asks again: never added here, another project's, what it opens changed", async () => {
@@ -200,17 +200,17 @@ describe("a desktop app's status (static: nothing launches)", () => {
     const approvals = new DesktopApprovals(dir())
     approvals.approve(notes(), "folder-b", opensOf(entry()))
     const updated = { "/Applications/Notes.app": notes({ version: "1.1" }) }
-    expect(await desktopStatus(entry(), "folder-b", approvals, looks(updated).looks)).toEqual({
-      status: "updated",
-    })
+    expect(await desktopStatus(entry(), "folder-b", approvals, looks(updated).looks)).toMatchObject(
+      { status: "updated" },
+    )
     // Project A tries and approves 1.1: B still hasn't tried it.
     approvals.approve(notes({ version: "1.1" }), "folder-a", opensOf(entry()))
-    expect(await desktopStatus(entry(), "folder-b", approvals, looks(updated).looks)).toEqual({
-      status: "updated",
-    })
-    expect(await desktopStatus(entry(), "folder-a", approvals, looks(updated).looks)).toEqual({
-      status: "ready",
-    })
+    expect(await desktopStatus(entry(), "folder-b", approvals, looks(updated).looks)).toMatchObject(
+      { status: "updated" },
+    )
+    expect(await desktopStatus(entry(), "folder-a", approvals, looks(updated).looks)).toMatchObject(
+      { status: "ready" },
+    )
   })
 
   it("never looks at the app to say what needs no look (another project's, opens changed)", async () => {
@@ -315,7 +315,7 @@ describe("adding a desktop app", () => {
         h.approvals,
         h.fake.looks,
       ),
-    ).toEqual({ status: "ready" })
+    ).toMatchObject({ status: "ready" })
   })
 
   it("allows a wrapper's site only as the trial named it, tried before it's added", async () => {
@@ -405,7 +405,7 @@ describe("adding a desktop app", () => {
     h.fake.looks.inspect = () => Promise.resolve(notes({ version: "2.0" }))
     await h.adds.add(1, "s1", card.token)
     const desk = openProject(h.opened.dir).project.apps["notes"] as ElectronApp
-    expect(await desktopStatus(desk, "folder-a", h.approvals, h.fake.looks)).toEqual({
+    expect(await desktopStatus(desk, "folder-a", h.approvals, h.fake.looks)).toMatchObject({
       status: "updated",
     })
   })
@@ -522,7 +522,7 @@ describe("adding an app a project already names", () => {
     expect(await h.adds.add(1, "s1", card.token)).toBe("desk")
     const desk = openProject(opened.dir).project.apps["desk"] as ElectronApp
     expect(desk.origins).toEqual(["https://app.slack.com"])
-    expect(await desktopStatus(desk, "folder-a", h.approvals, h.fake.looks)).toEqual({
+    expect(await desktopStatus(desk, "folder-a", h.approvals, h.fake.looks)).toMatchObject({
       status: "ready",
     })
   })
@@ -610,8 +610,51 @@ describe("an add's lifetime: its project's, checked after every wait", () => {
     const card = await adds.pick(1, session)
     const checking = adds.check(1, session, card?.token ?? "", false)
     await workspace.close()
-    await expect(checking).rejects.toMatchObject({ name: "AbortError" })
+    // Said in words (never a raw stop).
+    await expect(checking).rejects.toThrow(/isn't being added any more/)
     expect(signal?.aborted).toBe(true)
     expect(workspace.session).toBeUndefined()
+  })
+})
+
+describe("Kif starting during an add", () => {
+  it("ends a check in progress, keeping the card to check again", async () => {
+    const h = harness()
+    const trial = deferred<TrialOutcome>()
+    h.fake.looks.trial = (_app, o) => {
+      o.signal?.addEventListener("abort", () => trial.resolve({ failed: "stopped" }))
+      return trial.promise
+    }
+    const card = await h.pick()
+    const checking = h.adds.check(1, "s1", card.token, false)
+    h.adds.endChecks()
+    expect(await checking).toEqual({ failed: "stopped" })
+    h.fake.looks.trial = () => Promise.resolve({ ok: true })
+    expect(await h.adds.check(1, "s1", card.token, false)).toEqual({ ok: true })
+  })
+
+  it("says a check it ended as Kif working, never a raw stop", async () => {
+    const h = harness()
+    h.fake.looks.trial = (_app, o) =>
+      new Promise<TrialOutcome>((_, reject) =>
+        o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
+      )
+    const card = await h.pick()
+    const checking = h.adds.check(1, "s1", card.token, false)
+    h.state.busy = "Kif is working: stop it first"
+    h.adds.endChecks()
+    await expect(checking).rejects.toThrow(/Kif is working/)
+  })
+
+  it("says a check ended after Kif already stopped in words too", async () => {
+    const h = harness()
+    h.fake.looks.trial = (_app, o) =>
+      new Promise<TrialOutcome>((_, reject) =>
+        o.signal?.addEventListener("abort", () => reject(o.signal?.reason as Error)),
+      )
+    const card = await h.pick()
+    const checking = h.adds.check(1, "s1", card.token, false)
+    h.adds.endChecks()
+    await expect(checking).rejects.toThrow(/the check was ended/)
   })
 })

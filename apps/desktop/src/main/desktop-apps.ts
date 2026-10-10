@@ -45,7 +45,7 @@ type Approval = z.infer<typeof Approval>
 const MAX_COPIES = 20
 
 /** A version as kept (cut: compared the same way). */
-const versionOf = (app: Pick<DesktopApp, "version">) => app.version?.slice(0, 100)
+export const versionOf = (app: Pick<DesktopApp, "version">) => app.version?.slice(0, 100)
 
 /**
  * Each bundle id's copies (a release in Applications, a dev build elsewhere: one id, several
@@ -165,7 +165,7 @@ function without<T>(record: Readonly<Record<string, T>>, key: string): Record<st
 }
 
 /** The same app: its developer (a team app updated is still theirs), or the same pinned build. */
-function sameSigner(a: Signer, b: Signer): boolean {
+export function sameSigner(a: Signer, b: Signer): boolean {
   return a.kind === "team"
     ? b.kind === "team" && a.team === b.team && a.identifier === b.identifier
     : b.kind === "pinned" && a.digest === b.digest
@@ -178,7 +178,7 @@ function sameSigner(a: Signer, b: Signer): boolean {
  * developer, or another build of an unsigned one); `not-found` (no longer where it was picked).
  */
 export type DesktopStatus =
-  | { status: "ready" | "updated" }
+  | { status: "ready" | "updated"; app: DesktopApp }
   | { status: "allow" | "opens-changed" | "changed" | "not-found"; why: string }
 
 /** The functions that look at an app (the runtime's; fakes in tests). */
@@ -196,6 +196,7 @@ export async function desktopStatus(
   scope: string,
   approvals: DesktopApprovals,
   looks: Pick<Looks, "inspect">,
+  signal?: AbortSignal,
 ): Promise<DesktopStatus> {
   const copy = approvals.copyFor(entry.bundleId, scope)
   if (copy === undefined) {
@@ -211,8 +212,9 @@ export async function desktopStatus(
   }
   let now: DesktopApp
   try {
-    now = await looks.inspect(copy.path)
+    now = await looks.inspect(copy.path, signal)
   } catch (error) {
+    if (signal?.aborted === true) throw error
     if (!existsSync(copy.path)) {
       return { status: "not-found", why: `not at ${copy.path} any more: add it again` }
     }
@@ -222,8 +224,8 @@ export async function desktopStatus(
     return { status: "changed", why: "another app is there now (or another build): add it again" }
   }
   return versionOf(now) !== copy.scopes[scope]?.version && now.signer.kind === "team"
-    ? { status: "updated" }
-    : { status: "ready" }
+    ? { status: "updated", app: now }
+    : { status: "ready", app: now }
 }
 
 /** An app's name in the project: its own, in the app-name form, made unique. */
@@ -426,11 +428,18 @@ export class DesktopAdds {
     const stopping = new AbortController()
     pending.trial = stopping
     try {
-      const outcome = await this.#looks.trial(pending.app, {
-        origins: pending.origins,
-        signal: stopping.signal,
-        ...(this.#workDir !== undefined && { workDir: this.#workDir }),
-      })
+      const outcome = await this.#looks
+        .trial(pending.app, {
+          origins: pending.origins,
+          signal: stopping.signal,
+          ...(this.#workDir !== undefined && { workDir: this.#workDir }),
+        })
+        .catch((error: unknown) => {
+          // Ended (Kif started, given up): said in words, never a raw stop.
+          if (!stopping.signal.aborted) throw error
+          this.#own(owner, session, token)
+          throw refused("the check was ended (Kif started?): check it again")
+        })
       this.#own(owner, session, token)
       pending.tried = "ok" in outcome
       pending.site = "site" in outcome ? outcome.site : undefined
@@ -519,6 +528,11 @@ export class DesktopAdds {
       pending.stopping.abort()
       this.#pending.delete(token)
     }
+  }
+
+  /** Every check in progress ended (Kif starting): picks and cards kept, checked again later. */
+  endChecks(): void {
+    for (const pending of this.#pending.values()) pending.trial?.abort()
   }
 
   /** Every pick and add given up, their trials ended (a project switch, a quit). */
