@@ -372,9 +372,16 @@ steps:
         outDir: out,
         sceneId: "notes",
         electron: inTarget(target),
+        appBuild: { version: "44.4.5", opens: "a".repeat(64) },
       },
     )
     expect(take.meta.appUrl).toBe("electron:com.kiframe.fixture")
+    // The build it filmed and what it opened, kept (read back through the schema).
+    expect(take.meta.appBuild).toEqual({ version: "44.4.5", opens: "a".repeat(64) })
+    expect(
+      (JSON.parse(readFileSync(join(take.dir, "meta.json"), "utf8")) as { appBuild?: unknown })
+        .appBuild,
+    ).toEqual({ version: "44.4.5", opens: "a".repeat(64) })
     expect(existsSync(join(take.dir, "frames.webm"))).toBe(true)
   })
 

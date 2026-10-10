@@ -53,6 +53,8 @@ export interface RecordOptions extends RunOptions {
   encodeFailed?: boolean
   /** Version string written into meta.json. */
   kiframeVersion?: string
+  /** A desktop app's build and what it opened (its take keeps them: shown, never a key). */
+  appBuild?: { version?: string; opens: string }
 }
 
 export interface Take {
@@ -471,6 +473,7 @@ export async function recordScenario(
         recordedAt: recordedAt.toISOString(),
         appUrl: appIdentity(start.app),
         app: start.name,
+        ...(options.appBuild !== undefined && { appBuild: options.appBuild }),
         // The capture scale actually obtained (Phase 0 finding F1: screencast frames are at CSS size).
         viewport: {
           width: viewport.width,
