@@ -42,15 +42,18 @@ export function sandboxesOf(work: string): string {
       mkdirSync(dir, { recursive: true, mode: 0o700 })
       stat = lstatSync(dir)
     } catch (error) {
+      // Never its path (said to the agent): the work area by name, the failure by its code.
       throw new WorkAreaError(
-        `${dir} can't be made (${(error as { code?: string }).code ?? String(error)})`,
+        `Kiframe's work area can't be made (${(error as { code?: string }).code ?? "unwritable"})`,
       )
     }
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new WorkAreaError(`${dir} isn't a folder (a link?): Kiframe uses only a real one`)
+      throw new WorkAreaError(
+        "Kiframe's work area isn't a real folder (a link?): Kiframe uses only a real one",
+      )
     }
     if (process.getuid !== undefined && stat.uid !== process.getuid()) {
-      throw new WorkAreaError(`${dir} belongs to another user`)
+      throw new WorkAreaError("Kiframe's work area belongs to another user")
     }
     if ((stat.mode & 0o777) !== 0o700) chmodSync(dir, 0o700)
   }

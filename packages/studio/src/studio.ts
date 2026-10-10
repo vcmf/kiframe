@@ -38,7 +38,6 @@ import {
   type FittedImage,
   ImageRefusal,
   viewportWithin,
-  withoutPaths,
   type ElectronTarget,
   placeOf,
   type RunOptions,
@@ -69,6 +68,7 @@ import {
   firstApp,
   startAppOf,
   type TakeMeta,
+  appIdentity,
 } from "@kiframe/schema"
 import type { Browser, BrowserContext, ElementHandle, Page } from "playwright"
 import { parse as parseYaml } from "yaml"
@@ -438,9 +438,8 @@ export class Studio {
     return result
   }
 
-  /** The live page being opened (one at a time: a second caller waits for it). */
-  /** The live page being opened, and for which app (another app's caller waits, then asks again). */
-  #opening: { app: string | undefined; page: Promise<Page> } | undefined
+  /** The live page being opened: for which app, and the call that owns it (its stop ends it). */
+  #opening: { app: string; page: Promise<Page>; owner: AbortSignal } | undefined
 
   constructor(options: StudioOptions) {
     this.options = options
@@ -639,7 +638,7 @@ export class Studio {
     ref?: string,
     signal?: AbortSignal,
   ): Promise<{ text: string; image: string } | { error: string }> {
-    const page = await this.livePage()
+    const page = await this.livePage(undefined, signal ?? this.#lifetime.signal)
     // A ref's box, measured in both scans around the capture (it must not move); the image is its
     // part on screen (an `at` fraction maps onto the image only when it's whole). Never scrolled
     // to: a look changes nothing on the page (a replay would never see that scroll).
@@ -724,16 +723,14 @@ export class Studio {
     | { error: string }
   > {
     // A desktop app's (live, or the one that would open): refused before anything launches.
-    const opens = this.#live?.app ?? firstApp(this.options.config).name
     if (
       this.#live?.target !== undefined ||
       (this.#live === undefined &&
-        this.options.launchDesktop !== undefined &&
-        appOf(this.options.config, opens)?.kind === "electron")
+        appOf(this.options.config, this.#appFor(undefined))?.kind === "electron")
     ) {
       return { error: NO_DESKTOP_HANDOVER }
     }
-    await this.livePage()
+    await this.livePage(undefined, signal)
     const live = this.#live
     if (live === undefined) return { error: "there's no live page to hand over" }
     const started = Date.now()
@@ -902,19 +899,47 @@ export class Studio {
   }
 
   /**
-   * The page the agent explores and grounds on, at `app` (none: what's live, else the project's
-   * first app); another app's live page is closed first (one app live at a time).
+   * The app a live page is for: the one asked, else what's live, else the default (the first app;
+   * with no desktop launcher here, the first web app, as ever). Decided once, before anything opens.
    */
-  async livePage(app?: string, signal?: AbortSignal): Promise<Page> {
-    // Another app's scene: a desktop app's live launch closed first (one app per window); between
-    // web apps the live context stays (its sign-in kept: a step there goes where it needs).
-    const desktop = (name: string | undefined) =>
-      name !== undefined && appOf(this.options.config, name)?.kind === "electron"
+  #appFor(app: string | undefined): string {
+    return (
+      app ??
+      this.#live?.app ??
+      (this.options.launchDesktop === undefined
+        ? Object.entries(this.options.config.apps).find(([, a]) => a.kind === "web")?.[0]
+        : undefined) ??
+      firstApp(this.options.config).name
+    )
+  }
+
+  /**
+   * The page the agent explores and grounds on, at `app` (see `#appFor`). A desktop app's live
+   * launch is closed for another app (one app per window); a web app's context stays between web
+   * apps (its sign-in kept). A desktop launch is owned by the call that started it (stopped with it
+   * or the studio, never joined): one whose caller stopped is waited out (it never becomes live);
+   * a web page opening is shared (one page for callers at once).
+   */
+  async livePage(app: string | undefined, signal: AbortSignal): Promise<Page> {
+    const wanted = this.#appFor(app)
+    const opening = this.#opening
+    if (opening !== undefined) {
+      // A web page opening (at once, never stopped midway): one page for callers at once.
+      if (appOf(this.options.config, opening.app)?.kind !== "electron" && opening.app === wanted) {
+        return opening.page
+      }
+      // A desktop launch: owned, never joined. The agent's calls come one at a time: one still
+      // going is one whose caller stopped (waited out: it never becomes live).
+      if (!opening.owner.aborted) {
+        throw new Error(`"${opening.app}" is still opening: try again in a moment`)
+      }
+      await opening.page.catch(() => undefined)
+    }
+    const desktop = appOf(this.options.config, wanted)?.kind === "electron"
     if (
       this.#live !== undefined &&
-      app !== undefined &&
-      this.#live.app !== app &&
-      (this.#live.target !== undefined || desktop(app))
+      this.#live.app !== wanted &&
+      (this.#live.target !== undefined || desktop)
     ) {
       await this.#closeLive()
     }
@@ -922,36 +947,23 @@ export class Studio {
     // The page the runner followed may have closed (a popup): back on another page still open.
     const back = this.#backPage()
     if (back !== undefined) return back
-    const wanted = app ?? this.#live?.app
-    // Another app being opened: that done first, then asked again (it's closed if need be).
-    const opening = this.#opening
-    if (opening !== undefined && wanted !== undefined && opening.app !== wanted) {
-      await untilStopped(opening.page, signal).catch((error: unknown) => {
-        if (signal?.aborted === true) throw error
-      })
-      return this.livePage(app, signal)
-    }
     // A desktop app with no window left: it quit (launched again; said once it is).
     const quit = this.#live?.target !== undefined ? (this.#live.app ?? "the app") : undefined
-    if (this.#opening === undefined) {
-      const page = this.#open(wanted).then((opened) => {
+    const page = this.#open(wanted, AbortSignal.any([signal, this.#lifetime.signal])).then(
+      (opened) => {
         if (quit !== undefined) {
           this.#notice = `${quit} quit: launched again fresh (what earlier steps did is gone)`
         }
         return opened
+      },
+    )
+    this.#opening = { app: wanted, page, owner: signal }
+    void page
+      .finally(() => {
+        if (this.#opening?.page === page) this.#opening = undefined
       })
-      this.#opening = { app: wanted, page }
-      void page
-        .finally(() => {
-          if (this.#opening?.page === page) this.#opening = undefined
-        })
-        .catch(() => undefined)
-    }
-    // A desktop app's launch (slow, shared): each caller stopped by its own stop (the launch, by
-    // the studio's). A web page opens at once: its run says a stop as the runner does.
-    return desktop(this.#opening.app)
-      ? untilStopped(this.#opening.page, signal)
-      : this.#opening.page
+      .catch(() => undefined)
+    return page
   }
 
   /** The live page closed whole (a desktop app's target: its process and sandbox too). */
@@ -969,29 +981,29 @@ export class Studio {
     )
   }
 
-  async #open(app?: string): Promise<Page> {
+  /**
+   * Opens `name`'s live page: a desktop app launched (stopped by `stops`: a stop or the studio's
+   * close ends it, never kept), a web app's page at its address. Kept only if the project still
+   * lists that app, the same (removed or changed meanwhile: closed).
+   */
+  async #open(name: string, stops: AbortSignal): Promise<Page> {
     await this.#closeLive()
-    // None asked: the first app (with no desktop launcher here, the first web app, as ever).
-    const name =
-      app ??
-      (this.options.launchDesktop === undefined
-        ? Object.entries(this.options.config.apps).find(([, a]) => a.kind === "web")?.[0]
-        : undefined) ??
-      firstApp(this.options.config).name
     const start = appOf(this.options.config, name)
     if (start === undefined) throw new Error(`"${name}" isn't one of the project's apps`)
+    const identity = appIdentity(start)
+    const stillListed = () => {
+      const now = appOf(this.options.config, name)
+      return now !== undefined && appIdentity(now) === identity
+    }
     if (start.kind === "electron") {
       const launch = this.options.launchDesktop
-      if (launch === undefined)
+      if (launch === undefined) {
         throw new Error(`"${name}" is a desktop app: none can be opened here`)
-      // Stopped with the studio (a quit, a project switch): never by one caller's stop.
-      const { target } = await launch(name, this.#lifetime.signal)
-      // Closed meanwhile, or removed from the project meanwhile: never kept.
-      if (this.#lifetime.signal.aborted || appOf(this.options.config, name) === undefined) {
+      }
+      const { target } = await launch(name, stops)
+      if (stops.aborted || !stillListed()) {
         await target.close().catch(() => undefined)
-        throw new Error(
-          this.#lifetime.signal.aborted ? "the studio was closed" : `"${name}" was removed`,
-        )
+        throw stops.aborted ? (stops.reason as Error) : new Error(`"${name}" was removed`)
       }
       this.#live = { context: target.context, page: target.page, app: name, target }
       return target.page
@@ -1001,8 +1013,9 @@ export class Studio {
     try {
       const page = await context.newPage()
       await page.goto(start.url)
-      // Closed meanwhile: never kept (nothing would close it).
+      // Closed meanwhile, or the app removed meanwhile: never kept (nothing would close it).
       if (this.#lifetime.signal.aborted) throw new Error("the studio was closed")
+      if (!stillListed()) throw new Error(`"${name}" was removed`)
       // Kept only once it's at the app (a failed first visit is tried again next time).
       this.#live = { context, page, app: name }
       return page
@@ -1067,11 +1080,11 @@ export class Studio {
    * The live page's accessibility snapshot (or one region's), with its URL; with `find`, only the
    * parts that mention it (a long page's content past the cut).
    */
-  async snapshot(within?: unknown, find?: string): Promise<StepResult> {
+  async snapshot(within?: unknown, find?: string, signal?: AbortSignal): Promise<StepResult> {
     // Its refs are gone whatever this one gives (as Playwright's are).
     this.#snapshot = undefined
     this.#checked = undefined
-    const page = await this.livePage()
+    const page = await this.livePage(undefined, signal ?? this.#lifetime.signal)
     let root = page.locator("body")
     if (within !== undefined) {
       const parsed = Locator.safeParse(asObject(within))
@@ -1172,7 +1185,7 @@ export class Studio {
     const refs = refsAt(items)
     const now = this.#refusedNow(refs)
     if (now !== undefined || refs.length === 0) return now
-    const fresh = await this.#fresh(await this.livePage(), refs, signal)
+    const fresh = await this.#fresh(await this.livePage(undefined, signal), refs, signal)
     if ("error" in fresh) return fresh.error
     for (const { ref } of refs) {
       const why = this.#refused(ref, fresh.nodes)
@@ -1343,7 +1356,7 @@ export class Studio {
     part: ScenarioPart,
     signal: AbortSignal,
   ): Promise<{ value: unknown } | { error: string }> {
-    const page = await this.livePage()
+    const page = await this.livePage(undefined, signal)
     // The page as it is right now (the steps before changed it): each ref checked in a fresh
     // snapshot, and resolved against it (no other snapshot in between: it'd replace Playwright's refs).
     const checked = this.#checked
@@ -1668,6 +1681,12 @@ export class Studio {
         start.name,
         AbortSignal.any([signal, this.#lifetime.signal]),
       )
+      // Removed or changed while it launched: never run (its approval may be gone).
+      const now = appOf(this.options.config, start.name)
+      if (now === undefined || appIdentity(now) !== appIdentity(start.app)) {
+        await target.close().catch(() => undefined)
+        throw new Error(`"${start.name}" was removed`)
+      }
       return {
         page: target.page,
         run: { electron: electronHook(start.name, target) },
@@ -1815,26 +1834,6 @@ interface Fresh {
   close: () => Promise<void>
 }
 
-/** A wait ended by its own stop only (what it waits for goes on). */
-function untilStopped<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  if (signal === undefined) return work
-  if (signal.aborted) return Promise.reject(signal.reason as Error)
-  return new Promise<T>((resolve, reject) => {
-    const stop = () => reject(signal.reason as Error)
-    signal.addEventListener("abort", stop, { once: true })
-    work.then(
-      (value) => {
-        signal.removeEventListener("abort", stop)
-        resolve(value)
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", stop)
-        reject(error instanceof Error ? error : new Error(String(error)))
-      },
-    )
-  })
-}
-
 /** A desktop app's run hook from its launched target (its guard, its windows). */
 function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptions["electron"]> {
   return {
@@ -1852,9 +1851,9 @@ function electronHook(app: string, target: ElectronTarget): NonNullable<RunOptio
  */
 function refusal(error: unknown): string {
   // A launch's error can name the user's own folders: never to the agent.
-  const why = withoutPaths(failure(error))
+  const why = failure(error)
   return (error as { needsUser?: unknown }).needsUser === true
-    ? `${why}. The user settles this (the Apps panel): tell them, don't retry`
+    ? `${why}. The user settles this: tell them, don't retry`
     : why
 }
 

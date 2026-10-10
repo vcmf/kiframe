@@ -70,7 +70,7 @@ describe("a desktop app in the studio", () => {
 
   it("is never grounded as a web page without a desktop launcher: said, never a page opened", async () => {
     const alone = studioWith("  notes: { kind: electron, bundleId: com.example.notes }\n")
-    await expect(alone.studio.livePage()).rejects.toThrow(
+    await expect(alone.studio.livePage(undefined, new AbortController().signal)).rejects.toThrow(
       /"notes" is a desktop app: none can be opened here/,
     )
     expect(alone.opened).toEqual([])
@@ -78,7 +78,7 @@ describe("a desktop app in the studio", () => {
     const both = studioWith(
       '  notes: { kind: electron, bundleId: com.example.notes }\n  app: { kind: web, url: "https://app.test" }\n',
     )
-    await both.studio.livePage()
+    await both.studio.livePage(undefined, new AbortController().signal)
     expect(both.opened).toEqual(["https://app.test"])
     // A step grounded in the desktop app: refused, said why.
     const tool = studioTools.find((t) => t.name === "run_step")!
@@ -103,8 +103,8 @@ describe("a desktop app in the studio", () => {
     const two = studioWith(
       '  app: { kind: web, url: "https://app.test" }\n  docs: { kind: web, url: "https://docs.test" }\n',
     )
-    await two.studio.livePage("app")
-    await two.studio.livePage("docs")
+    await two.studio.livePage("app", new AbortController().signal)
+    await two.studio.livePage("docs", new AbortController().signal)
     expect(two.contexts).toHaveLength(1)
   })
 
@@ -171,39 +171,61 @@ steps:
     const two =
       "  notes: { kind: electron, bundleId: com.example.notes }\n  other: { kind: electron, bundleId: com.example.other }\n"
 
-    it("opens the app asked for, never another app's launch in progress", async () => {
+    it("refuses a call while another call's launch goes on (never joined)", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)
-      const notes = studio.livePage("notes")
-      const other = studio.livePage("other")
-      await Promise.resolve()
+      const notes = studio.livePage("notes", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      await expect(studio.livePage("other", new AbortController().signal)).rejects.toThrow(
+        /"notes" is still opening/,
+      )
+      await expect(studio.livePage("notes", new AbortController().signal)).rejects.toThrow(
+        /still opening/,
+      )
       fake.pending[0]?.go()
-      await notes
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(fake.pending.map((p) => p.app)).toEqual(["notes", "other"])
-      fake.pending[1]?.go()
-      expect((await other).url()).toBe("app://other/")
-      // notes closed before other opened (one app live at a time).
-      expect(fake.closed).toEqual(["notes"])
+      expect((await notes).url()).toBe("app://notes/")
     })
 
-    it("stops only the caller that stopped (the launch goes on for the other)", async () => {
+    it("ends a launch its caller stopped (never live), and the next call goes on", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)
       const stopping = new AbortController()
       const stopped = studio.livePage("notes", stopping.signal)
-      const going = studio.livePage("notes")
+      await expect.poll(() => fake.pending.length).toBe(1)
       stopping.abort()
+      // The launch sees the stop (its trial and spawn end).
+      expect(fake.pending[0]?.signal.aborted).toBe(true)
+      // The next call (the user's next message) comes while it's still winding down: waited
+      // out, never refused.
+      const next = studio.livePage("other", new AbortController().signal)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(fake.pending).toHaveLength(1)
+      fake.pending[0]?.fail(stopping.signal.reason as Error)
       await expect(stopped).rejects.toMatchObject({ name: "AbortError" })
+      await expect.poll(() => fake.pending.length).toBe(2)
+      fake.pending[1]?.go()
+      expect((await next).url()).toBe("app://other/")
+      expect(studio.currentPage?.url()).toBe("app://other/")
+    })
+
+    it("closes a launch that finished after its caller stopped (never kept)", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const stopping = new AbortController()
+      const stopped = studio.livePage("notes", stopping.signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      stopping.abort()
+      // It finishes anyway (a launch that ignored the stop): closed, never live.
       fake.pending[0]?.go()
-      expect((await going).url()).toBe("app://notes/")
-      expect(fake.pending[0]?.signal.aborted).toBe(false)
+      await expect(stopped).rejects.toMatchObject({ name: "AbortError" })
+      expect(fake.closed).toEqual(["notes"])
+      expect(studio.currentPage).toBeUndefined()
     })
 
     it("keeps no app removed while it launched", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)
-      const opening = studio.livePage("notes")
+      const opening = studio.livePage("notes", new AbortController().signal)
       // Removed once the launch is under way.
       await expect.poll(() => fake.pending.length).toBe(1)
       studio.setApps(
@@ -217,6 +239,43 @@ steps:
       expect(fake.closed).toEqual(["notes"])
     })
 
+    it("stops a snapshot's launch with the snapshot (the agent's first call)", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const stopping = new AbortController()
+      const shot = studioTools.find((t) => t.name === "snapshot")!.run({}, studio, stopping.signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      stopping.abort()
+      expect(fake.pending[0]?.signal.aborted).toBe(true)
+      fake.pending[0]?.fail(stopping.signal.reason as Error)
+      await expect(shot).rejects.toMatchObject({ name: "AbortError" })
+    })
+
+    it("never checks a scene in an app removed while it launched", async () => {
+      const fake = launcher()
+      const studio = desktopStudio(fake, two)
+      const checked = studio.check(`version: 1
+app: notes
+steps:
+  - { id: a, action: pause, ms: 1 }
+  - { id: b, action: pause, ms: 1 }
+  - { id: c, action: pause, ms: 1 }
+  - { id: d, action: pause, ms: 1 }
+  - { id: e, action: pause, ms: 1 }
+`)
+      if ("error" in checked) throw new Error(checked.error)
+      const replay = studio.replay(checked.scenario, "s", new AbortController().signal)
+      await expect.poll(() => fake.pending.length).toBe(1)
+      studio.setApps(
+        parseProjectYaml(
+          "version: 2\napps:\n  other: { kind: electron, bundleId: com.example.other }\n",
+        ).apps,
+      )
+      fake.pending[0]?.go()
+      expect(await replay).toMatch(/was removed/)
+      expect(fake.closed).toEqual(["notes"])
+    })
+
     it("refuses a handover before launching anything", async () => {
       const fake = launcher()
       const studio = desktopStudio(fake, two)
@@ -227,5 +286,32 @@ steps:
       })
       expect(fake.pending).toEqual([])
     })
+  })
+
+  it("never keeps a web app's page removed while it loaded", async () => {
+    let loaded: () => void = () => undefined
+    const made = studioWith(
+      '  app: { kind: web, url: "https://app.test" }\n  docs: { kind: web, url: "https://docs.test" }\n',
+    )
+    const browser = {
+      newContext: () =>
+        Promise.resolve({
+          newPage: () =>
+            Promise.resolve({
+              goto: () => new Promise((resolve) => (loaded = () => resolve(null))),
+              isClosed: () => false,
+            }),
+          close: () => Promise.resolve(),
+        }),
+    }
+    ;(made.studio as unknown as { options: { browser: unknown } }).options.browser = browser
+    const opening = made.studio.livePage("docs", new AbortController().signal)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    made.studio.setApps(
+      parseProjectYaml('version: 2\napps:\n  app: { kind: web, url: "https://app.test" }\n').apps,
+    )
+    loaded()
+    await expect(opening).rejects.toThrow(/was removed/)
+    expect(made.studio.currentPage).toBeUndefined()
   })
 })

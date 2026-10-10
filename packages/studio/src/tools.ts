@@ -58,7 +58,8 @@ const snapshot = defineTool({
         "Text to look for: only the elements that mention it, with where they are and their refs (as a reader: case, dashes and quotes don't matter; a phrase may run over a paragraph's links; with no exact match, the blocks holding all its words). For content further down a long page, past the snapshot's cut",
       ),
   }),
-  run: async ({ within, find }, studio: Studio) => said(await studio.snapshot(within, find)),
+  run: async ({ within, find }, studio: Studio, signal) =>
+    said(await studio.snapshot(within, find, signal)),
 })
 
 const look = defineTool({

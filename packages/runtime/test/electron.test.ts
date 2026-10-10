@@ -599,9 +599,16 @@ else setInterval(() => undefined, 60_000)
     const raw = new Error("connect ECONNREFUSED ws://127.0.0.1:9/devtools/browser/x")
     const none = { stopped: undefined, spawnError: undefined, quit: false }
     expect(launchFailure(raw, { ...none, stopped: stop, quit: true })).toBe(stop)
+    // A spawn error is said by its code: its message names the executable's local path.
+    const spawnError = Object.assign(new Error("spawn /Users/me/Notes.app/x ENOENT"), {
+      code: "ENOENT",
+    })
+    const spawned = String(launchFailure(raw, { ...none, spawnError, quit: true }))
+    expect(spawned).toMatch(/couldn't be launched \(ENOENT\)/)
+    expect(spawned).not.toContain("/Users")
     expect(
-      String(launchFailure(raw, { ...none, spawnError: new Error("ENOENT"), quit: true })),
-    ).toMatch(/couldn't be launched \(ENOENT\)/)
+      String(launchFailure(raw, { ...none, spawnError: new Error("/Users/me/x"), quit: true })),
+    ).toBe("Error: the app couldn't be launched (it couldn't run)")
     // Already said (a site to allow, a page never loaded) stays said, even if the app then quit.
     const site = new ElectronLaunchError("site", { why: "site", site: "https://a.example" })
     expect(launchFailure(site, { ...none, quit: true })).toBe(site)
@@ -1058,12 +1065,19 @@ steps:
   })
 
   it("says an app that isn't there any more, or can't start, never crashing the host", async () => {
-    await expect(launchElectron({ ...base, bundle: "/Applications/Gone.app" })).rejects.toThrow(
-      "the app isn't at /Applications/Gone.app any more",
+    // Said without a path (the agent reads a launch's error: never the user's folders).
+    const gone = await launchElectron({ ...base, bundle: "/Applications/Gone.app" }).catch(
+      (e: unknown) => String(e),
     )
-    await expect(
-      launchElectron({ ...base, executable: "/no/such/executable", timeoutMs: 5000 }),
-    ).rejects.toThrow(/the app couldn't be launched/)
+    expect(gone).toContain("the app isn't where it was approved any more")
+    expect(gone).not.toContain("/Applications")
+    const missing = await launchElectron({
+      ...base,
+      executable: "/no/such/executable",
+      timeoutMs: 5000,
+    }).catch((e: unknown) => String(e))
+    expect(missing).toMatch(/the app couldn't be launched/)
+    expect(missing).not.toContain("/no/such")
   })
 
   it("keeps a desktop scene in its app: no goto, URL condition or web preset there", async () => {
@@ -1556,6 +1570,6 @@ describe("the work area", () => {
     expect(statSync(join(own, "sandboxes")).mode & 0o777).toBe(0o700)
     const linked = join(mkdtempSync(join(tmpdir(), "kiframe-el-link-")), "work")
     symlinkSync(own, linked)
-    expect(() => sandboxesOf(linked)).toThrow(/isn't a folder/)
+    expect(() => sandboxesOf(linked)).toThrow(/isn't a real folder/)
   })
 })

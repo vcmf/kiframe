@@ -10,9 +10,9 @@ import type { OpenedProject } from "@kiframe/project"
 import {
   type DesktopApp,
   type ElectronLaunch,
+  ElectronLaunchError,
   type ElectronTarget,
   type TrialOutcome,
-  withoutPaths,
 } from "@kiframe/runtime"
 import type { ElectronApp, TakeMeta } from "@kiframe/schema"
 import {
@@ -73,26 +73,31 @@ export class DesktopLauncher {
       return await this.#launch(name, signal)
     } catch (error) {
       if (signal?.aborted === true) throw error
-      // Its own paths named first (whole: spaces in them), then any other.
-      const opened = this.#deps.opened()
-      const entry = opened?.project.apps[name]
-      const copy =
-        opened !== null && entry?.kind === "electron"
-          ? this.#deps.approvals().copyFor(entry.bundleId, this.#deps.scope(opened.dir))
-          : undefined
-      const known = [
-        ...(copy !== undefined ? [copy.path] : []),
-        ...(this.#deps.workDir !== undefined ? [this.#deps.workDir] : []),
-        ...(opened !== null ? [opened.dir] : []),
-        homedir(),
-      ]
-      const said = withoutPaths(error instanceof Error ? error.message : String(error), known)
-      // The approval's to settle: the user's. Anything else (a launch that timed out): said, the
-      // agent may try once more.
-      // The original kept as the cause (logs only: the agent reads the message).
-      if (error instanceof DesktopRefused) throw new DesktopRefused(said, { cause: error })
-      throw new Error(`${name} couldn't be launched: ${said}`, { cause: error })
+      throw new DesktopRefused(this.#said(name, error), { cause: error })
     }
+  }
+
+  /**
+   * A launch's failure as the agent reads it: its own worded refusals and the runtime's launch
+   * errors (none names a local path, by construction) as they are; anything else by its code
+   * only. A message naming a path Kiframe knows anyway (never meant to): replaced whole.
+   */
+  #said(name: string, error: unknown): string {
+    const said =
+      error instanceof DesktopRefused
+        ? error.message
+        : error instanceof ElectronLaunchError
+          ? `${name} couldn't be launched: ${error.message}`
+          : `${name} couldn't be launched (${(error as { code?: string }).code ?? "an error"})`
+    const opened = this.#deps.opened()
+    const known = [
+      homedir(),
+      ...(this.#deps.workDir !== undefined ? [this.#deps.workDir] : []),
+      ...(opened !== null ? [opened.dir] : []),
+    ]
+    return known.some((path) => path.length > 1 && said.includes(path))
+      ? `${name} couldn't be launched (details kept out: they name a local folder)`
+      : said
   }
 
   async #launch(
@@ -116,7 +121,9 @@ export class DesktopLauncher {
       // the trial, an app moved or replaced: refused for the user, never launched untried).
       status = await desktopStatus(entry, scope, this.#deps.approvals(), this.#deps.looks, signal)
       if (status.status === "updated") {
-        throw new DesktopRefused(`${name} updated again while it was checked: start again`)
+        throw new DesktopRefused(
+          `${name} updated again while it was checked: ask again in a moment`,
+        )
       }
     }
     if ("why" in status) throw new DesktopRefused(`${name}: ${status.why} (in the Apps panel)`)
@@ -205,8 +212,10 @@ export class DesktopLauncher {
     try {
       this.#deps.approvals().approve(app, scope, opensOf(entry))
     } catch (error) {
+      // Its code only (a write error names the approvals file's path).
       throw new DesktopRefused(
-        `${name} ran confined but couldn't be approved here (${(error as Error).message})`,
+        `${name} ran confined but couldn't be approved here (${(error as { code?: string }).code ?? "not saved"})`,
+        { cause: error },
       )
     }
   }

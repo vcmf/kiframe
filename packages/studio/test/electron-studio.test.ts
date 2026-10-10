@@ -121,7 +121,7 @@ describe("Kif in a desktop app", { timeout: 120_000 }, () => {
 
   it("says an app that quit while grounded, launched again fresh", async () => {
     const { studio, launches } = studioWith()
-    await studio.livePage("notes")
+    await studio.livePage("notes", new AbortController().signal)
     // The app's only window closed: the fixture quits.
     await studio.currentPage?.close()
     const step = JSON.stringify(
@@ -190,7 +190,7 @@ steps:
         step: { id: "a", action: "pause", ms: 1 },
       }),
     )
-    expect(step).toContain("The user settles this (the Apps panel): tell them, don't retry")
+    expect(step).toContain("The user settles this: tell them, don't retry")
     const saved = studio.check(`version: 1
 app: notes
 setup:
@@ -207,7 +207,7 @@ steps:
 
   it("closes its desktop app with the studio (nothing left running)", async () => {
     const { studio, work } = studioWith()
-    await studio.livePage("notes")
+    await studio.livePage("notes", new AbortController().signal)
     expect(sandboxes(work)).toHaveLength(1)
     await studio.close()
     expect(sandboxes(work)).toEqual([])
@@ -215,7 +215,7 @@ steps:
 
   it("hands nothing over live, closes an app removed from the project, says a relaunch on failure", async () => {
     const { studio, work } = studioWith()
-    await studio.livePage("notes")
+    await studio.livePage("notes", new AbortController().signal)
     expect(await studio.handOver("Sign in", undefined, new AbortController().signal)).toMatchObject(
       {
         error: expect.stringMatching(/isn't handed to the user yet/) as string,
@@ -256,7 +256,7 @@ steps:
     expect(step).not.toContain("Notes: 1")
   })
 
-  it("stops the tool that asked at once, and the launch with the studio (a quit, a switch)", async () => {
+  it("stops a launch with the call that started it (never live after a stop)", async () => {
     let seen: AbortSignal | undefined
     const { studio } = studioWith((_app, signal) => {
       seen = signal
@@ -273,9 +273,8 @@ steps:
     await new Promise((resolve) => setTimeout(resolve, 10))
     stopping.abort()
     await expect(step).rejects.toMatchObject({ name: "AbortError" })
-    // The launch is the studio's: ended as it closes (never left running past a quit).
-    expect(seen?.aborted).toBe(false)
-    await studio.close()
+    // The launch itself ended (its trial, its spawn): nothing comes live after the stop.
     expect(seen?.aborted).toBe(true)
+    expect(studio.currentPage).toBeUndefined()
   })
 })

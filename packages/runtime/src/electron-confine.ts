@@ -138,7 +138,7 @@ const same = (now: Stats, checked: Stats, kind: "dir" | "file") =>
   now.dev === checked.dev
 
 const changed = (rel: string) =>
-  new FilesError(`files${rel} changed while it was copied: try again`)
+  new FilesError(`files${rel} changed while it was copied: ask again in a moment`)
 
 /**
  * A project's `files/` copied into a launch's sandbox (what the app opens: every run from the same
@@ -209,7 +209,7 @@ export async function copyFiles(from: string, to: string, signal?: AbortSignal):
       code === "ENOENT"
         ? existsSync(from)
           ? // Something in it gone while it was copied (moved, swapped): said as such.
-            "files/ changed while it was copied: try again"
+            "files/ changed while it was copied: ask again in a moment"
           : "the project has no files/ folder (what its arguments name)"
         : `files/ couldn't be copied (${code ?? String(error)})`,
     )
@@ -223,7 +223,7 @@ export async function copyFiles(from: string, to: string, signal?: AbortSignal):
 export function argumentIn(arg: string, filesCopy: string): string {
   const parts = filesPath(arg)
   if (parts === undefined) {
-    throw new FilesError(`"${arg}": a desktop app opens only what's in the project's files/`)
+    throw new FilesError("a desktop app opens only what's in the project's files/ (files/<name>)")
   }
   return join(filesCopy, ...parts)
 }

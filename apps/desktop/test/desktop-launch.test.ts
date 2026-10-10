@@ -6,7 +6,8 @@ import type { DesktopApp, ElectronLaunch, ElectronTarget, TrialOutcome } from "@
 import type { ElectronApp } from "@kiframe/schema"
 import { describe, expect, it } from "vitest"
 import { DesktopApprovals, opensOf } from "../src/main/desktop-apps.ts"
-import { withoutPaths } from "@kiframe/runtime"
+import { ElectronLaunchError } from "@kiframe/runtime"
+import { homedir } from "node:os"
 import { DesktopLauncher, DesktopRefused } from "../src/main/desktop-launch.ts"
 
 // A desktop app launched for the agent (PR 4): from its approval only, an updated build tried
@@ -293,7 +294,10 @@ describe("a desktop app launched for the agent", () => {
         Object.assign(Object.create(approvals) as DesktopApprovals, {
           copyFor: approvals.copyFor.bind(approvals),
           approve: () => {
-            throw new Error("EACCES")
+            // As a write fails: its message names the approvals file.
+            throw Object.assign(new Error("EACCES: permission denied, open '/Users/a/x.json'"), {
+              code: "EACCES",
+            })
           },
         }),
       looks: {
@@ -307,6 +311,7 @@ describe("a desktop app launched for the agent", () => {
     const error = await failing.launch("notes").catch((e: unknown) => e)
     expect(error).toBeInstanceOf(DesktopRefused)
     expect(String(error)).toMatch(/couldn't be approved here \(EACCES\)/)
+    expect(String(error)).not.toContain("/Users")
   })
 
   it("never approves an update for another project opened while it was tried", async () => {
@@ -346,50 +351,41 @@ describe("a desktop app launched for the agent", () => {
     expect(state.launches).toEqual([])
   })
 
-  it("says a launch that failed without a local path (the agent may try once more)", async () => {
-    const { state, approvals } = setup()
-    const launcher = new DesktopLauncher({
-      approvals: () => approvals,
-      looks: {
-        inspect: () => Promise.resolve(state.installed),
-        trial: () => Promise.resolve({ ok: true }),
-      },
-      launch: () =>
-        Promise.reject(
-          new Error(
-            "the app couldn't be launched (/Applications/Notes.app/Contents/MacOS/Notes isn't there)",
-          ),
-        ),
-      opened: () => state.opened,
-      scope: () => "folder-a",
+  it("says every launch failure for the user, never a local path", async () => {
+    const failing = (error: Error) => {
+      const { state, approvals } = setup()
+      return new DesktopLauncher({
+        approvals: () => approvals,
+        looks: {
+          inspect: () => Promise.resolve(state.installed),
+          trial: () => Promise.resolve({ ok: true }),
+        },
+        launch: () => Promise.reject(error),
+        opened: () => state.opened,
+        scope: () => "folder-a",
+      })
+    }
+    // An OS error (its message names a path): said by its code only.
+    const os = Object.assign(new Error("spawn /Users/alice/Apps/My App.app/x ENOENT"), {
+      code: "ENOENT",
     })
-    const error = await launcher.launch("notes").catch((e: unknown) => e)
-    // Not the approval's: no "the user settles it" (a timeout may pass).
-    expect(error).not.toBeInstanceOf(DesktopRefused)
-    expect(String(error)).not.toContain("/Applications")
-    expect(String(error)).toContain("<a local path>")
-  })
-})
-
-describe("a local path in a message", () => {
-  it("is taken out whole (spaces in it), file: URLs too, never a web URL", () => {
-    expect(withoutPaths("not at /Users/alice/dev/My App.app any more")).toBe(
-      "not at <a local path> any more",
-    )
-    expect(withoutPaths("see ~/Library/Preferences/x.plist")).toBe("see <a local path>")
-    expect(
-      withoutPaths("(/Applications/Visual Studio Code.app/Contents/MacOS/Electron isn't there)"),
-    ).toBe("(<a local path> isn't there)")
-    expect(withoutPaths("inspect failed on /Volumes/Work Disk/clients/App.app: code 1")).toBe(
-      "inspect failed on <a local path>: code 1",
-    )
-    expect(withoutPaths("opened file:///opt/x/y then")).toBe("opened <a local path> then")
-    expect(withoutPaths("the site https://app.slack.com/client")).toBe(
-      "the site https://app.slack.com/client",
-    )
-    // A known path whole.
-    expect(withoutPaths("in /Users/me/My Work/x", ["/Users/me/My Work"])).toBe(
-      "in <a local path>/x",
-    )
+    const fromOs = await failing(os)
+      .launch("notes")
+      .catch((e: unknown) => e)
+    expect(fromOs).toBeInstanceOf(DesktopRefused)
+    expect(String(fromOs)).toContain("notes couldn't be launched (ENOENT)")
+    expect(String(fromOs)).not.toContain("/Users")
+    // The runtime's own launch errors (worded, path-free): as they are.
+    const said = await failing(new ElectronLaunchError("the app quit before Kiframe could attach"))
+      .launch("notes")
+      .catch((e: unknown) => e)
+    expect(String(said)).toContain("notes couldn't be launched: the app quit before")
+    expect((said as DesktopRefused).needsUser).toBe(true)
+    // A message naming a folder Kiframe knows (never meant to): replaced whole.
+    const leaked = await failing(new ElectronLaunchError(`odd: ${homedir()}/x`))
+      .launch("notes")
+      .catch((e: unknown) => e)
+    expect(String(leaked)).not.toContain(homedir())
+    expect(String(leaked)).toContain("details kept out")
   })
 })
