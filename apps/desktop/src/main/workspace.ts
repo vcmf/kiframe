@@ -18,6 +18,7 @@ export class Workspace<A extends Agent> {
   #session = ""
   #agent: A | undefined
   #switching: Promise<unknown> = Promise.resolve()
+  readonly #onSwitch: (() => void)[] = []
 
   readonly #ready: () => void
 
@@ -37,6 +38,16 @@ export class Workspace<A extends Agent> {
   /** The open project as its agent keeps it (the scenes it saved and filmed). */
   get opened(): OpenedProject | null {
     return this.#opened
+  }
+
+  /** This opening's session; none when no project is open. */
+  get session(): string | undefined {
+    return this.#opened === null ? undefined : this.#session
+  }
+
+  /** Told as a project is opened, created or closed (what belonged to the last one ends). */
+  onSwitch(listener: () => void): void {
+    this.#onSwitch.push(listener)
   }
 
   /** The open project's apps and this opening's session, without building its whole view. */
@@ -86,6 +97,14 @@ export class Workspace<A extends Agent> {
       this.#opened = opened
       this.#agent = agent
       this.#session = randomBytes(6).toString("hex")
+      // A listener that fails never keeps the old agent from closing.
+      for (const listener of this.#onSwitch) {
+        try {
+          listener()
+        } catch {
+          // said by the listener itself, if anywhere
+        }
+      }
       try {
         await old?.close()
       } finally {

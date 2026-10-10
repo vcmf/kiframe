@@ -300,6 +300,41 @@ export const LiveInput = z.discriminatedUnion("kind", [
 ])
 export type LiveInput = z.infer<typeof LiveInput>
 
+/** A desktop app picked: its card (never its path), or why it can't be added (null: cancelled). */
+export type DesktopPick =
+  | {
+      card: {
+        token: string
+        name: string
+        bundleId: string
+        version: string | undefined
+        electron: string
+        signer: { kind: "team"; team: string } | { kind: "pinned" }
+        /** The project names it already (a project from someone else): adding approves it here. */
+        existing: string | undefined
+        /** What that project opens with it (shown before it's allowed). */
+        opens: { args: string[]; origins: string[] } | undefined
+      }
+    }
+  | { refused: string }
+  | null
+
+/** A trial's outcome, as the card shows it (or why it couldn't run). */
+export type DesktopCheck = { ok: true } | { site: string } | { quit: true } | { failed: string }
+
+/** Each desktop app of the open project (by its name): its status on this Mac, and why. */
+export interface DesktopStatusView {
+  apps: Record<
+    string,
+    {
+      status: "ready" | "updated" | "allow" | "opens-changed" | "changed" | "not-found"
+      why?: string
+    }
+  >
+  /** The approvals file didn't read and was set aside (said once). */
+  problem: string | null
+}
+
 /** What the window needs to know to show the right screen. */
 export interface AppStatus {
   /** An OpenRouter key is in the keychain (its value never leaves main). */
@@ -395,6 +430,24 @@ export const invokeArgs = {
   "apps:remove": z.tuple([
     z.strictObject({ session: z.string().max(64), name: AppName, identity: z.string().max(2048) }),
   ]),
+  /**
+   * Adding a desktop app: main shows the picker (Applications) and inspects what was picked; the
+   * window gets a card and a token (never the app's path).
+   */
+  "apps:desktop-pick": z.tuple([z.strictObject({ session: z.string().max(64) })]),
+  /**
+   * The picked app tried, confined. `allowSite`: with the site its last trial named as its own
+   * (main kept it: the window never names a site).
+   */
+  "apps:desktop-check": z.tuple([
+    z.strictObject({ session: z.string().max(64), token: z.uuid(), allowSite: z.boolean() }),
+  ]),
+  /** The tried app added to the open project (or, named already, approved here). */
+  "apps:desktop-add": z.tuple([z.strictObject({ session: z.string().max(64), token: z.uuid() })]),
+  /** The add given up (its trial ended). */
+  "apps:desktop-cancel": z.tuple([]),
+  /** The open project's desktop apps as this Mac has them (static: nothing launches). */
+  "apps:desktop-status": z.tuple([z.strictObject({ session: z.string().max(64) })]),
   /** A scene of the open project, to play (its id, checked against the project in main). */
   "preview:open": z.tuple([z.string().min(1).max(200)]),
 } satisfies Record<(typeof INVOKE_CHANNELS)[number], z.ZodTuple>
@@ -423,6 +476,12 @@ export interface InvokeResults {
   "secrets:remove": string | null
   /** null when removed or cancelled; else why not, in words. */
   "apps:remove": string | null
+  "apps:desktop-pick": DesktopPick
+  "apps:desktop-check": DesktopCheck
+  /** null when added; else why not, in words. */
+  "apps:desktop-add": string | null
+  "apps:desktop-cancel": void
+  "apps:desktop-status": DesktopStatusView
   "preview:open": Preview
 }
 

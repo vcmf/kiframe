@@ -3,12 +3,20 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { type LlmClient, OpenAiCompatibleClient } from "@kiframe/agent"
 import { type OpenedProject, TakeStore } from "@kiframe/project"
+import { defaultWorkDir, inspectDesktopApp, sweepWorkArea, trialDesktopApp } from "@kiframe/runtime"
 import { keychainBackend, memoryBackend } from "@kiframe/vault"
 import { app, type BrowserWindow, dialog, shell } from "electron"
 import { type Browser, chromium } from "playwright"
 import type { AppStatus } from "../shared/ipc.ts"
 import { errorMessage } from "../shared/util.ts"
 import { AgentHost } from "./agent.ts"
+import {
+  addHostOf,
+  DesktopAdds,
+  DesktopApprovals,
+  desktopStatus,
+  type Looks,
+} from "./desktop-apps.ts"
 import { FileVersions } from "./file-versions.ts"
 import { resolveAppAddress } from "./app-address.ts"
 import { emit, registerHandlers } from "./ipc.ts"
@@ -261,6 +269,51 @@ function start(): void {
     return status()
   }
 
+  // Desktop apps (macOS): inspected and tried by the runtime; approvals in app data.
+  const looks: Looks = { inspect: inspectDesktopApp, trial: trialDesktopApp }
+  // Kiframe's work area (~/.kiframe); a test's own (never the user's) when it names one.
+  const workDir = process.env.KIFRAME_WORK_DIR ?? defaultWorkDir()
+  const adds: DesktopAdds = new DesktopAdds(
+    looks,
+    addHostOf(workspace, {
+      pickApp: async () => {
+        const picked = await dialog.showOpenDialog(parent(), {
+          title: "Add a desktop app",
+          buttonLabel: "Choose",
+          defaultPath: "/Applications",
+          properties: ["openFile"],
+          filters: [{ name: "Applications", extensions: ["app"] }],
+        })
+        return picked.canceled ? undefined : picked.filePaths[0]
+      },
+      approve: (picked, opened, opens) =>
+        desktopApprovals().approve(picked, ids().scope(opened.dir), opens),
+      changed: (opened) => appsChanged(opened),
+    }),
+    workDir,
+  )
+  // Every add ends, its trial too, as the project switches.
+  // Every add ends, its trial too, as the project switches.
+  workspace.onSwitch(() => adds.dropAll())
+  let approvals: DesktopApprovals | undefined
+  const desktopApprovals = (): DesktopApprovals =>
+    (approvals ??= new DesktopApprovals(app.getPath("userData")))
+  /** The open project, if it's this session's (else why not). */
+  const sessionProject = (session: string): OpenedProject | string => {
+    const opened = workspace.opened
+    if (opened === null || workspace.session !== session) return "the project changed"
+    return opened
+  }
+  /** The project's apps changed: its agent and the window told (never another project's). */
+  const appsChanged = (opened: OpenedProject): void => {
+    if (workspace.opened !== opened) return
+    workspace.agent?.appsChanged(opened.project.apps)
+    void status().then((now) => {
+      if (workspace.opened === opened) emit(window, "status", now)
+    })
+  }
+  const owner = () => window?.webContents.id ?? 0
+
   /** The window a dialog belongs to (modal to it: never opened behind it). */
   const parent = (): BrowserWindow => {
     if (window === null) throw new Error("no window to show the dialog in")
@@ -270,7 +323,14 @@ function start(): void {
   const showWindow = () => {
     if (window === null) {
       window = createWindow(join(here, "../preload"), icon, devServer)
+      const closing = window.webContents.id
+      // A reload keeps the id: its add given up all the same (the window starts afresh).
+      window.webContents.on("did-start-navigation", (event) => {
+        if (event.isMainFrame && !event.isSameDocument) adds.dropFor(closing)
+      })
       window.on("closed", () => {
+        // Its add dropped, its trial ended (macOS keeps the app open without a window).
+        adds.dropFor(closing)
         window = null
       })
       return
@@ -295,6 +355,8 @@ function start(): void {
     event.preventDefault()
     if (cleanup === "running") return
     cleanup = "running"
+    // Every desktop app's trial ended (its confined app killed with it).
+    adds.dropAll()
     const work = (async () => {
       // The browser let go within the close, as for project:close (an open in flight never comes
       // between); a close refused still lets it go: the app is quitting.
@@ -477,11 +539,60 @@ function start(): void {
           } catch (e) {
             return message(e)
           }
-          workspace.agent?.appsChanged(opened.project.apps)
-          void status().then((now) => {
-            if (workspace.opened === opened) emit(window, "status", now)
-          })
+          // A desktop app's approval in this project goes with it (its other projects' stay).
+          if (removed?.kind === "electron") {
+            try {
+              desktopApprovals().drop(removed.bundleId, ids().scope(opened.dir))
+            } catch (e) {
+              say(`its approval on this Mac couldn't be removed: ${message(e)}`)
+            }
+          }
+          appsChanged(opened)
           return null
+        },
+        "apps:desktop-pick": async ({ session }) => {
+          if (process.platform !== "darwin") {
+            return { refused: "desktop apps run on macOS only (they're confined there)" }
+          }
+          try {
+            const card = await adds.pick(owner(), session)
+            return card === null ? null : { card }
+          } catch (e) {
+            return { refused: message(e) }
+          }
+        },
+        "apps:desktop-check": async ({ session, token, allowSite }) => {
+          try {
+            return await adds.check(owner(), session, token, allowSite)
+          } catch (e) {
+            return { failed: message(e) }
+          }
+        },
+        "apps:desktop-add": async ({ session, token }) => {
+          try {
+            await adds.add(owner(), session, token)
+            return null
+          } catch (e) {
+            return message(e)
+          }
+        },
+        "apps:desktop-cancel": () => adds.dropFor(owner()),
+        "apps:desktop-status": async ({ session }) => {
+          const opened = sessionProject(session)
+          const apps: Record<string, Awaited<ReturnType<typeof desktopStatus>>> = {}
+          if (typeof opened === "string") return { apps, problem: null }
+          const store = desktopApprovals()
+          const scope = ids().scope(opened.dir)
+          await Promise.all(
+            Object.entries(opened.project.apps).map(async ([name, entry]) => {
+              if (entry.kind !== "electron") return
+              apps[name] =
+                process.platform === "darwin"
+                  ? await desktopStatus(entry, scope, store, looks)
+                  : { status: "not-found", why: "desktop apps run on macOS only" }
+            }),
+          )
+          return { apps, problem: store.takeProblem() }
         },
         "preview:open": (sceneId) => {
           const opened = workspace.opened
@@ -505,6 +616,12 @@ function start(): void {
         } catch (e) {
           // After the window's first read: pushed to it (not an action's result).
           say(`couldn't clean up old recordings: ${message(e)}`)
+        }
+        // What a crash left of desktop apps' launches (never another running Kiframe's).
+        if (process.platform === "darwin") {
+          sweepWorkArea(workDir).catch((e: unknown) =>
+            say(`couldn't clean up desktop apps' leftovers: ${message(e)}`),
+          )
         }
         // Sealed, then scratch beyond the budget (said if it fails).
         void sealTakes().then(() =>
