@@ -135,7 +135,7 @@ describe("a desktop app launched for the agent", () => {
   it("refuses an update that no longer runs confined", async () => {
     const { launcher, state, approvals } = setup(notes({ version: "1.1" }))
     state.trial = () => Promise.resolve({ quit: true })
-    await expect(launcher.launch("notes")).rejects.toThrow(/no longer runs confined/)
+    await expect(launcher.launch("notes")).rejects.toThrow(/updated: it quit at once/)
     expect(approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.version).toBe(
       "1.0",
     )
@@ -152,7 +152,7 @@ describe("a desktop app launched for the agent", () => {
       if (change === "removed") approvals.drop("com.example.Notes", "folder-a")
       else state.opened = null
       trial.resolve({ ok: true })
-      await expect(launching, change).rejects.toThrow(/changed while it was checked/)
+      await expect(launching, change).rejects.toThrow(/changed meanwhile/)
       expect(state.launches, change).toEqual([])
       expect(
         approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.version,
@@ -172,5 +172,91 @@ describe("a desktop app launched for the agent", () => {
     await Promise.all([one, two])
     expect(state.trials).toBe(1)
     expect(state.launches).toHaveLength(2)
+  })
+
+  it("never launches an app removed or a project switched while it was looked at", async () => {
+    for (const change of ["removed", "switched"] as const) {
+      const { launcher, state, approvals } = setup()
+      const looking = deferred<DesktopApp>()
+      const launcherWith = new DesktopLauncher({
+        approvals: () => approvals,
+        looks: { inspect: () => looking.promise, trial: () => Promise.resolve({ ok: true }) },
+        launch: (opts) => {
+          state.launches.push(opts)
+          return Promise.resolve({ close: () => Promise.resolve() } as unknown as ElectronTarget)
+        },
+        opened: () => state.opened,
+        scope: () => "folder-a",
+      })
+      void launcher
+      const launching = launcherWith.launch("notes")
+      if (change === "removed") approvals.drop("com.example.Notes", "folder-a")
+      else state.opened = null
+      looking.resolve(notes())
+      await expect(launching, change).rejects.toThrow(/changed meanwhile/)
+      expect(state.launches, change).toEqual([])
+    }
+  })
+
+  it("never launches a build other than the one tried (an update landing during its trial)", async () => {
+    const { launcher, state } = setup(notes({ version: "1.1" }))
+    const trial = deferred<TrialOutcome>()
+    state.trial = () => trial.promise
+    const launching = launcher.launch("notes")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    state.installed = notes({ version: "1.2" })
+    trial.resolve({ ok: true })
+    await expect(launching).rejects.toThrow(/updated again while it was checked/)
+    expect(state.launches).toEqual([])
+  })
+
+  it("stops only the launch that was stopped, never the trial others wait for", async () => {
+    const { launcher, state } = setup(notes({ version: "1.1" }))
+    const trial = deferred<TrialOutcome>()
+    state.trial = () => trial.promise
+    const stopping = new AbortController()
+    const stopped = launcher.launch("notes", stopping.signal)
+    const waiting = launcher.launch("notes")
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    stopping.abort()
+    await expect(stopped).rejects.toMatchObject({ name: "AbortError" })
+    trial.resolve({ ok: true })
+    await waiting
+    expect(state.trials).toBe(1)
+    expect(state.launches).toHaveLength(1)
+  })
+
+  it("says why an update's quiet trial didn't work, and a failed approval, for the user", async () => {
+    for (const [outcome, said] of [
+      [{ site: "https://login.example" }, /its window is now the site https:\/\/login\.example/],
+      [{ quit: true }, /quit at once/],
+      [{ failed: "busy" }, /couldn't be tried confined \(busy\)/],
+    ] as const) {
+      const { launcher, state } = setup(notes({ version: "1.1" }))
+      state.trial = () => Promise.resolve(outcome as TrialOutcome)
+      const error = await launcher.launch("notes").catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(DesktopRefused)
+      expect(String(error)).toMatch(said)
+    }
+    const { state, approvals } = setup(notes({ version: "1.1" }))
+    const failing = new DesktopLauncher({
+      approvals: () =>
+        Object.assign(Object.create(approvals) as DesktopApprovals, {
+          copyFor: approvals.copyFor.bind(approvals),
+          approve: () => {
+            throw new Error("EACCES")
+          },
+        }),
+      looks: {
+        inspect: () => Promise.resolve(state.installed),
+        trial: () => Promise.resolve({ ok: true }),
+      },
+      launch: () => Promise.reject(new Error("never")),
+      opened: () => state.opened,
+      scope: () => "folder-a",
+    })
+    const error = await failing.launch("notes").catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(DesktopRefused)
+    expect(String(error)).toMatch(/couldn't be approved here \(EACCES\)/)
   })
 })

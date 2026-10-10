@@ -175,12 +175,14 @@ describe("a desktop app's status (static: nothing launches)", () => {
   const approved = (a: DesktopApprovals) => a.approve(notes(), "folder-a", opensOf(entry()))
 
   it("is ready when approved here for what it opens, updated when its developer shipped a new build", async () => {
-    expect(await status({ "/Applications/Notes.app": notes() }, approved)).toMatchObject({
+    // With the app as inspected now, at the approved copy's place (what a launch starts).
+    expect(await status({ "/Applications/Notes.app": notes() }, approved)).toEqual({
       status: "ready",
+      app: notes(),
     })
     expect(
       await status({ "/Applications/Notes.app": notes({ version: "2.0" }) }, approved),
-    ).toMatchObject({ status: "updated" })
+    ).toEqual({ status: "updated", app: notes({ version: "2.0" }) })
   })
 
   it("asks again: never added here, another project's, what it opens changed", async () => {

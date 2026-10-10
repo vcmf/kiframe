@@ -247,7 +247,7 @@ function start(): void {
         item: (item) => current() && emit(window, "chat:item", item),
         running: (running) => {
           // Kif starting ends an "Add desktop app…" check in progress (never beside its run).
-          if (running && current()) adds.dropAll()
+          if (running && current()) adds.endChecks()
           return current() && emit(window, "chat:running", running)
         },
         frame: (frame) => current() && emit(window, "live:frame", frame),

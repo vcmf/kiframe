@@ -196,6 +196,7 @@ export async function desktopStatus(
   scope: string,
   approvals: DesktopApprovals,
   looks: Pick<Looks, "inspect">,
+  signal?: AbortSignal,
 ): Promise<DesktopStatus> {
   const copy = approvals.copyFor(entry.bundleId, scope)
   if (copy === undefined) {
@@ -211,8 +212,9 @@ export async function desktopStatus(
   }
   let now: DesktopApp
   try {
-    now = await looks.inspect(copy.path)
+    now = await looks.inspect(copy.path, signal)
   } catch (error) {
+    if (signal?.aborted === true) throw error
     if (!existsSync(copy.path)) {
       return { status: "not-found", why: `not at ${copy.path} any more: add it again` }
     }
@@ -519,6 +521,11 @@ export class DesktopAdds {
       pending.stopping.abort()
       this.#pending.delete(token)
     }
+  }
+
+  /** Every check in progress ended (Kif starting): picks and cards kept, checked again later. */
+  endChecks(): void {
+    for (const pending of this.#pending.values()) pending.trial?.abort()
   }
 
   /** Every pick and add given up, their trials ended (a project switch, a quit). */

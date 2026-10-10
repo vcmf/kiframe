@@ -54,7 +54,7 @@ export interface RecordOptions extends RunOptions {
   /** Version string written into meta.json. */
   kiframeVersion?: string
   /** A desktop app's build and what it opened (its take keeps them: shown, never a key). */
-  appBuild?: { version?: string; opens: string }
+  appBuild?: TakeMeta["appBuild"]
 }
 
 export interface Take {
