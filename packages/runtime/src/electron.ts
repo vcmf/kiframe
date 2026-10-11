@@ -295,7 +295,8 @@ function spawnOptions(sandbox: { root: string; env: NodeJS.ProcessEnv }): SpawnO
   return {
     detached: true,
     env: sandbox.env,
-    stdio: ["ignore", "ignore", "pipe"],
+    // Its standard output read only for Kiframe's own debugging.
+    stdio: ["ignore", process.env.KIFRAME_ELECTRON_DEBUG === undefined ? "ignore" : "pipe", "pipe"],
     cwd: sandbox.root,
   }
 }
@@ -356,6 +357,9 @@ async function makeSandbox(work: string): Promise<{
     // Chromium on macOS: its temp folder (the single-instance lock's socket) in the sandbox too,
     // never the user's /var/folders (denied by the confinement: such an app would quit).
     MAC_CHROMIUM_TMPDIR: dirs.tmp,
+    // zsh's temp files (here-docs: VS Code's shell, its environment read at start) in its own
+    // temp, never /tmp (denied).
+    TMPPREFIX: join(dirs.tmp, "zsh"),
   })
   return {
     root,
@@ -495,6 +499,14 @@ export async function launchElectronWith(
   // Its spawn failing is said by the launch (never an unhandled 'error' event).
   let spawnError: Error | undefined
   child.on("error", (error) => (spawnError = error))
+  // What it says and how it ends: Kiframe's own debugging only (its output may name paths).
+  if (process.env.KIFRAME_ELECTRON_DEBUG !== undefined) {
+    child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(`[app] ${chunk.toString()}`))
+    child.stdout?.on("data", (chunk: Buffer) =>
+      process.stderr.write(`[app out] ${chunk.toString()}`),
+    )
+    child.on("exit", (code, signalName) => debug("exit", `${code ?? signalName}`))
+  }
   let browser: Browser | undefined
   let ended: Promise<{ unread: boolean }> | undefined
   // Once: the app's group is signalled only while it's known alive (its leader running, or its
@@ -720,13 +732,13 @@ function debuggingEndpoint(
     const finish = (error?: Error, endpoint?: string) => {
       clearTimeout(timer)
       clearInterval(poll)
-      child.stderr?.removeAllListeners("data")
+      child.stderr?.removeListener("data", onData)
       child.removeListener("exit", exited)
       signal?.removeEventListener("abort", aborted)
       if (error !== undefined) reject(error)
       else resolve(endpoint as string)
     }
-    child.stderr?.on("data", (chunk: Buffer) => {
+    const onData = (chunk: Buffer) => {
       output = (output + chunk.toString("utf8")).slice(-8192)
       // A whole line only (a chunk may end mid-address), on this machine only.
       const found =
@@ -734,7 +746,8 @@ function debuggingEndpoint(
           output,
         )?.[1]
       if (found !== undefined) finish(undefined, found)
-    })
+    }
+    child.stderr?.on("data", onData)
     // The profile's own file, inside the sandbox (never one elsewhere: an app that ignores
     // --user-data-dir would write it where Kiframe never reads), read whole.
     const poll = setInterval(() => {
