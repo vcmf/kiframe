@@ -313,7 +313,7 @@ export type DesktopPick =
         /** The project names it already (a project from someone else): adding approves it here. */
         existing: string | undefined
         /** What that project opens with it (shown before it's allowed). */
-        opens: { args: string[]; origins: string[] } | undefined
+        opens: { args: string[]; origins: string[]; terminals: boolean } | undefined
       }
     }
   | { refused: string }
@@ -443,7 +443,9 @@ export const invokeArgs = {
     z.strictObject({ session: z.string().max(64), token: z.uuid(), allowSite: z.boolean() }),
   ]),
   /** The tried app added to the open project (or, named already, approved here). */
-  "apps:desktop-add": z.tuple([z.strictObject({ session: z.string().max(64), token: z.uuid() })]),
+  "apps:desktop-add": z.tuple([
+    z.strictObject({ session: z.string().max(64), token: z.uuid(), terminals: z.boolean() }),
+  ]),
   /** The add given up (its trial ended). */
   "apps:desktop-cancel": z.tuple([]),
   /** The open project's desktop apps as this Mac has them (static: nothing launches). */

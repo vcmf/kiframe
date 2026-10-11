@@ -10,7 +10,9 @@
 // Build the app first (pnpm --filter @kiframe/desktop build). Keys and secrets come from the root
 // `.env` (never printed). Risky steps are approved: throwaway accounts only.
 import {
+  appendFileSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -92,6 +94,15 @@ const { values } = parseArgs({
     input: { type: "string", multiple: true },
     // A file attached to the brief in the composer (its picker, as the user would).
     attach: { type: "string", multiple: true },
+    // A desktop app of the project, `name=/Applications/App.app`: written to project.json (with
+    // --desktop-arg), then added through the Apps panel (picked, checked confined, approved).
+    desktop: { type: "string" },
+    // What the desktop app opens: a path in the project's files/ (`files/demo`).
+    "desktop-arg": { type: "string", multiple: true },
+    // A folder copied into the project's files/ (what a desktop app opens).
+    files: { type: "string" },
+    // The desktop app opens terminals of its own (its card's warning shown before it's allowed).
+    "desktop-terminals": { type: "boolean" },
   },
 })
 function usage(why: string): never {
@@ -99,6 +110,13 @@ function usage(why: string): never {
     `${why}\nusage: --app ${Object.keys(APPS).join("|")} [--minutes 20] [--brief "…"], or --url <address> --brief "…"`,
   )
   process.exit(2)
+}
+// The desktop app's options only with it (never silently ignored).
+if (
+  values.desktop === undefined &&
+  (values["desktop-arg"] !== undefined || values["desktop-terminals"] === true)
+) {
+  usage("--desktop-arg and --desktop-terminals need --desktop")
 }
 // Any other app: its address and the request to send, both; never with --app (which one would run).
 let custom: AppRun | undefined
@@ -213,6 +231,78 @@ async function exportVideo(status: unknown, file: string): Promise<void> {
   log(done.status === 0 ? `exported: ${resolve(file)}` : `export failed (${done.status ?? "?"})`)
 }
 
+/**
+ * A desktop app added as the user would: its entry (what it opens) in the project's file, the
+ * project opened again, then the Apps panel: picked (main's dialog answered with the bundle),
+ * checked confined, approved. Each stage logged, its time too.
+ */
+async function addDesktop(spec: string, dir: string): Promise<void> {
+  const [name, bundle] = spec.split(/=(.*)/s)
+  if (name === undefined || bundle === undefined) throw new Error("--desktop name=/path/App.app")
+  // As the add card reads it (its name, its bundle id): what the panel shows.
+  const { inspectDesktopApp } = await import("@kiframe/runtime")
+  const { bundleId, name: shown } = await inspectDesktopApp(bundle)
+  const literal = shown.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  // Closed from the project's menu, as the user would.
+  await page.getByRole("button", { name: run.name }).first().click()
+  await page.getByRole("menuitem", { name: "Close project" }).click()
+  await page.getByRole("button", { name: "Open a project…" }).waitFor({ timeout: 30_000 })
+  const file = join(dir, "project.json")
+  const project = JSON.parse(readFileSync(file, "utf8")) as { apps: Record<string, unknown> }
+  if (name in project.apps)
+    throw new Error(`--desktop ${name}: the project names an app ${name} already`)
+  project.apps[name] = {
+    kind: "electron",
+    bundleId,
+    ...(values["desktop-arg"] !== undefined && { args: values["desktop-arg"] }),
+    ...(values["desktop-terminals"] === true && { terminals: true }),
+  }
+  writeFileSync(file, JSON.stringify(project, null, 2) + "\n")
+  await app.evaluate(({ dialog }, picked) => {
+    dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [picked] })
+  }, dir)
+  // Opened again from the menu, as the user would (the window's view of it made fresh).
+  await page.getByRole("button", { name: "Open a project…" }).click()
+  await page.getByRole("region", { name: "Scenes" }).waitFor({ timeout: 30_000 })
+  // The title bar's chip: the first app's host (the Apps panel).
+  await page.locator("header button.chip-button").click()
+  const panel = page.getByRole("dialog", { name: "Apps" })
+  await app.evaluate(({ dialog }, picked) => {
+    dialog.showOpenDialog = () => Promise.resolve({ canceled: false, filePaths: [picked] })
+  }, bundle)
+  await panel.getByRole("button", { name: "Add desktop app…" }).click()
+  const adding = panel.getByRole("region", { name: `Adding ${shown}` })
+  await adding.waitFor({ timeout: 30_000 })
+  log(`adding ${shown}: ${(await adding.textContent()) ?? ""}`)
+  if (values["desktop-terminals"] === true) {
+    const note = adding.getByRole("note")
+    log(`terminals warning: ${(await note.count()) > 0 ? await note.textContent() : "(none!)"}`)
+  }
+  const t0 = Date.now()
+  await adding.getByRole("button", { name: "Check" }).click()
+  const status = adding.getByRole("status")
+  await page.waitForFunction(
+    (el) => /runs confined|couldn|can't|isn't|refused|failed/i.test(el?.textContent ?? ""),
+    await status.elementHandle(),
+    { timeout: 120_000 },
+  )
+  const took = Math.round((Date.now() - t0) / 100) / 10
+  log(`checked in ${took} s: ${(await status.textContent()) ?? ""}`)
+  await shot("desktop-checked")
+  // Added, or allowed here when the project names it already (as here).
+  await adding
+    .getByRole("button", { name: new RegExp(`^(Add ${literal}|Allow ${literal} here)$`) })
+    .click()
+  const list = panel.getByRole("list", { name: "The project's apps" })
+  await page.waitForFunction(
+    (el) => /Ready on this Mac/.test(el?.textContent ?? ""),
+    await list.elementHandle(),
+    { timeout: 30_000 },
+  )
+  log(`app ${name} added: ${(await list.textContent()) ?? ""}`)
+  await page.keyboard.press("Escape")
+}
+
 /** The complete takes the app's take store holds (its own reading: leftovers and bad ones skipped). */
 function completeTakes(data: string): number {
   const store = new TakeStore(data)
@@ -251,6 +341,11 @@ const env = Object.fromEntries(
 env.KIFRAME_TEST_KEYCHAIN = "memory"
 // The agent's every event, timed, next to the report (what it called, with what, how long).
 env.KIFRAME_TRACE = join(out, "trace.jsonl")
+// A desktop app's sandboxes in the run's own work area (never the user's ~/.kiframe); its launch's
+// timings and failures' details on main's stderr, kept next to the report.
+env.KIFRAME_WORK_DIR = join(out, "work")
+env.KIFRAME_ELECTRON_TIMING = "1"
+env.KIFRAME_ELECTRON_DEBUG = "1"
 const profile = mkdtempSync(join(tmpdir(), "kiframe-real-"))
 const usageBefore = await credits()
 const started = Date.now()
@@ -259,6 +354,7 @@ const app = await electron.launch({
   cwd: join(root, "apps", "desktop"),
   env,
 })
+app.process().stderr?.on("data", (chunk: Buffer) => appendFileSync(join(out, "main.log"), chunk))
 const page = await app.firstWindow()
 await page.setViewportSize({ width: 1440, height: 900 }).catch(() => undefined)
 const shot = (name: string) =>
@@ -299,6 +395,14 @@ try {
     await page.getByRole("region", { name: "Scenes" }).waitFor({ timeout: 30_000 })
     log(`app ${name} added`)
   }
+
+  // A desktop app: in the project's file first (what it opens), as a shared project has it; then
+  // added through the Apps panel as the user would (its picker answered with the bundle).
+  if (values.files !== undefined) {
+    cpSync(values.files, join(dir, "files", basename(values.files)), { recursive: true })
+    log(`files/${basename(values.files)} added`)
+  }
+  if (values.desktop !== undefined) await addDesktop(values.desktop, dir)
 
   for (const secret of run.secrets) {
     const value = process.env[secret.env]

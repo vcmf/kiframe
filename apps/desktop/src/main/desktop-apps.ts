@@ -63,10 +63,19 @@ const File = z.strictObject({
 })
 type File = z.infer<typeof File>
 
-/** What a project opens with an app (its arguments and sites), as one digest. */
-export function opensOf(app: Pick<ElectronApp, "args" | "origins">): string {
+/**
+ * What a project opens with an app (its arguments, sites, terminals), as one digest: what its
+ * approval covers. Terminals only when on (an approval from before them keeps its digest).
+ */
+export function opensOf(app: Pick<ElectronApp, "args" | "origins" | "terminals">): string {
   return createHash("sha256")
-    .update(JSON.stringify({ args: app.args ?? [], origins: app.origins ?? [] }))
+    .update(
+      JSON.stringify({
+        args: app.args ?? [],
+        origins: app.origins ?? [],
+        ...(app.terminals === true && { terminals: true }),
+      }),
+    )
     .digest("hex")
 }
 
@@ -280,9 +289,10 @@ export interface DesktopCard {
   existing: string | undefined
   /**
    * What that project opens with it, shown before it's allowed: its arguments (paths in files/,
-   * not passed to the check) and the sites it shows as its own (the check runs with them).
+   * not passed to the check), the sites it shows as its own (the check runs with them), and
+   * whether it opens terminals (never in the check: a few seconds need no shell).
    */
-  opens: { args: string[]; origins: string[] } | undefined
+  opens: { args: string[]; origins: string[]; terminals: boolean } | undefined
 }
 
 /**
@@ -408,7 +418,14 @@ export class DesktopAdds {
         signer:
           app.signer.kind === "team" ? { kind: "team", team: app.signer.team } : { kind: "pinned" },
         existing,
-        opens: entry === undefined ? undefined : { args: [...(entry.args ?? [])], origins: listed },
+        opens:
+          entry === undefined
+            ? undefined
+            : {
+                args: [...(entry.args ?? [])],
+                origins: listed,
+                terminals: entry.terminals === true,
+              },
       }
     } finally {
       if (this.#picks.get(owner)?.generation === generation) this.#picks.delete(owner)
@@ -463,9 +480,14 @@ export class DesktopAdds {
    * The tried app added to the project (or, named already, allowed here): its build checked again
    * (the one tried), the project written (its changed-on-disk refusal), then approved. Once the
    * project is written the add is done (an approval that fails then: said, allowed again later).
+   * `terminals`: a new app's, as the user chose on its card (an app the project names keeps the
+   * project's: shown on its card, never changed here).
    */
-  async add(owner: number, session: string, token: string): Promise<string> {
+  async add(owner: number, session: string, token: string, terminals = false): Promise<string> {
     const pending = this.#own(owner, session, token)
+    if (terminals && pending.existing !== undefined) {
+      throw refused("the project says whether it opens terminals: remove it to change that")
+    }
     if (pending.trial !== undefined) throw refused("it's being checked: wait for it")
     if (!pending.tried) throw refused("check it first: it's added once it ran here")
     if (pending.adding) throw refused("it's being added already")
@@ -507,6 +529,7 @@ export class DesktopAdds {
           kind: "electron",
           bundleId: now.bundleId,
           ...(pending.origins.length > 0 && { origins: pending.origins }),
+          ...(terminals && { terminals: true }),
           viewport: { width: 1440, height: 900, deviceScaleFactor: 1 },
         }
         save(opened, name, entry)

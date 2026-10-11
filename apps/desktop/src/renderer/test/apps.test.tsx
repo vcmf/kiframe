@@ -168,7 +168,11 @@ describe("adding a desktop app", () => {
       token: card.token,
       allowSite: true,
     })
-    expect(invoke).toHaveBeenCalledWith("apps:desktop-add", { session: "s1", token: card.token })
+    expect(invoke).toHaveBeenCalledWith("apps:desktop-add", {
+      session: "s1",
+      token: card.token,
+      terminals: false,
+    })
     // The window named no path and no site: only its session, the token and a yes.
     expect(JSON.stringify(invoke.mock.calls)).not.toMatch(/Applications|slack\.com"/)
   })
@@ -200,7 +204,7 @@ describe("adding a desktop app", () => {
         card: {
           ...card,
           existing: "slack",
-          opens: { args: ["files/vault"], origins: ["https://evil.example"] },
+          opens: { args: ["files/vault"], origins: ["https://evil.example"], terminals: false },
         },
       }),
       "apps:desktop-cancel": () => undefined,
@@ -212,6 +216,68 @@ describe("adding a desktop app", () => {
     const adding = await within(panel).findByRole("region", { name: "Adding Slack" })
     expect(adding.textContent).toContain("the site https://evil.example as its own")
     expect(adding.textContent).toContain("files/vault (not opened by the check)")
+    expect(within(adding).queryByRole("note")).toBeNull()
+  })
+
+  it("warns before allowing an app the project lets open terminals (never a choice made here)", async () => {
+    const { invoke } = stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "apps:desktop-pick": () => ({
+        card: { ...card, existing: "minmux", opens: { args: [], origins: [], terminals: true } },
+      }),
+      "apps:desktop-check": () => ({ ok: true }),
+      "apps:desktop-add": () => null,
+      "apps:desktop-cancel": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
+    const panel = screen.getByRole("dialog", { name: "Apps" })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const adding = await within(panel).findByRole("region", { name: "Adding Slack" })
+    expect(adding.textContent).toContain("terminals of its own")
+    expect(within(adding).getByRole("note").textContent).toMatch(/can be read and typed into/)
+    // The project's say, shown: no box to change it here.
+    expect(within(adding).queryByRole("checkbox")).toBeNull()
+    fireEvent.click(within(adding).getByRole("button", { name: "Check" }))
+    fireEvent.click(await within(adding).findByRole("button", { name: "Allow Slack here" }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(invoke).toHaveBeenCalledWith("apps:desktop-add", {
+      session: "s1",
+      token: card.token,
+      terminals: false,
+    })
+  })
+
+  it("lets a new app open terminals only when ticked, warned of what that exposes", async () => {
+    const { invoke } = stubApi({
+      "app:status": () => status({ hasKey: true, project }),
+      "apps:desktop-pick": () => ({ card }),
+      "apps:desktop-check": () => ({ ok: true }),
+      "apps:desktop-add": () => null,
+      "apps:desktop-cancel": () => undefined,
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: /app\.test/ }))
+    const panel = screen.getByRole("dialog", { name: "Apps" })
+    fireEvent.click(within(panel).getByRole("button", { name: "Add desktop app…" }))
+    const adding = await within(panel).findByRole("region", { name: "Adding Slack" })
+    const box = within(adding).getByRole("checkbox", { name: /It opens terminals/ })
+    expect((box as HTMLInputElement).checked).toBe(false)
+    expect(within(adding).queryByRole("note")).toBeNull()
+    fireEvent.click(box)
+    expect(within(adding).getByRole("note").textContent).toMatch(/can be read and typed into/)
+    fireEvent.click(within(adding).getByRole("button", { name: "Check" }))
+    fireEvent.click(await within(adding).findByRole("button", { name: "Add Slack" }))
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(invoke).toHaveBeenCalledWith("apps:desktop-add", {
+      session: "s1",
+      token: card.token,
+      terminals: true,
+    })
   })
 
   it("never shows a check's answer on a card picked after it was given up", async () => {

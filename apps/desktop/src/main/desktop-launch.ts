@@ -139,6 +139,7 @@ export class DesktopLauncher {
       ...(existsSync(files) && { files }),
       ...(entry.args !== undefined && { args: entry.args }),
       ...(entry.origins !== undefined && { origins: entry.origins }),
+      ...(entry.terminals === true && { terminals: true }),
       viewport: entry.viewport,
       ...(signal !== undefined && { signal }),
       ...(this.#deps.workDir !== undefined && { workDir: this.#deps.workDir }),

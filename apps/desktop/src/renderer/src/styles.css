@@ -1679,6 +1679,14 @@ ul.strip-cards > li {
   color: var(--muted);
 }
 
+.app-card-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 8px;
+  font-size: 13px;
+}
+
 .app-card-label {
   font-style: italic;
 }
