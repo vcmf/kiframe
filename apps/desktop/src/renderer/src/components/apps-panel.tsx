@@ -16,6 +16,11 @@ import { useChat } from "../chat-store.ts"
 
 type Card = Extract<DesktopPick, { card: unknown }>["card"]
 
+/** What an app allowed its own terminals is open to (said on its card before it's added). */
+const TERMINALS_WARNING =
+  "Its terminals work. While Kiframe runs it, a terminal you open (in any app) can be read and " +
+  "typed into by it: only for apps you trust, and review what Kif does with it."
+
 /** A desktop app's status on this Mac, in words. */
 function statusText(entry: DesktopStatusView["apps"][string] | undefined): string {
   if (entry === undefined) return ""
@@ -41,6 +46,8 @@ export function AppsPanel({
   const [checking, setChecking] = useState(false)
   const [picking, setPicking] = useState(false)
   const [adding, setAdding] = useState(false)
+  // A new app's terminals (off unless the user ticks it for this card).
+  const [terminals, setTerminals] = useState(false)
   // The card a check's answer belongs to (an answer for a card given up: dropped).
   const current = useRef<string | null>(null)
   current.current = card?.token ?? null
@@ -114,6 +121,7 @@ export function AppsPanel({
       setError(picked.refused)
       return
     }
+    setTerminals(false)
     setCard(picked.card)
   }
 
@@ -139,7 +147,11 @@ export function AppsPanel({
     addingNow.current = token
     setAdding(true)
     const refused = await api()
-      .invoke("apps:desktop-add", { session: project.session, token })
+      .invoke("apps:desktop-add", {
+        session: project.session,
+        token,
+        terminals: card.existing === undefined && terminals,
+      })
       .catch((e: unknown) => String(e))
     if (addingNow.current === token) addingNow.current = null
     setAdding(false)
@@ -231,12 +243,31 @@ export function AppsPanel({
                 This project names it already (as {card.existing}): checking it allows it here, with
                 what the project opens with it:{" "}
                 {card.opens === undefined ||
-                (card.opens.args.length === 0 && card.opens.origins.length === 0)
+                (card.opens.args.length === 0 &&
+                  card.opens.origins.length === 0 &&
+                  !card.opens.terminals)
                   ? "nothing more."
                   : [
                       ...card.opens.origins.map((o) => `the site ${o} as its own`),
                       ...card.opens.args.map((a) => `${a} (not opened by the check)`),
+                      ...(card.opens.terminals ? ["terminals of its own"] : []),
                     ].join(", ")}
+              </p>
+            )}
+            {card.existing === undefined && (
+              <label className="app-card-option">
+                <input
+                  type="checkbox"
+                  checked={terminals}
+                  disabled={adding}
+                  onChange={(e) => setTerminals(e.target.checked)}
+                />
+                It opens terminals (a terminal app, an editor’s terminal)
+              </label>
+            )}
+            {(card.existing === undefined ? terminals : card.opens?.terminals === true) && (
+              <p className="app-card-why app-card-warn" role="note">
+                {TERMINALS_WARNING}
               </p>
             )}
             <p className="app-card-why">

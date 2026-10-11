@@ -598,9 +598,9 @@ function start(): void {
             return { failed: message(e) }
           }
         },
-        "apps:desktop-add": async ({ session, token }) => {
+        "apps:desktop-add": async ({ session, token, terminals }) => {
           try {
-            await adds.add(owner(), session, token)
+            await adds.add(owner(), session, token, terminals)
             return null
           } catch (e) {
             return message(e)

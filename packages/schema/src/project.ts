@@ -92,6 +92,12 @@ export const ElectronApp = z.strictObject({
     .optional(),
   /** The sites a wrapper app shows as its own (Slack's app.slack.com): its pages, never another's. */
   origins: z.array(HttpsOrigin).max(10).optional(),
+  /**
+   * It opens terminals of its own (a terminal app, an editor's terminal; decided 2026-10-11): its
+   * new ptys allowed, the user's open at launch never reached; a terminal the user opens while it
+   * runs is exposed to it (Seatbelt can't tell them apart). Approved on each Mac with the app.
+   */
+  terminals: z.boolean().optional(),
   /** The size its takes are recorded at (emulated: the window itself is never moved). */
   viewport: Viewport.prefault({ width: 1440, height: 900 }),
 })

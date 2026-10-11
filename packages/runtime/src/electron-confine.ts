@@ -28,6 +28,11 @@ export interface Confinement {
    * they are (a home outside /Users on a managed Mac).
    */
   private: readonly string[]
+  /**
+   * Its own terminals allowed (the project's app opens them, approved as such): the user's open at
+   * launch (`openTerminals`) never reached. Absent: no terminal at all.
+   */
+  terminals?: { existing: readonly string[] }
 }
 
 /**
@@ -36,13 +41,84 @@ export interface Confinement {
  */
 export const quoted = (s: string) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
 
+/** What `openTerminals` reads of /dev (the tests' own). */
+export interface DevView {
+  list: () => Promise<string[]>
+  /** A node's owner; undefined when it's gone (closed meanwhile). */
+  owner: (path: string) => Promise<number | undefined>
+}
+
+const DEV: DevView = {
+  list: () => readdir("/dev"),
+  owner: async (path) => {
+    try {
+      return (await lstat(path)).uid
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return undefined
+      throw error
+    }
+  },
+}
+
+/**
+ * The user's terminals there now (ptys owned by a user: a pty in use belongs to whoever opened
+ * it), never reached by an app allowed its own. A free pty's node stays, owned by root (measured
+ * 2026-10-11): never listed, the app's own next pty may take its number; one in use by root is
+ * closed to the app by its mode already. Seatbelt can't tell a pty the app opens later from one
+ * the user opens: those stay exposed (stated in BACKLOG). Unreadable: refused (never unlisted).
+ */
+export async function openTerminals(dev: DevView = DEV): Promise<string[]> {
+  try {
+    const paths = (await dev.list()).filter((n) => /^ttys[0-9]+$/.test(n)).map((n) => `/dev/${n}`)
+    const owners = await Promise.all(paths.map((path) => dev.owner(path)))
+    return paths.filter((_, i) => owners[i] !== undefined && owners[i] !== 0)
+  } catch {
+    throw new ConfinementError("the open terminals couldn't be listed: the app isn't launched")
+  }
+}
+
+/**
+ * The profile with an app's terminals parses (it isn't the one the canary ran): a macOS that
+ * refused it would otherwise read as an app that quit at once.
+ */
+export function checkProfile(profile: string, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      SANDBOX_EXEC,
+      ["-p", profile, "/usr/bin/true"],
+      { timeout: 5000, ...(signal !== undefined && { signal }) },
+      (error) =>
+        error === null
+          ? resolve()
+          : reject(new ConfinementError("the confinement for its terminals didn't load")),
+    )
+  })
+}
+
+/**
+ * Every way to reach a terminal: read, written, its mode changed, its ioctls, revoked (killed),
+ * its times watched (when the user types).
+ */
+const TERMINAL_OPS = "file-read-data file-read-metadata file-write* file-ioctl file-revoke"
+
 /** The Seatbelt profile of a launch. Later rules win over earlier ones. */
 export function seatbeltProfile(c: Confinement): string {
   const readable = [c.sandbox, ...c.readable].map((p) => `(subpath ${quoted(p)})`).join(" ")
+  // Its own ptys (new ones), or none; never the user's (open at launch), serial lines, BSD ptys.
+  const ptys =
+    c.terminals === undefined ? "" : ' (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$")'
+  // Every tty but its own new ptys (ttysNNN) and /dev/tty; the user's ptys, each.
+  const terminals =
+    c.terminals === undefined
+      ? '(regex #"^/dev/tty.") (literal "/dev/ptmx")'
+      : [
+          '(regex #"^/dev/tty[^s]")',
+          ...c.terminals.existing.map((t) => `(literal ${quoted(t)})`),
+        ].join(" ")
   return `(version 1)
 (allow default)
 (deny file-write*)
-(allow file-write* (subpath ${quoted(c.sandbox)}) (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (regex #"^/dev/tty") (regex #"^/dev/fd/"))
+(allow file-write* (subpath ${quoted(c.sandbox)}) (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper") (literal "/dev/tty")${ptys} (regex #"^/dev/fd/"))
 (deny file-read-data (subpath "/Users") (subpath "/Volumes") (subpath "/private/var/folders") (subpath "/private/tmp") (subpath "/var/folders") (subpath "/tmp")${c.private.map((p) => ` (subpath ${quoted(p)})`).join("")})
 (allow file-read-data ${readable})
 (deny network-outbound (remote unix-socket))
@@ -50,6 +126,7 @@ export function seatbeltProfile(c: Confinement): string {
 (deny appleevent-send)
 (deny process-exec* (subpath ${quoted(c.sandbox)}) (literal "/usr/bin/open") (literal "/usr/bin/osascript") (literal "/bin/launchctl"))
 (deny mach-lookup (global-name "com.apple.cfprefsd.agent") (global-name "com.apple.SecurityServer") (global-name "com.apple.pasteboard.1"))
+(deny ${TERMINAL_OPS} (regex #"^/dev/cu\\.") (regex #"^/dev/pty") ${terminals})
 `
 }
 

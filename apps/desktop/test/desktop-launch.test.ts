@@ -121,6 +121,31 @@ describe("a desktop app launched for the agent", () => {
     expect(state.launches).toEqual([])
   })
 
+  it("opens terminals only as approved here: a project that turned them on is asked again", async () => {
+    // Never when the project doesn't say so.
+    const plain = setup()
+    await plain.launcher.launch("notes")
+    expect(plain.state.launches[0]?.terminals).toBeUndefined()
+    // Turned on (a teammate's push, a hand edit), an update waiting too: refused, never tried.
+    for (const installed of [notes(), notes({ version: "1.1" })]) {
+      const { launcher, state, approvals, opened } = setup(installed)
+      saveProject(opened, {
+        ...opened.project,
+        apps: { ...opened.project.apps, notes: entry({ terminals: true }) },
+      })
+      await expect(launcher.launch("notes")).rejects.toThrow(/changed what it opens/)
+      expect(state.launches).toEqual([])
+      expect(state.trials).toBe(0)
+      expect(approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.opens).toBe(
+        opensOf(entry()),
+      )
+      // Allowed again here (the card said it): launched with them.
+      approvals.approve(installed, "folder-a", opensOf(entry({ terminals: true })))
+      await launcher.launch("notes")
+      expect(state.launches[0]?.terminals).toBe(true)
+    }
+  })
+
   it("tries an update quietly, then approves that build for the project and launches it", async () => {
     const { launcher, state, approvals } = setup(notes({ version: "1.1" }))
     await launcher.launch("notes")

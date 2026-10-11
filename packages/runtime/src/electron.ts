@@ -1,6 +1,14 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { posix } from "node:path"
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs"
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs"
 import { rm } from "node:fs/promises"
 import { userInfo } from "node:os"
 import { join, sep } from "node:path"
@@ -10,8 +18,11 @@ import {
   CONFINED_SWITCHES,
   argumentIn,
   checkConfinement,
+  checkProfile,
+  type Confinement,
   copyFiles,
   FilesError,
+  openTerminals,
   SANDBOX_EXEC,
   seatbeltProfile,
 } from "./electron-confine.ts"
@@ -176,6 +187,11 @@ export interface ElectronLaunch {
   viewport: Pick<Viewport, "width" | "height" | "deviceScaleFactor">
   /** The https sites a wrapper app shows as its own (the project's `origins`). */
   origins?: readonly string[]
+  /**
+   * It opens terminals of its own (the project's, approved): new ptys allowed, the user's open at
+   * launch never reached. Off: no terminal at all.
+   */
+  terminals?: boolean
   signal?: AbortSignal
   /**
    * How long its windows must stay as they are before its main window is chosen (default 1.5 s: a
@@ -351,6 +367,24 @@ async function makeSandbox(work: string): Promise<{
   }
 }
 
+/**
+ * Its shells' setup (user decision 2026-10-11): a prompt with no login or machine name (a demo
+ * shows it), the folder only. Its home is fresh at each launch: these are all it holds.
+ */
+function neutralShell(home: string, env: NodeJS.ProcessEnv): void {
+  writeFileSync(join(home, ".zshrc"), "PROMPT='%1~ %# '\n")
+  for (const file of [".bashrc", ".bash_profile"]) {
+    writeFileSync(join(home, file), "PS1='\\W \\$ '\n")
+  }
+  mkdirSync(join(home, ".config", "fish"), { recursive: true })
+  writeFileSync(
+    join(home, ".config", "fish", "config.fish"),
+    "function fish_prompt; echo -n (prompt_pwd)' > '; end\n",
+  )
+  // macOS's bash says zsh is the default at every start: never on camera.
+  env.BASH_SILENCE_DEPRECATION_WARNING = "1"
+}
+
 /** How long the app's windows must stay as they are before its main window is chosen. */
 const SETTLE_MS = 1500
 
@@ -390,10 +424,11 @@ export async function launchElectronWith(
   // Its files and its confinement ready before it starts (said, its sandbox removed, if not).
   let args: string[]
   let profile: string | undefined
+  let confinement: Confinement | undefined
   try {
     // The confinement first (cheap): a broken one never costs the files' copy.
     if (confined) {
-      const confinement = {
+      confinement = {
         sandbox: sandbox.root,
         readable: [...bundles.map(realpathOr), ...(hooks.readable ?? []).map(realpathOr)],
         // The home and the work area wherever they are, and the one temp folder left (/var/tmp).
@@ -402,7 +437,6 @@ export async function launchElectronWith(
       // Its own canary, beside its sandbox (never inside: that's readable) and named after it:
       // launches at once never touch each other's, and a crash's is swept with its sandbox.
       await checkConfinement(confinement, `${sandbox.root}.canary`, opts.signal)
-      profile = seatbeltProfile(confinement)
     }
     if (opts.files !== undefined) await copyFiles(opts.files, sandbox.files, opts.signal)
     args = (opts.args ?? []).map((a) => argumentIn(a, sandbox.files))
@@ -410,6 +444,24 @@ export async function launchElectronWith(
       if (!existsSync(arg)) {
         throw new ElectronLaunchError(`${arg.slice(sandbox.files.length + 1)} isn't in files/`)
       }
+    }
+    if (opts.terminals === true) {
+      // Its profile's shape loads (checked first: the listing below stays the last step).
+      if (confinement !== undefined) {
+        await checkProfile(
+          seatbeltProfile({ ...confinement, terminals: { existing: [] } }),
+          opts.signal,
+        )
+      }
+      neutralShell(sandbox.home, sandbox.env)
+    }
+    // Last before it starts: the user's terminals listed as late as they can be.
+    if (confinement !== undefined) {
+      const existing = opts.terminals === true ? await openTerminals() : undefined
+      profile = seatbeltProfile({
+        ...confinement,
+        ...(existing !== undefined && { terminals: { existing } }),
+      })
     }
     // Stopped meanwhile: never started.
     opts.signal?.throwIfAborted()

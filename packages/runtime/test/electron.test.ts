@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { createRequire } from "node:module"
-import { tmpdir, userInfo } from "node:os"
+import { hostname, tmpdir, userInfo } from "node:os"
 import { dirname, join } from "node:path"
 import { parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { errors } from "playwright"
@@ -36,7 +36,13 @@ import {
   seatbeltProfile,
   sweepWorkArea,
 } from "../src/index.ts"
-import { checkConfinement, copyFiles } from "../src/electron-confine.ts"
+import {
+  checkConfinement,
+  checkProfile,
+  ConfinementError,
+  copyFiles,
+  openTerminals,
+} from "../src/electron-confine.ts"
 import {
   attach,
   type ElectronLaunch,
@@ -174,6 +180,7 @@ const launch = async (
     timeoutMs?: number
     signal?: AbortSignal
     origins?: string[]
+    terminals?: boolean
   } = {},
 ) => {
   const target = await launchElectron({
@@ -1239,6 +1246,167 @@ steps:
         for (const probe of probes) rmSync(probe, { force: true })
         agent.close()
       }
+    })
+
+    /** A terminal of the user's (a pty the test opens, a shell in it): what's printed into it, seen. */
+    const userTerminal = async () => {
+      const shell = spawn(
+        "/usr/bin/script",
+        ["-q", "/dev/null", "/bin/sh", "-c", "tty; exec sleep 120"],
+        {
+          stdio: ["ignore", "pipe", "ignore"],
+        },
+      )
+      let seen = ""
+      shell.stdout.on("data", (d: Buffer) => (seen += d.toString()))
+      expect(await waitFor(() => /\/dev\/ttys[0-9]+/.test(seen), 10_000)).toBe(true)
+      const path = /\/dev\/ttys[0-9]+/.exec(seen)![0]
+      return { path, seen: () => seen, mode: () => statSync(path).mode, close: () => shell.kill() }
+    }
+    const terminalsSeen = async (target: ElectronTarget, name = "terminals.json") => {
+      const file = join(target.sandbox, "profile", name)
+      expect(await waitFor(() => existsSync(file), 15_000)).toBe(true)
+      return JSON.parse(readFileSync(file, "utf8")) as Record<string, string>
+    }
+
+    it("never reaches the user's terminals; opens its own only when its project allows it", async () => {
+      const user = await userTerminal()
+      const mode = user.mode()
+      try {
+        for (const terminals of [false, true]) {
+          const target = await launch(["terminals", `tty=${user.path}`], { terminals })
+          const seen = await terminalsSeen(target)
+          // Never the user's: not printed into, not read (keystrokes), its mode kept.
+          for (const escape of [
+            "tty-write-outside",
+            "tty-read-outside",
+            "tty-chmod-outside",
+            "tty-stat-outside",
+          ]) {
+            expect(seen[escape], `${escape} (terminals: ${terminals})`).toBe("DENIED EPERM")
+          }
+          // Its own pty (a terminal app's shell): only when allowed.
+          expect(seen["pty-shell"], `terminals: ${terminals}`).toMatch(
+            terminals ? /^OK true/ : /^DENIED/,
+          )
+          // Its shells' prompts: the folder only, never the user's login or Mac's name.
+          if (terminals) {
+            expect(seen["zsh-prompt"]).toMatch(/^OK \S+ %$/)
+            expect(seen["bash-prompt"]).toBe("OK \\W \\$")
+            for (const prompt of [seen["zsh-prompt"], seen["bash-prompt"]]) {
+              expect(prompt).not.toContain(userInfo().username)
+              expect(prompt).not.toContain(hostname().split(".")[0])
+            }
+          }
+          await target.close()
+        }
+        expect(user.seen()).not.toContain("INJECTED")
+        expect(user.mode()).toBe(mode)
+      } finally {
+        user.close()
+      }
+    })
+
+    it("can read a terminal opened while it runs, when allowed its own (the stated gap)", async () => {
+      // Seatbelt can't tell a pty the app opens from one the user opens after the launch: pinned
+      // here, so a fix (a pty broker) flips it knowingly. Without terminals: never.
+      for (const terminals of [true, false]) {
+        const target = await launch(["terminals"], { terminals })
+        await terminalsSeen(target)
+        const user = await userTerminal()
+        try {
+          writeFileSync(join(target.sandbox, "profile", "later.txt"), user.path)
+          const later = await terminalsSeen(target, "later.json")
+          expect(later["tty-read-later"], `terminals: ${terminals}`).toBe(
+            terminals ? "OK" : "DENIED EPERM",
+          )
+        } finally {
+          user.close()
+          await target.close()
+        }
+      }
+    })
+
+    it("lists the user's terminals last, every way to reach one denied; none for an app without", () => {
+      const base = { sandbox: "/s", readable: [], private: [] }
+      const without = seatbeltProfile(base)
+      const last = (p: string) => p.trim().split("\n").at(-1)!
+      expect(last(without)).toMatch(
+        /^\(deny file-read-data file-read-metadata file-write\* file-ioctl file-revoke /,
+      )
+      expect(last(without)).toContain('(regex #"^/dev/tty.") (literal "/dev/ptmx")')
+      expect(without).not.toContain('(regex #"^/dev/ttys[0-9]+$")')
+      const withOwn = seatbeltProfile({
+        ...base,
+        terminals: { existing: ["/dev/ttys001", "/dev/ttys004"] },
+      })
+      expect(withOwn).toContain('(literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$")')
+      expect(last(withOwn)).toMatch(
+        /^\(deny file-read-data file-read-metadata file-write\* file-ioctl file-revoke /,
+      )
+      // Every other tty (serial lines, old BSD ptys), then the user's ptys, each.
+      expect(last(withOwn)).toContain(
+        '(regex #"^/dev/tty[^s]") (literal "/dev/ttys001") (literal "/dev/ttys004")',
+      )
+      // Never every terminal writable (the rule that let an app print into the user's).
+      for (const p of [without, withOwn]) expect(p).not.toContain('(regex #"^/dev/tty")')
+    })
+
+    it("lists the user's ptys only: a free one's node (root's) is the app's to take", async () => {
+      const nodes: Record<string, number | undefined> = {
+        "/dev/ttys001": 501,
+        // Free (closed since boot): its node stays, root's; the app's next pty may take it.
+        "/dev/ttys003": 0,
+        // Closed while listed.
+        "/dev/ttys005": undefined,
+        "/dev/tty.usb": 501,
+        "/dev/cu.serial": 0,
+      }
+      const view = {
+        list: () => Promise.resolve([...Object.keys(nodes), "tty", "null"].map((p) => p.slice(5))),
+        owner: (p: string) => Promise.resolve(nodes[p]),
+      }
+      expect(await openTerminals(view)).toEqual(["/dev/ttys001"])
+      // Unreadable: refused (never a launch with them unlisted).
+      const eacces = () => Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" }))
+      for (const broken of [
+        { ...view, list: eacces },
+        { ...view, owner: eacces },
+      ]) {
+        await expect(openTerminals(broken)).rejects.toThrow(ConfinementError)
+      }
+      // On this Mac: the test's own terminal is listed (its user's), a root-owned node never (one
+      // closed since: gone, nothing to say of it).
+      const user = await userTerminal()
+      try {
+        const listed = await openTerminals()
+        expect(listed).toContain(user.path)
+        for (const path of listed) {
+          const owner = (() => {
+            try {
+              return statSync(path).uid
+            } catch {
+              return undefined
+            }
+          })()
+          if (owner !== undefined) expect(owner).not.toBe(0)
+        }
+      } finally {
+        user.close()
+      }
+    })
+
+    it("refuses a terminals profile macOS won't load (never read as an app that quit)", async () => {
+      const profile = seatbeltProfile({
+        sandbox: realpathSync(tmpdir()),
+        readable: [],
+        private: [],
+        terminals: { existing: [] },
+      })
+      await expect(checkProfile(profile)).resolves.toBeUndefined()
+      await expect(checkProfile(profile + "(deny no-such-operation)\n")).rejects.toThrow(
+        /the confinement for its terminals didn't load/,
+      )
     })
 
     it("never launches when the confinement doesn't hold (a canary is read)", async () => {

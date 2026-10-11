@@ -114,6 +114,65 @@ if (process.argv.includes("touch-arg") && opened !== undefined) {
   app.whenReady().then(() => writeFileSync(join(opened, "note.md"), "edited by the app"))
 }
 
+// "terminals": the user's terminal (`tty=`, opened before the launch: never reached) and a pty of
+// its own (a shell run through /usr/bin/script: what a terminal app does), tried and written down.
+// Then the terminal the test opens after the launch (`later.txt` in its data folder), if given.
+if (process.argv.includes("terminals")) {
+  app.whenReady().then(async () => {
+    const fs = require("node:fs")
+    const { execFileSync } = require("node:child_process")
+    const tty = process.argv.find((a) => a.startsWith("tty="))?.slice(4) ?? "/nonexistent"
+    const out = {}
+    const tryIt = (name, fn) => {
+      try {
+        out[name] = "OK " + String(fn()).slice(0, 40)
+      } catch (e) {
+        out[name] = "DENIED " + (e.code ?? String(e).slice(0, 40))
+      }
+    }
+    const openRead = (path) =>
+      fs.closeSync(fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK))
+    tryIt("tty-write-outside", () => fs.writeFileSync(tty, "INJECTED"))
+    tryIt("tty-read-outside", () => openRead(tty))
+    tryIt("tty-chmod-outside", () => fs.chmodSync(tty, 0o666))
+    // Its times (they change as the user types): never watched.
+    tryIt("tty-stat-outside", () => fs.statSync(tty).mtimeMs)
+    tryIt("pty-shell", () =>
+      execFileSync("/usr/bin/script", ["-q", "/dev/null", "/bin/echo", "pty-ok"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 5000,
+      })
+        .toString()
+        .includes("pty-ok"),
+    )
+    // What its shells' prompts show (a demo films them).
+    const shell = (program, script) =>
+      execFileSync(program, ["-i", "-c", script], {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 5000,
+      })
+        .toString()
+        .trim()
+    tryIt("zsh-prompt", () => shell("/bin/zsh", 'print -rP -- "$PS1"'))
+    tryIt("bash-prompt", () => shell("/bin/bash", 'echo "$PS1"'))
+    const data = app.getPath("userData")
+    fs.writeFileSync(join(data, "terminals.json"), JSON.stringify(out))
+    const asked = join(data, "later.txt")
+    for (let i = 0; i < 200 && !fs.existsSync(asked); i++)
+      await new Promise((r) => setTimeout(r, 50))
+    if (!fs.existsSync(asked)) return
+    const later = {}
+    const path = fs.readFileSync(asked, "utf8")
+    try {
+      openRead(path)
+      later["tty-read-later"] = "OK"
+    } catch (e) {
+      later["tty-read-later"] = "DENIED " + e.code
+    }
+    fs.writeFileSync(join(data, "later.json"), JSON.stringify(later))
+  })
+}
+
 // "probes": each escape the confinement must refuse, tried and written down (never the user's
 // data: a write would only create a probe file the test removes; reads only list folders).
 if (process.argv.includes("probes")) {

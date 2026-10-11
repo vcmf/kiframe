@@ -196,6 +196,16 @@ describe("a desktop app's status (static: nothing launches)", () => {
     expect((await status(at, approved, opens)).status).toBe("opens-changed")
   })
 
+  it("asks again for an app the project now lets open terminals; off is as never said", async () => {
+    const at = { "/Applications/Notes.app": notes() }
+    expect((await status(at, approved, entry({ terminals: true }))).status).toBe("opens-changed")
+    expect((await status(at, approved, entry({ terminals: false }))).status).toBe("ready")
+    // Approvals from before terminals keep their digest (never all asked again by an update).
+    expect(opensOf(entry())).toBe(
+      "be954a12116b1369a8f5d36bdb9f9c4482b0bc8cb3465685b11bbf6106b7584b",
+    )
+  })
+
   it("keeps each project's tried build: another's approval of an update changes nothing here", async () => {
     const approvals = new DesktopApprovals(dir())
     approvals.approve(notes(), "folder-b", opensOf(entry()))
@@ -316,6 +326,23 @@ describe("adding a desktop app", () => {
         h.fake.looks,
       ),
     ).toMatchObject({ status: "ready" })
+  })
+
+  it("lets it open terminals only as its card was ticked, approved with them", async () => {
+    for (const terminals of [false, true]) {
+      const h = harness()
+      const card = await h.pick()
+      await h.adds.check(1, "s1", card.token, false)
+      // Its check never opens terminals (a few seconds need no shell).
+      expect(h.fake.trials[0]).not.toHaveProperty("terminals")
+      expect(await h.adds.add(1, "s1", card.token, terminals)).toBe("notes")
+      const written = openProject(h.opened.dir).project.apps["notes"] as ElectronApp
+      // Written only when on (never `terminals: false`).
+      expect("terminals" in written, `terminals: ${terminals}`).toBe(terminals)
+      expect(await desktopStatus(written, "folder-a", h.approvals, h.fake.looks)).toMatchObject({
+        status: "ready",
+      })
+    }
   })
 
   it("allows a wrapper's site only as the trial named it, tried before it's added", async () => {
@@ -485,7 +512,11 @@ describe("adding an app a project already names", () => {
     const h = harness(named())
     const card = await h.pick()
     expect(card.existing).toBe("desk")
-    expect(card.opens).toEqual({ args: ["files/vault"], origins: ["https://a.example"] })
+    expect(card.opens).toEqual({
+      args: ["files/vault"],
+      origins: ["https://a.example"],
+      terminals: false,
+    })
     await h.adds.check(1, "s1", card.token, false)
     expect(h.fake.trials[0]?.origins).toEqual(["https://a.example"])
     expect(await h.adds.add(1, "s1", card.token)).toBe("desk")
@@ -508,6 +539,42 @@ describe("adding an app a project already names", () => {
       },
     })
     await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/the project changed meanwhile/)
+  })
+
+  it("shows its terminals before it's allowed, and never turns them on from the card", async () => {
+    const opened = project()
+    saveProject(opened, {
+      ...opened.project,
+      apps: { ...opened.project.apps, desk: entry({ terminals: true }) },
+    })
+    const h = harness(opened)
+    const card = await h.pick()
+    expect(card.opens?.terminals).toBe(true)
+    await h.adds.check(1, "s1", card.token, false)
+    expect(await h.adds.add(1, "s1", card.token)).toBe("desk")
+    expect(h.approvals.copyFor("com.example.Notes", "folder-a")?.scopes["folder-a"]?.opens).toBe(
+      opensOf(entry({ terminals: true })),
+    )
+    // One it names without them: the card's say never adds them.
+    const plain = harness(named())
+    const off = await plain.pick()
+    await plain.adds.check(1, "s1", off.token, false)
+    await expect(plain.adds.add(1, "s1", off.token, true)).rejects.toThrow(/remove it to change/)
+    expect(openProject(plain.opened.dir).project.apps["desk"]).not.toHaveProperty("terminals")
+    expect(plain.approvals.copyFor("com.example.Notes", "folder-a")).toBeUndefined()
+  })
+
+  it("never approves terminals turned on since the pick", async () => {
+    const h = harness(named())
+    const card = await h.pick()
+    await h.adds.check(1, "s1", card.token, false)
+    const desk = h.opened.project.apps["desk"] as ElectronApp
+    saveProject(h.opened, {
+      ...h.opened.project,
+      apps: { ...h.opened.project.apps, desk: { ...desk, terminals: true } },
+    })
+    await expect(h.adds.add(1, "s1", card.token)).rejects.toThrow(/the project changed meanwhile/)
+    expect(h.approvals.copyFor("com.example.Notes", "folder-a")).toBeUndefined()
   })
 
   it("writes a site allowed in its check to the project, and approves that", async () => {
