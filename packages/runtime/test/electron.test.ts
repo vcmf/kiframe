@@ -1289,6 +1289,8 @@ steps:
           expect(seen["pty-shell"], `terminals: ${terminals}`).toMatch(
             terminals ? /^OK true/ : /^DENIED/,
           )
+          // A shell's temp files in its own temp (every app's: VS Code reads its shell at start).
+          expect(seen["zsh-temp"], `terminals: ${terminals}`).toBe("OK here-ok")
           // Its shells' prompts: the folder only, never the user's login or Mac's name.
           if (terminals) {
             expect(seen["zsh-prompt"]).toMatch(/^OK \S+ %$/)

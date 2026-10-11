@@ -155,6 +155,8 @@ if (process.argv.includes("terminals")) {
         .trim()
     tryIt("zsh-prompt", () => shell("/bin/zsh", 'print -rP -- "$PS1"'))
     tryIt("bash-prompt", () => shell("/bin/bash", 'echo "$PS1"'))
+    // A here-string (a temp file of zsh's: what VS Code's shell integration writes).
+    tryIt("zsh-temp", () => shell("/bin/zsh", "cat <<< here-ok"))
     const data = app.getPath("userData")
     fs.writeFileSync(join(data, "terminals.json"), JSON.stringify(out))
     const asked = join(data, "later.txt")
