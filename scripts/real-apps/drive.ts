@@ -18,6 +18,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -282,7 +283,8 @@ async function addDesktop(spec: string, dir: string): Promise<void> {
   await adding.getByRole("button", { name: "Check" }).click()
   const status = adding.getByRole("status")
   await page.waitForFunction(
-    (el) => /runs confined|couldn|can't|isn't|refused|failed/i.test(el?.textContent ?? ""),
+    (el) =>
+      /runs confined|couldn|can.t|isn.t|refused|failed|quit|the site/i.test(el?.textContent ?? ""),
     await status.elementHandle(),
     { timeout: 120_000 },
   )
@@ -341,9 +343,13 @@ const env = Object.fromEntries(
 env.KIFRAME_TEST_KEYCHAIN = "memory"
 // The agent's every event, timed, next to the report (what it called, with what, how long).
 env.KIFRAME_TRACE = join(out, "trace.jsonl")
-// A desktop app's sandboxes in the run's own work area (never the user's ~/.kiframe); its launch's
-// timings and failures' details on main's stderr, kept next to the report.
-env.KIFRAME_WORK_DIR = join(out, "work")
+// A short path (never the user's ~/.kiframe): an app's socket in its sandbox must fit macOS's 104
+// characters (VS Code's quit at once under the run's own folder).
+const work = mkdtempSync("/tmp/kf-")
+env.KIFRAME_WORK_DIR = work
+process.on("exit", () => rmSync(work, { recursive: true, force: true }))
+// A desktop app's launch timings and failures' details (its own output too) on main's stderr
+// (main.log, next to the report).
 env.KIFRAME_ELECTRON_TIMING = "1"
 env.KIFRAME_ELECTRON_DEBUG = "1"
 const profile = mkdtempSync(join(tmpdir(), "kiframe-real-"))
