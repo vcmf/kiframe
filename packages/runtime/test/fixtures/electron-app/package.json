@@ -1,0 +1,5 @@
+{
+  "name": "kiframe-fixture-electron",
+  "private": true,
+  "main": "main.cjs"
+}

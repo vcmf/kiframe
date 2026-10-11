@@ -79,15 +79,31 @@ export const unknownTool = (tool: string): ToolFailure => ({
     `Pick a valid tool for this step, or answer directly if none applies.`,
 })
 
+/** How a failure the user settles (an app they must allow) ends, for the model: never retried. */
+export const USER_SETTLES = "The user settles this: tell them, and don't retry."
+
+/** Whether a thrown failure is one the user settles (never throws: a throwing getter is no). */
+export function needsUser(err: unknown): boolean {
+  try {
+    return (err as { needsUser?: unknown } | null | undefined)?.needsUser === true
+  } catch {
+    return false
+  }
+}
+
 /** A tool threw while running (e.g. a managed service 500 or a network error). */
 export const toolThrew = (tool: string, err: unknown): ToolFailure => ({
   ok: false,
   error: "tool_error",
   tool,
   message:
-    `The "${tool}" tool failed with an error: ${err instanceof Error ? err.message : String(err)}. ` +
-    `You may retry once if this looks transient; otherwise continue without it and ` +
-    `tell the user what could not be completed.`,
+    // Something the user settles (an app they must allow): never retried.
+    needsUser(err)
+      ? `The "${tool}" tool can't go on: ${err instanceof Error ? err.message : String(err)}. ` +
+        USER_SETTLES
+      : `The "${tool}" tool failed with an error: ${err instanceof Error ? err.message : String(err)}. ` +
+        `You may retry once if this looks transient; otherwise continue without it and ` +
+        `tell the user what could not be completed.`,
 })
 
 /** The user stopped the run before or while this call ran: not a failure of the tool. */

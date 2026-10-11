@@ -411,7 +411,7 @@ describe("studio tools", () => {
   it("scrubs a snapshot before cutting it (a value the cut splits never shows in part)", async () => {
     const value = "sk-live-4242424242"
     const { studio } = makeStudio(undefined, { knownValues: () => new Set([value]) })
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     // The value placed across the cut: SNAPSHOT_MAX falls in its middle.
     const fill = async (n: number) => {
       await page.setContent(`<p>${"x".repeat(n)} ${value} ${"y".repeat(1000)}</p>`)
@@ -458,7 +458,7 @@ steps:
     const value = "sk-live-4242424242"
     const { studio } = makeStudio(undefined, { knownValues: () => new Set([value]) })
     const step = (s: object) => tool("run_step").run({ scene: "long", step: s }, studio, never)
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     const rows = Array.from({ length: 600 }, (_, i) => `<p>Season ${i}: matches and goals</p>`)
     await page.setContent(
       `<main>${rows.join("")}<h2>World Cup 2026</h2><p>Key: ${value}</p><p>The final.</p></main>`,
@@ -629,7 +629,10 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 150
 
   it("opens one live page for callers at once", async () => {
     const { studio } = makeStudio()
-    const [a, b] = await Promise.all([studio.livePage(), studio.livePage()])
+    const [a, b] = await Promise.all([
+      studio.livePage(undefined, new AbortController().signal),
+      studio.livePage(undefined, new AbortController().signal),
+    ])
     expect(a).toBe(b)
     expect(browser.contexts().filter((c) => c.pages().includes(a))).toHaveLength(1)
     const before = browser.contexts().length
@@ -667,7 +670,7 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 150
 
   it("says when the page is on another site than the app's", async () => {
     const { studio } = makeStudio()
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     // The same server under another host name: another site.
     await page.goto(`${server.url.replace("127.0.0.1", "localhost")}/projects?token=abc`)
     const snap = (await tool("snapshot").run({}, studio, never)) as string
@@ -1007,7 +1010,7 @@ steps: [{ id: a, action: pause, ms: 1 }]
     )) as string
     expect(asText.split("\n")).toEqual(["1 step ok", expect.stringMatching(/^1\. ok/) as unknown])
     // A step that leaves the app's site stops the rest.
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     await page.goto(`${server.url.replace("127.0.0.1", "localhost")}/`)
     const offSite = (await tool("run_steps").run(
       {
@@ -1225,7 +1228,7 @@ describe("add_app (B4)", () => {
         why: "the install guide",
       }),
     ])
-    expect(openProject(dir).project.apps.docs?.url).toBe(docs().origin)
+    expect(openProject(dir).project.apps.docs).toMatchObject({ url: docs().origin })
     expect(
       await tool("run_step").run(
         { scene: "tour", step: { id: "go", action: "goto", app: "docs", url: "/login" } },
@@ -1460,7 +1463,7 @@ describe("look: the live page as an image", () => {
   it("shows the page with a secret painted over, one element alone, and its image intact through the boundary", async () => {
     const known = new Set<string>(["bob@acme.com"])
     const { studio } = makeStudio(undefined, { knownValues: () => known })
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     await page.setContent(
       `<p style="font-size:40px">Logged in as bob@acme.com</p><canvas id="c" role="img" aria-label="Drawing canvas" style="width:300px;height:120px;background:#eee"></canvas>`,
     )
@@ -1553,7 +1556,7 @@ describe("hand_over: the user takes the live browser", () => {
       asked = request
       return Promise.resolve({ outcome: "done", note: "", hide: true } as never)
     })
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     await page.goto("about:blank")
     await studio.handOver("Look", undefined, new AbortController().signal)
     expect(asked).toMatchObject({ kind: "handover", origin: "" })
@@ -1572,7 +1575,7 @@ describe("hand_over: the user takes the live browser", () => {
       await studio.currentPage!.close()
       return { outcome: "done", note: "", hide: true } as never
     })
-    await studio.livePage()
+    await studio.livePage(undefined, new AbortController().signal)
     const result = await studio.handOver("Sign in", undefined, new AbortController().signal)
     expect(result).toMatchObject({ outcome: "done", url: "" })
     expect(studio.scrub("x closing-typed-1")).toBe("x [secret]")
@@ -1588,7 +1591,7 @@ describe("hand_over: the user takes the live browser", () => {
       await new Promise((r) => setTimeout(r, 300))
       return { outcome: "declined", note: "no phone at hand", hide: true } as never
     })
-    const page = await studio.livePage()
+    const page = await studio.livePage(undefined, new AbortController().signal)
     await page.setContent(`<button>Go</button>`)
     const snap = await studio.snapshot()
     expect(snap.ok).toBe(true)
@@ -1627,7 +1630,7 @@ steps:
       studio.knowTyped(["typed-in-check-1"])
       return Promise.resolve({ outcome: "done", note: "", hide: true } as never)
     })
-    const live = await studio.livePage()
+    const live = await studio.livePage(undefined, new AbortController().signal)
     expect(await studio.replay(scenario(), "demo", new AbortController().signal)).toBe("ok")
     expect(asked).toMatchObject({
       kind: "handover",
@@ -1642,7 +1645,7 @@ steps:
     // Its context closed: the value stays known for the studio's life (a new live context too).
     expect(studio.scrub("x typed-in-check-1")).toBe("x [secret]")
     await live.context().close()
-    await studio.livePage()
+    await studio.livePage(undefined, new AbortController().signal)
     expect(studio.scrub("x typed-in-check-1")).toBe("x [secret]")
   }, 60_000)
 
@@ -1737,7 +1740,10 @@ ${["a", "b", "c", "d", "e"].map((id) => `  - { id: ${id}, action: pause, ms: 20 
     const never = new AbortController().signal
     expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
     const { apps } = studio.options.config
-    studio.setApps({ ...apps, other: { ...apps.app!, url: "https://other.test" } })
+    studio.setApps({
+      ...apps,
+      other: { kind: "web", viewport: apps.app!.viewport, url: "https://other.test" },
+    })
     expect(await studio.replay(sceneWith(), "demo", never)).toBe("ok")
     expect(asks()).toBe(2)
   }, 60_000)

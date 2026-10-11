@@ -50,7 +50,10 @@ export async function runOne(
   }
   await syncPage(ctx, step)
   // Where the step ended (the page it left driven: a popup, the opener back): one of the apps.
-  if (ctx.options.confineToApps !== false) await confine(ctx, step)
+  // A desktop app's run is always confined (its window can open the user's files): grounding too.
+  if (ctx.options.confineToApps !== false || ctx.options.electron !== undefined) {
+    await confine(ctx, step)
+  }
   if (ctx.options.recording === true) {
     await followSecretFields(ctx, step)
     // The page as the step left it: not a scan that started earlier in the step.

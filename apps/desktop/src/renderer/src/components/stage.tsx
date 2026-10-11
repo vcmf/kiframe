@@ -7,6 +7,7 @@ import { useChat } from "../chat-store.ts"
 import { LiveControl } from "./live-control.tsx"
 import { PreviewPlayer } from "./preview-player.tsx"
 import { SceneStrip } from "./scene-strip.tsx"
+import { appLabel } from "../../../shared/util.ts"
 
 type Tab = "preview" | "live"
 
@@ -126,7 +127,7 @@ export function Stage({ project }: { project: ProjectView }) {
             ) : (
               <>
                 <h2>Kif’s browser</h2>
-                <p>While Kif works on {project.url}, you watch it here.</p>
+                <p>While Kif works on {liveLabel(project.apps)}, you watch it here.</p>
               </>
             )}
           </>
@@ -163,4 +164,10 @@ function TabButton(props: {
       {props.live === true && <span className="live-dot" aria-label="live" />}
     </button>
   )
+}
+
+/** What the live tab says Kif's browser works on: the first web app (the page it opens). */
+function liveLabel(apps: ProjectView["apps"]): string {
+  const app = apps.find((a) => a.kind === "web") ?? apps[0]
+  return app === undefined ? "the app" : appLabel(app)
 }

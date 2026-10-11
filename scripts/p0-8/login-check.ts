@@ -1,7 +1,7 @@
 // P0-8 (throwaway): checks the Cal.com login preset alone. Prints the outcome and URL path only.
 import { readFileSync } from "node:fs"
 import { runScenario, StepError } from "@kiframe/runtime"
-import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { firstApp, urlOf, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
 
@@ -10,7 +10,7 @@ const project = parseProjectYaml(readFileSync("examples/calcom/project.yaml", "u
 const scenario = parseScenarioYaml(
   "version: 1\nsetup: [{ preset: login }]\nsteps: [{ id: wait, action: pause, ms: 500 }]\n",
 )
-const env = envSecretResolver(["calcom.username", "calcom.password"], firstApp(project).app.url)
+const env = envSecretResolver(["calcom.username", "calcom.password"], urlOf(firstApp(project).app))
 const browser = await chromium.launch()
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
 try {

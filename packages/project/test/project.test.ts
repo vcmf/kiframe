@@ -70,7 +70,7 @@ describe("project store", () => {
     })
     writeFileSync(join(dir, "project.json"), v1)
     const opened = openProject(dir)
-    expect(opened.project.apps.app?.url).toBe("https://www.app.test")
+    expect(opened.project.apps.app).toMatchObject({ url: "https://www.app.test" })
     expect(opened.project.apps.app?.viewport.width).toBe(1280)
     // Opening never rewrites it.
     expect(readFileSync(join(dir, "project.json"), "utf8")).toBe(v1)

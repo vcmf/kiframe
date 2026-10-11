@@ -31,13 +31,19 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm typecheck
-      - run: pnpm test:coverage
-      # The desktop app, built and launched under a virtual display. Ubuntu 24 restricts the user
-      # namespaces Chromium's sandbox needs: allowed back, so the app runs sandboxed as shipped.
+      # Ubuntu 24 restricts the user namespaces Chromium's sandbox needs: allowed back (Electron runs
+      # sandboxed as shipped). The tests run under a virtual display: the Electron target's tests
+      # launch a fixture desktop app.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: xvfb-run -a pnpm test:coverage
+        env:
+          # Slow shutdown phases of a desktop app's launch, and its failures' detail, said (the
+          # Electron target's evidence).
+          KIFRAME_ELECTRON_TIMING: "1"
+          KIFRAME_ELECTRON_DEBUG: "1"
+      # The desktop app, built and launched under a virtual display.
       - name: Desktop end-to-end
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          xvfb-run -a pnpm --filter @kiframe/desktop e2e
+        run: xvfb-run -a pnpm --filter @kiframe/desktop e2e
       - name: Upload coverage to Codecov
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v5
@@ -45,3 +51,23 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  # Desktop apps run on macOS only (Seatbelt, codesign, plutil): their suite, where it holds.
+  electron-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # A desktop app's takes are encoded with ffmpeg (as on Linux).
+      - run: brew install ffmpeg
+      # The studio's desktop tests drive a web page beside the app too.
+      - run: pnpm --filter @kiframe/runtime exec playwright install chromium
+      - run: pnpm exec vitest run --project electron
+        env:
+          KIFRAME_ELECTRON_TIMING: "1"
+          KIFRAME_ELECTRON_DEBUG: "1"

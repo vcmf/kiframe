@@ -210,7 +210,7 @@ describe("settings layers", () => {
       }),
     )
     const { config, environment } = resolveProjectConfig(p, org())
-    expect(config.apps.app?.url).toBe("https://app.example.com")
+    expect(config.apps.app).toMatchObject({ url: "https://app.example.com" })
     expect(config.interrupts.map((r) => r.do.action)).toEqual(["press"])
     expect(config.hide).toEqual([".intercom-launcher", ".beta-banner"])
     // The org's sandbox environment gives the project nothing (no flag: nothing is pre-approved).
@@ -294,7 +294,7 @@ describe("settings layers", () => {
 
   it("works without org settings", () => {
     const { config, environment } = resolveProjectConfig(Project.parse(project()), undefined)
-    expect(config.apps.app?.url).toBe("https://app.example.com")
+    expect(config.apps.app).toMatchObject({ url: "https://app.example.com" })
     expect(environment).toMatchObject({ requiredSecrets: [] })
   })
 

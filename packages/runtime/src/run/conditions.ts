@@ -1,10 +1,10 @@
-import { type Condition, sameApp } from "@kiframe/schema"
+import { type Action, type Condition, sameApp } from "@kiframe/schema"
 import { StepError, type StepRef } from "../errors.ts"
 import { EXACT_NAMES_HINT, ProbeRefusal } from "../secret-state.ts"
 import type { Locator as SchemaLocator } from "@kiframe/schema"
 import type { Page } from "playwright"
 import { countUnderRule, describeLocator, documentOf } from "../targets.ts"
-import { appNamed } from "./apps.ts"
+import { webAppNamed } from "./apps.ts"
 import { type Ctx, firstLine } from "./context.ts"
 
 // Conditions for `waitFor` / `expect`, and URL matching.
@@ -49,7 +49,13 @@ export async function waitForCondition(
       })
     } else if ("url" in condition) {
       // Relative to the app it names, else the one its step means.
-      const app = appNamed(ctx.apps, condition.app ?? ctx.app, step)
+      const app = webAppNamed(
+        ctx.apps,
+        condition.app ?? ctx.app,
+        step,
+        "a URL condition",
+        ctx.options.electron?.app,
+      )
       const expected = new URL(condition.url, app.url)
       await page.waitForURL((url) => urlMatches(url, expected), { timeout })
     } else if (!(await ctx.network.waitForIdle(timeout))) {
@@ -173,4 +179,13 @@ export async function pollLocator(
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
+}
+
+/** The condition an action carries (a waitFor's `until`, an expect's `that`), if any. */
+export function conditionOf(action: Action): Condition | undefined {
+  return action.action === "waitFor"
+    ? action.until
+    : action.action === "expect"
+      ? action.that
+      : undefined
 }

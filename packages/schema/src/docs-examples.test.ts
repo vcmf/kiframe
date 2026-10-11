@@ -18,7 +18,7 @@ function yamlBlockAfter(marker: string): string {
 describe("docs/OBJECT-MODEL.md examples", () => {
   it("project-level example (§2) is a valid project config", () => {
     const project = parseProjectYaml(yamlBlockAfter("**Project level**"))
-    expect(project.apps.app?.url).toBe("https://staging.acme.com")
+    expect(project.apps.app).toMatchObject({ url: "https://staging.acme.com" })
     expect(project.presets["login-as-manager"]?.session).toBe(true)
     expect(project.defaults.pacing.settleMs).toBe(400)
   })

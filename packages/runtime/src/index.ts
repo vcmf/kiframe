@@ -8,6 +8,26 @@ export * from "./recorder.ts"
 export * from "./runner.ts"
 export * from "./scanner.ts"
 export { type CastFrame, watchScreencast } from "./screencast.ts"
+export {
+  allowedPage,
+  type ElectronLaunch,
+  ElectronLaunchError,
+  type ElectronTarget,
+  launchElectron,
+  placeOf,
+} from "./electron.ts"
+export { defaultWorkDir, sweepWorkArea, WorkAreaError } from "./electron-workarea.ts"
+export {
+  buildHolds,
+  codeDigest,
+  type DesktopApp,
+  inspectDesktopApp,
+  InspectError,
+  type Signer,
+  signerOf,
+} from "./electron-inspect.ts"
+export { trialDesktopApp, type TrialOptions, type TrialOutcome } from "./electron-trial.ts"
+export { ConfinementError, FILES_LIMITS, seatbeltProfile } from "./electron-confine.ts"
 export { LookRefusal, maskedScreenshot, type MaskedShot } from "./look.ts"
 export {
   fitImage,
@@ -23,3 +43,4 @@ export { normalizeText } from "./text-match.ts"
 export { viewOf, type PageView } from "./scroller.ts"
 export { addKnownValues, isSafeSelector, knownValuesOf } from "./secret-state.ts"
 export * from "./batch.ts"
+export { viewportWithin } from "./run/secrets.ts"

@@ -123,7 +123,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 }
 const project = parseProjectYaml(readFileSync(values.project, "utf8"))
 /** The app every scene starts in (the project's first). */
-const start = firstApp(project).app
+const firstListed = firstApp(project).app
+if (firstListed.kind !== "web") throw new Error("ground.ts drives web apps only")
+const start = firstListed
 const model = values.model
 // The scene being grounded (its steps and its replays are one scene: they share approvals).
 const sceneId = sceneIdOf(values.out)

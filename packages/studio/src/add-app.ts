@@ -1,4 +1,4 @@
-import { App } from "@kiframe/schema"
+import { WebApp } from "@kiframe/schema"
 import type { AppCard } from "./studio.ts"
 
 // `add_app`'s card (OBJECT-MODEL §0.9): what the user approves, built from the very address that
@@ -48,7 +48,7 @@ export function appCard(
   url: string,
   why: string,
 ): Omit<AppCard, "secrets" | "usedBy"> | { error: string } {
-  const checked = App.shape.url.safeParse(url)
+  const checked = WebApp.shape.url.safeParse(url)
   if (!checked.success)
     return { error: `url: ${checked.error.issues[0]?.message ?? "not an address"}` }
   const at = new URL(checked.data)

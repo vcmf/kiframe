@@ -55,6 +55,7 @@ describe("finding in a snapshot", () => {
     expect(find(SNAP, "2026_FIFA")).toContain('link "2026 World Cup" [ref=e3]')
   })
 
+  // A ratio of times, never a budget: room for a CI machine busy with the Electron tests.
   it("stays linear on a huge snapshot with a common word", () => {
     // Time per size, not a wall-clock budget (CI and coverage are several times slower): four times
     // the snapshot takes about four times as long; a quadratic search takes about sixteen times.
@@ -73,7 +74,7 @@ describe("finding in a snapshot", () => {
     timed(10_000) // warm up
     const ratio = timed(100_000) / timed(25_000)
     expect(ratio).toBeLessThan(8)
-  })
+  }, 30_000)
 
   it("reads a sentence over a link, as written by a reader (dashes, quotes, case)", () => {
     // "He played in the 2026 World Cup and won." spans the paragraph's three children.

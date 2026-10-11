@@ -12,6 +12,7 @@ import {
   notesBlock,
   runNotes,
   Studio,
+  type StudioOptions,
   studioTools,
   systemPrompt,
 } from "@kiframe/studio"
@@ -99,6 +100,8 @@ export interface AgentHostOptions {
   projectChanged: () => void
   /** Where the files the agent replaces or deletes are kept first (none: not kept). */
   versions?: FileVersions
+  /** Launches the project's desktop apps (main's launcher, from their approvals). None: none. */
+  launchDesktop?: StudioOptions["launchDesktop"]
 }
 
 /** A message as sent: its text as the user wrote it, as the history keeps it, its files. */
@@ -515,6 +518,9 @@ export class AgentHost {
       takes,
       browser,
       ...(this.#options.afterRecord !== undefined && { afterRecord: this.#options.afterRecord }),
+      ...(this.#options.launchDesktop !== undefined && {
+        launchDesktop: this.#options.launchDesktop,
+      }),
       requestUser: (request, signal) => this.#ask(request, signal),
       // What the agent read of the project's files: this host's (outlives a studio remade).
       fileReads: this.#fileReads,

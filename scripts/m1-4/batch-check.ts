@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { parseArgs } from "node:util"
 import { recordBatch } from "@kiframe/runtime"
-import { firstApp, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
+import { firstApp, urlOf, parseProjectYaml, parseScenarioYaml } from "@kiframe/schema"
 import { chromium } from "playwright"
 import { envSecretResolver, loadDotEnv } from "../lib/secrets.ts"
 
@@ -47,7 +47,7 @@ try {
       scope: "phase0",
       resolveSecret: envSecretResolver(
         ["calcom.username", "calcom.password"],
-        firstApp(project).app.url,
+        urlOf(firstApp(project).app),
       ),
       timeoutMs: 15000,
       onEvent: (e) => {

@@ -1827,7 +1827,13 @@ steps:
         ? [`${e.kind}:${e.rule}:${e.step.stepId}`]
         : [],
     )
-    expect(kinds).toEqual(["interrupt_start:cookies:go", "interrupt_end:cookies:go"])
+    // Handled once, off camera, before the click it would block: before "go" when it shows during
+    // the pause, before "wait" when the page loaded slower than its 300 ms (a busy CI machine:
+    // already up as the steps begin). Either way the click it would have blocked works.
+    expect([
+      ["interrupt_start:cookies:go", "interrupt_end:cookies:go"],
+      ["interrupt_start:cookies:wait", "interrupt_end:cookies:wait"],
+    ]).toContainEqual(kinds)
   })
 
   it("doesn't re-run a rule on a dialog that is still fading out", async () => {

@@ -44,7 +44,9 @@ ${steps}`)
 const signedIn = `  - { id: check, action: expect, that: { visible: { by: text, text: Signed in, exact: true } } }\n`
 const signOut = `  - { id: out, action: click, target: { by: role, role: button, name: Sign out } }\n`
 
-describe("recordBatch", () => {
+// Browser launches share the machine with the Electron target's tests: the budget other browser
+// suites use.
+describe("recordBatch", { timeout: 30_000 }, () => {
   const run = async (steps: (string | [string, string])[]) => {
     const dir = mkdtempSync(join(tmpdir(), "kiframe-batch-"))
     const logins: number[] = []

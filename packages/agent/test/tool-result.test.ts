@@ -68,3 +68,15 @@ describe("tool-result contract", () => {
     expect(isToolFailure(r)).toBe(true) // one uniform "did it fail?" check across all origins
   })
 })
+
+describe("a tool that threw something the user settles", () => {
+  it("never invites a retry (the user settles it: the agent tells them)", () => {
+    const settles = Object.assign(new Error("notes: not allowed in this project yet"), {
+      needsUser: true,
+    })
+    const said = toolThrew("snapshot", settles).message
+    expect(said).toContain("The user settles this: tell them, and don't retry.")
+    expect(said).not.toContain("retry once")
+    expect(toolThrew("snapshot", new Error("boom")).message).toContain("retry once")
+  })
+})

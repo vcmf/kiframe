@@ -127,6 +127,17 @@ const TakeMetaBase = z.strictObject({
   appUrl: withoutCredentials(z.string()),
   /** The app the take starts in, by its name in the project (takes from before named apps: none). */
   app: AppName.optional(),
+  /**
+   * A desktop app's take: the build it filmed (its version, untrusted: bounded) and what the
+   * project opened it with (a digest of its arguments and sites). Shown, never a reason to record
+   * again (an app's update keeps its scenes: user decision 2026-10-10).
+   */
+  appBuild: z
+    .strictObject({
+      version: z.string().max(100).optional(),
+      opens: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .optional(),
   /** The environment the take was recorded on (APPROACHES §10c), when known. */
   environment: RuleName.optional(),
   /** The page's CSS viewport, and the capture scale actually obtained (frame pixels per CSS pixel). */

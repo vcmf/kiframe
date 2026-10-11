@@ -11,8 +11,7 @@ const project: ProjectView = {
   session: "s1",
   name: "Demo",
   dir: "/tmp/demo.kiframe",
-  url: "https://app.test/home",
-  apps: [{ name: "app", origin: "https://app.test" }],
+  apps: [{ name: "app", kind: "web", origin: "https://app.test" }],
   scenes: [],
   problems: [],
 }
@@ -140,8 +139,8 @@ describe("the secrets panel", () => {
     const two: ProjectView = {
       ...project,
       apps: [
-        { name: "app", origin: "https://app.test" },
-        { name: "docs", origin: "https://docs.test" },
+        { name: "app", kind: "web", origin: "https://app.test" },
+        { name: "docs", kind: "web", origin: "https://docs.test" },
       ],
     }
     const { invoke } = stubApi({
@@ -190,6 +189,42 @@ describe("the secrets panel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
     const panel = screen.getByRole("dialog", { name: "Secrets" })
     expect(within(panel).queryByLabelText("App")).toBeNull()
+  })
+
+  it("never offers a desktop app (it takes no secrets): the web app alone, no app asked", async () => {
+    const withDesk: ProjectView = {
+      ...project,
+      apps: [
+        { name: "notes", kind: "electron", bundleId: "com.example.notes" },
+        { name: "app", kind: "web", origin: "https://app.test" },
+      ],
+    }
+    stubApi({
+      "app:status": () => status({ hasKey: true, project: withDesk }),
+      "secrets:list": () => [],
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
+    const panel = screen.getByRole("dialog", { name: "Secrets" })
+    expect(within(panel).queryByLabelText("App")).toBeNull()
+    expect(panel.textContent).toMatch(/https:\/\/app\.test/)
+    expect(panel.textContent).not.toMatch(/com\.example\.notes/)
+  })
+
+  it("says no app takes secrets when the project has only desktop apps (no form)", async () => {
+    const deskOnly: ProjectView = {
+      ...project,
+      apps: [{ name: "notes", kind: "electron", bundleId: "com.example.notes" }],
+    }
+    stubApi({
+      "app:status": () => status({ hasKey: true, project: deskOnly }),
+      "secrets:list": () => [],
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole("button", { name: "Secrets" }))
+    const panel = screen.getByRole("dialog", { name: "Secrets" })
+    expect(panel.textContent).toMatch(/None of this project’s apps takes secrets/)
+    expect(within(panel).queryByRole("button", { name: "Add secret" })).toBeNull()
   })
 
   it("never moves focus while a value is typed (a status update re-renders the window)", async () => {

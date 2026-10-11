@@ -899,3 +899,22 @@ describe("untilStopped", () => {
     await expect(untilStopped(failing, stopped.signal)).rejects.toThrow()
   })
 })
+
+describe("runAgent: a failure the user settles", () => {
+  it("tells the model to tell the user, never to retry (the tool's flag kept through the loop)", async () => {
+    const refused = defineTool<Ctx, z.ZodObject<Record<string, never>>>({
+      name: "snapshot",
+      description: "Refused",
+      parameters: z.object({}),
+      run: () =>
+        Promise.reject(Object.assign(new Error("notes isn't allowed here"), { needsUser: true })),
+    })
+    const { llm } = scripted([{ kind: "tool_calls", calls: [call("c1", "snapshot", {})] }])
+    const events = await collect(
+      runAgent({ userMessage: "go", tools: [refused], llm, context: { log: [] } }),
+    )
+    const [result] = events.flatMap((e) => (e.type === "tool_result" ? [e.result] : []))
+    expect(JSON.stringify(result)).toContain("The user settles this: tell them, and don't retry")
+    expect(JSON.stringify(result)).not.toContain("retry once")
+  })
+})

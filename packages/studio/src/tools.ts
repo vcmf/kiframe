@@ -1,6 +1,6 @@
-import { defineTool, isWithImages, type Tool, withImages } from "@kiframe/agent"
+import { defineTool, isWithImages, needsUser, type Tool, withImages } from "@kiframe/agent"
 import { saveScene } from "@kiframe/project"
-import { AppName, firstApp, RuleName, SceneId } from "@kiframe/schema"
+import { AppName, firstApp, RuleName, SceneId, webAppsOf } from "@kiframe/schema"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { fileTools } from "./file-tools.ts"
@@ -58,7 +58,8 @@ const snapshot = defineTool({
         "Text to look for: only the elements that mention it, with where they are and their refs (as a reader: case, dashes and quotes don't matter; a phrase may run over a paragraph's links; with no exact match, the blocks holding all its words). For content further down a long page, past the snapshot's cut",
       ),
   }),
-  run: async ({ within, find }, studio: Studio) => said(await studio.snapshot(within, find)),
+  run: async ({ within, find }, studio: Studio, signal) =>
+    said(await studio.snapshot(within, find, signal)),
 })
 
 const look = defineTool({
@@ -232,8 +233,9 @@ const listSecrets = defineTool({
     "Names of the secrets the user provided (never their values), each with the app it's typed on.",
   parameters: z.object({}),
   run: (_args, studio: Studio) => {
-    // App by app (each its exact origin): a secret is typed only on its own app.
-    const apps = Object.entries(studio.options.config.apps)
+    // App by app (each its exact origin): a secret is typed only on its own app; a desktop app
+    // takes none (the user signs in by hand).
+    const apps = Object.entries(webAppsOf(studio.options.config.apps))
     const secrets = apps.flatMap(([app, { url }]) =>
       (studio.options.secrets?.(new URL(url).origin) ?? []).map((s) => ({ ...s, app })),
     )
@@ -369,6 +371,8 @@ function scrubbed(tool: Tool<Studio>): Tool<Studio> {
         const scrub = studio.scrubber()
         const scrubbed = new Error(scrub(error instanceof Error ? error.message : String(error)))
         if (error instanceof Error) scrubbed.name = error.name
+        // Whether the user settles it (an app to allow): the agent tells them, never retries.
+        if (needsUser(error)) Object.assign(scrubbed, { needsUser: true })
         throw scrubbed
       }
       // A tool's images are made safe where they're made (a screenshot masked; a project's image

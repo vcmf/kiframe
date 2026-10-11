@@ -1,4 +1,4 @@
-import { firstApp, stepReference } from "@kiframe/schema"
+import { type App, firstApp, stepReference } from "@kiframe/schema"
 import { SCENE_STEPS, type Studio } from "./studio.ts"
 
 /** The agent's instructions for a project (the scene format, how to ground, the tools' rules). */
@@ -118,6 +118,11 @@ Project presets available: ${Object.keys(config.presets).join(", ") || "none"}.
 ${appsPart(studio)}`
 }
 
+/** An app as the agent reads it: its address, or the desktop app it is. */
+function appSaid(app: App): string {
+  return app.kind === "web" ? app.url : `the desktop app ${app.bundleId}`
+}
+
 /**
  * The project's apps: one app said as before; several, with the rule a step on another app follows.
  * Either way, how a site the scene needs is added (add_app, the user approves).
@@ -128,13 +133,23 @@ function appsPart(studio: Studio): string {
   host: an identity provider is its own app): add it with \`add_app\` (the user approves; one line why).
   A step that ends on any other site fails in the replay. Never add a site to get around a refusal.`
   if (apps.length === 1) {
-    return `App: ${studio.scrub(firstApp(studio.options.config).app.url)}\n${adding}`
+    return `App: ${studio.scrub(appSaid(firstApp(studio.options.config).app))}\n${adding}`
   }
   const list = apps
-    .map(([name, app], i) => `  ${name}: ${studio.scrub(app.url)}${i === 0 ? " (the first)" : ""}`)
+    .map(
+      ([name, app], i) =>
+        `  ${name}: ${studio.scrub(appSaid(app))}${i === 0 ? " (the first)" : ""}`,
+    )
     .join("\n")
   return `Apps of the project (a scene may use several; never any other site):
 ${list}
+- A desktop app (one listed as "the desktop app …") is grounded and filmed like a web app (snapshot,
+  run_step, save_scene, record_scene), in its own window: its scene starts in it (\`app: <name>\`
+  and \`start_app\`); it shows its own pages, so no goto, URL condition or web preset there; one app
+  per scene (switching a scene to another app starts that app afresh: what earlier steps did there
+  is gone). Nothing in a desktop app is handed to the user yet (no handover step: sign-in by hand
+  comes next). A desktop app that won't open says why: the user settles it (the Apps panel); tell
+  them, never retry.
 - A scene starts in the first app unless it says another at the top level, next to version:
   \`app: <name>\`. Pass the same as \`start_app\` to run_step and run_steps while you ground it.
 - A step without an app means the scene's start app, NEVER the app the page went to (a link, a
@@ -142,5 +157,7 @@ ${list}
   condition \`{ action: waitFor, until: { url: /path, app: <name> } }\` (same in expect's \`that\`).
   Only goto and URL conditions take an app (never a click).
 - Where a step leaves the page says its app: \`url: docs: /install\`.
+- snapshot and look show the app that's open: with none open yet, open the scene's app first (a
+  run_step with its start_app; a pause step does nothing else).
 ${adding}`
 }

@@ -179,3 +179,23 @@ describe("the open project and its agent", () => {
     expect(ws.agent).toBe(made[2])
   })
 })
+
+describe("a project switch", () => {
+  it("tells its listeners on open, create and close (one that throws stops nothing)", async () => {
+    const workspace = new Workspace(() => ({ close: () => Promise.resolve() }))
+    let told = 0
+    workspace.onSwitch(() => {
+      throw new Error("a listener that fails")
+    })
+    workspace.onSwitch(() => (told += 1))
+    const dir = folder()
+    createProject(dir, { id: "p1", name: "Demo", url: "https://app.test" })
+    await workspace.open(dir)
+    expect(workspace.session).toMatch(/^[0-9a-f]{12}$/)
+    await workspace.create(folder(), { name: "New", url: "https://new.test" })
+    await workspace.close()
+    expect(told).toBe(3)
+    // No project: no session.
+    expect(workspace.session).toBeUndefined()
+  })
+})
